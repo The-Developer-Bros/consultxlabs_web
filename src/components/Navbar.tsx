@@ -26,6 +26,7 @@ const Navbar = () => {
         padding: "1em",
         background: "lightgray",
         alignItems: "center",
+        zIndex: 2,
       }}
     >
       <Image src={consultxlogo} alt="ConsultX Logo" width={100} height={20} />
