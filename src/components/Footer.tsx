@@ -7,12 +7,11 @@ import {
   FaLinkedin,
   FaTwitter,
 } from "react-icons/fa";
-import "../styles/Footer.css";
 
 const Footer: React.FC = () => {
   return (
-    <footer>
-      <div className="logo">
+    <footer className="flex flex-col items-center justify-center p-5 bg-black text-white">
+      <div className="w-full flex justify-center pb-5">
         {/* Replace with your company logo */}
         <Image
           src="/path-to-your-logo.png"
@@ -21,38 +20,28 @@ const Footer: React.FC = () => {
           height={100}
         />
       </div>
-      <div className="columns">
-        <div className="column">
-          <h2>Explore Areas of Expertise</h2>
-          <ul>
+      <div className="flex justify-between w-full max-w-6xl">
+        <div className="flex flex-col w-1/5">
+          <h2 className="mb-2 text-lg font-bold">Explore Areas of Expertise</h2>
+          <ul className="list-none p-0 mb-5 space-y-1">
             <li>Doctors</li>
             <li>Lawyers</li>
             <li>Engineers</li>
             <li>Designers</li>
             <li>Higher Education</li>
           </ul>
-          <h2>Follow Us</h2>
-          <ul className="social-icons">
-            <li>
-              <FaFacebook />
-            </li>
-            <li>
-              <FaInstagram />
-            </li>
-            <li>
-              <FaYoutube />
-            </li>
-            <li>
-              <FaLinkedin />
-            </li>
-            <li>
-              <FaTwitter />
-            </li>
+          <h2 className="mb-2 text-lg font-bold">Follow Us</h2>
+          <ul className="list-none p-0 flex space-x-2">
+            <li><FaFacebook /></li>
+            <li><FaInstagram /></li>
+            <li><FaYoutube /></li>
+            <li><FaLinkedin /></li>
+            <li><FaTwitter /></li>
           </ul>
         </div>
-        <div className="column">
-          <h2>Overview</h2>
-          <ul>
+        <div className="flex flex-col w-1/5">
+          <h2 className="mb-2 text-lg font-bold">Overview</h2>
+          <ul className="list-none p-0 mb-5 space-y-1">
             <li>About</li>
             <li>Career</li>
             <li>Press</li>
@@ -63,59 +52,36 @@ const Footer: React.FC = () => {
             <li>Local Sitemap</li>
           </ul>
         </div>
-        <div className="column">
-          <h2>Community</h2>
-          <ul>
+        <div className="flex flex-col w-1/5">
+          <h2 className="mb-2 text-lg font-bold">Community</h2>
+          <ul className="list-none p-0 mb-5 space-y-1">
             <li>Community Central</li>
             <li>Support</li>
             <li>Help</li>
             <li>Do not Sell my info</li>
           </ul>
-          <h2>Advertise</h2>
-          <ul>
+          <h2 className="mb-2 text-lg font-bold">Advertise</h2>
+          <ul className="list-none p-0 mb-5 space-y-1">
             <li>Media kit</li>
             <li>Contact</li>
           </ul>
         </div>
-        <div className="column">
-          <h2>ConsultX Apps</h2>
+        <div className="flex flex-col w-1/5">
+          <h2 className="mb-2 text-lg font-bold">ConsultX Apps</h2>
           <p>Stay in touch with us over other platforms</p>
-          <h2>Mobile App</h2>
-          <div className="mobile-app">
+          <h2 className="mb-2 text-lg font-bold">Mobile App</h2>
+          <div className="grid grid-cols-3 gap-4">
             {/* Replace with your app logo */}
-            <Image
-              className="logo"
-              src="/path-to-your-app-logo.png"
-              alt="App Logo"
-              width={100}
-              height={100}
-            />
-            <Image
-              className="apple-store"
-              src="/path-to-apple-store-logo.png"
-              alt="Apple Store"
-              width={100}
-              height={100}
-            />
-            <Image
-              className="android-store"
-              src="/path-to-android-store-logo.png"
-              alt="Android Store"
-              width={100}
-              height={100}
-            />
+            {/* Replace with your app store logos */}
           </div>
-          <h2>ConsultX Labs Udemy Channel</h2>
+          <h2 className="mb-2 text-lg font-bold">ConsultX Labs Udemy Channel</h2>
           {/* Replace with your Udemy logo */}
-          <Image
-            src="/path-to-udemy-logo.png"
-            alt="Udemy Logo"
-            width={100}
-            height={100}
-          />
         </div>
+
       </div>
+
     </footer>
+
   );
 };
 
