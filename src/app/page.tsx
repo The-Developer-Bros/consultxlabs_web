@@ -6,12 +6,14 @@ import AnnouncementBar from "@/components/AnnouncementBar";
 import TestimonialsSection from "@/components/TestimonialSection";
 import Footer from "@/components/Footer";
 import Banner from "@/components/Banner";
+import UserCarousel from "@/components/UserCarousel";
 export default function Home() {
   return (
     <Provider store={store}>
       <AnnouncementBar />
       <Navbar />
-        <Banner />
+      <Banner />
+      <UserCarousel />
       <TestimonialsSection />
       <Footer />
     </Provider>

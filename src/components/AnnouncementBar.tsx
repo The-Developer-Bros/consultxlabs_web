@@ -29,7 +29,7 @@ const AnnouncementBar = () => {
         top: 0,
         zIndex: 1000,
         display: "flex",
-        justifyContent: "space-between",
+        justifyContent: "center", 
       }}
     >
       🔥 Exciting sale coming soon! Get ready for amazing discounts on

@@ -17,11 +17,11 @@ const Banner = () => {
           position: "absolute",
           top: "40%", 
           left: "50%",
-          transform: "translate(-50%, -50%)",
+          transform: "translate(-50%, -100%)",
           textAlign: "center",
           color: "black", 
           fontSize: "100px",
-          width: "50%", 
+          width: "60%", 
         }}
       >
         Get Expert Advice from the Best Consultants
