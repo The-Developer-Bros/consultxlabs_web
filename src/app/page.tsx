@@ -13,9 +13,10 @@ export default function Home() {
       <AnnouncementBar />
       <Navbar />
       <Banner />
-      <UserCarousel />
+      {/* <UserCarousel /> */}
       <TestimonialsSection />
       <Footer />
     </Provider>
   );
 }
+ 

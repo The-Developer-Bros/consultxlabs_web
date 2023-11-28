@@ -34,60 +34,60 @@ const Navbar = () => {
     <Image src={consultxlogo} alt="ConsultX Logo" width={100} height={20} />
 
     <div style={{ display: "flex", alignItems: "center", gap: "50px" }}>
-      <div style={{ position: "relative" }}>
-        <button onMouseEnter={() => setShowConsultants(true)} onMouseLeave={() => setShowConsultants(false)}>
-          Find a Consultant
-        </button>
-        {showConsultants && (
-          <div style={{ position: "absolute", top: "100%", left: 0 }}>
-            {/* Add your categories here */}
-            <p>Doctor</p>
-            <p>Lawyer</p>
-            <p>Engineer</p>
-            {/* ... */}
-          </div>
-        )}
-      </div>
-
-      <button>Upcoming Webinars</button>
-      <button>How it Works</button>
-      <button>Podcasts</button>
-      <button>Blog</button>
-      <button>Pricing</button>
+      <button style={{ color: "black" }}>Experts</button>
+      <button style={{ color: "black" }}>Webinar</button>
+      <button style={{ color: "black" }}>Events</button>
+      <button style={{ color: "black" }}>Community</button>
+      <button style={{ color: "black" }}>Blog</button>
+      {user && <button>Feed</button>}
     </div>
 
-      <div style={{ display: "flex", alignItems: "center" }}>
-        {user ? (
-          <>
-            <Image
-              src={user.profilePicture}
-              alt="Profile"
-              width={100}
-              height={20}
-            />
-            <button onClick={handleLogout}>Sign out</button>
-          </>
-        ) : (
-          <>
-            <button
-              style={{ marginRight: "10px" }}
-              onClick={() => {
-                /* Implement your sign up logic here */
-              }}
-            >
-              Sign up
-            </button>
-            <button
-              onClick={() => {
-                /* Implement your sign in logic here */
-              }}
-            >
-              Sign in
-            </button>
-          </>
-        )}
-      </div>
-    </nav>
+    <div style={{ display: "flex", alignItems: "center" }}>
+      {user ? (
+        <>
+          <Image
+            src={user.profilePicture}
+            alt="Profile"
+            width={100}
+            height={20}
+          />
+          <button onClick={handleLogout}>Sign out</button>
+        </>
+      ) : (
+        <>
+          <button
+            style={{
+              marginRight: "10px",
+              color: "black",
+              border: "1px solid black",
+              borderRadius: "5px",
+              padding: "5px 10px",
+            }}
+            onClick={() => {
+              /* Implement your sign up logic here */
+            }}
+          >
+            Sign up
+          </button>
+          <button
+            style={{
+              marginRight: "10px",
+              color: "white",
+              background: "black",
+              border: "1px solid black",
+              borderRadius: "5px",
+              padding: "5px 10px",
+            }}
+            onClick={() => {
+              /* Implement your sign in logic here */
+            }}
+          >
+            Sign in
+          </button>
+        </>
+      )}
+    </div>
+  </nav>
   );
 };
 
