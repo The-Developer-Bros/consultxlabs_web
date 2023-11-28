@@ -3,6 +3,7 @@ import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 import { NextAuthOptions } from "next-auth";
+import NextAuth from "next-auth/next";
 import GitHubProvider from "next-auth/providers/github";
 import GoogleProvider from "next-auth/providers/google";
 
@@ -20,7 +21,7 @@ const firebaseApp = initializeApp(firebaseConfig);
 const firestore = getFirestore(firebaseApp);
 const auth = getAuth(firebaseApp);
 
-export const options: NextAuthOptions = {
+export const authOptions: NextAuthOptions = {
   providers: [
     GitHubProvider({
       clientId: process.env.GITHUB_CLIENT_ID ?? "",
@@ -32,22 +33,32 @@ export const options: NextAuthOptions = {
     }),
   ],
   adapter: FirestoreAdapter(firestore as any),
-  callbacks: {
-    async signIn(params) {
-      const { user, account, profile } = params;
-      return true;
-    },
-    async redirect(params) {
-      const { url, baseUrl } = params;
-      return baseUrl;
-    },
-    async session(params) {
-      const { session, user } = params;
-      return session;
-    },
-    async jwt(params) {
-      const { token, user, account, profile, isNewUser } = params;
-      return token;
-    },
-  },
+  // callbacks: {
+  //   async signIn({ user, account, profile, email, credentials }) {
+  //     return true;
+  //   },
+  //   async redirect({ url, baseUrl }) {
+  //     return baseUrl;
+  //   },
+  //   async session({ session, token, user }) {
+  //     return session;
+  //   },
+  //   async jwt({ token, user, account, profile, isNewUser }) {
+  //     return token;
+  //   },
+  // },
+  // theme: {
+  //   colorScheme: "auto", // "auto" | "dark" | "light"
+  //   brandColor: "", // Hex color value
+  //   logo: "", // Absolute URL to logo image
+  // },
+  // pages: {
+  //   signIn: "/auth/signin",
+  //   signOut: "/auth/signout",
+  //   error: "/auth/error",
+  //   verifyRequest: "/auth/verify-request",
+  //   newUser: null, // If set, new users will be directed here on first sign in
+  // }
 };
+
+export default NextAuth(authOptions);
