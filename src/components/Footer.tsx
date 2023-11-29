@@ -7,7 +7,7 @@ import {
   FaLinkedin,
   FaTwitter,
 } from "react-icons/fa";
-import consultxlogo from "src/assets/logos/ConsultX-logos/ConsultX-logos_white.png";
+import consultxlogo from "public/assets/logos/ConsultX-logos/ConsultX-logos_white.png";
 
 
 const Footer: React.FC = () => {

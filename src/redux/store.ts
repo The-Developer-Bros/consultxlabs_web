@@ -5,7 +5,7 @@ import announcementReducer from "./announcementSlice";
 
 const store = configureStore({
   reducer: {
-    user: userReducer,
+    // user: userReducer,
     announcement: announcementReducer,
   },
 });

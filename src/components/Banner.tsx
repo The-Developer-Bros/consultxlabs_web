@@ -1,5 +1,5 @@
 import Image from "next/image";
-import bannerImage from "src/assets/images/main-banner.jpeg";
+import bannerImage from "public/assets/images/main-banner.jpeg";
 
 const Banner = () => {
   return (
@@ -15,13 +15,13 @@ const Banner = () => {
       <div
         style={{
           position: "absolute",
-          top: "40%", 
+          top: "40%",
           left: "50%",
           transform: "translate(-50%, -100%)",
           textAlign: "center",
-          color: "black", 
+          color: "black",
           fontSize: "100px",
-          width: "60%", 
+          width: "60%",
         }}
       >
         Get Expert Advice from the Best Consultants

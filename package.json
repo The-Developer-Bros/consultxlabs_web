@@ -20,7 +20,7 @@
     "npm": "^10.2.1",
     "react": "latest",
     "react-dom": "latest",
-    "react-icons": "^4.11.0",
+    "react-icons": "^4.12.0",
     "react-redux": "^8.1.3",
     "react-responsive-carousel": "^3.2.23",
     "react-responsive-sidebar": "^0.1.16",
