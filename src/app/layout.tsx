@@ -1,22 +1,30 @@
-import './globals.css'
-import type { Metadata } from 'next'
-import { Inter } from 'next/font/google'
+import "./globals.css";
+import type { Metadata } from "next";
+import { getServerSession } from "next-auth";
+import { Inter } from "next/font/google";
+import { authOptions } from "./api/auth/[...nextauth]/route";
+import CustomSessionProvider from "./auth/session/CustomSessionProvider";
 
-const inter = Inter({ subsets: ['latin'] })
+const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: 'ConsultX Labs',
-  description: 'A consulting platform for the future',
-}
+  title: "ConsultX Labs",
+  description: "A consulting platform for the future",
+};
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
-}: {
-  children: React.ReactNode
-}) {
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  const session = await getServerSession(authOptions);
   return (
     <html lang="en">
-      <body className={inter.className}>{children}</body>
+      <body className={inter.className}>
+        <CustomSessionProvider session={session}>
+          {children}
+        </CustomSessionProvider>
+      </body>
     </html>
-  )
+  );
 }

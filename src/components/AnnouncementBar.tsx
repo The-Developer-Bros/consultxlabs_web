@@ -1,4 +1,3 @@
-// @client
 import { setIsAnnouncementBarOpen } from "@/redux/announcementSlice";
 import { RootState } from "@/redux/store";
 import { useDispatch, useSelector } from "react-redux";
