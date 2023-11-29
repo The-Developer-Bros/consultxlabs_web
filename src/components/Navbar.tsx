@@ -3,7 +3,7 @@ import { RootState } from "@/redux/store";
 import { setUser } from "@/redux/userSlice";
 import Image from "next/image";
 import { useSelector } from "react-redux";
-import consultxlogo from "src/assets/images/consultx-logo.png";
+import consultxlogo from "src/assets/logos/ConsultX-logos/ConsultX-logos_transparent.png";
 
 const Navbar = () => {
   const [showConsultants, setShowConsultants] = useState(false);
@@ -31,7 +31,7 @@ const Navbar = () => {
       zIndex: 2,
     }}
   >
-    <Image src={consultxlogo} alt="ConsultX Logo" width={100} height={20} />
+    <Image src={consultxlogo} alt="ConsultX Logo" height={60} />
 
     <div style={{ display: "flex", alignItems: "center", gap: "50px" }}>
       <button style={{ color: "black" }}>Experts</button>

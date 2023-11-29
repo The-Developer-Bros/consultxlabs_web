@@ -7,6 +7,8 @@ import {
   FaLinkedin,
   FaTwitter,
 } from "react-icons/fa";
+import consultxlogo from "src/assets/logos/ConsultX-logos/ConsultX-logos_white.png";
+
 
 const Footer: React.FC = () => {
   return (
@@ -14,10 +16,10 @@ const Footer: React.FC = () => {
       <div className="w-full flex justify-center pb-5">
         {/* Replace with your company logo */}
         <Image
-          src="/path-to-your-logo.png"
+          src={consultxlogo}
           alt="Company Logo"
-          width={500}
-          height={100}
+          width={50}
+          height={60}
         />
       </div>
       <div className="flex justify-between w-full max-w-6xl">

@@ -2,6 +2,33 @@
 
 *firebase*.json
 
+# Zipped Files
+*.zip
+*.gz
+*.tgz
+*.rar
+*.7z
+*.exe
+*.msi
+*.jar
+*.apk
+*.dmg
+*.iso
+*.img
+*.tar
+*.bz2
+*.xz
+*.lz
+*.lzma
+*.cab
+*.whl
+*.war
+*.ear
+*.egg
+*.deb
+*.rpm
+*.zst
+
 # Lock Files
 package-lock.json
 yarn.lock
