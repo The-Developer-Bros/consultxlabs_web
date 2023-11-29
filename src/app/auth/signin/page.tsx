@@ -30,14 +30,14 @@ export default function SignIn() {
             <div>
               Signed in as {session.user.name} <br />
               has email {session.user.email} <br />
+              {/* <img src={session.user.image!} alt={session.user.name!} />  */}
               <Image
                 src={session.user.image!}
                 alt={session.user.name!}
                 width={50}
                 height={50}
-                className="rounded-full"
-              />{" "}
-              <br />
+                className="rounded-full cursor-pointer"
+              />
               <br />
               <button
                 onClick={() => signOut()}

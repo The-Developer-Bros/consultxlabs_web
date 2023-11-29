@@ -1,22 +1,22 @@
 "use client";
-import { Provider } from "react-redux";
-import store from "@/redux/store";
-import Navbar from "../components/Navbar";
 import AnnouncementBar from "@/components/AnnouncementBar";
-import TestimonialsSection from "@/components/TestimonialSection";
-import Footer from "@/components/Footer";
 import Banner from "@/components/Banner";
-import UserCarousel from "@/components/UserCarousel";
+import Footer from "@/components/Footer";
+import TestimonialsSection from "@/components/TestimonialSection";
+import store from "@/redux/store";
+import { Provider as ReduxProvider } from "react-redux";
+import Navbar from "../components/Navbar";
+
 export default function Home() {
   return (
-    <Provider store={store}>
+    <ReduxProvider store={store}>
       <AnnouncementBar />
       <Navbar />
       <Banner />
       {/* <UserCarousel /> */}
       <TestimonialsSection />
       <Footer />
-    </Provider>
+    </ReduxProvider>
   );
 }
  

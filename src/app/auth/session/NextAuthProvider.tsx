@@ -7,7 +7,7 @@ interface Props {
   session: Session | null;
 }
 
-export default function CustomSessionProvider({
+export default function NextAuthProvider({
   children,
   session,
 }: Readonly<Props>) {
