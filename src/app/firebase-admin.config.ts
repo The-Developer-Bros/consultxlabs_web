@@ -14,6 +14,6 @@ if (!admin.apps.length) {
 }
 
 const firebaseAdminDb = initFirestore(app);
-const firebaseAdminAuth = app?.auth();
+const firebaseAdminAuth = admin.auth(app);
 
 export { firebaseAdminDb, firebaseAdminAuth };

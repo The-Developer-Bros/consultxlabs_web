@@ -27,6 +27,7 @@ const authOptions: NextAuthOptions = {
   adapter: FirestoreAdapter(firebaseAdminDb),
   session: { strategy: "jwt" },
   jwt: {
+    maxAge: 30 * (24 * 60 * 60), // 30 days
     secret: process.env.JWT_SECRET!,
   },
 
@@ -89,32 +90,33 @@ const authOptions: NextAuthOptions = {
       token: JWT;
       user: User | AdapterUser;
     }): Promise<any> {
-      if (session?.user && !session.firebaseToken) {
-        if (token.sub) {
-          try {
-            session.user.id = token.sub;
-            const firebaseToken = await firebaseAdminAuth?.createCustomToken(
-              token.sub
-            );
-            if (!firebaseToken) {
-              throw new Error("Failed to create Firebase token.");
-            }
-            session.firebaseToken = firebaseToken;
-            console.log("Firebase token created:", session.firebaseToken);
-          } catch (error) {
-            console.log("Error creating custom token:", error);
-          }
+      if (session?.user && !session.firebaseToken && token.sub) {
+        session.user.id = token.sub;
 
-          try {
-            if (session.firebaseToken) {
-              await signInWithCustomToken(firebaseAuth, session.firebaseToken);
-              console.log("Firebase token signed in:", session.firebaseToken);
-            }
-          } catch (error) {
-            console.log("Error signing in with custom token:", error);
-          }
+        if (!firebaseAdminAuth) {
+          console.error("No Firebase Admin Auth was initialized.");
+          return session;
+        }
+
+        try {
+          const firebaseToken = await firebaseAdminAuth.createCustomToken(
+            token.sub
+          );
+          session.firebaseToken = firebaseToken;
+          console.log("Firebase token created:", session.firebaseToken);
+        } catch (error) {
+          console.error("Error creating custom token:", error);
+          return session;
+        }
+
+        try {
+          await signInWithCustomToken(firebaseAuth, session.firebaseToken);
+          console.log("Firebase token signed in:", session.firebaseToken);
+        } catch (error) {
+          console.error("Error signing in with custom token:", error);
         }
       }
+
       return session;
     },
 
