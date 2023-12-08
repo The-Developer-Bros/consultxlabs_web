@@ -1,8 +1,8 @@
 "use client";
 import React from "react";
 import { signIn, signOut, useSession } from "next-auth/react";
-import consultxlogo from "public/assets/logos/ConsultX-logos/ConsultX-logos_white.png";
-import spotlights from "public/assets/images/spotlight.webp";
+import consultxlogo from "../../../../public/static/assets/logos/ConsultX-logos/ConsultX-logos_white.png";
+import spotlights from "../../../../public/static/assets/images/spotlight.webp";
 import Image from "next/image";
 import { FaGoogle, FaGithub, FaFacebook } from "react-icons/fa";
 import { useRouter } from "next/navigation";

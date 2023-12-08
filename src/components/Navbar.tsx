@@ -4,7 +4,7 @@ import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useSelector } from "react-redux";
 
-import consultxlogo from "public/assets/logos/ConsultX-logos/ConsultX-logos_transparent.png";
+import consultxlogo from "../../public/static/assets/logos/ConsultX-logos/ConsultX-logos_transparent.png";
 
 const Navbar = () => {
   const isAnnouncementBarOpen = useSelector(

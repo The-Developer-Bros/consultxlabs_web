@@ -1,8 +1,7 @@
 import { getApp, getApps, initializeApp } from "firebase/app";
-import {
-    getAuth
-} from "firebase/auth";
+import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
+import { getFunctions } from "firebase/functions";
 
 const firebaseConfig: Record<string, string> = {
   apiKey: process.env.FIREBASE_API_KEY!,
@@ -16,6 +15,7 @@ const firebaseConfig: Record<string, string> = {
 
 const firebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig); // This is to ensure that we don't initialize the app more than once
 const firestore = getFirestore(firebaseApp);
-const auth = getAuth(firebaseApp);
+const firebaseAuth = getAuth(firebaseApp);
+const firebaseFunctions = getFunctions(firebaseApp);
 
-export { auth, firebaseApp, firestore };
+export { firebaseApp, firestore, firebaseAuth, firebaseFunctions };
