@@ -4,6 +4,7 @@ import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useSelector } from "react-redux";
 
+import { firebaseAuth } from "@/app/firebase.config";
 import consultxlogo from "../../public/static/assets/logos/ConsultX-logos/ConsultX-logos_transparent.png";
 
 const Navbar = () => {
@@ -51,7 +52,11 @@ const Navbar = () => {
               className="rounded-full cursor-pointer"
             />
             <button
-              onClick={() => signOut()}
+              onClick={() => {
+                signOut();
+                // TODO: Work on this
+                // firebaseAuth.signOut(); 
+              }}
               style={{ marginLeft: "10px", color: "black" }}
             >
               Sign out
