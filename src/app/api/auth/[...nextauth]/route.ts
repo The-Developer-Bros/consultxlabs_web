@@ -43,25 +43,32 @@ const authOptions: NextAuthOptions = {
       user: User | AdapterUser;
       account: Account | null;
       profile?: Profile;
-      email?: { verificationRequest?: boolean };
+      email?: string | { verificationRequest?: boolean };
       credentials?: any;
     }): Promise<boolean | string> {
       if (account?.provider === "google" || account?.provider === "github") {
         // Check if user is in your database
-        // const userSnapshot = await firebase
-        //   .firestore()
-        //   .collection("users")
-        //   .where("email", "==", email)
-        //   .get();
-        // if (userSnapshot.empty) {
-        //   // If the user is not in the database, return an error message
-        //   console.log("User not found.Please create an account first.");
-        //   return false;
-        // }
+        const userRef = firebaseAdminDb.collection("users").doc(user.id);
+        const userDoc = await userRef.get();
+        if (!userDoc.exists) {
+          // If the user is not in the database, create a new user in Firebase
+          try {
+            const newUser = await firebaseAdminAuth.createUser({
+              uid: user.id,
+              email: user.email as string,
+              displayName: user.name as string,
+            });
+            console.log("New user created in Firebase:", newUser.uid);
+          } catch (error) {
+            console.error("Error creating new user in Firebase:", error);
+            return false;
+          }
+        }
         return true;
       }
       return false;
     },
+
     async jwt({
       token,
       user,
@@ -90,31 +97,36 @@ const authOptions: NextAuthOptions = {
       token: JWT;
       user: User | AdapterUser;
     }): Promise<any> {
+      //////////////////////////// DO NOT REMOVE ////////////////////////////
+
       if (session?.user && !session.firebaseToken && token.sub) {
         session.user.id = token.sub;
 
-        if (!firebaseAdminAuth) {
-          console.error("No Firebase Admin Auth was initialized.");
-          return session;
-        }
+        // if (!firebaseAdminAuth) {
+        //   console.error("No Firebase Admin Auth was initialized.");
+        //   return session;
+        // }
 
-        try {
-          const firebaseToken = await firebaseAdminAuth.createCustomToken(
-            token.sub
-          );
-          session.firebaseToken = firebaseToken;
-          console.log("Firebase token created:", session.firebaseToken);
-        } catch (error) {
-          console.error("Error creating custom token:", error);
-          return session;
-        }
+        // try {
+        //   const firebaseToken = await firebaseAdminAuth.createCustomToken(
+        //     token.sub
+        //   );
+        //   session.firebaseToken = firebaseToken;
+        //   console.log(
+        //     "Firebase token created and integrated in session:",
+        //     session.firebaseToken
+        //   );
+        // } catch (error) {
+        //   console.error("Error creating custom token:", error);
+        //   return session;
+        // }
 
-        try {
-          await signInWithCustomToken(firebaseAuth, session.firebaseToken);
-          console.log("Firebase token signed in:", session.firebaseToken);
-        } catch (error) {
-          console.error("Error signing in with custom token:", error);
-        }
+        // try {
+        //   await signInWithCustomToken(firebaseAuth, session.firebaseToken);
+        //   console.log("Firebase token signed in:", session.firebaseToken);
+        // } catch (error) {
+        //   console.error("Error signing in with custom token:", error);
+        // }
       }
 
       return session;
