@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "start-watch": "WATCHPACK_POLLING=true next start",
     "lint": "next lint"
   },
   "dependencies": {
