@@ -1,132 +1,76 @@
-import React, { useState } from "react";
-import Image from "next/image";
-import "tailwindcss/tailwind.css";
+import React from "react";
 
-interface TestimonialProps {
+interface Testimonial {
   name: string;
-  testimonial: string;
   image: string;
-  id: number;
+  quote: string;
 }
 
-const Testimonial: React.FC<TestimonialProps & { isActive: boolean }> = ({
-  name,
-  testimonial,
-  image,
-  isActive,
-}) => {
-  return (
-    <div
-      className={`flex flex-col items-center justify-center w-48 h-48 m-2 p-5 rounded-lg shadow-md transition-all duration-300 ease-in-out relative ${
-        isActive ? "transform scale-150 z-10 shadow-lg" : "opacity-50"
-      }`}
-    >
-      <Image src={image} alt={name} width={200} height={200} />
-      <h2 className="text-lg font-bold">{name}</h2>
-      <p className="text-sm">{testimonial}</p>
-    </div>
-  );
-};
-
-const TestimonialsSection: React.FC = () => {
-  const [currentIndex, setCurrentIndex] = useState(0); // Add this line
-
-  const handlePrev = () => {
-    if (currentIndex > 0) {
-      setCurrentIndex(currentIndex - 1);
-    } else {
-      setCurrentIndex(testimonials.length - 1); // Replace items with testimonials
-    }
-  };
-
-  const handleNext = () => {
-    if (currentIndex < testimonials.length - 1) { // Replace items with testimonials
-      setCurrentIndex(currentIndex + 1);
-    } else {
-      setCurrentIndex(0);
-    }
-  };
-
-  return (
-    <div className="flex overflow-hidden justify-center w-full max-w-7xl mx-auto relative">
-      <button
-        onClick={handlePrev}
-        className="p-2 bg-blue-500 text-white rounded-lg"
-      >
-        Prev
-      </button>
-      {testimonials.map((testimonial, index) => (
-        <Testimonial isActive={index === currentIndex} key={testimonial.id} {...testimonial} />
-      ))}
-      <button
-        onClick={handleNext}
-        className="p-2 bg-blue-500 text-white rounded-lg"
-      >
-        Next
-      </button>
-    </div>
-  );
-};
-
-export default TestimonialsSection;
-
-
-
-const testimonials: TestimonialProps[] = [
+const testimonialData: Testimonial[] = [
   {
-    id: 0,
     name: "John Doe",
-    testimonial:
-      "Lorem ipsum dolor sit amet consectetur adipisicing elit. Quisquam, voluptatum.",
-    image: "/images/testimonial-1.jpg",
+    image: "/images/avatar1.jpg",
+    quote:
+      "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Etiam in ex diam.",
   },
   {
-    id: 1,
-    name: "Jane Doe",
-    testimonial:
-      "Lorem ipsum dolor sit amet consectetur adipisicing elit. Quisquam, voluptatum.",
-    image: "/images/testimonial-2.jpg",
-  },
-  {
-    id: 2,
-    name: "John Smith",
-    testimonial:
-      "Lorem ipsum dolor sit amet consectetur adipisicing elit. Quisquam, voluptatum.",
-    image: "/images/testimonial-3.jpg",
-  },
-  {
-    id: 3,
     name: "Jane Smith",
-    testimonial:
-      "Lorem ipsum dolor sit amet consectetur adipisicing elit. Quisquam, voluptatum.",
-    image: "/images/testimonial-4.jpg",
+    image: "/images/avatar2.jpg",
+    quote: "Ut consectetur lacus eget velit aliquam interdum nec quis purus.",
   },
   {
-    id: 4,
-    name: "John Doe",
-    testimonial:
-      "Lorem ipsum dolor sit amet consectetur adipisicing elit. Quisquam, voluptatum.",
-    image: "/images/testimonial-5.jpg",
-  },
-  {
-    id: 5,
-    name: "Jane Doe",
-    testimonial:
-      "Lorem ipsum dolor sit amet consectetur adipisicing elit. Quisquam, voluptatum.",
-    image: "/images/testimonial-6.jpg",
-  },
-  {
-    id: 6,
-    name: "John Smith",
-    testimonial:
-      "Lorem ipsum dolor sit amet consectetur adipisicing elit. Quisquam, voluptatum.",
-    image: "/images/testimonial-7.jpg",
-  },
-  {
-    id: 7,
-    name: "Jane Smith",
-    testimonial:
-      "Lorem ipsum dolor sit amet consectetur adipisicing elit. Quisquam, voluptatum.",
-    image: "/images/testimonial-8.jpg",
+    name: "Mike Johnson",
+    image: "/images/avatar3.jpg",
+    quote: "Fusce eu nisl eu purus lobortis ullamcorper at nec enim.",
   },
 ];
+
+interface TestimonialCardProps {
+  name: string;
+  image: string;
+  quote: string;
+}
+
+const TestimonialCard: React.FC<TestimonialCardProps> = ({
+  name,
+  image,
+  quote,
+}) => (
+  <div className="bg-white p-8 border border-gray-200 rounded-lg shadow-sm">
+    <div className="flex items-center justify-center">
+      <img
+        className="h-12 w-12 rounded-full"
+        src={image}
+        alt={`${name}'s face`}
+      />
+    </div>
+    <h3 className="mt-6 text-center text-xl font-medium text-gray-900">
+      {name}
+    </h3>
+    <p className="mt-2 text-center text-gray-500">&quot;{quote}&quot;</p>
+  </div>
+);
+
+const TestimonialSection: React.FC = () => (
+  <div className="bg-gray-100">
+    <div className="max-w-7xl mx-auto py-16 px-4 sm:px-6 lg:px-8">
+      <div className="max-w-3xl mx-auto text-center">
+        <h2 className="text-3xl font-extrabold text-gray-900">
+          Hear what our customers have to say about us
+        </h2>
+        <p className="mt-4 text-lg text-gray-500">
+          Check out what our customers are saying about us!
+        </p>
+      </div>
+      <div className="mt-16">
+        <div className="grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-3">
+          {testimonialData.map((testimonial, index) => (
+            <TestimonialCard key={index} {...testimonial} />
+          ))}
+        </div>
+      </div>
+    </div>
+  </div>
+);
+
+export default TestimonialSection;
