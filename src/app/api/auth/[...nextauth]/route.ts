@@ -5,7 +5,6 @@ import {
 import { firebaseAuth } from "@/app/firebase.config";
 import { FirestoreAdapter } from "@next-auth/firebase-adapter";
 import { signInWithCustomToken } from "firebase/auth";
-import firebase from "firebase/compat/app";
 import { Account, NextAuthOptions, Profile, Session, User } from "next-auth";
 import { AdapterUser } from "next-auth/adapters";
 import { JWT } from "next-auth/jwt";
@@ -13,6 +12,7 @@ import NextAuth from "next-auth/next";
 import GitHubProvider from "next-auth/providers/github";
 import GoogleProvider from "next-auth/providers/google";
 
+// DONT EXPORT authOptions if using Docker
 const authOptions: NextAuthOptions = {
   providers: [
     GoogleProvider({

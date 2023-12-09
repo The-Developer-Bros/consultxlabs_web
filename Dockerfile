@@ -13,6 +13,9 @@ RUN npm install
 # Copy the application files (needed for production) [except for node_modules].
 COPY . .
 
+# Build the Next.js application.
+RUN npm run build
+
 # The application listens on port 3000, so let's expose it.
 EXPOSE 3000
 
