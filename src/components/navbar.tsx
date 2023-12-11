@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useSelector } from "react-redux";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { useSession, signOut } from "next-auth/react";
 import { RootState } from "@/redux/store";
 import consultxlogo from "../../public/static/assets/logos/ConsultX-logos/ConsultX-logos_transparent.png";
+import { motion } from "framer-motion";
 
 const Navbar = () => {
   const router = useRouter();
@@ -22,13 +23,28 @@ const Navbar = () => {
     setIsOpen(false);
   };
 
+  const [isScrolled, setIsScrolled] = useState(false);
+
+  useEffect(() => {
+    const checkScroll = () => {
+      setIsScrolled(window.scrollY > 50);
+    };
+
+    window.addEventListener("scroll", checkScroll);
+
+    // Cleanup after the effect:
+    return () => {
+      window.removeEventListener("scroll", checkScroll);
+    };
+  }, []); // Empty dependency array ensures this runs once on mount and unmount
+
   return (
     <>
       {/* Main Navbar */}
       <nav
-        className={`fixed top-0 w-full z-50 bg-white ${
+        className={`fixed top-0 w-full z-50 py-2 bg-white ${
           isAnnouncementBarOpen ? "pt-12" : "pt-0"
-        } px-6 lg:px-0`}
+        } px-6 lg:px-0 ${isScrolled ? "shadow-md" : ""}`}
       >
         <div className="flex justify-between items-center">
           <Image src={consultxlogo} alt="ConsultX Logo" height={60} />
@@ -93,7 +109,13 @@ const Navbar = () => {
 
       {/* Side Drawer */}
       {isOpen && (
-        <div className="lg:hidden fixed top-0 left-0 h-full w-4/5 bg-white z-50 transition-transform duration-500 ease-in-out transform translate-x-0">
+        <motion.div
+          className="lg:hidden fixed top-0 left-0 h-full w-4/5 bg-white z-50"
+          initial={{ x: "-100%" }}
+          animate={{ x: 0 }}
+          exit={{ x: "-100%" }}
+          transition={{ type: "spring", duration: 1 }}
+        >
           <div className="flex justify-end p-4">
             <button onClick={closeMenu}>&times;</button>
           </div>
@@ -105,7 +127,7 @@ const Navbar = () => {
             <button>Community</button>
             <button>Blog</button>
           </div>
-        </div>
+        </motion.div>
       )}
     </>
   );
