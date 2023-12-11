@@ -1,4 +1,5 @@
 import React from "react";
+import Image from "next/image";
 
 interface Testimonial {
   name: string;
@@ -11,17 +12,19 @@ const testimonialData: Testimonial[] = [
     name: "John Doe",
     image: "/images/avatar1.jpg",
     quote:
-      "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Etiam in ex diam.",
+      "The team at ConsultX provided us with valuable insights that helped our business grow. Their expertise in the field is unparalleled.",
   },
   {
     name: "Jane Smith",
     image: "/images/avatar2.jpg",
-    quote: "Ut consectetur lacus eget velit aliquam interdum nec quis purus.",
+    quote:
+      "Working with ConsultX was a game-changer for us. Their strategic advice helped us navigate complex business challenges.",
   },
   {
     name: "Mike Johnson",
     image: "/images/avatar3.jpg",
-    quote: "Fusce eu nisl eu purus lobortis ullamcorper at nec enim.",
+    quote:
+      "The consultants at ConsultX are top-notch. They helped us optimize our processes and improve efficiency.",
   },
 ];
 
@@ -38,10 +41,12 @@ const TestimonialCard: React.FC<TestimonialCardProps> = ({
 }) => (
   <div className="bg-white p-8 border border-gray-200 rounded-lg shadow-sm">
     <div className="flex items-center justify-center">
-      <img
-        className="h-12 w-12 rounded-full"
+      <Image
         src={image}
         alt={`${name}'s face`}
+        width={48}
+        height={48}
+        className="rounded-full"
       />
     </div>
     <h3 className="mt-6 text-center text-xl font-medium text-gray-900">
