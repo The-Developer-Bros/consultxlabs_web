@@ -187,7 +187,7 @@ const authOptions: NextAuthOptions = {
       url: string;
       baseUrl: string;
     }): Promise<string> {
-      return baseUrl;
+      return baseUrl + "/dashboard";
     },
   },
   // theme: {

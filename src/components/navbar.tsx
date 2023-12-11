@@ -6,6 +6,7 @@ import { useSession, signOut } from "next-auth/react";
 import { RootState } from "@/redux/store";
 import consultxlogo from "../../public/static/assets/logos/ConsultX-logos/ConsultX-logos_transparent.png";
 import { motion } from "framer-motion";
+import Link from "next/link";
 
 const Navbar = () => {
   const router = useRouter();
@@ -56,12 +57,26 @@ const Navbar = () => {
           </div>
 
           <div className="hidden lg:flex gap-8">
-            {session?.user && <button>Feed</button>}
-            <button>Experts</button>
-            <button>Webinar</button>
-            <button>Events</button>
-            <button>Community</button>
-            <button>Blog</button>
+            {session?.user && (
+              <Link href="/feed">
+                <button>Feed</button>
+              </Link>
+            )}
+            <Link href="/explore/experts">
+              <button>Experts</button>
+            </Link>
+            <Link href="/explore/webinar">
+              <button>Webinar</button>
+            </Link>
+            <Link href="/explore/events">
+              <button>Events</button>
+            </Link>
+            <Link href="/explore/community">
+              <button>Community</button>
+            </Link>
+            <Link href="/blog">
+              <button>Blog</button>
+            </Link>
           </div>
 
           <div className="flex items-center">
@@ -120,12 +135,26 @@ const Navbar = () => {
             <button onClick={closeMenu}>&times;</button>
           </div>
           <div className="flex flex-col gap-4 p-4">
-            {session?.user && <button>Feed</button>}
-            <button>Experts</button>
-            <button>Webinar</button>
-            <button>Events</button>
-            <button>Community</button>
-            <button>Blog</button>
+            {session?.user && (
+              <Link href="//feed">
+                <button>Feed</button>
+              </Link>
+            )}
+            <Link href="/explore/experts">
+              <button>Experts</button>
+            </Link>
+            <Link href="/explore/webinar">
+              <button>Webinar</button>
+            </Link>
+            <Link href="/explore/events">
+              <button>Events</button>
+            </Link>
+            <Link href="/explore/community">
+              <button>Community</button>
+            </Link>
+            <Link href="/blog">
+              <button>Blog</button>
+            </Link>
           </div>
         </motion.div>
       )}
