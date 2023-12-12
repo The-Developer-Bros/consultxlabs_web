@@ -9,7 +9,7 @@ import {
   Accordion,
 } from "@/components/ui/accordion";
 import { CardContent, Card } from "@/components/ui/card";
-export function FAQ() {
+export function Faq() {
   return (
     <div className="flex justify-center items-center py-10">
       <Card className="shadow-lg w-[1200px]">

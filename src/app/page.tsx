@@ -1,12 +1,11 @@
 "use client";
-import AnnouncementBar from "@/components/announcement-bar";
 import Footer from "@/components/footer";
 import TestimonialsSection from "@/components/testimonials";
 import store from "@/redux/store";
 import { Provider as ReduxProvider } from "react-redux";
 import Navbar from "../components/navbar";
 
-import { FAQ } from "@/components/faq";
+import { Faq } from "@/components/faq";
 import { Newsletter } from "@/components/newsletter";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -29,7 +28,7 @@ export default function Home() {
   return (
     <ReduxProvider store={store}>
       <AnimatePresence>
-        <AnnouncementBar />
+        {/* <AnnouncementBar /> */}
         <Navbar />
         <main className="flex-0">
           <section
@@ -238,7 +237,7 @@ export default function Home() {
             </div>
           </section>
         </main>
-        <FAQ />
+        <Faq />
         <TestimonialsSection />
         <Newsletter />
         <Footer />

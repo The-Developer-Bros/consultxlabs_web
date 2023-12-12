@@ -1,20 +1,17 @@
 import { useState, useEffect } from "react";
-import { useSelector } from "react-redux";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { useSession, signOut } from "next-auth/react";
-import { RootState } from "@/redux/store";
 import consultxlogo from "../../public/static/assets/logos/ConsultX-logos/ConsultX-logos_transparent.png";
 import { motion } from "framer-motion";
 import Link from "next/link";
 
 const Navbar = () => {
   const router = useRouter();
-  const isAnnouncementBarOpen = useSelector(
-    (state: RootState) => state.announcement.isAnnouncementBarOpen
-  );
   const { data: session } = useSession();
   const [isOpen, setIsOpen] = useState(false);
+  const [isScrolled, setIsScrolled] = useState(false);
+  const [isAnnouncementBarOpen, setIsAnnouncementBarOpen] = useState(true);
 
   const toggleMenu = () => {
     setIsOpen(!isOpen);
@@ -24,7 +21,9 @@ const Navbar = () => {
     setIsOpen(false);
   };
 
-  const [isScrolled, setIsScrolled] = useState(false);
+  const handleClose = () => {
+    setIsAnnouncementBarOpen(false);
+  };
 
   useEffect(() => {
     const checkScroll = () => {
@@ -41,6 +40,32 @@ const Navbar = () => {
 
   return (
     <>
+      {isAnnouncementBarOpen && (
+        <div
+          style={{
+            width: "100%",
+            backgroundColor: "black",
+            color: "white",
+            textAlign: "center",
+            padding: "10px 0",
+            position: "fixed",
+            top: 0,
+            zIndex: 1000,
+            display: "flex",
+            justifyContent: "center",
+          }}
+        >
+          🔥 Exciting sale coming soon! Get ready for amazing discounts on
+          consultancy sessions! 🔥
+          <button
+            style={{ color: "white", marginRight: "10px" }}
+            onClick={handleClose}
+          >
+            X
+          </button>
+        </div>
+      )}
+
       {/* Main Navbar */}
       <nav
         className={`fixed top-0 w-full z-50 py-2 bg-white ${
