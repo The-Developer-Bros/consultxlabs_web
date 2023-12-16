@@ -90,11 +90,8 @@ const Navbar = () => {
             <Link href="/explore/experts">
               <button>Experts</button>
             </Link>
-            <Link href="/explore/webinar">
-              <button>Webinar</button>
-            </Link>
-            <Link href="/explore/events">
-              <button>Events</button>
+            <Link href="/explore/programs">
+              <button>Programs</button>
             </Link>
             <Link href="/explore/community">
               <button>Community</button>
