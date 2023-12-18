@@ -13,7 +13,7 @@ export default function Community() {
     <>
       <Navbar />
       <section
-        className="w-full py-12 md:py-24 lg:py-32 xl:py-48 bg-cover bg-center"
+        className="w-full mt-12 md:mt-24 lg:mt-32 xl:mt-48 bg-cover bg-center"
         style={{
           backgroundImage: "url('/placeholder.svg?height=1920&width=1080')",
         }}

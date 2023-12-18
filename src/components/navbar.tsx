@@ -73,8 +73,9 @@ const Navbar = () => {
         } px-6 lg:px-0 ${isScrolled ? "shadow-md" : ""}`}
       >
         <div className="flex justify-between items-center">
-          <Image src={consultxlogo} alt="ConsultX Logo" height={60} />
-
+          <Link href="/">
+            <Image src={consultxlogo} alt="ConsultX Logo" height={60} />
+          </Link>
           <div className="lg:hidden">
             <button onClick={toggleMenu} aria-label="Toggle Navigation">
               ☰
@@ -104,13 +105,15 @@ const Navbar = () => {
           <div className="flex items-center">
             {session?.user ? (
               <>
-                <Image
-                  src={session.user.image!}
-                  alt="Profile"
-                  width={50}
-                  height={50}
-                  className="rounded-full cursor-pointer"
-                />
+                <Link href="/profile">
+                  <Image
+                    src={session.user.image!}
+                    alt="Profile"
+                    width={50}
+                    height={50}
+                    className="rounded-full cursor-pointer"
+                  />
+                </Link>
                 <button
                   onClick={() => {
                     signOut();

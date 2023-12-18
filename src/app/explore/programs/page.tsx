@@ -12,7 +12,8 @@ export default function Programs() {
   return (
     <>
       <Navbar />
-      <div className="bg-white xl:py-40 lg:py-32 md:py-24 sm:py-16 py-12">
+      {/* <div className="bg-white xl:py-40 lg:py-32 md:py-24 sm:py-16 py-12"> */}
+      <div className="bg-white mt-20 sm:mt-30 md:mt-30 lg:mt-30 xl:mt-40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex flex-col">
             <div className="flex justify-between border-b border-gray-200 py-6">
