@@ -36,7 +36,9 @@ export default function Community() {
                   placeholder="Enter your email"
                   type="email"
                 />
-                <Button type="submit">Sign Up</Button>
+                <Button type="submit" className="bg-black text-white">
+                  Sign Up
+                </Button>
               </form>
               <p className="text-xs text-gray-500 dark:text-gray-400">
                 By signing up, you agree to our
