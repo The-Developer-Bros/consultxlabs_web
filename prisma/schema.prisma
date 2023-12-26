@@ -8,26 +8,6 @@ datasource db {
   url          = env("DATABASE_URL")
 }
 
-model Account {
-  id                String  @id @default(uuid())
-  userId            String
-  type              String
-  provider          String
-  providerAccountId String
-  refresh_token     String?
-  access_token      String?
-  expires_at        Int?
-  token_type        String?
-  scope             String?
-  id_token          String?
-  session_state     String?
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([provider, providerAccountId])
-  @@index([userId])
-}
-
 model User {
   id             String       @id @default(uuid())
   createdAt      DateTime     @default(now())
@@ -41,35 +21,58 @@ model User {
   isAdmin        Boolean      @default(false)
   emailConfirmed Boolean      @default(false)
   profile        UserProfile?
-  Account        Account[]
+  Account        Account?
 }
 
 model UserProfile {
-  user         User           @relation(fields: [id], references: [id])
-  id           String         @unique
-  posts        Post[]
-  comments     Comment[]
-  Calendar     Calendar[]
-  Class        Class[]
-  Consultation Consultation[]
-  Subscription Subscription[]
-  Webinar      Webinar[]
-  Consultant   Consultant[]
-  Consultee    Consultee[]
+  id         String      @id @default(uuid())
+  user       User        @relation(fields: [id], references: [id])
+  posts      Post[]
+  comments   Comment[]
+  consultant Consultant?
+  consultee  Consultee?
+
+  @@index([id])
+}
+
+model Account {
+  id                String  @id @default(uuid())
+  userId            String  @unique
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User?   @relation(fields: [userId], references: [id])
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
 }
 
 model Consultant {
   id            String         @id @default(uuid())
   user          UserProfile    @relation(fields: [userId], references: [id])
-  userId        String
+  userId        String         @unique
+  calendar      Calendar[]
   consultations Consultation[]
+  subscriptions Subscription[]
+  webinars      Webinar[]
+  classes       Class[]
 }
 
 model Consultee {
   id            String         @id @default(uuid())
   user          UserProfile    @relation(fields: [userId], references: [id])
-  userId        String
+  userId        String         @unique
   consultations Consultation[]
+  subscriptions Subscription[]
+  webinars      Webinar[]
+  classes       Class[]
 }
 
 model Post {
@@ -102,8 +105,8 @@ model Comment {
 }
 
 model Calendar {
-  availability_id String       @id @db.VarChar(255)
-  consultant      UserProfile? @relation(fields: [consultantId], references: [id])
+  availability_id String      @id @db.VarChar(255)
+  consultant      Consultant? @relation(fields: [consultantId], references: [id])
   consultantId    String?
 
   start_time DateTime? @db.DateTime(0)
@@ -113,58 +116,78 @@ model Calendar {
 }
 
 model Consultation {
-  id            String       @id @default(uuid())
-  createdAt     DateTime     @default(now())
-  consultant    Consultant   @relation(fields: [consultantId], references: [id])
-  consultantId  String
-  consultee     Consultee    @relation(fields: [consulteeId], references: [id])
-  consulteeId   String
-  start_time    DateTime?    @db.DateTime(0)
-  end_time      DateTime?    @db.DateTime(0)
-  UserProfile   UserProfile? @relation(fields: [userProfileId], references: [id])
-  userProfileId String?
-  price         Int?
+  consultation_id String     @id @default(uuid())
+  createdAt       DateTime   @default(now())
+  consultant      Consultant @relation(fields: [consultantId], references: [id])
+  consultantId    String
+  consultee       Consultee  @relation(fields: [consulteeId], references: [id])
+  consulteeId     String
+  start_time      DateTime?  @db.DateTime(0)
+  end_time        DateTime?  @db.DateTime(0)
+  price           Int?
 
   @@index([consultantId])
   @@index([consulteeId])
-  @@index([userProfileId])
 }
 
 model Subscription {
   subscription_id String       @id @default(uuid())
-  consultant      UserProfile? @relation(fields: [consultantId], references: [id])
   consultantId    String?
   start_time      DateTime?    @db.DateTime(0)
   end_time        DateTime?    @db.DateTime(0)
-  start_date      DateTime?    @db.DateTime(0)
-  end_date        DateTime?    @db.DateTime(0)
+  start_date      DateTime?    @db.Date
+  end_date        DateTime?    @db.Date
   price           Int?
+  daysOfWeek      DaysOfWeek[]
+  consultant      Consultant?  @relation(fields: [consultantId], references: [id])
+  consultee       Consultee?   @relation(fields: [consulteeId], references: [id])
+  consulteeId     String?
 
   @@index([consultantId], map: "subscription_consultant_fk")
+  @@index([consulteeId], map: "subscription_consultee_fk")
 }
 
 model Webinar {
-  webinar_id   String       @id @default(uuid())
-  consultant   UserProfile? @relation(fields: [consultantId], references: [id])
+  webinar_id   String      @id @default(uuid())
   consultantId String?
-  start_time   DateTime?    @db.DateTime(0)
-  end_time     DateTime?    @db.DateTime(0)
+  start_time   DateTime?   @db.DateTime(0)
+  end_time     DateTime?   @db.DateTime(0)
   price        Int?
+  consultant   Consultant? @relation(fields: [consultantId], references: [id])
+  consultee    Consultee?  @relation(fields: [consulteeId], references: [id])
+  consulteeId  String?
 
   @@index([consultantId], map: "webinar_consultant_fk")
+  @@index([consulteeId], map: "webinar_consultee_fk")
 }
 
 model Class {
   class_id     String       @id @default(uuid())
-  consultant   UserProfile? @relation(fields: [consultantId], references: [id])
   consultantId String?
   start_time   DateTime?    @db.DateTime(0)
   end_time     DateTime?    @db.DateTime(0)
   start_date   DateTime?    @db.DateTime(0)
   end_date     DateTime?    @db.DateTime(0)
   price        Int?
+  daysOfWeek   DaysOfWeek[]
+  consultant   Consultant?  @relation(fields: [consultantId], references: [id])
+  consultee    Consultee?   @relation(fields: [consulteeId], references: [id])
+  consulteeId  String?
 
   @@index([consultantId], map: "class_consultant_fk")
+  @@index([consulteeId], map: "class_consultee_fk")
+}
+
+model DaysOfWeek {
+  id             String       @id @default(uuid())
+  day            Days_of_week
+  subscription   Subscription @relation(fields: [subscriptionId], references: [subscription_id])
+  subscriptionId String
+  class          Class        @relation(fields: [classId], references: [class_id])
+  classId        String
+
+  @@index([subscriptionId])
+  @@index([classId])
 }
 
 enum Account_type {
