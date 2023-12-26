@@ -1,0 +1,185 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider     = "mysql"
+  relationMode = "prisma"
+  url          = env("DATABASE_URL")
+}
+
+model Account {
+  id                String  @id @default(uuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model User {
+  id             String       @id @default(uuid())
+  createdAt      DateTime     @default(now())
+  username       String       @unique @db.VarChar(20)
+  emailEncrypted String       @unique
+  emailIv        String       @unique
+  password       String
+  oauthToken     String?
+  phone_number   String       @unique
+  isMod          Boolean      @default(false)
+  isAdmin        Boolean      @default(false)
+  emailConfirmed Boolean      @default(false)
+  profile        UserProfile?
+  Account        Account[]
+}
+
+model UserProfile {
+  user         User           @relation(fields: [id], references: [id])
+  id           String         @unique
+  posts        Post[]
+  comments     Comment[]
+  Calendar     Calendar[]
+  Class        Class[]
+  Consultation Consultation[]
+  Subscription Subscription[]
+  Webinar      Webinar[]
+  Consultant   Consultant[]
+  Consultee    Consultee[]
+}
+
+model Consultant {
+  id            String         @id @default(uuid())
+  user          UserProfile    @relation(fields: [userId], references: [id])
+  userId        String
+  consultations Consultation[]
+}
+
+model Consultee {
+  id            String         @id @default(uuid())
+  user          UserProfile    @relation(fields: [userId], references: [id])
+  userId        String
+  consultations Consultation[]
+}
+
+model Post {
+  id        String      @id @default(uuid())
+  createdAt DateTime    @default(now())
+  title     String      @db.VarChar(300)
+  caption   String      @db.VarChar(1000)
+  upvotes   Int         @default(0)
+  downvotes Int         @default(0)
+  comments  Comment[]
+  author    UserProfile @relation(fields: [authorId], references: [id])
+  authorId  String
+
+  @@index([authorId])
+}
+
+model Comment {
+  id        String      @id @default(uuid())
+  createdAt DateTime    @default(now())
+  text      String      @db.VarChar(1000)
+  upvotes   Int         @default(0)
+  downvotes Int         @default(0)
+  author    UserProfile @relation(fields: [authorId], references: [id])
+  authorId  String
+  post      Post        @relation(fields: [postId], references: [id])
+  postId    String
+
+  @@index([authorId])
+  @@index([postId])
+}
+
+model Calendar {
+  availability_id String       @id @db.VarChar(255)
+  consultant      UserProfile? @relation(fields: [consultantId], references: [id])
+  consultantId    String?
+
+  start_time DateTime? @db.DateTime(0)
+  end_time   DateTime? @db.DateTime(0)
+
+  @@index([consultantId], map: "calendar_consultant_fk")
+}
+
+model Consultation {
+  id            String       @id @default(uuid())
+  createdAt     DateTime     @default(now())
+  consultant    Consultant   @relation(fields: [consultantId], references: [id])
+  consultantId  String
+  consultee     Consultee    @relation(fields: [consulteeId], references: [id])
+  consulteeId   String
+  start_time    DateTime?    @db.DateTime(0)
+  end_time      DateTime?    @db.DateTime(0)
+  UserProfile   UserProfile? @relation(fields: [userProfileId], references: [id])
+  userProfileId String?
+  price         Int?
+
+  @@index([consultantId])
+  @@index([consulteeId])
+  @@index([userProfileId])
+}
+
+model Subscription {
+  subscription_id String       @id @default(uuid())
+  consultant      UserProfile? @relation(fields: [consultantId], references: [id])
+  consultantId    String?
+  start_time      DateTime?    @db.DateTime(0)
+  end_time        DateTime?    @db.DateTime(0)
+  start_date      DateTime?    @db.DateTime(0)
+  end_date        DateTime?    @db.DateTime(0)
+  price           Int?
+
+  @@index([consultantId], map: "subscription_consultant_fk")
+}
+
+model Webinar {
+  webinar_id   String       @id @default(uuid())
+  consultant   UserProfile? @relation(fields: [consultantId], references: [id])
+  consultantId String?
+  start_time   DateTime?    @db.DateTime(0)
+  end_time     DateTime?    @db.DateTime(0)
+  price        Int?
+
+  @@index([consultantId], map: "webinar_consultant_fk")
+}
+
+model Class {
+  class_id     String       @id @default(uuid())
+  consultant   UserProfile? @relation(fields: [consultantId], references: [id])
+  consultantId String?
+  start_time   DateTime?    @db.DateTime(0)
+  end_time     DateTime?    @db.DateTime(0)
+  start_date   DateTime?    @db.DateTime(0)
+  end_date     DateTime?    @db.DateTime(0)
+  price        Int?
+
+  @@index([consultantId], map: "class_consultant_fk")
+}
+
+enum Account_type {
+  Consultant
+  Consultee
+  Staff
+  Admin
+}
+
+enum Days_of_week {
+  Monday
+  Tuesday
+  Wednesday
+  Thursday
+  Friday
+  Saturday
+  Sunday
+}
