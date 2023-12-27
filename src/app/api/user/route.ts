@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import prisma from "../../../lib/prisma";
+import prisma from "@/lib/prisma";
 import { v4 as uuidv4 } from "uuid";
 import { Prisma } from "@prisma/client";
 export async function POST(req: Request) {
