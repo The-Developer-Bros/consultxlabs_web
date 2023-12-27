@@ -54,14 +54,19 @@ model Account {
 }
 
 model ConsultantProfile {
-  id            String         @id @default(uuid())
-  user          UserProfile    @relation(fields: [userId], references: [id])
-  userId        String         @unique
-  calendar      Calendar[]
-  consultations Consultation[]
-  subscriptions Subscription[]
-  webinars      Webinar[]
-  classes       Class[]
+  id              String            @id @default(uuid())
+  user            UserProfile       @relation(fields: [userId], references: [id])
+  userId          String            @unique
+  dayAvailability DayAvailability[]
+  consultations   Consultation[]
+  subscriptions   Subscription[]
+  webinars        Webinar[]
+  classes         Class[]
+  rating          Float?
+  specialization  String?
+  experience      Int?
+  location        String?
+  comments        Comment[]
 }
 
 model ConsulteeProfile {
@@ -72,6 +77,7 @@ model ConsulteeProfile {
   subscriptions Subscription[]
   webinars      Webinar[]
   classes       Class[]
+  location      String?
 }
 
 model Post {
@@ -89,29 +95,21 @@ model Post {
 }
 
 model Comment {
-  id        String      @id @default(uuid())
-  createdAt DateTime    @default(now())
-  text      String      @db.VarChar(1000)
-  upvotes   Int         @default(0)
-  downvotes Int         @default(0)
-  author    UserProfile @relation(fields: [authorId], references: [id])
-  authorId  String
-  post      Post        @relation(fields: [postId], references: [id])
-  postId    String
+  id                  String             @id @default(uuid())
+  createdAt           DateTime           @default(now())
+  text                String             @db.VarChar(1000)
+  upvotes             Int                @default(0)
+  downvotes           Int                @default(0)
+  author              UserProfile        @relation(fields: [authorId], references: [id])
+  authorId            String
+  post                Post               @relation(fields: [postId], references: [id])
+  postId              String
+  ConsultantProfile   ConsultantProfile? @relation(fields: [consultantProfileId], references: [id])
+  consultantProfileId String?
 
   @@index([authorId])
   @@index([postId])
-}
-
-model Calendar {
-  availabilityId String             @id @db.VarChar(255)
-  consultant     ConsultantProfile? @relation(fields: [consultantId], references: [id])
-  consultantId   String?
-
-  startTime DateTime? @db.DateTime(0)
-  endTime   DateTime? @db.DateTime(0)
-
-  @@index([consultantId], map: "calendar_consultant_fk")
+  @@index([consultantProfileId])
 }
 
 model Consultation {
@@ -175,6 +173,24 @@ model Class {
 
   @@index([consultantId], map: "class_consultant_fk")
   @@index([consulteeId], map: "class_consultee_fk")
+}
+
+model DayAvailability {
+  availabilityId      String             @id @db.VarChar(255)
+  day                 DaysOfWeekEnum
+  startTime           DateTime?          @db.DateTime(0)
+  endTime             DateTime?          @db.DateTime(0)
+  ConsultantProfile   ConsultantProfile? @relation(fields: [consultantProfileId], references: [id])
+  consultantProfileId String?
+
+  @@index([consultantProfileId])
+}
+
+model DayAppointment {
+  appointmentId String         @id @db.VarChar(255)
+  day           DaysOfWeekEnum
+  startTime     DateTime?      @db.DateTime(0)
+  endTime       DateTime?      @db.DateTime(0)
 }
 
 model DaysOfWeek {
