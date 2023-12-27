@@ -3,6 +3,7 @@ import {
   firebaseAdminDb,
 } from "@/app/firebase-admin.config";
 import { FirestoreAdapter } from "@next-auth/firebase-adapter";
+import { PrismaAdapter } from "@next-auth/prisma-adapter";
 import { Account, NextAuthOptions, Profile, Session, User } from "next-auth";
 import { AdapterUser } from "next-auth/adapters";
 import { JWT } from "next-auth/jwt";
@@ -10,8 +11,12 @@ import NextAuth from "next-auth/next";
 import GitHubProvider from "next-auth/providers/github";
 import GoogleProvider from "next-auth/providers/google";
 
+import prisma from "@/lib/prisma";
+
 // DONT EXPORT authOptions if using Docker
 const authOptions: NextAuthOptions = {
+  // adapter: PrismaAdapter(prisma),
+  adapter: FirestoreAdapter(firebaseAdminDb),
   providers: [
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID!,
@@ -22,7 +27,6 @@ const authOptions: NextAuthOptions = {
       clientSecret: process.env.GITHUB_CLIENT_SECRET!,
     }),
   ],
-  adapter: FirestoreAdapter(firebaseAdminDb),
   session: { strategy: "jwt" },
   jwt: {
     maxAge: 30 * (24 * 60 * 60), // 30 days
