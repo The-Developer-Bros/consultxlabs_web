@@ -9,32 +9,29 @@ datasource db {
 }
 
 model User {
-  id             String       @id @default(uuid())
-  createdAt      DateTime     @default(now())
-  username       String       @unique @db.VarChar(20)
-  email          String       @unique
-  password       String
-  oauthToken     String?      @unique
-  phoneNumber    String       @unique
-  isMod          Boolean      @default(false)
-  isAdmin        Boolean      @default(false)
-  emailConfirmed Boolean      @default(false)
-  profile        UserProfile?
-  account        Account?
+  id                  String             @id @default(uuid())
+  createdAt           DateTime           @default(now())
+  username            String             @unique @db.VarChar(20)
+  email               String             @unique
+  password            String
+  oauthToken          String?            @unique
+  phoneNumber         String             @unique
+  emailConfirmed      Boolean            @default(false)
+  onboardingCompleted Boolean            @default(false)
+  userRole            UserRole           @default(CONSULTEE)
+  oauthAccount        OAuthAccount?
+  consultantProfile   ConsultantProfile? @relation(fields: [consultantProfileId], references: [id])
+  consulteeProfile    ConsulteeProfile?  @relation(fields: [consulteeProfileId], references: [id])
+  consultantProfileId String?
+  consulteeProfileId  String?
+  posts               Post[]
+  comments            Comment[]
+
+  @@index([consultantProfileId])
+  @@index([consulteeProfileId])
 }
 
-model UserProfile {
-  id                String             @id @default(uuid())
-  user              User               @relation(fields: [id], references: [id])
-  posts             Post[]
-  comments          Comment[]
-  consultantProfile ConsultantProfile?
-  consulteeProfile  ConsulteeProfile?
-
-  @@index([id])
-}
-
-model Account {
+model OAuthAccount {
   id                String  @id @default(uuid())
   userId            String  @unique
   type              String
@@ -55,8 +52,6 @@ model Account {
 
 model ConsultantProfile {
   id              String            @id @default(uuid())
-  user            UserProfile       @relation(fields: [userId], references: [id])
-  userId          String            @unique
   dayAvailability DayAvailability[]
   consultations   Consultation[]
   subscriptions   Subscription[]
@@ -67,31 +62,32 @@ model ConsultantProfile {
   experience      Int?
   location        String?
   comments        Comment[]
+  User            User[]
 }
 
 model ConsulteeProfile {
   id            String         @id @default(uuid())
-  user          UserProfile    @relation(fields: [userId], references: [id])
-  userId        String         @unique
   consultations Consultation[]
   subscriptions Subscription[]
   webinars      Webinar[]
   classes       Class[]
   location      String?
+  User          User[]
 }
 
 model Post {
-  id        String      @id @default(uuid())
-  createdAt DateTime    @default(now())
-  title     String      @db.VarChar(300)
-  caption   String      @db.VarChar(1000)
-  upvotes   Int         @default(0)
-  downvotes Int         @default(0)
+  id        String    @id @default(uuid())
+  createdAt DateTime  @default(now())
+  title     String    @db.VarChar(300)
+  caption   String    @db.VarChar(1000)
+  upvotes   Int       @default(0)
+  downvotes Int       @default(0)
   comments  Comment[]
-  author    UserProfile @relation(fields: [authorId], references: [id])
-  authorId  String
 
-  @@index([authorId])
+  User   User?   @relation(fields: [userId], references: [id])
+  userId String?
+
+  @@index([userId])
 }
 
 model Comment {
@@ -100,16 +96,16 @@ model Comment {
   text                String             @db.VarChar(1000)
   upvotes             Int                @default(0)
   downvotes           Int                @default(0)
-  author              UserProfile        @relation(fields: [authorId], references: [id])
-  authorId            String
   post                Post               @relation(fields: [postId], references: [id])
   postId              String
   ConsultantProfile   ConsultantProfile? @relation(fields: [consultantProfileId], references: [id])
   consultantProfileId String?
+  User                User?              @relation(fields: [userId], references: [id])
+  userId              String?
 
-  @@index([authorId])
   @@index([postId])
   @@index([consultantProfileId])
+  @@index([userId])
 }
 
 model Consultation {
@@ -213,4 +209,11 @@ enum DaysOfWeekEnum {
   Friday
   Saturday
   Sunday
+}
+
+enum UserRole {
+  CONSULTANT
+  CONSULTEE
+  ADMIN
+  STAFF
 }

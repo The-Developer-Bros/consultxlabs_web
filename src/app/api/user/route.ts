@@ -24,8 +24,6 @@ export async function POST(req: Request) {
       password,
       oauthToken,
       phoneNumber,
-      isMod,
-      isAdmin,
       emailConfirmed,
     } = await req.json();
 
@@ -37,21 +35,15 @@ export async function POST(req: Request) {
         password,
         oauthToken,
         phoneNumber,
-        isMod,
-        isAdmin,
         emailConfirmed,
-        profile: {
+        consultantProfile: {
           create: {
-            consultantProfile: {
-              create: {
-                id: uuidv4(),
-              },
-            },
-            consulteeProfile: {
-              create: {
-                id: uuidv4(),
-              },
-            },
+            id: uuidv4(),
+          },
+        },
+        consulteeProfile: {
+          create: {
+            id: uuidv4(),
           },
         },
       },
@@ -86,8 +78,6 @@ export async function PUT(req: Request) {
       password,
       oauthToken,
       phoneNumber,
-      isMod,
-      isAdmin,
       emailConfirmed,
     } = await req.json();
 
@@ -101,8 +91,6 @@ export async function PUT(req: Request) {
         password,
         oauthToken,
         phoneNumber,
-        isMod,
-        isAdmin,
         emailConfirmed,
       },
     });

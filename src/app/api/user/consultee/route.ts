@@ -14,12 +14,14 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
-    const { id, userId } = await req.json();
+    const { id, classes, subscriptions, webinars } = await req.json();
 
     const createdUser = await prisma.consulteeProfile.create({
       data: {
         id,
-        userId,
+        classes,
+        subscriptions,
+        webinars,
       },
     });
 
@@ -32,14 +34,17 @@ export async function POST(req: Request) {
 
 export async function PUT(req: Request) {
   try {
-    const { id, userId } = await req.json();
+    const { id, classes, subscriptions, webinars } = await req.json();
 
     const updatedUser = await prisma.consulteeProfile.update({
       where: {
         id,
       },
       data: {
-        userId,
+        id,
+        classes,
+        subscriptions,
+        webinars,
       },
     });
 

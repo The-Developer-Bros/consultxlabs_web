@@ -13,6 +13,8 @@ export async function GET(request: Request) {
       where = { consultationId };
     } else if (consultantId && consulteeId) {
       where = { consultantId, consulteeId };
+    } else {
+      where = {};
     }
 
     const consultations = await prisma.consultation.findMany({
