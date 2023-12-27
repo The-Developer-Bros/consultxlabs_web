@@ -3,12 +3,42 @@ import prisma from "@/lib/prisma";
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 
+export async function GET(request: Request) {
+  try {
+    const { consultationId, consultantId, consulteeId } = await request.json();
+
+    let where: any = {};
+
+    if (consultationId) {
+      where = { consultationId };
+    } else if (consultantId && consulteeId) {
+      where = { consultantId, consulteeId };
+    }
+
+    const consultations = await prisma.consultation.findMany({
+      where,
+      include: {
+        consultant: true,
+        consultee: true,
+      },
+    });
+
+    return NextResponse.json({ data: consultations }, { status: 200 });
+  } catch (error) {
+    console.log(error);
+    return NextResponse.json(
+      { error: "Something went wrong" },
+      { status: 500 }
+    );
+  }
+}
+
 export async function POST(request: Request) {
   const {
     consultantId,
     consulteeId,
-    start_time,
-    end_time,
+    startTime,
+    endTime,
     price,
     consultant,
     consultee,
@@ -16,11 +46,11 @@ export async function POST(request: Request) {
   try {
     const consultation = await prisma.consultation.create({
       data: {
-        consultation_id: uuidv4(),
+        consultationId: uuidv4(),
         consultantId,
         consulteeId,
-        start_time,
-        end_time,
+        startTime,
+        endTime,
         price,
         consultant: {
           connect: {
@@ -49,16 +79,47 @@ export async function POST(request: Request) {
   }
 }
 
-export async function GET(request: Request) {
+export async function PUT(request: Request) {
   try {
-    const consultations = await prisma.consultation.findMany({
-      include: {
-        consultant: true,
-        consultee: true,
+    const {
+      consultationId,
+      consultantId,
+      consulteeId,
+      startTime,
+      endTime,
+      price,
+    } = await request.json();
+
+    const updatedConsultation = await prisma.consultation.update({
+      where: { consultationId },
+      data: {
+        consultantId,
+        consulteeId,
+        startTime,
+        endTime,
+        price,
       },
     });
 
-    return NextResponse.json({ data: consultations }, { status: 200 });
+    return NextResponse.json({ data: updatedConsultation }, { status: 200 });
+  } catch (error) {
+    console.log(error);
+    return NextResponse.json(
+      { error: "Something went wrong" },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    const { consultationId } = await request.json();
+
+    const deletedConsultation = await prisma.consultation.delete({
+      where: { consultationId },
+    });
+
+    return NextResponse.json({ data: deletedConsultation }, { status: 200 });
   } catch (error) {
     console.log(error);
     return NextResponse.json(

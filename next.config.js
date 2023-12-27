@@ -1,6 +1,16 @@
 /** @type {import('next').NextConfig} */
 module.exports = {
+  // images: {
+  //   domains: ["lh3.googleusercontent.com", "firebasestorage.googleapis.com"],
+  // },
   images: {
-    domains: ["lh3.googleusercontent.com", "firebasestorage.googleapis.com"],
+    remotePatterns: [
+      {
+        hostname: "lh3.googleusercontent.com",
+      },
+      {
+        hostname: "firebasestorage.googleapis.com",
+      },
+    ],
   },
 };

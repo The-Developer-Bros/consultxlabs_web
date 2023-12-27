@@ -2,41 +2,52 @@ import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { v4 as uuidv4 } from "uuid";
 import { Prisma } from "@prisma/client";
+
+export async function GET(req: Request) {
+  try {
+    const users = await prisma.user.findMany();
+    return NextResponse.json({ data: users }, { status: 200 });
+  } catch (error) {
+    console.error("Error getting user:", error);
+    return NextResponse.json(
+      { error: "Internal Server Error" },
+      { status: 500 }
+    );
+  }
+}
+
 export async function POST(req: Request) {
   try {
     const {
       username,
-      emailEncrypted,
-      emailIv,
+      email,
       password,
       oauthToken,
-      phone_number,
+      phoneNumber,
       isMod,
       isAdmin,
       emailConfirmed,
     } = await req.json();
 
-    // Create user
     const createdUser = await prisma.user.create({
       data: {
         id: uuidv4(),
         username,
-        emailEncrypted,
-        emailIv,
+        email,
         password,
         oauthToken,
-        phone_number,
+        phoneNumber,
         isMod,
         isAdmin,
         emailConfirmed,
         profile: {
           create: {
-            consultant: {
+            consultantProfile: {
               create: {
                 id: uuidv4(),
               },
             },
-            consultee: {
+            consulteeProfile: {
               create: {
                 id: uuidv4(),
               },
@@ -46,7 +57,6 @@ export async function POST(req: Request) {
       },
     });
 
-    // Return the created user
     return NextResponse.json({ data: createdUser }, { status: 201 });
   } catch (error) {
     if (
@@ -65,67 +75,38 @@ export async function POST(req: Request) {
     );
   }
 }
-export async function GET(req: Request) {
-  try {
-    const { id } = await req.json();
-
-    // Get user
-    const user = await prisma.user.findUnique({
-      where: {
-        id: id as string,
-      },
-    });
-
-    // Check if user exists
-    if (!user) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
-
-    // Return the user
-    return NextResponse.json({ data: user }, { status: 200 });
-  } catch (error) {
-    console.error("Error getting user:", error);
-    return NextResponse.json(
-      { error: "Internal Server Error" },
-      { status: 500 }
-    );
-  }
-}
 
 export async function PUT(req: Request) {
   try {
     const {
       id,
       username,
-      emailEncrypted,
-      emailIv,
+
+      email,
       password,
       oauthToken,
-      phone_number,
+      phoneNumber,
       isMod,
       isAdmin,
       emailConfirmed,
     } = await req.json();
 
-    // Update user
     const updatedUser = await prisma.user.update({
       where: {
         id: id as string,
       },
       data: {
         username,
-        emailEncrypted,
-        emailIv,
+        email,
         password,
         oauthToken,
-        phone_number,
+        phoneNumber,
         isMod,
         isAdmin,
         emailConfirmed,
       },
     });
 
-    // Return the updated user
     return NextResponse.json({ data: updatedUser }, { status: 200 });
   } catch (error) {
     console.error("Error updating user:", error);
@@ -140,7 +121,6 @@ export async function DELETE(req: Request) {
   try {
     const { id } = await req.json();
 
-    // Delete user
     const deletedUser = await prisma.user.delete({
       where: {
         id: id as string,
@@ -151,7 +131,6 @@ export async function DELETE(req: Request) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    // Return the deleted user
     return NextResponse.json({ data: deletedUser }, { status: 200 });
   } catch (error) {
     console.error("Error deleting user:", error);
