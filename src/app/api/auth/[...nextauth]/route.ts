@@ -15,8 +15,8 @@ import prisma from "@/lib/prisma";
 
 // DONT EXPORT authOptions if using Docker
 const authOptions: NextAuthOptions = {
-  // adapter: PrismaAdapter(prisma),
-  adapter: FirestoreAdapter(firebaseAdminDb),
+  adapter: PrismaAdapter(prisma),
+  // adapter: FirestoreAdapter(firebaseAdminDb),
   providers: [
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID!,
