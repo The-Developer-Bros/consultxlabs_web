@@ -9,6 +9,7 @@ import {
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import Navbar from "@/components/navbar";
+import Image from "next/image";
 
 export default function Dashboard() {
   const { data: session } = useSession();
@@ -72,16 +73,13 @@ export default function Dashboard() {
                 <CardContent>
                   <div className="flex space-x-4 overflow-x-auto pb-2">
                     <div className="min-w-[200px] h-[300px] bg-gray-200">
-                      <img
+                      <Image
                         alt="Session"
-                        className="w-full h-2/3 object-cover"
-                        height="200"
                         src="/placeholder.svg"
-                        style={{
-                          aspectRatio: "200/200",
-                          objectFit: "cover",
-                        }}
-                        width="200"
+                        width={200}
+                        height={200}
+                        layout="responsive"
+                        objectFit="cover"
                       />
                       <div className="p-2">
                         <h3 className="font-bold">Session Name</h3>
@@ -100,16 +98,13 @@ export default function Dashboard() {
                 <CardContent>
                   <div className="flex space-x-4 overflow-x-scroll pb-2">
                     <div className="min-w-[200px] h-[300px] bg-gray-200">
-                      <img
+                      <Image
                         alt="Class"
-                        className="w-full h-2/3 object-cover"
-                        height="200"
                         src="/placeholder.svg"
-                        style={{
-                          aspectRatio: "200/200",
-                          objectFit: "cover",
-                        }}
-                        width="200"
+                        width={200}
+                        height={200}
+                        layout="responsive"
+                        objectFit="cover"
                       />
                       <div className="p-2">
                         <h3 className="font-bold">Class Name</h3>
@@ -128,16 +123,13 @@ export default function Dashboard() {
                 <CardContent>
                   <div className="flex space-x-4 overflow-x-scroll pb-2">
                     <div className="min-w-[200px] h-[300px] bg-gray-200">
-                      <img
+                      <Image
                         alt="Webinar"
-                        className="w-full h-2/3 object-cover"
-                        height="200"
                         src="/placeholder.svg"
-                        style={{
-                          aspectRatio: "200/200",
-                          objectFit: "cover",
-                        }}
-                        width="200"
+                        width={200}
+                        height={200}
+                        layout="responsive"
+                        objectFit="cover"
                       />
                       <div className="p-2">
                         <h3 className="font-bold">Webinar Name</h3>
@@ -156,16 +148,13 @@ export default function Dashboard() {
                 <CardContent>
                   <div className="flex space-x-4 overflow-x-scroll pb-2">
                     <div className="min-w-[200px] h-[300px] bg-gray-200">
-                      <img
+                      <Image
                         alt="Conference"
-                        className="w-full h-2/3 object-cover"
-                        height="200"
                         src="/placeholder.svg"
-                        style={{
-                          aspectRatio: "200/200",
-                          objectFit: "cover",
-                        }}
-                        width="200"
+                        width={200}
+                        height={200}
+                        layout="responsive"
+                        objectFit="cover"
                       />
                       <div className="p-2">
                         <h3 className="font-bold">Conference Name</h3>

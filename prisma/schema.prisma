@@ -8,6 +8,8 @@ datasource db {
   url          = env("DATABASE_URL")
 }
 
+////////////////////////////////////////// DO NOT EDIT //////////////////////////////////////////
+
 model User {
   id                  String             @id @default(cuid())
   name                String?
@@ -69,17 +71,19 @@ model VerificationToken {
   @@map("verificationtokens")
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////
+
 model ConsultantProfile {
   id              String            @id @default(uuid())
+  rating          Float?
+  specialization  String?           @db.Text
+  experience      String?           @db.Text
+  location        String?           @db.Text
   dayAvailability DayAvailability[]
   consultations   Consultation[]
   subscriptions   Subscription[]
   webinars        Webinar[]
   classes         Class[]
-  rating          Float?
-  specialization  String?
-  experience      Int?
-  location        String?
   posts           Post[]
   comments        Comment[]
   User            User[]
@@ -91,7 +95,7 @@ model ConsulteeProfile {
   subscriptions Subscription[]
   webinars      Webinar[]
   classes       Class[]
-  location      String?
+  location      String?        @db.Text
   posts         Post[]
   User          User[]
 }
@@ -118,7 +122,7 @@ model Post {
 model Comment {
   id                  String             @id @default(uuid())
   createdAt           DateTime           @default(now())
-  text                String             @db.VarChar(1000)
+  text                String             @db.Text
   upvotes             Int                @default(0)
   downvotes           Int                @default(0)
   post                Post               @relation(fields: [postId], references: [id])

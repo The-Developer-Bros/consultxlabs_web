@@ -1,3 +1,8 @@
+import {
+  firebaseAdminAuth,
+  firebaseAdminDb,
+} from "@/app/firebase-admin.config";
+import { FirestoreAdapter } from "@next-auth/firebase-adapter";
 import { PrismaAdapter } from "@next-auth/prisma-adapter";
 import { Account, NextAuthOptions, Profile, Session, User } from "next-auth";
 import { AdapterUser } from "next-auth/adapters";
@@ -10,7 +15,8 @@ import prisma from "@/lib/prisma";
 
 // DONT EXPORT authOptions if using Docker
 const authOptions: NextAuthOptions = {
-  adapter: PrismaAdapter(prisma),
+  // adapter: PrismaAdapter(prisma),
+  adapter: FirestoreAdapter(firebaseAdminDb),
   providers: [
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID!,
@@ -29,6 +35,7 @@ const authOptions: NextAuthOptions = {
 
   callbacks: {
     // The callbacks are arranged in the order they are called in when authenticating a user.
+    //////////////////////////// NEWER BUGGY VERSION ////////////////////////////
 
     async signIn({
       user,
@@ -43,7 +50,27 @@ const authOptions: NextAuthOptions = {
       email?: string | { verificationRequest?: boolean };
       credentials?: any;
     }): Promise<boolean | string> {
-      return true;
+      if (account?.provider === "google" || account?.provider === "github") {
+        // Check if user is in your database
+        const userRef = firebaseAdminDb.collection("users").doc(user.id);
+        const userDoc = await userRef.get();
+        if (!userDoc.exists) {
+          // If the user is not in the database, create a new user in Firebase
+          try {
+            const newUser = await firebaseAdminAuth.createUser({
+              uid: user.id,
+              email: user.email as string,
+              displayName: user.name as string,
+            });
+            console.log("New user created in Firebase:", newUser.uid);
+          } catch (error) {
+            console.error("Error creating new user in Firebase:", error);
+            return false;
+          }
+        }
+        return true;
+      }
+      return false;
     },
 
     async jwt({
@@ -76,7 +103,7 @@ const authOptions: NextAuthOptions = {
     }): Promise<any> {
       //////////////////////////// DO NOT REMOVE ////////////////////////////
 
-      if (session?.user && token.sub) {
+      if (session?.user && !session.firebaseToken && token.sub) {
         session.user.id = token.sub;
       }
 
