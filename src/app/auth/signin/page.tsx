@@ -37,7 +37,7 @@ export default function SignIn() {
         </div>
       </div>
       <div className="w-1/2 bg-gray-900 text-white p-12 flex flex-col justify-center">
-        <div>
+        <div className="flex flex-col p-20">
           <h2 className="text-3xl font-semibold mb-6">Create an account</h2>
           <p className="mb-6">Enter your email below to create your account</p>
           <Input placeholder="name@example.com" />
