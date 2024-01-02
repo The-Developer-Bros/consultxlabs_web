@@ -15,7 +15,9 @@ import { useSession } from "next-auth/react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { use } from "react";
 import bannerImage from "../../public/static/assets/images/main-banner.jpeg";
+import { fetchFirebaseImage } from "./firebase.utils";
 
 export default function Home() {
   const { data: session } = useSession();
@@ -25,10 +27,11 @@ export default function Home() {
     router.push("/dashboard");
   }
 
+  const servicesImage = use(fetchFirebaseImage("frontend/services-image.jpg"));
+
   return (
     <ReduxProvider store={store}>
       <AnimatePresence>
-        {/* <AnnouncementBar /> */}
         <Navbar />
         <main className="flex-0">
           <section
@@ -76,7 +79,7 @@ export default function Home() {
                 alt="Image"
                 className="mx-auto aspect-video overflow-hidden rounded-xl object-cover object-center sm:w-full lg:order-last"
                 height={310}
-                src="/placeholder.svg"
+                src={servicesImage!}
                 width={550}
               />
               <div className="flex flex-col justify-center space-y-4">
