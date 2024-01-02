@@ -6,8 +6,8 @@ export async function fetchFirebaseImage(imageRelativePath: string) {
     const imageAbsolutePath =
       "gs://" + process.env.FIREBASE_STORAGE_BUCKET + "/" + imageRelativePath;
     const storageRef = ref(firebaseStorage, imageAbsolutePath);
-    return getDownloadURL(storageRef);
+    return await getDownloadURL(storageRef);
   } catch (error) {
-    console.log(error);
+    console.log("Error fetching image from Firebase: ", error);
   }
 }

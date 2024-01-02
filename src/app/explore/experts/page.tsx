@@ -8,8 +8,10 @@ import { CardHeader, CardContent, Card } from "@/components/ui/card";
 import { Avatar } from "@/components/ui/avatar";
 
 import Navbar from "@/components/navbar";
-import React from "react";
+import React, { use } from "react";
 import { SearchExperts } from "@/components/search-experts";
+import { fetchFirebaseImage } from "@/app/firebase.utils";
+import Image from "next/image";
 
 const categories = [
   {
@@ -39,10 +41,14 @@ const categories = [
 ];
 
 export default function ExploreExperts() {
+  const expertsHeroImage = use(
+    fetchFirebaseImage("frontend/explore/experts/experts-hero-section.jpg")
+  );
+
   return (
     <>
       <Navbar />
-      <section className="w-full border-y pt-24 md:pt-48 lg:pt-64 xl:pt-80">
+      <section className="w-full border-y pt-30 md:pt-30 lg:pt-40 xl:pt-60">
         <div className="px-4 md:px-6 space-y-10 xl:space-y-16">
           <div className="grid max-w-[1300px] mx-auto gap-4 px-4 sm:px-6 md:px-10 md:grid-cols-2 md:gap-16">
             <div>
@@ -57,7 +63,7 @@ export default function ExploreExperts() {
               </p>
               <div className="space-x-4">
                 <Link
-                  className="inline-flex h-9 items-center justify-center rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-gray-50 shadow transition-colors hover:bg-gray-900/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gray-950 disabled:pointer-events-none disabled:opacity-50 dark:bg-gray-50 dark:text-gray-900 dark:hover:bg-gray-50/90 dark:focus-visible:ring-gray-300"
+                  className="inline-flex h-10 items-center justify-center rounded-md bg-black text-white hover:bg-white hover:text-black px-4 py-2 text-sm font-medium shadow"
                   href="#"
                 >
                   Get Started
@@ -65,11 +71,18 @@ export default function ExploreExperts() {
               </div>
             </div>
           </div>
-          <img
+          {/* <img
             alt="Hero"
             className="mx-auto aspect-[3/1] overflow-hidden rounded-t-xl object-cover"
             height="300"
             src="/placeholder.svg"
+            width="1270"
+          /> */}
+          <Image
+            src={expertsHeroImage!}
+            alt="Hero"
+            className="mx-auto aspect-[3/1] overflow-hidden rounded-t-xl object-cover"
+            height="300"
             width="1270"
           />
         </div>
@@ -78,7 +91,7 @@ export default function ExploreExperts() {
         <div className="space-y-12 px-4 md:px-6">
           <div className="flex flex-col items-center justify-center space-y-4 text-center">
             <div className="space-y-2">
-              <div className="inline-block rounded-lg bg-gray-100 px-3 py-1 text-sm dark:bg-gray-800">
+              <div className="inline-block rounded-lg px-3 py-1 text-sm bg-gray-900 text-gray-50">
                 Featured Experts
               </div>
               <h2 className="text-3xl font-bold tracking-tighter sm:text-5xl">
@@ -124,7 +137,7 @@ export default function ExploreExperts() {
           </div>
           <div className="flex justify-center space-x-4">
             <Link
-              className="inline-flex h-10 items-center justify-center rounded-md bg-gray-900 px-8 text-sm font-medium text-gray-50 shadow transition-colors hover:bg-gray-900/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gray-950 disabled:pointer-events-none disabled:opacity-50 dark:bg-gray-50 dark:text-gray-900 dark:hover:bg-gray-50/90 dark:focus-visible:ring-gray-300"
+              className="inline-flex h-10 items-center justify-center rounded-md bg-black text-white hover:bg-white hover:text-black px-4 py-2 text-sm font-medium shadow"
               href="#"
             >
               View All Experts
@@ -143,14 +156,15 @@ export default function ExploreExperts() {
             </h2>
             <p className="mx-auto max-w-[600px] text-gray-500 md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed dark:text-gray-400">
               Hear from our valued customers about their experience with our
-              keyboards.
+              experts.
             </p>
           </div>
           <div className="mx-auto w-full max-w-sm space-y-2">
             <Avatar className="w-12 h-12" />
             <p className="text-sm text-gray-500 dark:text-gray-400">
-              &ldquo;The mechanical keyboard I bought from here is the best
-              I&apos;ve ever used. The keys are so satisfying to press!&ldquo;
+              &ldquo;The expertise and guidance provided by the consultants here
+              have been invaluable to my business. They have helped me achieve
+              remarkable results and I highly recommend their services!&ldquo;
             </p>
             <p className="text-xs text-gray-500 dark:text-gray-400">
               - Happy Customer
