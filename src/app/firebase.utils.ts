@@ -1,3 +1,4 @@
+"use server";
 import { ref, getDownloadURL } from "firebase/storage";
 import { firebaseStorage } from "./firebase.config";
 
