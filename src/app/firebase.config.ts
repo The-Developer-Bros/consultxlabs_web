@@ -2,6 +2,7 @@ import { getApp, getApps, initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 import { getFunctions } from "firebase/functions";
+import { getStorage } from "firebase/storage";
 
 const firebaseConfig: Record<string, string> = {
   apiKey: process.env.FIREBASE_API_KEY!,
@@ -15,7 +16,14 @@ const firebaseConfig: Record<string, string> = {
 
 const firebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig); // This is to ensure that we don't initialize the app more than once
 const firestore = getFirestore(firebaseApp);
-const firebaseAuth = getAuth(firebaseApp);
+// const firebaseAuth = getAuth(firebaseApp);
 const firebaseFunctions = getFunctions(firebaseApp);
+const firebaseStorage = getStorage(firebaseApp);
 
-export { firebaseApp, firestore, firebaseAuth, firebaseFunctions };
+export {
+  firebaseApp,
+  //  firebaseAuth, // TODO: Slowing down the build process
+  firebaseFunctions,
+  firebaseStorage,
+  firestore,
+};

@@ -1,15 +1,15 @@
 "use client";
-import Link from "next/link";
+import Navbar from "@/components/navbar";
 import {
+  Card,
+  CardContent,
   CardDescription,
   CardHeader,
-  CardContent,
-  Card,
 } from "@/components/ui/card";
 import { useSession } from "next-auth/react";
-import { useRouter } from "next/navigation";
-import Navbar from "@/components/navbar";
 import Image from "next/image";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 export default function Dashboard() {
   const { data: session } = useSession();
@@ -18,6 +18,7 @@ export default function Dashboard() {
   if (!session) {
     router.push("/");
   }
+
   return (
     <>
       <Navbar />
