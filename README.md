@@ -22,13 +22,14 @@ Before you start, make sure you have the following installed and configured on y
 First, clone the project repository from our version control system (e.g., GitHub, Bitbucket, or GitLab) to your local machine.
 
 ```bash
+# Please clone using SSH instead of HTTPS (since we'll be making the repository private later on)
 git clone <repository_url>
 cd <repository_directory>
 ```
 
 ## Step 2: Create a .env.local File
 
-Create a `.env.local` file in the root directory of the project. This file will contain all the environment variables you need to set up. For security reasons, this file is not committed to the project repository. We'll be taking variables from `.env.sample` file and putting them in `.env.local` file.
+Create a `.env.local` file in the root directory of the project. This file will contain all the environment variables you need to set up. For security reasons, this file is not committed to the project repository. We'll be taking variables from `.env.sample` file and putting them in the `.env.local` file.
 
 ### The NextAuth.js Variables
 
@@ -90,11 +91,21 @@ You need to log in to PlanetScale with the ConsultX account where we have alread
 DATABASE_URL="your_database_url"
 ```
 
-## Docker Commands
+## Docker [Not working yet]
+
+Use this approach if you want to run the project in a Docker container.
+This is useful if:
+
+- you cannot install Node.js and npm on your machine
+- you want to run the project in an isolated environment
+- the experiments you are running could potentially break your machine or your OS
+- the experiments you are running could potentially break your Node.js or npm installation
+- you want to run the project on a different OS than the one you are using.
 
 ### Running it through just docker
 
 ```bash
+# Build and run
 docker build -t consultx-docker .
 docker run -p 3000:3000 consultx-docker
 ```
