@@ -1,7 +1,7 @@
-# ConsultX - The One-stop Platform for Mentors, Advisor,Teachers, and Students
+# ConsultX - The One-stop Platform for Mentors, Advisors, Teachers, and Students
 
-Consultx is an going to be the one stop platform for all experts, mentors, coaches, consultants, teachers and advisors for sharing their wisdom to masses.
-Kind of like swiggy with different restaurants for people.
+ConsultX is going to be the one-stop platform for all experts, mentors, coaches, consultants, teachers and advisors to share their wisdom with the masses.
+Kind of like Swiggy with different restaurants for people.
 
 ## Setting Up Environment Variables for Development
 
