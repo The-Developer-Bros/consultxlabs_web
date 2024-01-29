@@ -39,17 +39,19 @@ export default function Home() {
   return (
     <ReduxProvider store={store}>
       <Navbar />
-      <section
-        className="h-full py-12 md:py-24 lg:py-40 xl:py-56 bg-gray-100"
-        style={{
-          // backgroundImage: `url(${bannerImage.src})`,
-          backgroundImage: `url(${mainBannerImage})`,
-          backgroundSize: "cover",
-          backgroundPosition: "center",
-          backgroundPositionY: "15%", // Lower the image vertically
-        }}
-      >
-        <div className="px-4 md:px-6">
+      <section className="relative h-full py-12 md:py-24 lg:py-40 xl:py-56">
+        {mainBannerImage && (
+          <Image
+            src={mainBannerImage}
+            alt="Main Banner"
+            layout="fill"
+            objectFit="cover"
+            objectPosition="center 15%"
+            className="absolute z-0"
+            loading="eager"
+          />
+        )}
+        <div className="relative z-10 px-4 md:px-6">
           <div className="flex flex-col items-center space-y-4 text-center">
             <div className="space-y-2">
               <h1 className="text-3xl sm:text-4xl md:text-5xl lg:text-6xl xl:text-7xl font-bold tracking-tighter">
@@ -87,6 +89,7 @@ export default function Home() {
             width={550}
             height={300}
             alt="Image"
+            loading="eager"
           />
           <div className="flex flex-col justify-around space-y-4">
             <div className="space-y-2">
