@@ -17,7 +17,7 @@ import {
 export default function ExpertProfile({
   params,
 }: {
-  readonly params: { slug: string };
+  readonly params: { expertId: string };
 }) {
   // Route	params Type Definition
   // app/blog/[slug]/page.js	{ slug: string }
@@ -29,7 +29,7 @@ export default function ExpertProfile({
   return (
     <>
       <Navbar />
-      <div key={params.slug} className="flex justify-center py-40">
+      <div key={params.expertId} className="flex justify-center py-40">
         <div className="flex flex-col w-1/2">
           <div className="flex items-center mb-6 text-lg">
             <div className="flex flex-col">

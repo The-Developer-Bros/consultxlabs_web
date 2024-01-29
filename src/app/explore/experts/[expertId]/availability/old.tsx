@@ -1,0 +1,237 @@
+"use client";
+import { useState } from 'react';
+import { Button } from "@/components/ui/button"
+import { AvatarImage, AvatarFallback, Avatar } from "@/components/ui/avatar"
+import { format, addMonths, subMonths } from 'date-fns';
+import { SelectValue, SelectTrigger, SelectItem, SelectContent, Select } from "@/components/ui/select"
+
+export default function ConsultantAvailabilityCalendar() {
+  const days = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+  const [currentMonth, setCurrentMonth] = useState(new Date());
+
+  const nextMonth = () => {
+    setCurrentMonth(addMonths(currentMonth, 1));
+  };
+
+  const prevMonth = () => {
+    setCurrentMonth(subMonths(currentMonth, 1));
+  };
+
+  return (
+    <div className="flex h-screen w-full flex-col bg-white p-8">
+      <div className="flex w-full justify-between">
+        <Button variant="ghost">Today</Button>
+        <div className="flex items-center space-x-4">
+          <ChevronLeftIcon className="h-6 w-6" onClick={prevMonth} />
+          <h1 className="text-xl font-semibold">{format(currentMonth, 'MMMM yyyy')}</h1>
+          <ChevronRightIcon className="h-6 w-6" onClick={nextMonth} />
+        </div>
+        <div className="flex items-center space-x-10">
+          <SearchIcon className="h-6 w-6 text-gray-600" />
+          <SettingsIcon className="h-6 w-6 text-gray-600" />
+          <Select>
+            <SelectTrigger id="view-select">
+              <SelectValue placeholder="Month" />
+            </SelectTrigger>
+            <SelectContent position="popper">
+              <SelectItem value="day">Day</SelectItem>
+              <SelectItem value="week">Week</SelectItem>
+              <SelectItem value="month">Month</SelectItem>
+            </SelectContent>
+          </Select>
+          <PlusIcon className="h-6 w-6 text-gray-600" />
+        </div>
+        <Avatar>
+          <AvatarImage alt="User Avatar" src="/placeholder.svg?height=32&width=32" />
+          <AvatarFallback>U</AvatarFallback>
+        </Avatar>
+      </div>
+      <div className="flex w-full items-center justify-around mt-8">
+        {days.map((day) => (
+          <h2 key={day} className="text-center text-sm font-semibold">{day}</h2> 
+        ))}
+        </div>
+      <div className="mt-4 grid grid-cols-7 gap-1 w-full h-full divide-x divide-y"> {/* Updated to use divide utilities for line separators */}
+        {Array.from({ length: 31 }, (_, i) => i + 1).map((day) => (
+          <div key={day} className="flex flex-col h-full justify-start items-start "> {/* Removed border and adjusted styles */}
+            <h2 className="text-left text-sm font-semibold pt-1 pl-1">{day}</h2>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+
+function ChevronLeftIcon({ onClick }) {
+  return (
+    <svg
+      onClick={onClick}
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="m15 18-6-6 6-6" />
+    </svg>
+  )
+}
+
+
+function ChevronRightIcon({ onClick }) {
+  return (
+    <svg
+      onClick={onClick}
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="m9 18 6-6-6-6" />
+    </svg>
+  )
+}
+
+
+function SearchIcon(props) {
+  return (
+    <svg
+      {...props}
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="11" cy="11" r="8" />
+      <path d="m21 21-4.3-4.3" />
+    </svg>
+  )
+}
+
+
+function SettingsIcon(props) {
+  return (
+    <svg
+      {...props}
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M12.22 2h-.44a2 2 0 0-2 2v.18a2 1-1 1.73l-.43.25a2 1-2 0l-.15-.08a2 0-2.73.73l-.22.38a2 .73 2.73l.15.1a2 1 1.72v.51a2 1.74l-.15.09a2 0-.73 2.73l.22.38a2 2.73.73l.15-.08a2 0l.43.25a2 1.73V20a2 2h.44a2 2-2v-.18a2 1-1.73l.43-.25a2 0l.15.08a2 2.73-.73l.22-.39a2 0-.73-2.73l-.15-.08a2 1-1-1.74v-.5a2 1-1.74l.15-.09a2 .73-2.73l-.22-.38a2 0-2.73-.73l-.15.08a2 0l-.43-.25a2 1-1-1.73V4a2 0-2-2z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  )
+}
+
+
+function BellIcon(props) {
+  return (
+    <svg
+      {...props}
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M6 8a6 6 0 1 12 0c0 7 3 9 9H3s3-2 3-9" />
+      <path d="M10.3 21a1.94 1.94 0 3.4" />
+    </svg>
+  )
+}
+
+
+function LayoutGridIcon(props) {
+  return (
+    <svg
+      {...props}
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <rect width="7" height="7" x="3" y="3" rx="1" />
+      <rect width="7" height="7" x="14" y="3" rx="1" />
+      <rect width="7" height="7" x="14" y="14" rx="1" />
+      <rect width="7" height="7" x="3" y="14" rx="1" />
+    </svg>
+  )
+}
+
+
+function ListIcon(props) {
+  return (
+    <svg
+      {...props}
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <line x1="8" x2="21" y1="6" y2="6" />
+      <line x1="8" x2="21" y1="12" y2="12" />
+      <line x1="8" x2="21" y1="18" y2="18" />
+      <line x1="3" x2="3.01" y1="6" y2="6" />
+      <line x1="3" x2="3.01" y1="12" y2="12" />
+      <line x1="3" x2="3.01" y1="18" y2="18" />
+    </svg>
+  )
+}
+
+
+
+function PlusIcon(props) {
+  return (
+    <svg
+      {...props}
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M5 12h14" />
+      <path d="M12 5v14" />
+    </svg>
+  )
+}
+
