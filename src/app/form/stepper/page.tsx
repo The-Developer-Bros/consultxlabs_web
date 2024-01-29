@@ -65,20 +65,6 @@ export default function UserOnboarding() {
     role: "",
   });
 
-  // const {
-  //   handleSubmit,
-  //   control,
-  //   formState: { errors },
-  // } = useForm({
-  //   resolver: zodResolver(
-  //     step === 1
-  //       ? UserSchema
-  //       : formData.role == "Consultant"
-  //       ? ConsultantSchema
-  //       : StaffAdminSchema
-  //   ),
-  // });
-
   const {
     handleSubmit: handleStep1Submit,
     control: step1Control,
@@ -108,17 +94,32 @@ export default function UserOnboarding() {
   const step1SubmitHandler: SubmitHandler<User> = (data) => {
     console.log("step 1 data", data);
     setFormData({ ...formData, ...data });
+    if (Object.keys(step1Errors).length === 0) {
+      setStep((prevStep) => prevStep + 1);
+    } else {
+      console.error("Zod validation error in step 1", step1Errors);
+    }
   };
 
   const step2SubmitHandler: SubmitHandler<UserWithRole> = (data) => {
     console.log("step 2 data", data);
     setFormData({ ...formData, ...data });
+    if (Object.keys(step2Errors).length === 0) {
+      setStep((prevStep) => prevStep + 1);
+    } else {
+      console.error("Zod validation error in step 2", step2Errors);
+    }
   };
 
   const step3SubmitHandler: SubmitHandler<Consultant | StaffAdmin> = (data) => {
     console.log("step 3 data", data);
     setFormData({ ...formData, ...data });
     console.log("form success", formData);
+    if (Object.keys(step3Errors).length === 0) {
+      setStep((prevStep) => prevStep + 1);
+    } else {
+      console.error("Zod validation error in step 3", step3Errors);
+    }
   };
 
   const handleNext = () => {
@@ -129,10 +130,6 @@ export default function UserOnboarding() {
       handleStep2Submit(step2SubmitHandler);
     } else if (step === 3) {
       handleStep3Submit(step3SubmitHandler);
-    }
-
-    if (step < totalSteps) {
-      setStep((prevStep) => prevStep + 1);
     }
   };
 
@@ -284,10 +281,17 @@ export default function UserOnboarding() {
                       control={step3Control}
                       defaultValue=""
                       render={({ field }) => (
-                        <Input
-                          {...field}
-                          placeholder="Enter your specialization"
-                        />
+                        <div>
+                          <Input
+                            {...field}
+                            placeholder="Enter your specialization"
+                          />
+                          {step3Errors.specialization && (
+                            <p className="text-red-500">
+                              {step3Errors.specialization.message as string}
+                            </p>
+                          )}
+                        </div>
                       )}
                     />
                   </div>
@@ -298,7 +302,14 @@ export default function UserOnboarding() {
                       control={step3Control}
                       defaultValue=""
                       render={({ field }) => (
-                        <Input {...field} pattern="[0-9]*" type="text" />
+                        <div>
+                          <Input {...field} pattern="[0-9]*" type="text" />
+                          {step3Errors.experience && (
+                            <p className="text-red-500">
+                              {step3Errors.experience.message as string}
+                            </p>
+                          )}
+                        </div>
                       )}
                     />
                   </div>
@@ -311,10 +322,17 @@ export default function UserOnboarding() {
                       control={step3Control}
                       defaultValue=""
                       render={({ field }) => (
-                        <Textarea
-                          {...field}
-                          placeholder="Type your message here."
-                        />
+                        <div>
+                          <Textarea
+                            {...field}
+                            placeholder="Type your message here."
+                          />
+                          {step3Errors.expertiseBackground && (
+                            <p className="text-red-500">
+                              {step3Errors.expertiseBackground.message as string}
+                            </p>
+                          )}
+                        </div>
                       )}
                     />
                   </div>
@@ -325,7 +343,14 @@ export default function UserOnboarding() {
                       control={step3Control}
                       defaultValue=""
                       render={({ field }) => (
-                        <Input {...field} placeholder="Enter your location" />
+                        <div>
+                          <Input {...field} placeholder="Enter your location" />
+                          {step3Errors.location && (
+                            <p className="text-red-500">
+                              {step3Errors.location.message as string}
+                            </p>
+                          )}
+                        </div>
                       )}
                     />
                   </div>
@@ -340,14 +365,14 @@ export default function UserOnboarding() {
                       control={step3Control}
                       defaultValue=""
                       render={({ field }) => (
-                        <>
+                        <div>
                           <Input {...field} type="password" />
                           {step3Errors.companyPassword && (
                             <p className="text-red-500">
                               {step3Errors.companyPassword.message as string}
                             </p>
                           )}
-                        </>
+                        </div>
                       )}
                     />
                   </div>
