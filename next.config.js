@@ -13,4 +13,17 @@ module.exports = {
       },
     ],
   },
+  // headers: async () => {
+  //   return [
+  //     {
+  //       source: "/(.*)",
+  //       headers: [
+  //         {
+  //           key: "Access-Control-Allow-Origin",
+  //           value: "*",
+  //         },
+  //       ],
+  //     },
+  //   ];
+  // },
 };

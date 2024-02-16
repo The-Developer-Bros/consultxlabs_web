@@ -29,7 +29,7 @@ cd <repository_directory>
 
 ## Step 2: Create a .env.local File
 
-Create a `.env.local` file in the root directory of the project. This file will contain all the environment variables you need to set up. For security reasons, this file is not committed to the project repository. We'll be taking variables from `.env.sample` file and putting them in the `.env.local` file.
+Create a `.env.local` file in the root directory of the project. This file will contain all the environment variables you need to set up. For security reasons, this file is not committed to the project repository. We'll be taking variables from the `.env.sample` file and putting them in the `.env.local` file.
 
 ### The NextAuth.js Variables
 
@@ -106,11 +106,15 @@ This is useful if:
 
 ```bash
 # Build and run
-docker build -t consultx-docker .
+docker build -f Dockerfile.dev -t consultx-docker .
 docker run -p 3000:3000 consultx-docker
 ```
 
 ### Running it through docker-compose
+
+```bash
+docker-compose up -f docker-compose.yml
+```
 
 ```bash
 # Get latest docker

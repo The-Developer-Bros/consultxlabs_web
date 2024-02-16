@@ -1,10 +1,23 @@
 version: "3"
 services:
-  web:
-    image: consultx-docker
-    stdin_open: true
+  client-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
     ports:
       - "3000:3000"
     volumes:
-      - "./:/usr/src/app:delegated"
-      - "/usr/src/app/node_modules"
+      - /app/node_modules
+      - .:/app
+    env_file:
+      - .env
+      - .env.local
+  client-prod:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    ports:
+      - "4000:4000"
+    env_file:
+      - .env
+      - .env.local
