@@ -28,7 +28,6 @@ export default function ExpertProfile({
 
   return (
     <>
-      <Navbar />
       <div key={params.expertId} className="flex justify-center py-40">
         <div className="flex flex-col w-1/2">
           <div className="flex items-center mb-6 text-lg">

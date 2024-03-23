@@ -11,7 +11,6 @@ import Navbar from "@/components/navbar";
 export default function Community() {
   return (
     <>
-      <Navbar />
       <section
         className="w-full mt-12 md:mt-24 lg:mt-32 xl:mt-48 bg-cover bg-center"
         style={{

@@ -20,7 +20,6 @@ export default function Dashboard() {
   }
   return (
     <>
-      <Navbar />
       <div className="grid h-screen min-h-screen w-full lg:grid-cols-[280px_1fr]">
         <div className="hidden lg:block bg-gray-100/40 dark:bg-gray-900 py-96">
           <div className="flex h-full max-h-screen flex-col gap-2">

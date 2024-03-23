@@ -19,7 +19,6 @@ import Navbar from "@/components/navbar";
 export default function ContactUs() {
   return (
     <>
-      <Navbar />
       <Card className="m-4 mt-20 sm:mt-20 md:mt-30 lg:mt-30 xl:mt-40">
         <CardHeader>
           <CardTitle className="text-xl">Contact Us</CardTitle>

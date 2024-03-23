@@ -11,7 +11,6 @@ import Navbar from "@/components/navbar";
 export default function Feed() {
   return (
     <>
-      <Navbar />
       <div className="flex px-4  md:px-6 py-20 md:py-30 lg:py-30 xl:py-40 max-w-7xl mx-auto">
         <aside className="w-1/5 space-y-6">
           <Card>

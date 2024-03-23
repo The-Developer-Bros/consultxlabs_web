@@ -29,7 +29,6 @@ export default function Home() {
     <ReduxProvider store={store}>
       <AnimatePresence>
         {/* <AnnouncementBar /> */}
-        <Navbar />
         <main className="flex-0">
           <section
             className="h-full py-12 md:py-24 lg:py-40 xl:py-56 bg-gray-100"

@@ -4,6 +4,7 @@ import { Inter } from "next/font/google";
 import { authOptions } from "./api/auth/[...nextauth]/route";
 import NextAuthProvider from "./nextauth-session-provider";
 import "./globals.css";
+import Navbar from "@/components/navbar";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -22,6 +23,7 @@ export default async function RootLayout({
     <html lang="en">
       <body className={inter.className}>
         <NextAuthProvider session={session}>
+          <Navbar />
           {children}
         </NextAuthProvider>
       </body>

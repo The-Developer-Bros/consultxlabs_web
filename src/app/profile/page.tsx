@@ -41,7 +41,6 @@ export default function Profile() {
 
   return (
     <>
-      <Navbar />
       <div className="flex justify-center items-center min-h-screen px-4 py-20 md:py-30 lg:py-30 xl:py-40">
         <div className="flex w-full max-w-4xl gap-4">
           <div className="w-1/2">

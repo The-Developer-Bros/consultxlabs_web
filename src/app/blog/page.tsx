@@ -9,7 +9,6 @@ import Link from "next/link";
 export default function Blog() {
   return (
     <section className="w-full">
-      <Navbar />
       <main className="container mx-auto px-4 md:px-6 py-8">
         <section className="mb-8">
           <h2 className="text-2xl font-bold mb-4">Top Story</h2>
