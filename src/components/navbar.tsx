@@ -1,14 +1,15 @@
 "use client";
-import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
-import Image from "next/image";
-import { useSession, signOut } from "next-auth/react";
-import consultxlogo from "../../public/static/assets/logos/ConsultX-logos/ConsultX-logos_transparent.png";
 import { motion } from "framer-motion";
+import { signOut, useSession } from "next-auth/react";
+import Image from "next/image";
 import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import consultxlogo from "../../public/static/assets/logos/ConsultX-logos/ConsultX-logos_transparent.png";
 
 const Navbar = () => {
   const router = useRouter();
+  const pathname = usePathname();
   const { data: session } = useSession();
   const [isOpen, setIsOpen] = useState(false);
   const [isScrolled, setIsScrolled] = useState(false);
@@ -38,6 +39,9 @@ const Navbar = () => {
       window.removeEventListener("scroll", checkScroll);
     };
   }, []); // Empty dependency array ensures this runs once on mount and unmount
+
+  const excludeNavbar = pathname.startsWith("/auth/") || pathname.startsWith("/admin/");
+  if (excludeNavbar) return null;
 
   return (
     <>

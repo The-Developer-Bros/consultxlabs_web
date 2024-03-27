@@ -3,9 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider     = "mysql"
-  relationMode = "prisma"
-  url          = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 ////////////////////////////////////////// DO NOT EDIT //////////////////////////////////////////
@@ -14,7 +14,7 @@ model User {
   id                  String             @id @default(cuid())
   name                String?
   email               String?            @unique
-  emailVerified       DateTime?          @map("email_verified")
+  emailVerified       DateTime?
   image               String?
   accounts            Account[]
   sessions            Session[]
@@ -32,10 +32,10 @@ model User {
 
 model Account {
   id                String  @id @default(cuid())
-  userId            String  @map("user_id")
+  userId            String
   type              String
   provider          String
-  providerAccountId String  @map("provider_account_id")
+  providerAccountId String
   refresh_token     String? @db.Text
   access_token      String? @db.Text
   expires_at        Int?
@@ -53,8 +53,8 @@ model Account {
 
 model Session {
   id           String   @id @default(cuid())
-  sessionToken String   @unique @map("session_token")
-  userId       String   @map("user_id")
+  sessionToken String   @unique
+  userId       String
   expires      DateTime
   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -76,9 +76,9 @@ model VerificationToken {
 model ConsultantProfile {
   id              String            @id @default(uuid())
   rating          Float?
-  specialization  String?           @db.Text
-  experience      String?           @db.Text
-  location        String?           @db.Text
+  specialization  String?
+  experience      String?
+  location        String?
   dayAvailability DayAvailability[]
   consultations   Consultation[]
   subscriptions   Subscription[]
@@ -95,7 +95,7 @@ model ConsulteeProfile {
   subscriptions Subscription[]
   webinars      Webinar[]
   classes       Class[]
-  location      String?        @db.Text
+  location      String?
   posts         Post[]
   User          User[]
 }
@@ -122,7 +122,7 @@ model Post {
 model Comment {
   id                  String             @id @default(uuid())
   createdAt           DateTime           @default(now())
-  text                String             @db.Text
+  text                String
   upvotes             Int                @default(0)
   downvotes           Int                @default(0)
   post                Post               @relation(fields: [postId], references: [id])
@@ -141,8 +141,8 @@ model Consultation {
   consultantId   String
   consultee      ConsulteeProfile  @relation(fields: [consulteeId], references: [id])
   consulteeId    String
-  startTime      DateTime?         @db.DateTime(0)
-  endTime        DateTime?         @db.DateTime(0)
+  startTime      DateTime?
+  endTime        DateTime?
   price          Int?
 
   @@index([consultantId])
@@ -152,56 +152,56 @@ model Consultation {
 model Subscription {
   subscriptionId String             @id @default(uuid())
   consultantId   String?
-  startTime      DateTime?          @db.DateTime(0)
-  endTime        DateTime?          @db.DateTime(0)
-  startDate      DateTime?          @db.Date
-  endDate        DateTime?          @db.Date
+  startTime      DateTime?
+  endTime        DateTime?
+  startDate      DateTime?
+  endDate        DateTime?
   price          Int?
   daysOfWeek     DaysOfWeek[]
   consultant     ConsultantProfile? @relation(fields: [consultantId], references: [id])
   consultee      ConsulteeProfile?  @relation(fields: [consulteeId], references: [id])
   consulteeId    String?
 
-  @@index([consultantId], map: "subscription_consultant_fk")
-  @@index([consulteeId], map: "subscription_consultee_fk")
+  @@index([consultantId])
+  @@index([consulteeId])
 }
 
 model Webinar {
   webinarId    String             @id @default(uuid())
   consultantId String?
-  startTime    DateTime?          @db.DateTime(0)
-  endTime      DateTime?          @db.DateTime(0)
+  startTime    DateTime?
+  endTime      DateTime?
   price        Int?
   consultant   ConsultantProfile? @relation(fields: [consultantId], references: [id])
   consultee    ConsulteeProfile?  @relation(fields: [consulteeId], references: [id])
   consulteeId  String?
 
-  @@index([consultantId], map: "webinar_consultant_fk")
-  @@index([consulteeId], map: "webinar_consultee_fk")
+  @@index([consultantId])
+  @@index([consulteeId])
 }
 
 model Class {
   classId      String             @id @default(uuid())
   consultantId String?
-  startTime    DateTime?          @db.DateTime(0)
-  endTime      DateTime?          @db.DateTime(0)
-  startDate    DateTime?          @db.DateTime(0)
-  endDate      DateTime?          @db.DateTime(0)
+  startTime    DateTime?
+  endTime      DateTime?
+  startDate    DateTime?
+  endDate      DateTime?
   price        Int?
   daysOfWeek   DaysOfWeek[]
   consultant   ConsultantProfile? @relation(fields: [consultantId], references: [id])
   consultee    ConsulteeProfile?  @relation(fields: [consulteeId], references: [id])
   consulteeId  String?
 
-  @@index([consultantId], map: "class_consultant_fk")
-  @@index([consulteeId], map: "class_consultee_fk")
+  @@index([consultantId])
+  @@index([consulteeId])
 }
 
 model DayAvailability {
-  availabilityId      String             @id @db.VarChar(255)
+  availabilityId      String             @id @default(uuid())
   day                 DaysOfWeekEnum
-  startTime           DateTime?          @db.DateTime(0)
-  endTime             DateTime?          @db.DateTime(0)
+  startTime           DateTime?
+  endTime             DateTime?
   ConsultantProfile   ConsultantProfile? @relation(fields: [consultantProfileId], references: [id])
   consultantProfileId String?
 
@@ -209,10 +209,10 @@ model DayAvailability {
 }
 
 model DayAppointment {
-  appointmentId String         @id @db.VarChar(255)
+  appointmentId String         @id @default(uuid())
   day           DaysOfWeekEnum
-  startTime     DateTime?      @db.DateTime(0)
-  endTime       DateTime?      @db.DateTime(0)
+  startTime     DateTime?
+  endTime       DateTime?
 }
 
 model DaysOfWeek {

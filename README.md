@@ -27,9 +27,9 @@ git clone <repository_url>
 cd <repository_directory>
 ```
 
-## Step 2: Create a .env.local File
+## Step 2: Create a .env File
 
-Create a `.env.local` file in the root directory of the project. This file will contain all the environment variables you need to set up. For security reasons, this file is not committed to the project repository. We'll be taking variables from `.env.sample` file and putting them in the `.env.local` file.
+Create a `.env` file in the root directory of the project. This file will contain all the environment variables you need to set up. For security reasons, this file is not committed to the project repository. We'll be taking variables from `.env.sample` file and putting them in the `.env` file.
 
 ### The NextAuth.js Variables
 
@@ -37,33 +37,6 @@ Create a `.env.local` file in the root directory of the project. This file will 
 NEXTAUTH_URL="http://localhost:3000"
 NEXTAUTH_SECRET="anything"
 JWT_SECRET="anything"
-```
-
-### The Firebase Variables
-
-You need to log in to Firebase with the ConsultX account where we have already created a project. Then go to the project settings scroll down to the bottom and click on the config button. Copy the config and paste it into the `.env`.local` file.
-
-```bash
-# You can ask the team for the config
-FIREBASE_API_KEY="your_firebase_api_key"
-FIREBASE_AUTH_DOMAIN="your_firebase_auth_domain"
-FIREBASE_PROJECT_ID="your_firebase_project_id"
-FIREBASE_STORAGE_BUCKET="your_firebase_storage_bucket"
-FIREBASE_MESSAGING_SENDER_ID="your_firebase_messaging_sender_id"
-FIREBASE_APP_ID="your_firebase_app_id"
-FIREBASE_MEASUREMENT_ID="your_firebase_measurement_id"
-```
-
-### The Firebase-Admin Variables
-
-You need to log in to Firebase with the ConsultX account where we have already created a project. Then go to the project settings scroll down to the bottom and click on the service accounts. Then click on the generate new private key button. This will download a JSON file. Copy the contents of the JSON file and paste it into the `.env.local` file.
-
-```bash
-# You need to get these from your own service accounts.json as you'll be generating your own private key
-FIREBASE_PRIVATE_KEY="your_firebase_private_key from the JSON file"
-FIREBASE_CLIENT_EMAIL="your_firebase_client_email from the JSON file"
-
-GOOGLE_APPLICATION_CREDENTIALS="path_to_the_json_file"
 ```
 
 ### The OAuth Variables (Google, Github, Facebook)
@@ -82,13 +55,14 @@ FACEBOOK_CLIENT_ID="your_facebook_client_id"
 FACEBOOK_CLIENT_SECRET="your_facebook_client_secret"
 ```
 
-### PlanetScale MySQL Variables
+### Supabase Database Variables
 
-You need to log in to PlanetScale with the ConsultX account where we have already created a database. Then go to the database settings scroll down to the bottom and click on the connect button. Copy the connection string and paste it into the `.env.local` file.
+You need to log in to Supabase with the ConsultX account where we have already created a database. Then go to the database settings scroll down to the bottom and click on the connect button. Copy the connection string and paste it into the `.env` file.
 
 ```bash
 # You can ask the team for the connection string
-DATABASE_URL="your_database_url"
+DATABASE_URL="your_supabase_connection_string"
+DIRECT_URL="your_supabase_direct_url"
 ```
 
 ## Docker [Not working yet]
