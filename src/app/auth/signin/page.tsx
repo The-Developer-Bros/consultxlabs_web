@@ -5,17 +5,11 @@
  */
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { signIn, useSession } from "next-auth/react";
+import { signIn } from "next-auth/react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 
 export default function SignIn() {
-  const { data: session } = useSession();
 
-  const router = useRouter();
-  if (session) {
-    router.push("/");
-  }
   return (
     <div className="min-h-screen flex">
       <div className="w-1/2 bg-gray-100 text-black p-12 flex flex-col justify-between">

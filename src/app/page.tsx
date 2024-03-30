@@ -3,7 +3,6 @@ import Footer from "@/components/footer";
 import TestimonialsSection from "@/components/testimonials";
 import store from "@/redux/store";
 import { Provider as ReduxProvider } from "react-redux";
-import Navbar from "../components/navbar";
 
 import { Faq } from "@/components/faq";
 import { Newsletter } from "@/components/newsletter";
@@ -11,19 +10,11 @@ import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { AnimatePresence } from "framer-motion";
-import { useSession } from "next-auth/react";
 import Image from "next/image";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import bannerImage from "../../public/static/assets/images/main-banner.jpeg";
 
 export default function Home() {
-  const { data: session } = useSession();
-
-  const router = useRouter();
-  if (session) {
-    router.push("/dashboard");
-  }
 
   return (
     <ReduxProvider store={store}>

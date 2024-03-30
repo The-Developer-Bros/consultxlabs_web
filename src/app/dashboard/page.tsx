@@ -1,23 +1,13 @@
-"use client";
-import Link from "next/link";
 import {
+  Card,
+  CardContent,
   CardDescription,
   CardHeader,
-  CardContent,
-  Card,
 } from "@/components/ui/card";
-import { useSession } from "next-auth/react";
-import { useRouter } from "next/navigation";
-import Navbar from "@/components/navbar";
 import Image from "next/image";
+import Link from "next/link";
 
 export default function Dashboard() {
-  const { data: session } = useSession();
-
-  const router = useRouter();
-  if (!session) {
-    router.push("/");
-  }
   return (
     <>
       <div className="grid h-screen min-h-screen w-full lg:grid-cols-[280px_1fr]">
