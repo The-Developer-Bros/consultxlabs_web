@@ -42,7 +42,7 @@ const MeetingPage = () => {
       await localStream.startPublishing();
 
       // Play the local video stream
-      if (videoRef.current) {d
+      if (videoRef.current) {
         videoRef.current.srcObject = localStream.stream;
       }
 
