@@ -1,4 +1,4 @@
-import { useRouter } from 'next/router';
+import { redirect } from 'next/navigation';
 import { ZegoExpressEngine } from 'zego-express-engine-webrtc';
 import { useEffect, useRef } from 'react';
 import { PrismaClient } from '@prisma/client';
