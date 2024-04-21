@@ -6,7 +6,6 @@
 import { CardHeader, CardContent, Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { AvatarImage, AvatarFallback, Avatar } from "@/components/ui/avatar";
-import Navbar from "@/components/navbar";
 
 export default function Feed() {
   return (
@@ -20,13 +19,13 @@ export default function Feed() {
             <CardContent>
               <ul className="space-y-2">
                 <li>
-                  <Button variant="primary">Action 1</Button>
+                  <Button variant="outline">Action 1</Button>
                 </li>
                 <li>
-                  <Button variant="primary">Action 2</Button>
+                  <Button variant="outline">Action 2</Button>
                 </li>
                 <li>
-                  <Button variant="primary">Action 3</Button>
+                  <Button variant="outline">Action 3</Button>
                 </li>
               </ul>
             </CardContent>

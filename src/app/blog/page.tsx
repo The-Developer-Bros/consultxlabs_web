@@ -3,7 +3,6 @@
  * v0 by Vercel.
  * @see https://v0.dev/t/AfXYpLG
  */
-import Navbar from "@/components/navbar";
 import Link from "next/link";
 
 export default function Blog() {

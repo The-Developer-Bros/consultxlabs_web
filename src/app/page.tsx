@@ -1,5 +1,4 @@
 "use client";
-import Footer from "@/components/footer";
 import TestimonialsSection from "@/components/testimonials";
 import store from "@/redux/store";
 import { Provider as ReduxProvider } from "react-redux";
@@ -230,7 +229,6 @@ export default function Home() {
         <Faq />
         <TestimonialsSection />
         <Newsletter />
-        <Footer />
       </AnimatePresence>
     </ReduxProvider>
   );

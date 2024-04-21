@@ -7,7 +7,6 @@ import Link from "next/link";
 import { CardHeader, CardContent, Card } from "@/components/ui/card";
 import { Avatar } from "@/components/ui/avatar";
 
-import Navbar from "@/components/navbar";
 import React from "react";
 import { SearchExperts } from "@/components/search-experts";
 
