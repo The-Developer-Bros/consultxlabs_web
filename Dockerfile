@@ -2,7 +2,7 @@
 FROM node:latest
 
 # Set the working directory in the Docker container.
-WORKDIR /usr/src/app
+WORKDIR /usr/app
 
 # Copy the package.json and package-lock.json files (needed for production).
 COPY package*.json ./

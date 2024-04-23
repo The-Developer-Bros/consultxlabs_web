@@ -11,7 +11,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { AnimatePresence } from "framer-motion";
 import Image from "next/image";
 import Link from "next/link";
-import bannerImage from "../../public/static/assets/images/main-banner.jpeg";
+import bannerImage from "../public/static/assets/images/main-banner.jpeg";
 
 export default function Home() {
 

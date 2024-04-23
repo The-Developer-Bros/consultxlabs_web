@@ -6,5 +6,5 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - "./:/usr/src/app:delegated"
-      - "/usr/src/app/node_modules"
+      - "./:/usr/app:delegated"
+      - "/usr/app/node_modules"
