@@ -11,19 +11,30 @@ datasource db {
 ////////////////////////////////////////// DO NOT EDIT //////////////////////////////////////////
 
 model User {
-  id                  String             @id @default(cuid())
-  name                String?
-  email               String?            @unique
-  emailVerified       DateTime?
-  image               String?
-  accounts            Account[]
-  sessions            Session[]
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  accounts      Account[] // This refers to the accounts that the user has connected
+  sessions      Session[] // This refers to the sessions that the user has opened
+
   onboardingCompleted Boolean?           @default(false)
   role                UserRole?          @default(CONSULTEE)
-  consultantProfile   ConsultantProfile? @relation(fields: [consultantProfileId], references: [id])
-  consulteeProfile    ConsulteeProfile?  @relation(fields: [consulteeProfileId], references: [id])
+  consultantProfile   ConsultantProfile?
+  consulteeProfile    ConsulteeProfile?
   consultantProfileId String?
   consulteeProfileId  String?
+
+  attachments      Attachment[]
+  comments         Comment[]
+  commentLikes     CommentLike[]
+  images           Image[]
+  imageLikes       ImageLike[]
+  posts            Post[]
+  postLikes        PostLike[]
+  postsAttachments PostsAttachment[]
+  usersImages      UsersImage[]
 
   @@index([consultantProfileId])
   @@index([consulteeProfileId])
@@ -71,166 +82,373 @@ model VerificationToken {
   @@map("verificationtokens")
 }
 
-//////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////// SOCIAL ENGAGEMENT TEMPLATE ////////////////////////////////////////////////////
+
+model UsersImage {
+  id      String @id @default(uuid())
+  user    User   @relation(fields: [userId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  userId  String
+  image   Image  @relation(fields: [imageId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  imageId String
+  sort    Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+
+  @@unique([userId, imageId])
+}
+
+model CategoryType {
+  id    String @id @default(uuid())
+  key   String @unique
+  title String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+
+  categories Category[]
+}
+
+model Category {
+  id             String        @id @default(uuid())
+  key            String        @unique
+  title          String
+  categoryType   CategoryType? @relation(fields: [categoryTypeId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  categoryTypeId String?
+
+  parentCategoryId String?
+  parentCategory   Category?  @relation("CategorySubcategories", fields: [parentCategoryId], references: [id])
+  subcategories    Category[] @relation("CategorySubcategories")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+
+  postsCategories PostsCategory[]
+}
+
+model Comment {
+  id     String @id @default(uuid())
+  body   String @db.Text()
+  user   User   @relation(fields: [userId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  userId String
+
+  parentCommentId String?
+  parentComment   Comment?  @relation("CommentSubComments", fields: [parentCommentId], references: [id])
+  subComments     Comment[] @relation("CommentSubComments")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+
+  commentLikes  CommentLike[]
+  postsComments PostsComment[]
+}
+
+model CommentLike {
+  id        String  @id @default(uuid())
+  comment   Comment @relation(fields: [commentId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  commentId String
+  user      User    @relation(fields: [userId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  userId    String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+
+  @@unique([commentId, userId])
+}
+
+model Image {
+  id               String  @id @default(uuid())
+  fileKey          String
+  filename         String
+  originalFilename String  @map("original_filename")
+  user             User?   @relation(fields: [userId], references: [id])
+  userId           String?
+  title            String?
+  description      String? @db.Text()
+  width            Int?
+  height           Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+
+  imageLikes  ImageLike[]
+  imageTags   ImageTag[]
+  postsImages PostsImage[]
+  usersImages UsersImage[]
+}
+
+model ImageLike {
+  id      String @id @default(uuid())
+  image   Image  @relation(fields: [imageId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  imageId String
+  user    User   @relation(fields: [userId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  userId  String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+
+  @@unique([imageId, userId])
+}
+
+model ImageTag {
+  id      String  @id @default(uuid())
+  image   Image?  @relation(fields: [imageId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  imageId String?
+  x       Decimal @db.Decimal(8, 3)
+  y       Decimal @db.Decimal(8, 3)
+}
+
+model Attachment {
+  id               String  @id @default(uuid())
+  fileExtension    String?
+  fileKey          String
+  filename         String
+  originalFilename String
+  user             User?   @relation(fields: [userId], references: [id])
+  userId           String?
+  title            String?
+  description      String? @db.Text()
+  width            Int?
+  height           Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+
+  postsAttachments PostsAttachment[]
+}
+
+model Post {
+  id         String   @id @default(uuid())
+  title      String
+  body       String   @db.Text()
+  bodyData   Json?
+  postType   PostType @relation(fields: [postTypeId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  postTypeId String
+  user       User     @relation(fields: [userId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  userId     String
+  published  Boolean  @default(true)
+  isRichText Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+
+  postLikes        PostLike[]
+  postPageViews    PostPageView[]
+  postsAttachments PostsAttachment[]
+  postsCategories  PostsCategory[]
+  postsComments    PostsComment[]
+  postsImages      PostsImage[]
+}
+
+model PostType {
+  id    String @id @default(uuid())
+  key   String @unique
+  title String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+
+  posts Post[]
+}
+
+model PostsAttachment {
+  id           String     @id @default(uuid())
+  post         Post       @relation(fields: [postId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  postId       String
+  attachment   Attachment @relation(fields: [attachmentId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  attachmentId String
+  sort         Int?
+
+  user   User?   @relation(fields: [userId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  userId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+
+  @@unique([postId, attachmentId])
+}
+
+model PostsCategory {
+  id         String   @id @default(uuid())
+  category   Category @relation(fields: [categoryId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  categoryId String
+  post       Post     @relation(fields: [postId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  postId     String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+}
+
+model PostsComment {
+  id        String  @id @default(uuid())
+  comment   Comment @relation(fields: [commentId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  commentId String
+  post      Post    @relation(fields: [postId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  postId    String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+}
+
+model PostLike {
+  id     String @id @default(uuid())
+  post   Post   @relation(fields: [postId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  postId String
+  user   User   @relation(fields: [userId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  userId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+
+  @@unique([postId, userId])
+}
+
+model PostPageView {
+  id     String @id @default(uuid())
+  post   Post   @relation(fields: [postId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  postId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+}
+
+model PostsImage {
+  id      String @id @default(uuid())
+  image   Image  @relation(fields: [imageId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  imageId String
+  post    Post   @relation(fields: [postId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  postId  String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 model ConsultantProfile {
-  id              String            @id @default(uuid())
-  rating          Float?
-  specialization  String?
-  experience      String?
-  location        String?
-  dayAvailability DayAvailability[]
-  consultations   Consultation[]
-  subscriptions   Subscription[]
-  webinars        Webinar[]
-  classes         Class[]
-  posts           Post[]
-  comments        Comment[]
-  User            User[]
+  id             String  @id @default(uuid())
+  rating         Float
+  specialization String?
+  experience     String?
+  location       String?
+  onlineStatus   Boolean
+
+  slotsOfAvailability SlotsOfAvailability[]
+  consultations       Consultation[]
+  subscriptions       Subscription[]
+  webinars            Webinar[]
+  classes             Class[]
+
+  User   User   @relation(fields: [userId], references: [id])
+  userId String @unique
 }
 
 model ConsulteeProfile {
-  id            String         @id @default(uuid())
+  id           String  @id @default(uuid())
+  location     String?
+  onlineStatus Boolean
+
   consultations Consultation[]
   subscriptions Subscription[]
   webinars      Webinar[]
   classes       Class[]
-  location      String?
-  posts         Post[]
-  User          User[]
-}
 
-model Post {
-  id        String    @id @default(uuid())
-  createdAt DateTime  @default(now())
-  title     String    @db.VarChar(300)
-  caption   String    @db.VarChar(1000)
-  upvotes   Int       @default(0)
-  downvotes Int       @default(0)
-  comments  Comment[]
-
-  ConsultantProfile   ConsultantProfile? @relation(fields: [consultantProfileId], references: [id])
-  consultantProfileId String?
-
-  ConsulteeProfile   ConsulteeProfile? @relation(fields: [consulteeProfileId], references: [id])
-  consulteeProfileId String?
-
-  @@index([consultantProfileId])
-  @@index([consulteeProfileId])
-}
-
-model Comment {
-  id                  String             @id @default(uuid())
-  createdAt           DateTime           @default(now())
-  text                String
-  upvotes             Int                @default(0)
-  downvotes           Int                @default(0)
-  post                Post               @relation(fields: [postId], references: [id])
-  postId              String
-  ConsultantProfile   ConsultantProfile? @relation(fields: [consultantProfileId], references: [id])
-  consultantProfileId String?
-
-  @@index([postId])
-  @@index([consultantProfileId])
+  User   User   @relation(fields: [userId], references: [id])
+  userId String @unique
 }
 
 model Consultation {
-  consultationId String            @id @default(uuid())
-  createdAt      DateTime          @default(now())
-  consultant     ConsultantProfile @relation(fields: [consultantId], references: [id])
-  consultantId   String
-  consultee      ConsulteeProfile  @relation(fields: [consulteeId], references: [id])
-  consulteeId    String
-  startTime      DateTime?
-  endTime        DateTime?
-  price          Int?
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  price     Int?
 
-  @@index([consultantId])
-  @@index([consulteeId])
+  ConsultantProfile   ConsultantProfile @relation(fields: [consultantProfileId], references: [id])
+  consultantProfileId String
+  consultee           ConsulteeProfile  @relation(fields: [consulteeProfileId], references: [id])
+  consulteeProfileId  String            @unique
+
+  slotOfAppointment SlotsOfAppointment?
 }
 
 model Subscription {
-  subscriptionId String             @id @default(uuid())
-  consultantId   String?
-  startTime      DateTime?
-  endTime        DateTime?
-  startDate      DateTime?
-  endDate        DateTime?
-  price          Int?
-  daysOfWeek     DaysOfWeek[]
-  consultant     ConsultantProfile? @relation(fields: [consultantId], references: [id])
-  consultee      ConsulteeProfile?  @relation(fields: [consulteeId], references: [id])
-  consulteeId    String?
+  id         String    @id @default(uuid())
+  createdAt  DateTime  @default(now())
+  expiryDate DateTime?
+  price      Int?
 
-  @@index([consultantId])
-  @@index([consulteeId])
+  ConsultantProfile   ConsultantProfile @relation(fields: [consultantProfileId], references: [id])
+  consultantProfileId String
+  ConsulteeProfile    ConsulteeProfile  @relation(fields: [consulteeProfileId], references: [id])
+  consulteeProfileId  String
+
+  slotsOfAppointment SlotsOfAppointment[]
 }
 
 model Webinar {
-  webinarId    String             @id @default(uuid())
-  consultantId String?
-  startTime    DateTime?
-  endTime      DateTime?
-  price        Int?
-  consultant   ConsultantProfile? @relation(fields: [consultantId], references: [id])
-  consultee    ConsulteeProfile?  @relation(fields: [consulteeId], references: [id])
-  consulteeId  String?
+  id    String @id @default(uuid())
+  price Int?
 
-  @@index([consultantId])
-  @@index([consulteeId])
+  ConsultantProfile   ConsultantProfile  @relation(fields: [consultantProfileId], references: [id])
+  consultantProfileId String
+  consultees          ConsulteeProfile[]
+
+  slotOfAppointment SlotsOfAppointment?
 }
 
 model Class {
-  classId      String             @id @default(uuid())
+  id           String    @id @default(uuid())
   consultantId String?
-  startTime    DateTime?
-  endTime      DateTime?
-  startDate    DateTime?
-  endDate      DateTime?
+  createdAt    DateTime  @default(now())
+  expiryDate   DateTime?
   price        Int?
-  daysOfWeek   DaysOfWeek[]
-  consultant   ConsultantProfile? @relation(fields: [consultantId], references: [id])
-  consultee    ConsulteeProfile?  @relation(fields: [consulteeId], references: [id])
-  consulteeId  String?
+
+  ConsultantProfile   ConsultantProfile  @relation(fields: [consultantProfileId], references: [id])
+  consultantProfileId String
+  consultees          ConsulteeProfile[]
+
+  slotOfAppointment SlotsOfAppointment[]
 
   @@index([consultantId])
-  @@index([consulteeId])
-}
-
-model DayAvailability {
-  availabilityId      String             @id @default(uuid())
-  day                 DaysOfWeekEnum
-  startTime           DateTime?
-  endTime             DateTime?
-  ConsultantProfile   ConsultantProfile? @relation(fields: [consultantProfileId], references: [id])
-  consultantProfileId String?
-
-  @@index([consultantProfileId])
-}
-
-model DayAppointment {
-  appointmentId String         @id @default(uuid())
-  day           DaysOfWeekEnum
-  startTime     DateTime?
-  endTime       DateTime?
-}
-
-model DaysOfWeek {
-  id             String         @id @default(uuid())
-  day            DaysOfWeekEnum
-  subscription   Subscription   @relation(fields: [subscriptionId], references: [subscriptionId])
-  subscriptionId String
-  class          Class          @relation(fields: [classId], references: [classId])
-  classId        String
-
-  @@index([subscriptionId])
-  @@index([classId])
 }
 
 model Newsletter {
   id        String   @id @default(uuid())
   email     String   @unique
   createdAt DateTime @default(now())
+}
+
+model SlotsOfAvailability {
+  id                String       @id @default(uuid())
+  availabilitySlots SlotTiming[]
+
+  ConsultantProfile   ConsultantProfile? @relation(fields: [consultantProfileId], references: [id])
+  consultantProfileId String?
+}
+
+model SlotsOfAppointment {
+  id               String       @id @default(uuid())
+  appointmentSlots SlotTiming[]
+
+  Subscription   Subscription? @relation(fields: [subscriptionId], references: [id])
+  subscriptionId String?
+  Class          Class?        @relation(fields: [classId], references: [id])
+  classId        String?
+  Consultation   Consultation? @relation(fields: [consultationId], references: [id])
+  consultationId String?       @unique
+  Webinar        Webinar?      @relation(fields: [webinarId], references: [id])
+  webinarId      String?       @unique
+}
+
+model SlotTiming {
+  slotId    String         @id @default(uuid())
+  day       DaysOfWeekEnum
+  startTime DateTime?
+  endTime   DateTime?
+
+  SlotsOfAvailability   SlotsOfAvailability? @relation(fields: [slotsOfAvailabilityId], references: [id])
+  slotsOfAvailabilityId String?
+  SlotsOfAppointment    SlotsOfAppointment?  @relation(fields: [slotsOfAppointmentId], references: [id])
+  slotsOfAppointmentId  String?
 }
 
 enum DaysOfWeekEnum {
