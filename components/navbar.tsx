@@ -1,12 +1,12 @@
 "use client";
 import { motion } from "framer-motion";
+import micromatch from "micromatch";
 import { signOut, useSession } from "next-auth/react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import consultxlogo from "../public/static/assets/logos/ConsultX-logos/ConsultX-logos_transparent.png";
-import micromatch from "micromatch";
 
 const Navbar = () => {
   const router = useRouter();
@@ -138,7 +138,12 @@ const Navbar = () => {
                 <button
                   className="mr-2 border border-black rounded px-2 py-1"
                   onClick={() => {
-                    /* Implement your sign-up logic here */
+                    try {
+                      // TODO: Redirect to the sign up page
+                      router.push("/auth/signin");
+                    } catch (e) {
+                      console.log(e);
+                    }
                   }}
                 >
                   Sign up
@@ -146,7 +151,11 @@ const Navbar = () => {
                 <button
                   className="mr-2 bg-black text-white border border-black rounded px-2 py-1"
                   onClick={() => {
-                    router.replace("/auth/signin");
+                    try {
+                      router.push("/auth/signin");
+                    } catch (e) {
+                      console.log(e);
+                    }
                   }}
                 >
                   Sign in
