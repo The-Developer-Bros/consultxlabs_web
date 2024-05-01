@@ -1,3 +1,4 @@
+"use client";
 import React from "react";
 import Image from "next/image";
 import {
@@ -9,8 +10,29 @@ import {
 } from "react-icons/fa";
 import consultxlogo from "../public/static/assets/logos/ConsultX-logos/ConsultX-logos_white.png";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
+import micromatch from "micromatch";
+
+const apiRoutes = ["/api/**"];
+const publicAuthRoutes = ["/auth/**"];
+const protectedRoutes = [
+  "/form/**",
+  "/admin/**",
+  "/dashboard/**",
+  "/settings/**",
+  "/profile/**",
+];
 
 const Footer: React.FC = () => {
+  const pathname = usePathname();
+
+  // Exclude footer from both API and protected routes
+  const excludeFooter =
+    micromatch.isMatch(pathname, apiRoutes) ||
+    micromatch.isMatch(pathname, protectedRoutes) ||
+    micromatch.isMatch(pathname, publicAuthRoutes);
+  if (excludeFooter) return null;
+
   return (
     <footer className="flex flex-col items-center justify-center p-5 bg-black text-white">
       <div className="w-full flex justify-center pb-5">

@@ -12,9 +12,7 @@ const protectedRoutes = [
   "/settings/**",
   "/profile/**",
 ];
-
 const publicAuthRoutes = ["/auth/**"];
-
 /**
  * Middleware function to handle authentication and authorization for routes.
  * @param req The NextRequest object representing the incoming request.
@@ -24,25 +22,21 @@ export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
   // const sessionToken = req.cookies.get("next-auth.session-token");
   // const isLoggedIn = sessionToken !== undefined;
-
   // Check if the user is logged in
   const token = await getToken({ req });
   const isAuthenticated = !!token;
-
   // Check if the current route is an API route
   if (micromatch.isMatch(pathname, apiRoutes)) {
     // Bypass authentication for the Inngest API routes
     if (micromatch.isMatch(pathname, inngestApiRoutes)) {
       return NextResponse.next();
     }
-
     if (!micromatch.isMatch(pathname, authApiRoutes)) {
       if (!isAuthenticated) {
         return NextResponse.redirect(new URL("/auth/signin", req.url));
       }
     }
   }
-
   // Check if the current route is a protected route
   if (micromatch.isMatch(pathname, protectedRoutes)) {
     // Allow access only to authenticated users
@@ -50,7 +44,6 @@ export async function middleware(req: NextRequest) {
       return NextResponse.redirect(new URL("/auth/signin", req.url));
     }
   }
-
   // Check if the current route is a public route
   if (micromatch.isMatch(pathname, publicAuthRoutes)) {
     // Redirect to the dashboard if the user is already logged in
@@ -58,11 +51,9 @@ export async function middleware(req: NextRequest) {
       return NextResponse.redirect(new URL("/dashboard", req.url));
     }
   }
-
   // Allow access to public routes
   return NextResponse.next();
 }
-
 export const config = {
   matcher: ["/((?!.+\\.[\\w]+$|_next).*)", "/", "/(api|trpc)(.*)"],
 };
