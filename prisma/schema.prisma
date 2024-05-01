@@ -187,10 +187,8 @@ model Webinar {
 model Class {
   id           String    @id @default(uuid())
   consultantId String?
-  startTime    DateTime?
-  endTime      DateTime?
-  startDate    DateTime?
-  endDate      DateTime?
+  createdAt    DateTime  @default(now())
+  expiryDate   DateTime?
   price        Int?
 
   ConsultantProfile   ConsultantProfile  @relation(fields: [consultantProfileId], references: [id])
