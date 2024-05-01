@@ -11,11 +11,11 @@ import {
 import * as React from "react";
 
 interface UserSigninEmailProps {
-  name: string;
+  firstName: string;
 }
 
 export const UserSigninEmail: React.FC<Readonly<UserSigninEmailProps>> = ({
-  name,
+  firstName,
 }) => (
   <Html>
     <Head />
@@ -29,8 +29,10 @@ export const UserSigninEmail: React.FC<Readonly<UserSigninEmailProps>> = ({
           </div>
           <Text style={headerText}>Explore the Platform</Text>
         </div>
-        <div style={content}>
-          <Heading style={h2}>Discover the Power of ConsultX</Heading>
+        <div style={{ display: "flex", flexDirection: "row", gap: "10px" }}>
+          <Heading style={h2}>
+            Discover the Power of ConsultX, {firstName}!
+          </Heading>
           <Text style={text}>
             Unlock a world of possibilities with our comprehensive consulting
             platform. Explore the features that can transform your business.

@@ -1,9 +1,8 @@
-import { inngestClient } from "@/lib/inngest";
-import resendClient from "@/lib/resend";
-import { UserSignInEmail } from "@/emails/user-signin-email-template";
 import AuthFailureEmail from "@/emails/auth-failure-email-template";
+import UserSigninEmail from "@/emails/user-signin-email-template";
+import { inngestClient } from "@/lib/inngest";
 import prisma from "@/lib/prisma";
-import { authOptions } from "@/app/api/auth/[...nextauth]/route";
+import resendClient from "@/lib/resend";
 
 export const sendEmailOnUserSignInJob = inngestClient.createFunction(
   { id: "handle-sign-in" },
@@ -23,7 +22,7 @@ export const sendEmailOnUserSignInJob = inngestClient.createFunction(
             to: event.data.user_email,
             subject: "Welcome back to Inngest!",
             html: "<p>Thanks for signing in again!</p>",
-            react: UserSignInEmail({ firstName: event.data.user_first_name }),
+            react: UserSigninEmail({ firstName: event.data.user_first_name }),
           });
         });
       }

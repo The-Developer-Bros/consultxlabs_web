@@ -35,7 +35,7 @@ export const UserSignupEmail: React.FC<Readonly<UserSignupEmailProps>> = ({
           </div>
           <Text style={headerText}>Welcome Aboard!</Text>
         </div>
-        <div style={content}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
           <Heading style={h2}>Activate Your Account</Heading>
           <Text style={text}>
             Thank you for signing up with ConsultX. To get started, please click
