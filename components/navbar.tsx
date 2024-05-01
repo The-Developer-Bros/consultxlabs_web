@@ -40,7 +40,10 @@ const Navbar = () => {
     };
   }, []); // Empty dependency array ensures this runs once on mount and unmount
 
-  const excludeNavbar = pathname.startsWith("/auth/") || pathname.startsWith("/admin/");
+  const excludeNavbar =
+    pathname.startsWith("/auth/") ||
+    pathname.startsWith("/admin/") ||
+    pathname.startsWith("/api/");
   if (excludeNavbar) return null;
 
   return (

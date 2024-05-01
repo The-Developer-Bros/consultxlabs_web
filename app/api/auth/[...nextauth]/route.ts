@@ -6,6 +6,7 @@ import NextAuth from "next-auth/next";
 import GitHubProvider from "next-auth/providers/github";
 import GoogleProvider from "next-auth/providers/google";
 
+import { inngestClient } from "@/lib/inngest";
 import prisma from "@/lib/prisma";
 
 // DONT EXPORT authOptions if using Docker
@@ -43,7 +44,38 @@ const authOptions: NextAuthOptions = {
       email?: string | { verificationRequest?: boolean };
       credentials?: any;
     }): Promise<boolean | string> {
-      return true;
+      // TODO: Verify if isNewUser is working as expected
+      try {
+        const isNewUser = await prisma.user.findUnique({
+          where: {
+            email: user.email!,
+          },
+        });
+
+        if (!isNewUser) {
+          console.log("New user signed up:", user.email);
+          await inngestClient.send({
+            name: "user/created",
+            data: {
+              user_first_name: user.name,
+              user_email: user.email,
+            },
+          });
+        } else {
+          console.log("User signed in:", user.email);
+          await inngestClient.send({
+            name: "user/signed-in",
+            data: {
+              user_first_name: user.name,
+              user_email: user.email,
+            },
+          });
+        }
+        return true;
+      } catch (error: any) {
+        console.error("Error sending event to Inngest:", error.message);
+        return false;
+      }
     },
 
     async jwt({
