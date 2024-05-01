@@ -197,6 +197,20 @@ model Class {
   @@index([consulteeId])
 }
 
+model Meeting {
+  id           String   @id @default(uuid())
+  userId       String
+  meetingType  String
+  startTime    DateTime
+  endTime      DateTime
+  recurring    Boolean  @default(false)
+  roomId       String?
+  token        String?
+  recordingUrl String?
+
+  @@index([userId])
+}
+
 model DayAvailability {
   availabilityId      String             @id @default(uuid())
   day                 DaysOfWeekEnum
