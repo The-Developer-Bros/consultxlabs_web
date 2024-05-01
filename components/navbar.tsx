@@ -6,6 +6,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import consultxlogo from "../public/static/assets/logos/ConsultX-logos/ConsultX-logos_transparent.png";
+import micromatch from "micromatch";
 
 const Navbar = () => {
   const router = useRouter();
@@ -40,7 +41,11 @@ const Navbar = () => {
     };
   }, []); // Empty dependency array ensures this runs once on mount and unmount
 
-  const excludeNavbar = pathname.startsWith("/auth/") || pathname.startsWith("/admin/");
+  const apiRoutes = ["/api/**"];
+  const publicAuthRoutes = ["/auth/**"];
+  const excludeNavbar =
+    micromatch.isMatch(pathname, apiRoutes) ||
+    micromatch.isMatch(pathname, publicAuthRoutes);
   if (excludeNavbar) return null;
 
   return (

@@ -23,240 +23,234 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import Link from "next/link";
-
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 
 export default function Profile() {
-  
   return (
-    <>
-      <div className="flex justify-center items-center min-h-screen px-4 py-20 md:py-30 lg:py-30 xl:py-40">
-        <div className="flex w-full max-w-4xl gap-4">
-          <div className="w-1/2">
-            <Card className="w-full max-w-xs">
-              <CardHeader>
-                <CardTitle>Account Settings</CardTitle>
-                <CardDescription>
-                  Manage your account settings and preferences.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="mb-4 grid grid-cols-[25px_1fr] items-start pb-4 last:mb-0 last:pb-0">
-                  <Avatar
-                    alt="User Avatar"
-                    className="w-8 h-8"
-                    src="/placeholder.svg?height=32&width=32"
-                  />
-                  <div className="grid gap-1">
-                    <p className="text-sm font-medium">Current User</p>
-                    <p className="text-sm text-gray-500 dark:text-gray-400">
-                      user@example.com
-                    </p>
+    <div className="flex justify-center items-center min-h-screen px-4 py-20 md:py-30 lg:py-30 xl:py-40">
+      <div className="max-w-4xl w-full space-y-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          <Card>
+            <CardHeader>
+              <CardTitle>Profile Information</CardTitle>
+              <CardDescription>
+                View and update your personal information.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center space-x-4 mb-6">
+                <Avatar
+                  alt="User Avatar"
+                  className="w-16 h-16"
+                  src="/placeholder.svg?height=64&width=64"
+                />
+                <div>
+                  <p className="text-lg font-medium">John Doe</p>
+                  <p className="text-sm text-gray-500">Full Name</p>
+                </div>
+              </div>
+              <div className="space-y-4">
+                <div className="flex items-center">
+                  <MailIcon className="w-5 h-5 text-gray-400 mr-2" />
+                  <div>
+                    <p className="text-sm font-medium">Email</p>
+                    <p className="text-sm">johndoe@example.com</p>
                   </div>
                 </div>
-                <div className="mb-4 grid grid-cols-[25px_1fr] items-start pb-4 last:mb-0 last:pb-0">
-                  <SettingsIcon className="w-4 h-4" />
-                  <div className="grid gap-1">
+                <div className="flex items-center">
+                  <PhoneIcon className="w-5 h-5 text-gray-400 mr-2" />
+                  <div>
+                    <p className="text-sm font-medium">Phone</p>
+                    <p className="text-sm">+1 234 567 8910</p>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+            <CardFooter>
+              <Button className="w-full" variant="outline">
+                Update Information
+              </Button>
+            </CardFooter>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>Account Settings</CardTitle>
+              <CardDescription>
+                Manage your account settings and preferences.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center mb-4">
+                <Avatar
+                  alt="User Avatar"
+                  className="w-8 h-8 mr-2"
+                  src="/placeholder.svg?height=32&width=32"
+                />
+                <div>
+                  <p className="text-sm font-medium">Current User</p>
+                  <p className="text-sm text-gray-500">user@example.com</p>
+                </div>
+              </div>
+              <div className="space-y-4">
+                <div className="flex items-center">
+                  <SettingsIcon className="w-5 h-5 text-gray-400 mr-2" />
+                  <div>
                     <Link className="text-sm font-medium underline" href="#">
                       Logout of all devices
                     </Link>
-                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                    <p className="text-sm text-gray-500">
                       This will logout your account from all devices.
                     </p>
                   </div>
                 </div>
-                <div className="mb-4 grid grid-cols-[25px_1fr] items-start pb-4 last:mb-0 last:pb-0">
-                  <TrashIcon className="w-4 h-4" />
-                  <div className="grid gap-1">
+                <div className="flex items-center">
+                  <TrashIcon className="w-5 h-5 text-red-500 mr-2" />
+                  <div>
                     <Link
                       className="text-sm font-medium underline text-red-500"
                       href="#"
                     >
                       Delete Account
                     </Link>
-                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                    <p className="text-sm text-gray-500">
                       This will permanently delete your account.
                     </p>
                   </div>
                 </div>
-              </CardContent>
-              <CardFooter>
-                <Button className="w-full" variant="outline">
-                  Save Changes
-                </Button>
-              </CardFooter>
-            </Card>
-          </div>
-          <div className="w-1/2 space-y-4">
-            <Card className="w-full max-w-xs">
-              <CardHeader>
-                <CardTitle>Profile Information</CardTitle>
-                <CardDescription>
-                  View and update your personal information.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="mb-4 grid grid-cols-[25px_1fr] items-start pb-4 last:mb-0 last:pb-0">
-                  <Avatar
-                    alt="User Avatar"
-                    className="w-16 h-16"
-                    src="/placeholder.svg?height=64&width=64"
-                  />
-                  <div className="grid gap-1">
-                    <p className="text-sm font-medium">Full Name</p>
-                    <p className="text-sm">John Doe</p>
-                  </div>
-                </div>
-                <div className="mb-4 grid grid-cols-[25px_1fr] items-start pb-4 last:mb-0 last:pb-0">
-                  <MailIcon className="w-4 h-4" />
-                  <div className="grid gap-1">
-                    <p className="text-sm font-medium">Email</p>
-                    <p className="text-sm">johndoe@example.com</p>
-                  </div>
-                </div>
-                <div className="mb-4 grid grid-cols-[25px_1fr] items-start pb-4 last:mb-0 last:pb-0">
-                  <PhoneIcon className="w-4 h-4" />
-                  <div className="grid gap-1">
-                    <p className="text-sm font-medium">Phone</p>
-                    <p className="text-sm">+1 234 567 8910</p>
-                  </div>
-                </div>
-              </CardContent>
-              <CardFooter>
-                <Button className="w-full" variant="outline">
-                  Update Information
-                </Button>
-              </CardFooter>
-            </Card>
-            <Card key="1" className="w-full max-w-lg">
-              <CardHeader className="border-b border-dark-gray-300 pb-4">
-                <div className="flex items-center">
-                  <CookieIcon className="mr-2" />
-                  <CardTitle>Cookie Preferences</CardTitle>
-                </div>
-                <CardDescription>
-                  Manage your cookie settings. You can enable or disable
-                  different types of cookies below.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4 pt-4">
-                <div className="flex justify-between items-start space-y-2">
-                  <div>
-                    <Label htmlFor="essential">Essential Cookies</Label>
-                    <p className="text-dark-gray-500 text-sm">
-                      These cookies are necessary for the website to function
-                      and cannot be switched off.
-                    </p>
-                  </div>
-                  <Switch className="ml-auto" id="essential" />
-                </div>
-                <div className="flex justify-between items-start space-y-2">
-                  <div>
-                    <Label htmlFor="analytics">Analytics Cookies</Label>
-                    <p className="text-dark-gray-500 text-sm">
-                      These cookies allow us to count visits and traffic
-                      sources, so we can measure and improve the performance of
-                      our site.
-                    </p>
-                  </div>
-                  <Switch className="ml-auto" id="analytics" />
-                </div>
-                <div className="flex justify-between items-start space-y-2">
-                  <div>
-                    <Label htmlFor="marketing">Marketing Cookies</Label>
-                    <p className="text-dark-gray-500 text-sm">
-                      These cookies help us show you relevant ads.
-                    </p>
-                  </div>
-                  <Switch className="ml-auto" id="marketing" />
-                </div>
-              </CardContent>
-              <div className="border-t border-dark-gray-300 mt-4" />
-              <div className="flex justify-end items-center py-4">
-                <Card className="max-w-2xl mx-auto">
-                  <CardHeader>
-                    <CardTitle>Notification Preferences</CardTitle>
-                    <CardDescription>
-                      Select which notifications you'd like to receive
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="grid gap-4">
-                    <div className="flex items-center">
-                      <div className="space-y-1">
-                        <Label
-                          className="text-sm font-medium leading-none"
-                          htmlFor="all"
-                        >
-                          All Notifications
-                        </Label>
-                        <p className="text-sm text-gray-500 dark:text-gray-400">
-                          Receive all notifications.
-                        </p>
-                      </div>
-                      <Switch className="ml-auto" id="all" />
-                    </div>
-                    <div className="flex items-center">
-                      <div className="space-y-1">
-                        <Label
-                          className="text-sm font-medium leading-none"
-                          htmlFor="mentions"
-                        >
-                          Mentions
-                        </Label>
-                        <p className="text-sm text-gray-500 dark:text-gray-400">
-                          Receive notifications only when someone mentions you.
-                        </p>
-                      </div>
-                      <Switch className="ml-auto" id="mentions" />
-                    </div>
-                    <div className="flex items-center">
-                      <div className="space-y-1">
-                        <Label
-                          className="text-sm font-medium leading-none"
-                          htmlFor="direct-messages"
-                        >
-                          Direct Messages
-                        </Label>
-                        <p className="text-sm text-gray-500 dark:text-gray-400">
-                          Receive notifications for direct messages.
-                        </p>
-                      </div>
-                      <Switch className="ml-auto" id="direct-messages" />
-                    </div>
-                    <div className="flex items-center">
-                      <div className="space-y-1">
-                        <Label
-                          className="text-sm font-medium leading-none"
-                          htmlFor="updates"
-                        >
-                          Updates
-                        </Label>
-                        <p className="text-sm text-gray-500 dark:text-gray-400">
-                          Get notifications about new features and updates.
-                        </p>
-                      </div>
-                      <Switch className="ml-auto" id="updates" />
-                    </div>
-                  </CardContent>
-                </Card>
               </div>
-              <CardFooter>
-                <Button
-                  className="ml-auto"
-                  type="submit"
-                  style={{ backgroundColor: "black", color: "white" }}
-                >
-                  Save Preferences
-                </Button>
-              </CardFooter>
-            </Card>
-          </div>
+            </CardContent>
+            <CardFooter>
+              <Button className="w-full" variant="outline">
+                Save Changes
+              </Button>
+            </CardFooter>
+          </Card>
         </div>
+        <Card>
+          <CardHeader>
+            <div className="flex items-center">
+              <CookieIcon className="w-5 h-5 text-gray-400 mr-2" />
+              <CardTitle>Cookie Preferences</CardTitle>
+            </div>
+            <CardDescription>
+              Manage your cookie settings. You can enable or disable different
+              types of cookies below.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <Label htmlFor="essential">Essential Cookies</Label>
+                <p className="text-sm text-gray-500">
+                  These cookies are necessary for the website to function and
+                  cannot be switched off.
+                </p>
+              </div>
+              <Switch id="essential" />
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <Label htmlFor="analytics">Analytics Cookies</Label>
+                <p className="text-sm text-gray-500">
+                  These cookies allow us to count visits and traffic sources, so
+                  we can measure and improve the performance of our site.
+                </p>
+              </div>
+              <Switch id="analytics" />
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <Label htmlFor="marketing">Marketing Cookies</Label>
+                <p className="text-sm text-gray-500">
+                  These cookies help us show you relevant ads.
+                </p>
+              </div>
+              <Switch id="marketing" />
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Notification Preferences</CardTitle>
+            <CardDescription>
+              Select which notifications you'd like to receive
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <Label
+                  className="text-sm font-medium leading-none"
+                  htmlFor="all"
+                >
+                  All Notifications
+                </Label>
+                <p className="text-sm text-gray-500">
+                  Receive all notifications.
+                </p>
+              </div>
+              <Switch id="all" />
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <Label
+                  className="text-sm font-medium leading-none"
+                  htmlFor="mentions"
+                >
+                  Mentions
+                </Label>
+                <p className="text-sm text-gray-500">
+                  Receive notifications only when someone mentions you.
+                </p>
+              </div>
+              <Switch id="mentions" />
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <Label
+                  className="text-sm font-medium leading-none"
+                  htmlFor="direct-messages"
+                >
+                  Direct Messages
+                </Label>
+                <p className="text-sm text-gray-500">
+                  Receive notifications for direct messages.
+                </p>
+              </div>
+              <Switch id="direct-messages" />
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <Label
+                  className="text-sm font-medium leading-none"
+                  htmlFor="updates"
+                >
+                  Updates
+                </Label>
+                <p className="text-sm text-gray-500">
+                  Get notifications about new features and updates.
+                </p>
+              </div>
+              <Switch id="updates" />
+            </div>
+          </CardContent>
+          <CardFooter>
+            <Button
+              className="ml-auto"
+              type="submit"
+              style={{ backgroundColor: "black", color: "white" }}
+            >
+              Save Preferences
+            </Button>
+          </CardFooter>
+        </Card>
       </div>
-    </>
+    </div>
   );
 }
+
+// ... (icon components remain the same)
 
 function SettingsIcon(props: any) {
   return (
