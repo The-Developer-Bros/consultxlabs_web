@@ -1,18 +1,27 @@
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { getServerSession } from "next-auth";
 import prisma from "./prisma";
+import { User } from "@prisma/client";
 
-export const getCurrentUser = async () => {
+// NOT WORKING
+export const getCurrentUser = async (): Promise<User | undefined> => {
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.user?.email) return;
+    console.log("Session is", session);
+
+    // Since email is not available in the session object,
+    // we need to fetch the user from the database using the user ID.
+    if (!session?.user?.id) return;
+
     const currentUser = await prisma.user.findUnique({
-      where: { email: session.user.email },
+      where: { id: session.user.id },
     });
+
     if (!currentUser) return;
+
     return currentUser;
-  } catch (e: any) {
-    // simply ignores if no user is logged in
+  } catch (error: any) {
+    console.error(error);
     return;
   }
 };

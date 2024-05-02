@@ -5,7 +5,6 @@ import micromatch from "micromatch";
 const apiRoutes = ["/api/**"];
 const authApiRoutes = ["/api/auth/**"];
 const inngestApiRoutes = ["/api/inngest/**"];
-
 const protectedRoutes = [
   "/form/**",
   "/admin/**",
@@ -42,7 +41,10 @@ export async function middleware(req: NextRequest) {
   if (micromatch.isMatch(pathname, protectedRoutes)) {
     // Allow access only to authenticated users
     if (!isAuthenticated) {
-      return NextResponse.redirect(new URL("/auth/signin", req.url));
+      const callbackUrl = encodeURIComponent(req.url);
+      return NextResponse.redirect(
+        new URL(`/auth/signin?callbackUrl=${callbackUrl}`, req.url)
+      );
     }
   }
   // Check if the current route is a public route
