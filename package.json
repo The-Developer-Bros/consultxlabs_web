@@ -15,7 +15,9 @@
     "db:pull": "prisma db pull",
     "db:push": "prisma db push",
     "react-email": "email dev --port 3001",
-    "inngest-server": "npx inngest-cli@latest dev"
+    "inngest-server": "npx inngest-cli@latest dev",
+    "dev-all": "concurrently \"npm run dev\" \"npm run react-email\" \"npm run inngest-server\"",
+    "prod-all": "concurrently \"npm run dev\" \"npm run inngest-server\""
   },
   "dependencies": {
     "@hookform/resolvers": "^3.3.4",
@@ -38,6 +40,7 @@
     "chance": "^1.1.11",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
+    "concurrently": "^8.2.2",
     "date-fns": "^3.6.0",
     "dotenv": "^16.4.5",
     "framer-motion": "^11.1.7",
