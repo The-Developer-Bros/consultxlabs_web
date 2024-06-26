@@ -326,12 +326,14 @@ model PostsImage {
 ////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 model ConsultantProfile {
-  id             String  @id @default(uuid())
+  id             String   @id @default(uuid())
   rating         Float
   specialization String?
   experience     String?
   location       String?
   onlineStatus   Boolean
+  domain         String?
+  subDomains     String[]
 
   slotsOfAvailability SlotsOfAvailability[]
   consultations       Consultation[]
