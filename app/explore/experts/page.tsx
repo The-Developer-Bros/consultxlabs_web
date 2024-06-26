@@ -24,34 +24,52 @@ import {
 } from "@/components/ui/select";
 import Image from "next/image";
 
-const dummyConsultants = [
-  {
-    title: "Consultant Category 1",
-    expertise: "Business Strategy",
-    rating: "4.5",
-    location: "London",
-  },
-  {
-    title: "Consultant Category 2",
-    expertise: "Finance",
-    rating: "4.3",
-    location: "New York",
-  },
-  {
-    title: "Consultant Category 3",
-    expertise: "IT Services",
-    rating: "4.2",
-    location: "Los Angeles",
-  },
-  {
-    title: "Consultant Category 4",
-    expertise: "Marketing",
-    rating: "4.7",
-    location: "Chicago",
-  },
-];
+import { useEffect, useState } from "react";
+
+// const dummyConsultants = [
+//   {
+//     title: "Consultant Category 1",
+//     expertise: "Business Strategy",
+//     rating: "4.5",
+//     location: "London",
+//   },
+//   {
+//     title: "Consultant Category 2",
+//     expertise: "Finance",
+//     rating: "4.3",
+//     location: "New York",
+//   },
+//   {
+//     title: "Consultant Category 3",
+//     expertise: "IT Services",
+//     rating: "4.2",
+//     location: "Los Angeles",
+//   },
+//   {
+//     title: "Consultant Category 4",
+//     expertise: "Marketing",
+//     rating: "4.7",
+//     location: "Chicago",
+//   },
+// ];
+
 
 export default function ExploreExperts() {
+
+  const [domains, setDomains] = useState([])
+  const [subdomains, setSubdomains] = useState([])
+
+  useEffect(() => {
+    async function fetchData() {
+      const response = await fetch('/api/domains-and-subdomains')
+      const data = await response.json()
+      setDomains(data.domains)
+      setSubdomains(data.subdomains)
+    }
+    fetchData()
+  }, [])
+
+
   return (
     <>
       <section className="w-full border-y pt-24 md:pt-48 lg:pt-64 xl:pt-80">
@@ -203,8 +221,8 @@ export default function ExploreExperts() {
         </div>
 
         <div className="space-y-6 mt-8">
-          {dummyConsultants.map((consultant, index) => (
-            <Card key={index} className="w-full">
+          {dummyConsultants.map((consultant) => (
+            <Card key={consultant.title} className="w-full">
               <CardHeader>
                 <h3 className="text-lg font-bold">{consultant.title}</h3>
               </CardHeader>
