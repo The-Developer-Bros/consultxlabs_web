@@ -26,7 +26,7 @@ async function fetchDomainsAndSubdomains() {
 
 import { NextRequest, NextResponse } from 'next/server';
 
-export default async function handler(req: NextRequest, res: NextResponse) {
+export async function GET(req: NextRequest, res: NextResponse) {
   try {
     const { domains, subdomains } = await fetchDomainsAndSubdomains();
     return NextResponse.json({ data: { domains, subdomains } }, { status: 200 });

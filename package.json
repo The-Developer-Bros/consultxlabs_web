@@ -14,7 +14,7 @@
     "studio": "prisma studio",
     "db:pull": "prisma db pull",
     "db:push": "prisma db push",
-    "seed": "npx ts-node --project tsconfig.seed.json ./seed.ts"
+    "seed": "npx ts-node --project tsconfig.seed.json ./prisma/seed.ts"
   },
   "dependencies": {
     "@faker-js/faker": "^8.4.1",

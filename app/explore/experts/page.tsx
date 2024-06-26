@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
+  SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -26,49 +27,61 @@ import Image from "next/image";
 
 import { useEffect, useState } from "react";
 
-// const dummyConsultants = [
-//   {
-//     title: "Consultant Category 1",
-//     expertise: "Business Strategy",
-//     rating: "4.5",
-//     location: "London",
-//   },
-//   {
-//     title: "Consultant Category 2",
-//     expertise: "Finance",
-//     rating: "4.3",
-//     location: "New York",
-//   },
-//   {
-//     title: "Consultant Category 3",
-//     expertise: "IT Services",
-//     rating: "4.2",
-//     location: "Los Angeles",
-//   },
-//   {
-//     title: "Consultant Category 4",
-//     expertise: "Marketing",
-//     rating: "4.7",
-//     location: "Chicago",
-//   },
-// ];
+const dummyConsultants = [
+  {
+    title: "Consultant Category 1",
+    expertise: "Business Strategy",
+    rating: "4.5",
+    location: "London",
+  },
+  {
+    title: "Consultant Category 2",
+    expertise: "Finance",
+    rating: "4.3",
+    location: "New York",
+  },
+  {
+    title: "Consultant Category 3",
+    expertise: "IT Services",
+    rating: "4.2",
+    location: "Los Angeles",
+  },
+  {
+    title: "Consultant Category 4",
+    expertise: "Marketing",
+    rating: "4.7",
+    location: "Chicago",
+  },
+];
 
+type Domain = string;
+type Subdomain = string;
 
 export default function ExploreExperts() {
-
-  const [domains, setDomains] = useState([])
-  const [subdomains, setSubdomains] = useState([])
+  const [domains, setDomains] = useState<Domain[]>([]);
+  const [subdomains, setSubdomains] = useState<Subdomain[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     async function fetchData() {
-      const response = await fetch('/api/domains-and-subdomains')
-      const data = await response.json()
-      setDomains(data.domains)
-      setSubdomains(data.subdomains)
+      setIsLoading(true);
+      try {
+        const response = await fetch("/api/consultant/info");
+        const data = await response.json();
+        if (data.data.domains && Array.isArray(data.data.domains)) {
+          setDomains(data.data.domains);
+        }
+        if (data.data.subdomains && Array.isArray(data.data.subdomains)) {
+          setSubdomains(data.data.subdomains);
+        }
+      } catch (error) {
+        console.error("Error fetching domains and subdomains:", error);
+      } finally {
+        setIsLoading(false);
+      }
     }
-    fetchData()
-  }, [])
-
+    fetchData();
+  }, []);
 
   return (
     <>
@@ -177,18 +190,50 @@ export default function ExploreExperts() {
             <AccordionTrigger>Advanced Filters</AccordionTrigger>
             <AccordionContent>
               <div className="space-y-4">
-                <Select>
+                <Select disabled={isLoading}>
                   <SelectTrigger>
-                    <SelectValue placeholder="Select Domain" />
+                    <SelectValue
+                      placeholder={
+                        isLoading ? "Loading domains..." : "Select Domain"
+                      }
+                    />
                   </SelectTrigger>
-                  <SelectContent>{/* Add domain options */}</SelectContent>
+                  <SelectContent>
+                    {isLoading ? (
+                      <SelectItem value="loading" disabled>
+                        Loading domains...
+                      </SelectItem>
+                    ) : (
+                      domains.map((domain) => (
+                        <SelectItem key={domain} value={domain}>
+                          {domain}
+                        </SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
                 </Select>
 
-                <Select>
+                <Select disabled={isLoading}>
                   <SelectTrigger>
-                    <SelectValue placeholder="Select Subdomain" />
+                    <SelectValue
+                      placeholder={
+                        isLoading ? "Loading subdomains..." : "Select Subdomain"
+                      }
+                    />
                   </SelectTrigger>
-                  <SelectContent>{/* Add subdomain options */}</SelectContent>
+                  <SelectContent>
+                    {isLoading ? (
+                      <SelectItem value="loading" disabled>
+                        Loading subdomains...
+                      </SelectItem>
+                    ) : (
+                      subdomains.map((subdomain) => (
+                        <SelectItem key={subdomain} value={subdomain}>
+                          {subdomain}
+                        </SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
                 </Select>
 
                 <Select>

@@ -1,7 +1,7 @@
-import prisma from './lib/prisma';
+import prisma from '../lib/prisma';
 import { faker } from '@faker-js/faker';
 import * as dotenv from 'dotenv';
-dotenv.config({ path: '.env' });
+dotenv.config({ path: ".env" });
 
 async function main() {
 
