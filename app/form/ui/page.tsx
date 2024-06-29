@@ -66,7 +66,7 @@ export default function UserOnboarding() {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="role">Role</Label>
-                <Select id="role" required>
+                <Select required={true}>
                   <SelectTrigger>
                     <SelectValue placeholder="Select a role" />
                   </SelectTrigger>

@@ -1,11 +1,11 @@
+import Footer from "@/components/footer";
+import Navbar from "@/components/navbar";
 import type { Metadata } from "next";
 import { getServerSession } from "next-auth";
 import { Inter } from "next/font/google";
-import { authOptions } from "./api/auth/[...nextauth]/route";
-import NextAuthProvider from "./nextauth-session-provider";
+import authOptions from "./api/auth/[...nextauth]/options";
 import "./globals.css";
-import Navbar from "@/components/navbar";
-import Footer from "@/components/footer";
+import NextAuthProvider from "./nextauth-session-provider";
 
 const inter = Inter({ subsets: ["latin"] });
 

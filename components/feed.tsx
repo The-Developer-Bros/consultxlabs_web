@@ -17,13 +17,13 @@ export function Feed() {
           <CardContent>
             <ul className="space-y-2">
               <li>
-                <Button variant="primary">Action 1</Button>
+                <Button variant="link">Action 1</Button>
               </li>
               <li>
-                <Button variant="primary">Action 2</Button>
+                <Button variant="link">Action 2</Button>
               </li>
               <li>
-                <Button variant="primary">Action 3</Button>
+                <Button variant="link">Action 3</Button>
               </li>
             </ul>
           </CardContent>
@@ -100,13 +100,13 @@ export function Feed() {
           <CardContent>
             <ul className="space-y-2">
               <li>
-                <Button variant="primary">Action 4</Button>
+                <Button variant="link">Action 4</Button>
               </li>
               <li>
-                <Button variant="primary">Action 5</Button>
+                <Button variant="link">Action 5</Button>
               </li>
               <li>
-                <Button variant="primary">Action 6</Button>
+                <Button variant="link">Action 6</Button>
               </li>
             </ul>
           </CardContent>
