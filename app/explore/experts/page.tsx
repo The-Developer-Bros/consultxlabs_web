@@ -148,6 +148,72 @@ export default function ExploreExperts() {
  */
 import Image from "next/image";
 
+type Profile = {
+  name: string;
+  username: string;
+  description: string;
+  experience: string;
+  skills: string[];
+};
+
+type Category = {
+  title: string;
+  profiles: Profile[];
+};
+
+const data: Category[] = [
+  {
+    title: "Tech",
+    profiles: [
+      {
+        name: "Alice Johnson",
+        username: "@alicejohnson",
+        description: "Ph.D. in Natural Language Processing",
+        experience: "10 years of experience in AI",
+        skills: ["NLP", "AI", "Expert"],
+      },
+    ],
+  },
+  {
+    title: "Business",
+    profiles: [
+      {
+        name: "Claire Rodriguez",
+        username: "@clairerodriguez",
+        description: "Serial Entrepreneur",
+        experience: "Expert in Growth Hacking",
+        skills: ["Entrepreneurship", "Growth Hacking", "Expert"],
+      },
+    ],
+  },
+  {
+    title: "Finance",
+    profiles: [
+      {
+        name: "David Lee",
+        username: "@davidlee",
+        description: "Expert in Tax Law",
+        experience: "15 years of experience in Finance",
+        skills: ["Taxes", "Finance", "Expert"],
+      },
+      {
+        name: "Emma Brown",
+        username: "@emmabrown",
+        description: "Investment Advisor",
+        experience: "Expert in Portfolio Management",
+        skills: ["Investment", "Finance", "Expert"],
+      },
+      {
+        name: "Sophia Turner",
+        username: "@sophiaturner",
+        description: "CPA with 20 years of experience",
+        experience: "Expert in Corporate Accounting",
+        skills: ["Accounting", "Finance", "Expert"],
+      },
+    ],
+  },
+];
+
 export function FindExperts() {
   const [domains, setDomains] = useState<Domain[]>([]);
   const [subdomains, setSubdomains] = useState<Subdomain[]>([]);
@@ -344,364 +410,171 @@ export function FindExperts() {
         />
       </div>
       <div className="space-y-4">
-        <div className="space-y-2">
-          <h2 className="text-xl font-semibold">Tech</h2>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm">NLP</span>
-            <span className="text-sm">Computer Vision</span>
-            <span className="text-sm">Data Science</span>
-          </div>
-          <div className="border border-gray-200 rounded-lg p-4 flex items-center justify-between space-x-4 dark:border-gray-800">
-            <div className="flex items-center space-x-4">
-              <Image
-                alt="Portrait"
-                className="rounded-full overflow-hidden"
-                height="80"
-                src="/placeholder.svg"
-                style={{ aspectRatio: "80/80", objectFit: "cover" }}
-                width="80"
-              />
-              <div className="space-y-1.5">
-                <div className="flex items-center space-x-2">
-                  <h3 className="font-semibold">Alice Johnson</h3>
-                  <span className="text-sm text-gray-500 dark:text-gray-400">
-                    @alicejohnson
-                  </span>
-                </div>
-                <div className="text-sm grid gap-0.5">
-                  <p>Ph.D. in Natural Language Processing</p>
-                  <p>10 years of experience in AI</p>
-                  <div className="flex flex-wrap items-center gap-2 mt-2">
-                    <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-                      NLP
-                    </span>
-                    <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-                      AI
-                    </span>
-                    <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-                      Expert
-                    </span>
+        {data.map((category) => (
+          <div key={category.title} className="space-y-2">
+            <h2 className="text-xl font-semibold">{category.title}</h2>
+            <div className="space-y-4">
+              {category.profiles.map((profile) => (
+                <div
+                  key={profile.username}
+                  className="border border-gray-200 rounded-lg p-4 flex items-center justify-between space-x-4 dark:border-gray-800"
+                >
+                  <div className="flex items-center space-x-4">
+                    <Image
+                      alt="Portrait"
+                      className="rounded-full overflow-hidden"
+                      height="80"
+                      src="/placeholder.svg"
+                      style={{ aspectRatio: "80/80", objectFit: "cover" }}
+                      width="80"
+                    />
+                    <div className="space-y-1.5">
+                      <div className="flex items-center space-x-2">
+                        <h3 className="font-semibold">{profile.name}</h3>
+                        <span className="text-sm text-gray-500 dark:text-gray-400">
+                          {profile.username}
+                        </span>
+                      </div>
+                      <div className="text-sm grid gap-0.5">
+                        <p>{profile.description}</p>
+                        <p>{profile.experience}</p>
+                        <div className="flex flex-wrap items-center gap-2 mt-2">
+                          {profile.skills.map((skill) => (
+                            <span
+                              key={skill}
+                              className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200"
+                            >
+                              {skill}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
-            </div>
-            <div className="flex">
-              <div className="bg-card rounded-lg shadow-lg w-[320px] mr-4">
-                <Tabs defaultValue="1-month" className="w-full">
-                  <TabsList className="grid grid-cols-4 border-b">
-                    <TabsTrigger value="1-month">1 Month</TabsTrigger>
-                    <TabsTrigger value="3-month">3 Months</TabsTrigger>
-                    <TabsTrigger value="6-month">6 Months</TabsTrigger>
-                    <TabsTrigger value="12-month">12 Months</TabsTrigger>
-                  </TabsList>
-                  <TabsContent value="1-month">
-                    <Card className="rounded-b-lg">
-                      <CardContent className="grid gap-4 p-6">
-                        <div className="flex items-center justify-between">
-                          <div className="text-4xl font-bold">$99</div>
-                          <div className="text-muted-foreground">per month</div>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <div>Calls per week</div>
-                          <div className="font-medium">1</div>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <div>Email support</div>
-                          <div className="font-medium">Unlimited</div>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <div>Video meetings</div>
-                          <div className="font-medium">1 per month</div>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  </TabsContent>
-                  <TabsContent value="3-month">
-                    <Card className="rounded-b-lg">
-                      <CardContent className="grid gap-4 p-6">
-                        <div className="flex items-center justify-between">
-                          <div className="text-4xl font-bold">$79</div>
-                          <div className="text-muted-foreground">per month</div>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <div>Calls per week</div>
-                          <div className="font-medium">3</div>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <div>Email support</div>
-                          <div className="font-medium">Unlimited</div>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <div>Video meetings</div>
-                          <div className="font-medium">2 per month</div>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  </TabsContent>
-                  <TabsContent value="6-month">
-                    <Card className="rounded-b-lg">
-                      <CardContent className="grid gap-4 p-6">
-                        <div className="flex items-center justify-between">
-                          <div className="text-4xl font-bold">$59</div>
-                          <div className="text-muted-foreground">per month</div>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <div>Calls per week</div>
-                          <div className="font-medium">6</div>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <div>Email support</div>
-                          <div className="font-medium">Unlimited</div>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <div>Video meetings</div>
-                          <div className="font-medium">4 per month</div>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  </TabsContent>
-                  <TabsContent value="12-month">
-                    <Card className="rounded-b-lg">
-                      <CardContent className="grid gap-4 p-6">
-                        <div className="flex items-center justify-between">
-                          <div className="text-4xl font-bold">$39</div>
-                          <div className="text-muted-foreground">per month</div>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <div>Calls per week</div>
-                          <div className="font-medium">12</div>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <div>Email support</div>
-                          <div className="font-medium">Unlimited</div>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <div>Video meetings</div>
-                          <div className="font-medium">8 per month</div>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  </TabsContent>
-                </Tabs>
-              </div>
-              <div className="flex flex-col items-cen space-y-2 pt-5 justify-start">
-                <Button className="w-[140px]" variant="outline">
-                  Book a Free Trial
-                </Button>
-                <Button className="w-[140px]" variant="outline">
-                  Book a Session
-                </Button>
-                <Button className="w-[140px]" variant="outline">
-                  Book Mentorship
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div className="space-y-2">
-          <h2 className="text-xl font-semibold">Business</h2>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm">Entrepreneurship</span>
-            <span className="text-sm">Leadership</span>
-            <span className="text-sm">Marketing</span>
-          </div>
-          <div className="grid gap-4 md:grid-cols-1">
-            <div className="border border-gray-200 rounded-lg p-4 flex items-center justify-between space-x-4 dark:border-gray-800">
-              <div className="flex items-center space-x-4">
-                <Image
-                  alt="Portrait"
-                  className="rounded-full overflow-hidden"
-                  height="80"
-                  src="/placeholder.svg"
-                  style={{ aspectRatio: "80/80", objectFit: "cover" }}
-                  width="80"
-                />
-                <div className="space-y-1.5">
-                  <div className="flex items-center space-x-2">
-                    <h3 className="font-semibold">Claire Rodriguez</h3>
-                    <span className="text-sm text-gray-500 dark:text-gray-400">
-                      @clairerodriguez
-                    </span>
-                  </div>
-                  <div className="text-sm grid gap-0.5">
-                    <p>Serial Entrepreneur</p>
-                    <p>Expert in Growth Hacking</p>
-                    <div className="flex flex-wrap items-center gap-2 mt-2">
-                      <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-                        Entrepreneurship
-                      </span>
-                      <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-                        Growth Hacking
-                      </span>
-                      <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-                        Expert
-                      </span>
+                  <div className="flex">
+                    <div className="bg-card rounded-lg shadow-lg w-[320px] mr-4">
+                      <Tabs defaultValue="1-month" className="w-full">
+                        <TabsList className="grid grid-cols-4 border-b">
+                          <TabsTrigger value="1-month">1 Month</TabsTrigger>
+                          <TabsTrigger value="3-month">3 Months</TabsTrigger>
+                          <TabsTrigger value="6-month">6 Months</TabsTrigger>
+                          <TabsTrigger value="12-month">12 Months</TabsTrigger>
+                        </TabsList>
+                        <TabsContent value="1-month">
+                          <Card className="rounded-b-lg">
+                            <CardContent className="grid gap-4 p-6">
+                              <div className="flex items-center justify-between">
+                                <div className="text-4xl font-bold">$99</div>
+                                <div className="text-muted-foreground">
+                                  per month
+                                </div>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <div>Calls per week</div>
+                                <div className="font-medium">1</div>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <div>Email support</div>
+                                <div className="font-medium">Unlimited</div>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <div>Video meetings</div>
+                                <div className="font-medium">1 per month</div>
+                              </div>
+                            </CardContent>
+                          </Card>
+                        </TabsContent>
+                        <TabsContent value="3-month">
+                          <Card className="rounded-b-lg">
+                            <CardContent className="grid gap-4 p-6">
+                              <div className="flex items-center justify-between">
+                                <div className="text-4xl font-bold">$79</div>
+                                <div className="text-muted-foreground">
+                                  per month
+                                </div>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <div>Calls per week</div>
+                                <div className="font-medium">3</div>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <div>Email support</div>
+                                <div className="font-medium">Unlimited</div>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <div>Video meetings</div>
+                                <div className="font-medium">2 per month</div>
+                              </div>
+                            </CardContent>
+                          </Card>
+                        </TabsContent>
+                        <TabsContent value="6-month">
+                          <Card className="rounded-b-lg">
+                            <CardContent className="grid gap-4 p-6">
+                              <div className="flex items-center justify-between">
+                                <div className="text-4xl font-bold">$59</div>
+                                <div className="text-muted-foreground">
+                                  per month
+                                </div>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <div>Calls per week</div>
+                                <div className="font-medium">6</div>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <div>Email support</div>
+                                <div className="font-medium">Unlimited</div>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <div>Video meetings</div>
+                                <div className="font-medium">4 per month</div>
+                              </div>
+                            </CardContent>
+                          </Card>
+                        </TabsContent>
+                        <TabsContent value="12-month">
+                          <Card className="rounded-b-lg">
+                            <CardContent className="grid gap-4 p-6">
+                              <div className="flex items-center justify-between">
+                                <div className="text-4xl font-bold">$39</div>
+                                <div className="text-muted-foreground">
+                                  per month
+                                </div>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <div>Calls per week</div>
+                                <div className="font-medium">12</div>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <div>Email support</div>
+                                <div className="font-medium">Unlimited</div>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <div>Video meetings</div>
+                                <div className="font-medium">8 per month</div>
+                              </div>
+                            </CardContent>
+                          </Card>
+                        </TabsContent>
+                      </Tabs>
+                    </div>
+                    <div className="flex flex-col items-cen space-y-2 pt-5 justify-start">
+                      <Button className="w-[140px]" variant="outline">
+                        Book a Free Trial
+                      </Button>
+                      <Button className="w-[140px]" variant="outline">
+                        Book a Session
+                      </Button>
+                      <Button className="w-[140px]" variant="outline">
+                        Book Mentorship
+                      </Button>
                     </div>
                   </div>
                 </div>
-              </div>
-              <div className="flex flex-col items-end space-y-2">
-                <Button className="w-[140px]" variant="outline">
-                  Book a Free Trial
-                </Button>
-                <Button className="w-[140px]" variant="outline">
-                  Book a Session
-                </Button>
-                <Button className="w-[140px]" variant="outline">
-                  Book Mentorship
-                </Button>
-              </div>
+              ))}
             </div>
           </div>
-        </div>
-        <div className="space-y-2">
-          <h2 className="text-xl font-semibold">Finance</h2>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm">Taxes</span>
-            <span className="text-sm">Investment</span>
-            <span className="text-sm">Accounting</span>
-          </div>
-          <div className="grid gap-4 md:grid-cols-1">
-            <div className="border border-gray-200 rounded-lg p-4 flex items-center justify-between space-x-4 dark:border-gray-800">
-              <div className="flex items-center space-x-4">
-                <Image
-                  alt="Portrait"
-                  className="rounded-full overflow-hidden"
-                  height="80"
-                  src="/placeholder.svg"
-                  style={{ aspectRatio: "80/80", objectFit: "cover" }}
-                  width="80"
-                />
-                <div className="space-y-1.5">
-                  <div className="flex items-center space-x-2">
-                    <h3 className="font-semibold">David Lee</h3>
-                    <span className="text-sm text-gray-500 dark:text-gray-400">
-                      @davidlee
-                    </span>
-                  </div>
-                  <div className="text-sm grid gap-0.5">
-                    <p>Expert in Tax Law</p>
-                    <p>15 years of experience in Finance</p>
-                    <div className="flex flex-wrap items-center gap-2 mt-2">
-                      <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-                        Taxes
-                      </span>
-                      <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-                        Finance
-                      </span>
-                      <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-                        Expert
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div className="flex flex-col items-end space-y-2">
-                <Button className="w-[140px]" variant="outline">
-                  Book a Free Trial
-                </Button>
-                <Button className="w-[140px]" variant="outline">
-                  Book a Session
-                </Button>
-                <Button className="w-[140px]" variant="outline">
-                  Book Mentorship
-                </Button>
-              </div>
-            </div>
-            <div className="border border-gray-200 rounded-lg p-4 flex items-center justify-between space-x-4 dark:border-gray-800">
-              <div className="flex items-center space-x-4">
-                <Image
-                  alt="Portrait"
-                  className="rounded-full overflow-hidden"
-                  height="80"
-                  src="/placeholder.svg"
-                  style={{ aspectRatio: "80/80", objectFit: "cover" }}
-                  width="80"
-                />
-                <div className="space-y-1.5">
-                  <div className="flex items-center space-x-2">
-                    <h3 className="font-semibold">Emma Brown</h3>
-                    <span className="text-sm text-gray-500 dark:text-gray-400">
-                      @emmabrown
-                    </span>
-                  </div>
-                  <div className="text-sm grid gap-0.5">
-                    <p>Investment Advisor</p>
-                    <p>Expert in Portfolio Management</p>
-                    <div className="flex flex-wrap items-center gap-2 mt-2">
-                      <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-                        Investment
-                      </span>
-                      <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-                        Finance
-                      </span>
-                      <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-                        Expert
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div className="flex flex-col items-end space-y-2">
-                <Button className="w-[140px]" variant="outline">
-                  Book a Free Trial
-                </Button>
-                <Button className="w-[140px]" variant="outline">
-                  Book a Session
-                </Button>
-                <Button className="w-[140px]" variant="outline">
-                  Book Mentorship
-                </Button>
-              </div>
-            </div>
-            <div className="border border-gray-200 rounded-lg p-4 flex items-center justify-between space-x-4 dark:border-gray-800">
-              <div className="flex items-center space-x-4">
-                <Image
-                  alt="Portrait"
-                  className="rounded-full overflow-hidden"
-                  height="80"
-                  src="/placeholder.svg"
-                  style={{ aspectRatio: "80/80", objectFit: "cover" }}
-                  width="80"
-                />
-                <div className="space-y-1.5">
-                  <div className="flex items-center space-x-2">
-                    <h3 className="font-semibold">Sophia Turner</h3>
-                    <span className="text-sm text-gray-500 dark:text-gray-400">
-                      @sophiaturner
-                    </span>
-                  </div>
-                  <div className="text-sm grid gap-0.5">
-                    <p>CPA with 20 years of experience</p>
-                    <p>Expert in Corporate Accounting</p>
-                    <div className="flex flex-wrap items-center gap-2 mt-2">
-                      <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-                        Accounting
-                      </span>
-                      <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-                        Finance
-                      </span>
-                      <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-                        Expert
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div className="flex flex-col items-end space-y-2">
-                <Button className="w-[140px]" variant="outline">
-                  Book a Free Trial
-                </Button>
-                <Button className="w-[140px]" variant="outline">
-                  Book a Session
-                </Button>
-                <Button className="w-[140px]" variant="outline">
-                  Book Mentorship
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
+        ))}
       </div>
     </div>
   );
