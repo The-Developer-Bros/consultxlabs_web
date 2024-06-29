@@ -58,7 +58,7 @@ export function CookiePerferances() {
 }
 
 
-function CookieIcon(props) {
+function CookieIcon(props: any) {
   return (
     <svg
       {...props}

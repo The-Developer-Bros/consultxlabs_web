@@ -450,7 +450,7 @@ export function FindExperts() {
   )
 }
 
-function XIcon(props) {
+function XIcon(props: any) {
   return (
     <svg
       {...props}

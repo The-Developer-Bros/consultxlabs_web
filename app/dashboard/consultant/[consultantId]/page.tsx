@@ -298,7 +298,7 @@ export default function ConsultantDashboard() {
 }
 
 
-function SettingsIcon(props) {
+function SettingsIcon(props: any) {
   return (
     <svg
       {...props}
@@ -319,7 +319,7 @@ function SettingsIcon(props) {
 }
 
 
-function SignalIcon(props) {
+function SignalIcon(props: any) {
   return (
     <svg
       {...props}
@@ -343,7 +343,7 @@ function SignalIcon(props) {
 }
 
 
-function SearchIcon(props) {
+function SearchIcon(props: any) {
   return (
     <svg
       {...props}
@@ -364,7 +364,7 @@ function SearchIcon(props) {
 }
 
 
-function FileEditIcon(props) {
+function FileEditIcon(props: any) {
   return (
     <svg
       {...props}
@@ -386,7 +386,7 @@ function FileEditIcon(props) {
 }
 
 
-function DeleteIcon(props) {
+function DeleteIcon(props: any) {
   return (
     <svg
       {...props}
@@ -408,7 +408,7 @@ function DeleteIcon(props) {
 }
 
 
-function DownloadIcon(props) {
+function DownloadIcon(props: any) {
   return (
     <svg
       {...props}

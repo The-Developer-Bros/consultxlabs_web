@@ -418,7 +418,7 @@ export default function Hackathon() {
   );
 }
 
-function CalendarCheckIcon(props) {
+function CalendarCheckIcon(props: any) {
   return (
     <svg
       {...props}
@@ -441,7 +441,7 @@ function CalendarCheckIcon(props) {
   );
 }
 
-function UsersIcon(props) {
+function UsersIcon(props: any) {
   return (
     <svg
       {...props}
@@ -463,7 +463,7 @@ function UsersIcon(props) {
   );
 }
 
-function GlobeIcon(props) {
+function GlobeIcon(props: any) {
   return (
     <svg
       {...props}
@@ -484,7 +484,7 @@ function GlobeIcon(props) {
   );
 }
 
-function TrophyIcon(props) {
+function TrophyIcon(props: any) {
   return (
     <svg
       {...props}
@@ -508,7 +508,7 @@ function TrophyIcon(props) {
   );
 }
 
-function TwitterIcon(props) {
+function TwitterIcon(props: any) {
   return (
     <svg
       {...props}

@@ -156,7 +156,7 @@ export default function ConsultantAvailabilityCalendar() {
 }
 
 
-function ChevronLeftIcon(props) {
+function ChevronLeftIcon(props: any) {
   return (
     <svg
       {...props}
@@ -176,7 +176,7 @@ function ChevronLeftIcon(props) {
 }
 
 
-function ChevronRightIcon(props) {
+function ChevronRightIcon(props: any) {
   return (
     <svg
       {...props}
@@ -196,7 +196,7 @@ function ChevronRightIcon(props) {
 }
 
 
-function SearchIcon(props) {
+function SearchIcon(props: any) {
   return (
     <svg
       {...props}
@@ -217,7 +217,7 @@ function SearchIcon(props) {
 }
 
 
-function SettingsIcon(props) {
+function SettingsIcon(props: any) {
   return (
     <svg
       {...props}
@@ -238,7 +238,7 @@ function SettingsIcon(props) {
 }
 
 
-function PlusIcon(props) {
+function PlusIcon(props: any) {
   return (
     <svg
       {...props}

@@ -103,7 +103,7 @@ function ChevronRightIcon({ onClick }) {
 }
 
 
-function SearchIcon(props) {
+function SearchIcon(props: any) {
   return (
     <svg
       {...props}
@@ -124,7 +124,7 @@ function SearchIcon(props) {
 }
 
 
-function SettingsIcon(props) {
+function SettingsIcon(props: any) {
   return (
     <svg
       {...props}
@@ -145,7 +145,7 @@ function SettingsIcon(props) {
 }
 
 
-function BellIcon(props) {
+function BellIcon(props: any) {
   return (
     <svg
       {...props}
@@ -166,7 +166,7 @@ function BellIcon(props) {
 }
 
 
-function LayoutGridIcon(props) {
+function LayoutGridIcon(props: any) {
   return (
     <svg
       {...props}
@@ -189,7 +189,7 @@ function LayoutGridIcon(props) {
 }
 
 
-function ListIcon(props) {
+function ListIcon(props: any) {
   return (
     <svg
       {...props}
@@ -215,7 +215,7 @@ function ListIcon(props) {
 
 
 
-function PlusIcon(props) {
+function PlusIcon(props: any) {
   return (
     <svg
       {...props}

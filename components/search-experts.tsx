@@ -121,7 +121,7 @@ export function SearchExperts() {
 }
 
 
-function MicroscopeIcon(props) {
+function MicroscopeIcon(props: any) {
   return (
     <svg
       {...props}
@@ -146,7 +146,7 @@ function MicroscopeIcon(props) {
 }
 
 
-function SettingsIcon(props) {
+function SettingsIcon(props: any) {
   return (
     <svg
       {...props}
