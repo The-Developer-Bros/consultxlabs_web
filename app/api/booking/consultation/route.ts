@@ -5,23 +5,21 @@ import { Prisma } from "@prisma/client";
 
 export async function GET(request: Request) {
   try {
-    const { consultationId, consultantId, consulteeId } = await request.json();
+    const { consultationId, consultantProfileId, consulteeProfileId } = await request.json();
 
     let where: any = {};
 
     if (consultationId) {
-      where = { consultationId };
-    } else if (consultantId && consulteeId) {
-      where = { consultantId, consulteeId };
-    } else {
-      where = {};
+      where.id = consultationId;
+    } else if (consultantProfileId && consulteeProfileId) {
+      where = { consultantProfileId, consulteeProfileId };
     }
 
     const consultations = await prisma.consultation.findMany({
       where,
       include: {
-        consultant: true,
-        consultee: true,
+        consultantProfile: true,
+        consulteeProfile: true,
       },
     });
 
@@ -36,32 +34,31 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const {
-    consultantId,
-    consulteeId,
-    startTime,
-    endTime,
-    price,
-    consultant,
-    consultee,
-  } = await request.json();
   try {
+    const {
+      consultantProfileId,
+      consulteeProfileId,
+      price,
+      slotTiming,
+    } = await request.json();
+
     const consultation = await prisma.consultation.create({
       data: {
-        consultationId: uuidv4(),
-        consultantId,
-        consulteeId,
-        startTime,
-        endTime,
+        id: uuidv4(),
+        consultantProfileId,
+        consulteeProfileId,
         price,
-        consultant: {
-          connect: {
-            id: consultant.id,
+        slotOfAppointment: {
+          create: {
+            appointmentSlots: {
+              create: slotTiming,
+            },
           },
         },
-        consultee: {
-          connect: { id: consultee.id },
-        },
+      },
+      include: {
+        consultantProfile: true,
+        consulteeProfile: true,
       },
     });
 
@@ -85,21 +82,29 @@ export async function PUT(request: Request) {
   try {
     const {
       consultationId,
-      consultantId,
-      consulteeId,
-      startTime,
-      endTime,
+      consultantProfileId,
+      consulteeProfileId,
       price,
+      slotTiming,
     } = await request.json();
 
     const updatedConsultation = await prisma.consultation.update({
-      where: { consultationId },
+      where: { id: consultationId },
       data: {
-        consultantId,
-        consulteeId,
-        startTime,
-        endTime,
+        consultantProfileId,
+        consulteeProfileId,
         price,
+        slotOfAppointment: {
+          update: {
+            appointmentSlots: {
+              update: slotTiming,
+            },
+          },
+        },
+      },
+      include: {
+        consultantProfile: true,
+        consulteeProfile: true,
       },
     });
 
@@ -118,7 +123,7 @@ export async function DELETE(request: Request) {
     const { consultationId } = await request.json();
 
     const deletedConsultation = await prisma.consultation.delete({
-      where: { consultationId },
+      where: { id: consultationId },
     });
 
     return NextResponse.json({ data: deletedConsultation }, { status: 200 });

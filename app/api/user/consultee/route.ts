@@ -22,6 +22,12 @@ export async function POST(req: Request) {
         classes,
         subscriptions,
         webinars,
+        onlineStatus: false,
+        user: {
+          connect: {
+            id,
+          },
+        },
       },
     });
 

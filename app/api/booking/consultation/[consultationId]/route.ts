@@ -8,11 +8,11 @@ export async function GET(
 ) {
   try {
     const { consultationId } = params;
-    const consultation = await prisma.consultation.findFirstOrThrow({
-      where: { consultationId: consultationId },
+    const consultation = await prisma.consultation.findUniqueOrThrow({
+      where: { id: consultationId },
       include: {
-        consultant: true,
-        consultee: true,
+        consultantProfile: true,
+        consulteeProfile: true,
       },
     });
 
@@ -41,27 +41,42 @@ export async function PUT(
 ) {
   try {
     const { consultationId } = params;
-    const { startTime, endTime, price, consultant, consultee } =
+    const { startTime, endTime, price, consultantProfileId, consulteeProfileId } =
       await request.json();
 
     const consultation = await prisma.consultation.update({
-      where: { consultationId: consultationId },
+      where: { id: consultationId },
       data: {
-        startTime,
-        endTime,
         price,
-        consultant: {
+        consultantProfile: {
           connect: {
-            id: consultant.id,
+            id: consultantProfileId,
           },
         },
-        consultee: {
-          connect: { id: consultee.id },
+        consulteeProfile: {
+          connect: {
+            id: consulteeProfileId,
+          },
+        },
+        slotOfAppointment: {
+          update: {
+            appointmentSlots: {
+              updateMany: {
+                where: {
+                  slotId: consultationId, // Assuming you have a way to identify the slot
+                },
+                data: {
+                  startTime,
+                  endTime,
+                },
+              },
+            },
+          },
         },
       },
       include: {
-        consultant: true,
-        consultee: true,
+        consultantProfile: true,
+        consulteeProfile: true,
       },
     });
 
@@ -83,7 +98,7 @@ export async function DELETE(
     const { consultationId } = params;
 
     const consultation = await prisma.consultation.delete({
-      where: { consultationId: consultationId },
+      where: { id: consultationId },
     });
 
     return NextResponse.json({ data: consultation }, { status: 200 });

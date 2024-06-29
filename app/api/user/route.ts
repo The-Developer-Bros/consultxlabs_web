@@ -21,29 +21,24 @@ export async function POST(req: Request) {
     const {
       username,
       email,
-      password,
-      oauthToken,
-      phoneNumber,
-      emailConfirmed,
     } = await req.json();
 
     const createdUser = await prisma.user.create({
       data: {
         id: uuidv4(),
-        username,
-        email,
-        password,
-        oauthToken,
-        phoneNumber,
-        emailConfirmed,
+        name: username,
+        email: email,
         consultantProfile: {
           create: {
             id: uuidv4(),
+            rating: 0,
+            onlineStatus: false,
           },
         },
         consulteeProfile: {
           create: {
             id: uuidv4(),
+            onlineStatus: false,
           },
         },
       },
@@ -72,13 +67,9 @@ export async function PUT(req: Request) {
   try {
     const {
       id,
-      username,
-
+      name,
       email,
-      password,
-      oauthToken,
-      phoneNumber,
-      emailConfirmed,
+      emailVerified,
     } = await req.json();
 
     const updatedUser = await prisma.user.update({
@@ -86,12 +77,9 @@ export async function PUT(req: Request) {
         id: id as string,
       },
       data: {
-        username,
+        name,
         email,
-        password,
-        oauthToken,
-        phoneNumber,
-        emailConfirmed,
+        emailVerified
       },
     });
 

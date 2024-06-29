@@ -341,7 +341,7 @@ model ConsultantProfile {
   webinars            Webinar[]
   classes             Class[]
 
-  User   User   @relation(fields: [userId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
   userId String @unique
 }
 
@@ -355,7 +355,7 @@ model ConsulteeProfile {
   webinars      Webinar[]
   classes       Class[]
 
-  User   User   @relation(fields: [userId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
   userId String @unique
 }
 
@@ -364,9 +364,9 @@ model Consultation {
   createdAt DateTime @default(now())
   price     Int?
 
-  ConsultantProfile   ConsultantProfile @relation(fields: [consultantProfileId], references: [id])
+  consultantProfile   ConsultantProfile @relation(fields: [consultantProfileId], references: [id])
   consultantProfileId String
-  consultee           ConsulteeProfile  @relation(fields: [consulteeProfileId], references: [id])
+  consulteeProfile    ConsulteeProfile  @relation(fields: [consulteeProfileId], references: [id])
   consulteeProfileId  String            @unique
 
   slotOfAppointment SlotsOfAppointment?
@@ -378,9 +378,9 @@ model Subscription {
   expiryDate DateTime?
   price      Int?
 
-  ConsultantProfile   ConsultantProfile @relation(fields: [consultantProfileId], references: [id])
+  consultantProfile   ConsultantProfile @relation(fields: [consultantProfileId], references: [id])
   consultantProfileId String
-  ConsulteeProfile    ConsulteeProfile  @relation(fields: [consulteeProfileId], references: [id])
+  consulteeProfile    ConsulteeProfile  @relation(fields: [consulteeProfileId], references: [id])
   consulteeProfileId  String
 
   slotsOfAppointment SlotsOfAppointment[]
@@ -390,9 +390,9 @@ model Webinar {
   id    String @id @default(uuid())
   price Int?
 
-  ConsultantProfile   ConsultantProfile  @relation(fields: [consultantProfileId], references: [id])
+  consultantProfile   ConsultantProfile  @relation(fields: [consultantProfileId], references: [id])
   consultantProfileId String
-  consultees          ConsulteeProfile[]
+  consulteeProfiles   ConsulteeProfile[]
 
   slotOfAppointment SlotsOfAppointment?
 }
@@ -404,9 +404,9 @@ model Class {
   expiryDate   DateTime?
   price        Int?
 
-  ConsultantProfile   ConsultantProfile  @relation(fields: [consultantProfileId], references: [id])
+  consultantProfile   ConsultantProfile  @relation(fields: [consultantProfileId], references: [id])
   consultantProfileId String
-  consultees          ConsulteeProfile[]
+  consulteeProfiles   ConsulteeProfile[]
 
   slotOfAppointment SlotsOfAppointment[]
 
@@ -423,7 +423,7 @@ model SlotsOfAvailability {
   id                String       @id @default(uuid())
   availabilitySlots SlotTiming[]
 
-  ConsultantProfile   ConsultantProfile? @relation(fields: [consultantProfileId], references: [id])
+  consultantProfile   ConsultantProfile? @relation(fields: [consultantProfileId], references: [id])
   consultantProfileId String?
 }
 
@@ -431,13 +431,13 @@ model SlotsOfAppointment {
   id               String       @id @default(uuid())
   appointmentSlots SlotTiming[]
 
-  Subscription   Subscription? @relation(fields: [subscriptionId], references: [id])
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id])
   subscriptionId String?
-  Class          Class?        @relation(fields: [classId], references: [id])
+  class          Class?        @relation(fields: [classId], references: [id])
   classId        String?
-  Consultation   Consultation? @relation(fields: [consultationId], references: [id])
+  consultation   Consultation? @relation(fields: [consultationId], references: [id])
   consultationId String?       @unique
-  Webinar        Webinar?      @relation(fields: [webinarId], references: [id])
+  webinar        Webinar?      @relation(fields: [webinarId], references: [id])
   webinarId      String?       @unique
 }
 
@@ -447,7 +447,7 @@ model SlotTiming {
   startTime DateTime?
   endTime   DateTime?
 
-  SlotsOfAvailability   SlotsOfAvailability? @relation(fields: [slotsOfAvailabilityId], references: [id])
+  slotsOfAvailability   SlotsOfAvailability? @relation(fields: [slotsOfAvailabilityId], references: [id])
   slotsOfAvailabilityId String?
   SlotsOfAppointment    SlotsOfAppointment?  @relation(fields: [slotsOfAppointmentId], references: [id])
   slotsOfAppointmentId  String?
