@@ -50,8 +50,6 @@ type Domain = string;
 type Subdomain = string;
 
 export default function ExploreExperts() {
-
-
   return (
     <>
       <section className="w-full py-12 md:py-24 lg:py-32">
@@ -151,7 +149,6 @@ export default function ExploreExperts() {
 import Image from "next/image";
 
 export function FindExperts() {
-
   const [domains, setDomains] = useState<Domain[]>([]);
   const [subdomains, setSubdomains] = useState<Subdomain[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -354,88 +351,140 @@ export function FindExperts() {
             <span className="text-sm">Computer Vision</span>
             <span className="text-sm">Data Science</span>
           </div>
-          <div className="grid gap-4 md:grid-cols-1">
-            <div className="border border-gray-200 rounded-lg p-4 flex items-center justify-between space-x-4 dark:border-gray-800">
-              <div className="flex items-center space-x-4">
-                <Image
-                  alt="Portrait"
-                  className="rounded-full overflow-hidden"
-                  height="80"
-                  src="/placeholder.svg"
-                  style={{ aspectRatio: "80/80", objectFit: "cover" }}
-                  width="80"
-                />
-                <div className="space-y-1.5">
-                  <div className="flex items-center space-x-2">
-                    <h3 className="font-semibold">Alice Johnson</h3>
-                    <span className="text-sm text-gray-500 dark:text-gray-400">
-                      @alicejohnson
+          <div className="border border-gray-200 rounded-lg p-4 flex items-center justify-between space-x-4 dark:border-gray-800">
+            <div className="flex items-center space-x-4">
+              <Image
+                alt="Portrait"
+                className="rounded-full overflow-hidden"
+                height="80"
+                src="/placeholder.svg"
+                style={{ aspectRatio: "80/80", objectFit: "cover" }}
+                width="80"
+              />
+              <div className="space-y-1.5">
+                <div className="flex items-center space-x-2">
+                  <h3 className="font-semibold">Alice Johnson</h3>
+                  <span className="text-sm text-gray-500 dark:text-gray-400">
+                    @alicejohnson
+                  </span>
+                </div>
+                <div className="text-sm grid gap-0.5">
+                  <p>Ph.D. in Natural Language Processing</p>
+                  <p>10 years of experience in AI</p>
+                  <div className="flex flex-wrap items-center gap-2 mt-2">
+                    <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
+                      NLP
+                    </span>
+                    <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
+                      AI
+                    </span>
+                    <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
+                      Expert
                     </span>
                   </div>
-                  <div className="text-sm grid gap-0.5">
-                    <p>Ph.D. in Natural Language Processing</p>
-                    <p>10 years of experience in AI</p>
-                    <div className="flex flex-wrap items-center gap-2 mt-2">
-                      <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-                        NLP
-                      </span>
-                      <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-                        AI
-                      </span>
-                      <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-                        Expert
-                      </span>
-                    </div>
-                  </div>
                 </div>
-              </div>
-              <div className="flex flex-col items-end space-y-2">
-                <Button className="w-[140px]" variant="outline">
-                  Book a Free Trial
-                </Button>
-                <Button className="w-[140px]" variant="outline">
-                  Book a Session
-                </Button>
-                <Button className="w-[140px]" variant="outline">
-                  Book Mentorship
-                </Button>
               </div>
             </div>
-            <div className="border border-gray-200 rounded-lg p-4 flex items-center justify-between space-x-4 dark:border-gray-800">
-              <div className="flex items-center space-x-4">
-                <Image
-                  alt="Portrait"
-                  className="rounded-full overflow-hidden"
-                  height="80"
-                  src="/placeholder.svg"
-                  style={{ aspectRatio: "80/80", objectFit: "cover" }}
-                  width="80"
-                />
-                <div className="space-y-1.5">
-                  <div className="flex items-center space-x-2">
-                    <h3 className="font-semibold">Bob Smith</h3>
-                    <span className="text-sm text-gray-500 dark:text-gray-400">
-                      @bobsmith
-                    </span>
-                  </div>
-                  <div className="text-sm grid gap-0.5">
-                    <p>Expert in Computer Vision</p>
-                    <p>Published 20+ papers in AI</p>
-                    <div className="flex flex-wrap items-center gap-2 mt-2">
-                      <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-                        Computer Vision
-                      </span>
-                      <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-                        AI
-                      </span>
-                      <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-                        Expert
-                      </span>
-                    </div>
-                  </div>
-                </div>
+            <div className="flex">
+              <div className="bg-card rounded-lg shadow-lg w-[320px] mr-4">
+                <Tabs defaultValue="1-month" className="w-full">
+                  <TabsList className="grid grid-cols-4 border-b">
+                    <TabsTrigger value="1-month">1 Month</TabsTrigger>
+                    <TabsTrigger value="3-month">3 Months</TabsTrigger>
+                    <TabsTrigger value="6-month">6 Months</TabsTrigger>
+                    <TabsTrigger value="12-month">12 Months</TabsTrigger>
+                  </TabsList>
+                  <TabsContent value="1-month">
+                    <Card className="rounded-b-lg">
+                      <CardContent className="grid gap-4 p-6">
+                        <div className="flex items-center justify-between">
+                          <div className="text-4xl font-bold">$99</div>
+                          <div className="text-muted-foreground">per month</div>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div>Calls per week</div>
+                          <div className="font-medium">1</div>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div>Email support</div>
+                          <div className="font-medium">Unlimited</div>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div>Video meetings</div>
+                          <div className="font-medium">1 per month</div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </TabsContent>
+                  <TabsContent value="3-month">
+                    <Card className="rounded-b-lg">
+                      <CardContent className="grid gap-4 p-6">
+                        <div className="flex items-center justify-between">
+                          <div className="text-4xl font-bold">$79</div>
+                          <div className="text-muted-foreground">per month</div>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div>Calls per week</div>
+                          <div className="font-medium">3</div>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div>Email support</div>
+                          <div className="font-medium">Unlimited</div>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div>Video meetings</div>
+                          <div className="font-medium">2 per month</div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </TabsContent>
+                  <TabsContent value="6-month">
+                    <Card className="rounded-b-lg">
+                      <CardContent className="grid gap-4 p-6">
+                        <div className="flex items-center justify-between">
+                          <div className="text-4xl font-bold">$59</div>
+                          <div className="text-muted-foreground">per month</div>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div>Calls per week</div>
+                          <div className="font-medium">6</div>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div>Email support</div>
+                          <div className="font-medium">Unlimited</div>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div>Video meetings</div>
+                          <div className="font-medium">4 per month</div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </TabsContent>
+                  <TabsContent value="12-month">
+                    <Card className="rounded-b-lg">
+                      <CardContent className="grid gap-4 p-6">
+                        <div className="flex items-center justify-between">
+                          <div className="text-4xl font-bold">$39</div>
+                          <div className="text-muted-foreground">per month</div>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div>Calls per week</div>
+                          <div className="font-medium">12</div>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div>Email support</div>
+                          <div className="font-medium">Unlimited</div>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div>Video meetings</div>
+                          <div className="font-medium">8 per month</div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </TabsContent>
+                </Tabs>
               </div>
-              <div className="flex flex-col items-end space-y-2">
+              <div className="flex flex-col items-cen space-y-2 pt-5 justify-start">
                 <Button className="w-[140px]" variant="outline">
                   Book a Free Trial
                 </Button>
@@ -675,5 +724,159 @@ function XIcon(props: any) {
       <path d="M18 6 6 18" />
       <path d="m6 6 12 12" />
     </svg>
+  );
+}
+
+/**
+ * This code was generated by v0 by Vercel.
+ * @see https://v0.dev/t/7C8g2UpU0QT
+ * Documentation: https://v0.dev/docs#integrating-generated-code-into-your-nextjs-app
+ */
+
+/** Add fonts into your Next.js project:
+
+import { Inter } from 'next/font/google'
+
+inter({
+  subsets: ['latin'],
+  display: 'swap',
+})
+
+To read more about using these font, please visit the Next.js documentation:
+- App Directory: https://nextjs.org/docs/app/building-your-application/optimizing/fonts
+- Pages Directory: https://nextjs.org/docs/pages/building-your-application/optimizing/fonts
+**/
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+
+export function ConsultantPricing() {
+  return (
+    <div className="flex items-start gap-6 w-full max-w-[900px]">
+      <div className="bg-card rounded-lg shadow-lg w-[320px]">
+        <Tabs defaultValue="1-month" className="w-full">
+          <TabsList className="grid grid-cols-4 border-b">
+            <TabsTrigger value="1-month">1 Month</TabsTrigger>
+            <TabsTrigger value="3-month">3 Months</TabsTrigger>
+            <TabsTrigger value="6-month">6 Months</TabsTrigger>
+            <TabsTrigger value="12-month">12 Months</TabsTrigger>
+          </TabsList>
+          <TabsContent value="1-month">
+            <Card className="rounded-b-lg">
+              <CardContent className="grid gap-4 p-6">
+                <div className="flex items-center justify-between">
+                  <div className="text-4xl font-bold">$99</div>
+                  <div className="text-muted-foreground">per month</div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>Calls per week</div>
+                  <div className="font-medium">1</div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>Email support</div>
+                  <div className="font-medium">Unlimited</div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>Video meetings</div>
+                  <div className="font-medium">1 per month</div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>Dedicated account manager</div>
+                  <div className="font-medium">No</div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+          <TabsContent value="3-month">
+            <Card className="rounded-b-lg">
+              <CardContent className="grid gap-4 p-6">
+                <div className="flex items-center justify-between">
+                  <div className="text-4xl font-bold">$79</div>
+                  <div className="text-muted-foreground">per month</div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>Calls per week</div>
+                  <div className="font-medium">3</div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>Email support</div>
+                  <div className="font-medium">Unlimited</div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>Video meetings</div>
+                  <div className="font-medium">2 per month</div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>Dedicated account manager</div>
+                  <div className="font-medium">No</div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+          <TabsContent value="6-month">
+            <Card className="rounded-b-lg">
+              <CardContent className="grid gap-4 p-6">
+                <div className="flex items-center justify-between">
+                  <div className="text-4xl font-bold">$59</div>
+                  <div className="text-muted-foreground">per month</div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>Calls per week</div>
+                  <div className="font-medium">6</div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>Email support</div>
+                  <div className="font-medium">Unlimited</div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>Video meetings</div>
+                  <div className="font-medium">4 per month</div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>Dedicated account manager</div>
+                  <div className="font-medium">Yes</div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+          <TabsContent value="12-month">
+            <Card className="rounded-b-lg">
+              <CardContent className="grid gap-4 p-6">
+                <div className="flex items-center justify-between">
+                  <div className="text-4xl font-bold">$39</div>
+                  <div className="text-muted-foreground">per month</div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>Calls per week</div>
+                  <div className="font-medium">12</div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>Email support</div>
+                  <div className="font-medium">Unlimited</div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>Video meetings</div>
+                  <div className="font-medium">8 per month</div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>Dedicated account manager</div>
+                  <div className="font-medium">Yes</div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
+      </div>
+      <div className="flex flex-col gap-4">
+        <Button size="lg">Book a Call</Button>
+        <Button size="lg" variant="outline">
+          Contact Sales
+        </Button>
+        <Button size="lg" variant="outline">
+          Learn More
+        </Button>
+        <Button size="lg" variant="outline">
+          Try for Free
+        </Button>
+      </div>
+    </div>
   );
 }
