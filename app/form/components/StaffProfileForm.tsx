@@ -1,8 +1,7 @@
 // components/StaffProfileForm.tsx
 import React from "react";
 import { useFormContext } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { StaffProfile, staffProfileSchema } from "../schemas/userSchema";
+import { StaffProfile } from "../schemas/userSchema";
 
 interface Props {
   onSubmit: () => void;

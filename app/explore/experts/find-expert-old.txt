@@ -1,0 +1,115 @@
+  <div className="container mx-auto p-6">
+        <h1 className="text-3xl font-bold mb-6">Find Your Next Consultant</h1>
+
+        <div className="mb-6">
+          <Input
+            placeholder="Search for consultants, domains, subdomains, etc."
+            className="w-full"
+          />
+        </div>
+
+        <Accordion type="single" collapsible>
+          <AccordionItem value="filters">
+            <AccordionTrigger>Advanced Filters</AccordionTrigger>
+            <AccordionContent>
+              <div className="space-y-4">
+                <Select disabled={isLoading}>
+                  <SelectTrigger>
+                    <SelectValue
+                      placeholder={
+                        isLoading ? "Loading domains..." : "Select Domain"
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {isLoading ? (
+                      <SelectItem value="loading" disabled>
+                        Loading domains...
+                      </SelectItem>
+                    ) : (
+                      domains.map((domain) => (
+                        <SelectItem key={domain} value={domain}>
+                          {domain}
+                        </SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
+                </Select>
+
+                <Select disabled={isLoading}>
+                  <SelectTrigger>
+                    <SelectValue
+                      placeholder={
+                        isLoading ? "Loading subdomains..." : "Select Subdomain"
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {isLoading ? (
+                      <SelectItem value="loading" disabled>
+                        Loading subdomains...
+                      </SelectItem>
+                    ) : (
+                      subdomains.map((subdomain) => (
+                        <SelectItem key={subdomain} value={subdomain}>
+                          {subdomain}
+                        </SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
+                </Select>
+
+                <Select>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Order By" />
+                  </SelectTrigger>
+                  <SelectContent>{/* Add ordering options */}</SelectContent>
+                </Select>
+
+                <div className="flex items-center space-x-2">
+                  <Checkbox id="available" />
+                  <label htmlFor="available">
+                    Only show consultants currently available
+                  </label>
+                </div>
+
+                <div className="flex items-center space-x-2">
+                  <Checkbox id="remote" />
+                  <label htmlFor="remote">
+                    Include consultants available for remote work
+                  </label>
+                </div>
+              </div>
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
+
+        <div className="mt-6">
+          <Button variant="destructive">Reset Search</Button>
+        </div>
+
+        <div className="space-y-6 mt-8">
+          {dummyConsultants.map((consultant) => (
+            <Card key={consultant.title} className="w-full">
+              <CardHeader>
+                <h3 className="text-lg font-bold">{consultant.title}</h3>
+              </CardHeader>
+              <CardContent>
+                <div className="flex justify-between items-center">
+                  <div>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                      {consultant.expertise}
+                    </p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                      {consultant.location}
+                    </p>
+                  </div>
+                  <p className="text-sm font-semibold">
+                    Rating: {consultant.rating}
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </div>

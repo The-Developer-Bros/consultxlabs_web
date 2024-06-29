@@ -1,8 +1,7 @@
 // components/ConsultantProfileForm.tsx
 import React from "react";
 import { useFormContext } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { ConsultantProfile, consultantProfileSchema } from "../schemas/userSchema";
+import { ConsultantProfile } from "../schemas/userSchema";
 
 interface Props {
   onNext: () => void;

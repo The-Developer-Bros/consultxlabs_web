@@ -1,8 +1,7 @@
 // components/RoleForm.tsx
 import React from "react";
 import { useFormContext } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { RoleInfo, roleSchema } from "../schemas/userSchema";
+import { RoleInfo } from "../schemas/userSchema";
 
 interface Props {
   onNext: () => void;
