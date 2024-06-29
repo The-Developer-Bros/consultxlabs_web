@@ -16,7 +16,7 @@ export default function ConsultantDashboard() {
         <div className="flex items-center">
           <div className="mr-6">
             <Avatar>
-              <AvatarImage alt="Mike Steele" src="/placeholder.svg?height=40&width=40" />
+              <AvatarImage alt="Mike Steele" src="/placeholder.svg" />
               <AvatarFallback>MS</AvatarFallback>
             </Avatar>
           </div>
@@ -71,7 +71,7 @@ export default function ConsultantDashboard() {
                   <Card className="bg-purple-100">
                     <CardHeader>
                       <Avatar>
-                        <AvatarImage alt="Olga Nunez" src="/placeholder.svg?height=40&width=40" />
+                        <AvatarImage alt="Olga Nunez" src="/placeholder.svg" />
                         <AvatarFallback>ON</AvatarFallback>
                       </Avatar>
                       <div>
@@ -90,7 +90,7 @@ export default function ConsultantDashboard() {
                   <Card className="bg-purple-100">
                     <CardHeader>
                       <Avatar>
-                        <AvatarImage alt="Olga Nunez" src="/placeholder.svg?height=40&width=40" />
+                        <AvatarImage alt="Olga Nunez" src="/placeholder.svg" />
                         <AvatarFallback>ON</AvatarFallback>
                       </Avatar>
                       <div>
@@ -184,7 +184,7 @@ export default function ConsultantDashboard() {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center">
                       <Avatar>
-                        <AvatarImage alt="Stephen" src="/placeholder.svg?height=40&width=40" />
+                        <AvatarImage alt="Stephen" src="/placeholder.svg" />
                         <AvatarFallback>S</AvatarFallback>
                       </Avatar>
                       <p className="ml-2">Stephen joined to 🎨 channel.</p>
@@ -194,7 +194,7 @@ export default function ConsultantDashboard() {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center">
                       <Avatar>
-                        <AvatarImage alt="Stephen" src="/placeholder.svg?height=40&width=40" />
+                        <AvatarImage alt="Stephen" src="/placeholder.svg" />
                         <AvatarFallback>S</AvatarFallback>
                       </Avatar>
                       <p className="ml-2">Stephen joined to 🎨 channel.</p>
@@ -204,7 +204,7 @@ export default function ConsultantDashboard() {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center">
                       <Avatar>
-                        <AvatarImage alt="Stephen" src="/placeholder.svg?height=40&width=40" />
+                        <AvatarImage alt="Stephen" src="/placeholder.svg" />
                         <AvatarFallback>S</AvatarFallback>
                       </Avatar>
                       <p className="ml-2">Stephen joined to 🎨 channel.</p>
@@ -214,7 +214,7 @@ export default function ConsultantDashboard() {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center">
                       <Avatar>
-                        <AvatarImage alt="Stephen" src="/placeholder.svg?height=40&width=40" />
+                        <AvatarImage alt="Stephen" src="/placeholder.svg" />
                         <AvatarFallback>S</AvatarFallback>
                       </Avatar>
                       <p className="ml-2">Stephen joined to 🎨 channel.</p>
@@ -224,7 +224,7 @@ export default function ConsultantDashboard() {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center">
                       <Avatar>
-                        <AvatarImage alt="Stephen" src="/placeholder.svg?height=40&width=40" />
+                        <AvatarImage alt="Stephen" src="/placeholder.svg" />
                         <AvatarFallback>S</AvatarFallback>
                       </Avatar>
                       <p className="ml-2">Stephen joined to 🎨 channel.</p>
@@ -234,7 +234,7 @@ export default function ConsultantDashboard() {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center">
                       <Avatar>
-                        <AvatarImage alt="Stephen" src="/placeholder.svg?height=40&width=40" />
+                        <AvatarImage alt="Stephen" src="/placeholder.svg" />
                         <AvatarFallback>S</AvatarFallback>
                       </Avatar>
                       <p className="ml-2">Stephen joined to 🎨 channel.</p>
@@ -250,7 +250,7 @@ export default function ConsultantDashboard() {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center">
                       <Avatar>
-                        <AvatarImage alt="Jesus Cardoza" src="/placeholder.svg?height=40&width=40" />
+                        <AvatarImage alt="Jesus Cardoza" src="/placeholder.svg" />
                         <AvatarFallback>JC</AvatarFallback>
                       </Avatar>
                       <p className="ml-2">Jesus Cardoza</p>
@@ -260,7 +260,7 @@ export default function ConsultantDashboard() {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center">
                       <Avatar>
-                        <AvatarImage alt="Andrea Jennings" src="/placeholder.svg?height=40&width=40" />
+                        <AvatarImage alt="Andrea Jennings" src="/placeholder.svg" />
                         <AvatarFallback>AJ</AvatarFallback>
                       </Avatar>
                       <p className="ml-2">Andrea Jennings</p>
@@ -270,7 +270,7 @@ export default function ConsultantDashboard() {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center">
                       <Avatar>
-                        <AvatarImage alt="Yvonne Breiner" src="/placeholder.svg?height=40&width=40" />
+                        <AvatarImage alt="Yvonne Breiner" src="/placeholder.svg" />
                         <AvatarFallback>YB</AvatarFallback>
                       </Avatar>
                       <p className="ml-2">Yvonne Breiner</p>
@@ -280,7 +280,7 @@ export default function ConsultantDashboard() {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center">
                       <Avatar>
-                        <AvatarImage alt="Gabriel Dennis" src="/placeholder.svg?height=40&width=40" />
+                        <AvatarImage alt="Gabriel Dennis" src="/placeholder.svg" />
                         <AvatarFallback>GD</AvatarFallback>
                       </Avatar>
                       <p className="ml-2">Gabriel Dennis</p>

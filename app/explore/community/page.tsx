@@ -11,7 +11,7 @@ export default function Community() {
     <section
       className="min-h-screen flex flex-col justify-center items-center bg-cover bg-center"
       style={{
-        backgroundImage: "url('/placeholder.svg?height=1920&width=1080')",
+        backgroundImage: "url('/placeholder.svg')",
       }}
     >
       <div className="px-4 md:px-6">

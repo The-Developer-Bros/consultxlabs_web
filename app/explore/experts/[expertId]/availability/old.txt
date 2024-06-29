@@ -42,7 +42,7 @@ export default function ConsultantAvailabilityCalendar() {
           <PlusIcon className="h-6 w-6 text-gray-600" />
         </div>
         <Avatar>
-          <AvatarImage alt="User Avatar" src="/placeholder.svg?height=32&width=32" />
+          <AvatarImage alt="User Avatar" src="/placeholder.svg" />
           <AvatarFallback>U</AvatarFallback>
         </Avatar>
       </div>

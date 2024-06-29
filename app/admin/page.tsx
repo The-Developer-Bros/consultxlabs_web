@@ -129,7 +129,7 @@ export default function AdminPanel() {
               <Avatar className="h-9 w-9">
                 <AvatarImage
                   alt="Avatar"
-                  src="/placeholder.svg?height=32&width=32"
+                  src="/placeholder.svg"
                 />
                 <AvatarFallback>AD</AvatarFallback>
               </Avatar>

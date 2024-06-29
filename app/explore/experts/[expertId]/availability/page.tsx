@@ -96,7 +96,7 @@ export default function ConsultantAvailabilityCalendar() {
           <div className="relative">
             <div className="absolute top-0 right-0">
               <Avatar>
-                <AvatarImage alt="User Avatar" src="/placeholder.svg?height=32&width=32" />
+                <AvatarImage alt="User Avatar" src="/placeholder.svg" />
               </Avatar>
             </div>
           </div>
