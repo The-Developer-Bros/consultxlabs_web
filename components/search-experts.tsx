@@ -5,6 +5,7 @@
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { CardHeader, CardContent, Card } from "@/components/ui/card"
+import Image from "next/image"
 
 export function SearchExperts() {
   return (
@@ -67,7 +68,7 @@ export function SearchExperts() {
       <div className="grid grid-cols-2 gap-4">
         <Card className="mb-4">
           <CardHeader className="flex items-center space-x-4">
-            <img
+            <Image
               alt="Consultant Profile"
               className="rounded-full"
               height="50"
@@ -92,7 +93,7 @@ export function SearchExperts() {
         </Card>
         <Card className="mb-4">
           <CardHeader className="flex items-center space-x-4">
-            <img
+            <Image
               alt="Consultant Profile"
               className="rounded-full"
               height="50"

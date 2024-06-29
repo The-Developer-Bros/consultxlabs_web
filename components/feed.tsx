@@ -5,6 +5,7 @@
 import { CardHeader, CardContent, Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { AvatarImage, AvatarFallback, Avatar } from "@/components/ui/avatar"
+import Image from "next/image"
 
 export function Feed() {
   return (
@@ -44,7 +45,7 @@ export function Feed() {
             </div>
           </CardHeader>
           <CardContent>
-            <img
+            <Image
               alt="Post related"
               className="w-full h-48 object-cover mb-4"
               height="200"

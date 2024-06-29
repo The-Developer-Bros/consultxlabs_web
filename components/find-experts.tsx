@@ -6,6 +6,7 @@
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem, SelectGroup, SelectLabel } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
+import Image from "next/image"
 
 export function FindExperts() {
   return (
@@ -161,7 +162,7 @@ export function FindExperts() {
           <div className="grid gap-4 md:grid-cols-1">
             <div className="border border-gray-200 rounded-lg p-4 flex items-center justify-between space-x-4 dark:border-gray-800">
               <div className="flex items-center space-x-4">
-                <img
+                <Image
                   alt="Portrait"
                   className="rounded-full overflow-hidden"
                   height="80"
@@ -205,7 +206,7 @@ export function FindExperts() {
             </div>
             <div className="border border-gray-200 rounded-lg p-4 flex items-center justify-between space-x-4 dark:border-gray-800">
               <div className="flex items-center space-x-4">
-                <img
+                <Image
                   alt="Portrait"
                   className="rounded-full overflow-hidden"
                   height="80"
@@ -259,7 +260,7 @@ export function FindExperts() {
           <div className="grid gap-4 md:grid-cols-1">
             <div className="border border-gray-200 rounded-lg p-4 flex items-center justify-between space-x-4 dark:border-gray-800">
               <div className="flex items-center space-x-4">
-                <img
+                <Image
                   alt="Portrait"
                   className="rounded-full overflow-hidden"
                   height="80"
@@ -313,7 +314,7 @@ export function FindExperts() {
           <div className="grid gap-4 md:grid-cols-1">
             <div className="border border-gray-200 rounded-lg p-4 flex items-center justify-between space-x-4 dark:border-gray-800">
               <div className="flex items-center space-x-4">
-                <img
+                <Image
                   alt="Portrait"
                   className="rounded-full overflow-hidden"
                   height="80"
@@ -357,7 +358,7 @@ export function FindExperts() {
             </div>
             <div className="border border-gray-200 rounded-lg p-4 flex items-center justify-between space-x-4 dark:border-gray-800">
               <div className="flex items-center space-x-4">
-                <img
+                <Image
                   alt="Portrait"
                   className="rounded-full overflow-hidden"
                   height="80"
@@ -401,7 +402,7 @@ export function FindExperts() {
             </div>
             <div className="border border-gray-200 rounded-lg p-4 flex items-center justify-between space-x-4 dark:border-gray-800">
               <div className="flex items-center space-x-4">
-                <img
+                <Image
                   alt="Portrait"
                   className="rounded-full overflow-hidden"
                   height="80"

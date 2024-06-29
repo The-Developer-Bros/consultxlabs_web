@@ -6,6 +6,7 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
+import Image from "next/image";
 
 export default function Programs() {
   return (
@@ -49,7 +50,7 @@ export default function Programs() {
             </div>
             <div className="grid grid-cols-3 gap-6">
               <Card className="w-full">
-                <img
+                <Image
                   alt="Event thumbnail"
                   className="aspect-video"
                   height="180"
@@ -62,7 +63,7 @@ export default function Programs() {
                 </div>
               </Card>
               <Card className="w-full">
-                <img
+                <Image
                   alt="Event thumbnail"
                   className="aspect-video"
                   height="180"
@@ -77,7 +78,7 @@ export default function Programs() {
                 </div>
               </Card>
               <Card className="w-full">
-                <img
+                <Image
                   alt="Event thumbnail"
                   className="aspect-video"
                   height="180"
@@ -92,7 +93,7 @@ export default function Programs() {
                 </div>
               </Card>
               <Card className="w-full">
-                <img
+                <Image
                   alt="Event thumbnail"
                   className="aspect-video"
                   height="180"
@@ -107,7 +108,7 @@ export default function Programs() {
                 </div>
               </Card>
               <Card className="w-full">
-                <img
+                <Image
                   alt="Event thumbnail"
                   className="aspect-video"
                   height="180"
@@ -122,7 +123,7 @@ export default function Programs() {
                 </div>
               </Card>
               <Card className="w-full">
-                <img
+                <Image
                   alt="Event thumbnail"
                   className="aspect-video"
                   height="180"

@@ -5,6 +5,7 @@
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card } from "@/components/ui/card"
+import Image from "next/image"
 
 export function Programs() {
   return (
@@ -46,42 +47,42 @@ export function Programs() {
           </div>
           <div className="grid grid-cols-3 gap-6">
             <Card className="w-full">
-              <img alt="Event thumbnail" className="aspect-video" height="180" src="/placeholder.svg" width="320" />
+              <Image alt="Event thumbnail" className="aspect-video" height="180" src="/placeholder.svg" width="320" />
               <div className="p-4">
                 <h3 className="text-lg font-semibold">AI Hackathon 2024</h3>
                 <p className="text-gray-500">Starts in 3 days</p>
               </div>
             </Card>
             <Card className="w-full">
-              <img alt="Event thumbnail" className="aspect-video" height="180" src="/placeholder.svg" width="320" />
+              <Image alt="Event thumbnail" className="aspect-video" height="180" src="/placeholder.svg" width="320" />
               <div className="p-4">
                 <h3 className="text-lg font-semibold">Online Web Development Workshop</h3>
                 <p className="text-gray-500">Starts in 1 week</p>
               </div>
             </Card>
             <Card className="w-full">
-              <img alt="Event thumbnail" className="aspect-video" height="180" src="/placeholder.svg" width="320" />
+              <Image alt="Event thumbnail" className="aspect-video" height="180" src="/placeholder.svg" width="320" />
               <div className="p-4">
                 <h3 className="text-lg font-semibold">Data Science Seminar</h3>
                 <p className="text-gray-500">Starts in 2 weeks</p>
               </div>
             </Card>
             <Card className="w-full">
-              <img alt="Event thumbnail" className="aspect-video" height="180" src="/placeholder.svg" width="320" />
+              <Image alt="Event thumbnail" className="aspect-video" height="180" src="/placeholder.svg" width="320" />
               <div className="p-4">
                 <h3 className="text-lg font-semibold">Blockchain Hackathon 2024</h3>
                 <p className="text-gray-500">Starts in 3 weeks</p>
               </div>
             </Card>
             <Card className="w-full">
-              <img alt="Event thumbnail" className="aspect-video" height="180" src="/placeholder.svg" width="320" />
+              <Image alt="Event thumbnail" className="aspect-video" height="180" src="/placeholder.svg" width="320" />
               <div className="p-4">
                 <h3 className="text-lg font-semibold">Offline Networking Event</h3>
                 <p className="text-gray-500">Starts in 1 month</p>
               </div>
             </Card>
             <Card className="w-full">
-              <img alt="Event thumbnail" className="aspect-video" height="180" src="/placeholder.svg" width="320" />
+              <Image alt="Event thumbnail" className="aspect-video" height="180" src="/placeholder.svg" width="320" />
               <div className="p-4">
                 <h3 className="text-lg font-semibold">Online Consultation with Industry Experts</h3>
                 <p className="text-gray-500">Available now</p>

@@ -12,6 +12,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import Image from "next/image";
 
 export default function ExpertProfile({
   params,
@@ -130,7 +131,7 @@ export default function ExpertProfile({
           </div>
         </div>
         <div className="flex flex-col items-center w-1/4 ml-10">
-          <img
+          <Image
             alt="Profile"
             className="rounded-full mb-6"
             height="1350"
