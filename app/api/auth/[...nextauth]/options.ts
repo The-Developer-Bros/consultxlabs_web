@@ -77,6 +77,21 @@ const authOptions: NextAuthOptions = {
 
       if (session?.user && token.sub) {
         session.user.id = token.sub;
+
+        const user = await prisma.user.findUnique({
+          where: {
+            email: session.user.email ?? "",
+          },
+        });
+
+        session.user.email = user?.email;
+        session.user.name = user?.name;
+        session.user.image = user?.image;
+        session.user.phone = user?.phone ?? "";
+        session.user.address = user?.address ?? "";
+        session.user.onboardingCompleted = user?.onboardingCompleted ?? false;
+        session.user.role = user?.role ?? "CONSULTEE";
+
       }
 
       return session;

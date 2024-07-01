@@ -17,6 +17,7 @@ model User {
   emailVerified DateTime?
   image         String?
   phone         String?
+  address       String?
   accounts      Account[] // This refers to the accounts that the user has connected
   sessions      Session[] // This refers to the sessions that the user has opened
 

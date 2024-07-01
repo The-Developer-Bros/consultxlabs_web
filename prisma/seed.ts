@@ -15,12 +15,14 @@ async function main() {
           email: faker.internet.email(),
           emailVerified: faker.date.past(),
           image: faker.image.avatar(),
+          phone: faker.phone.number(),
+          address: faker.location.streetAddress(),
           onboardingCompleted: faker.datatype.boolean(),
           role: userRole,
           ...(userRole === 'CONSULTANT' && {
             consultantProfile: {
               create: {
-                rating: faker.number.float({ min: 1, max: 5, precision: 0.1 }),
+                rating: faker.number.float({ min: 1, max: 5, multipleOf: 0.1 }),
                 specialization: faker.person.jobArea(),
                 experience: faker.helpers.arrayElement(['1-3 years', '3-5 years', '5-10 years', '10+ years']),
                 location: faker.location.city(),

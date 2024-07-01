@@ -8,7 +8,13 @@ declare module "next-auth" {
     // supabaseToken?: string;
     user: {
       id: string;
+      emailVerified: boolean | null;
       phone: string;
+      address: string;
+      onboardingCompleted: boolean;
+      role: string;
+
+      // name, email, image are provided by default
     } & DefaultSession["user"];
   }
 }
