@@ -58,21 +58,23 @@ export default function Home() {
               </div>
             </div>
           </section>
-          <section className="w-full py-12 md:py-24 lg:py-32">
-            <div className="grid items-center gap-6 lg:gap-8 xl:gap-6 xl:grid-cols-[1fr_450px] px-4 md:px-6 lg:px-8">
+          <section className="w-full py-12 md:py-24 lg:py-32 flex flex-col justify-around items-center">
+            <div className="grid items-center gap-6 lg:gap-12 xl:grid-cols-[1fr_550px] px-10 sm:w-full md:w-2/3 lg:w-5/6 xl:w-6/7">
               <Image
-                alt="Image"
-                className="mx-auto aspect-video overflow-hidden rounded-xl object-cover object-center sm:w-full lg:order-last"
-                height={310}
+                // src={servicesImage}
                 src="/placeholder.svg"
+                className="mx-auto aspect-video overflow-hidden rounded-xl object-cover object-center sm:w-full lg:order-last"
                 width={550}
+                height={300}
+                alt="Image"
+                loading="eager"
               />
-              <div className="flex flex-col justify-center space-y-4">
+              <div className="flex flex-col justify-around space-y-4">
                 <div className="space-y-2">
                   <h2 className="text-3xl sm:text-4xl md:text-5xl lg:text-6xl xl:text-7xl font-bold tracking-tighter">
                     Our Services
                   </h2>
-                  <p className="max-w-[600px] text-gray-500 md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed dark:text-gray-400">
+                  <p className="w-2/3 text-gray-500 md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed dark:text-gray-400">
                     We provide a range of services including 1-1 sessions,
                     classes, webinars, and conferences. Our experts are ready to
                     share their advice and experience with you.
@@ -157,38 +159,38 @@ export default function Home() {
             </div>
           </section>
           <section className="w-full border-y pt-6 md:pt-12 lg:pt-16 xl:pt-20">
-        <div className="px-4 md:px-6 space-y-10 xl:space-y-16">
-          <div className="grid max-w-[1300px] mx-auto gap-4 px-4 sm:px-6 md:px-10 md:grid-cols-2 md:gap-16">
-            <div>
-              <h1 className="lg:leading-tighter text-3xl font-bold tracking-tighter sm:text-4xl md:text-5xl xl:text-[3.4rem] 2xl:text-[3.75rem]">
-                The Best Experts in the World
-              </h1>
-            </div>
-            <div className="flex flex-col items-start space-y-4">
-              <p className="mx-auto max-w-[700px] text-gray-500 md:text-xl dark:text-gray-400">
-                Explore our wide range of consultants and find the right one for
-                your business.
-              </p>
-              <div className="space-x-4">
-                <Link
-                  className="inline-flex h-9 items-center justify-center rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-gray-50 shadow transition-colors hover:bg-gray-900/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gray-950 disabled:pointer-events-none disabled:opacity-50 dark:bg-gray-50 dark:text-gray-900 dark:hover:bg-gray-50/90 dark:focus-visible:ring-gray-300"
-                  href="#"
-                >
-                  Get Started
-                </Link>
+            <div className="px-4 md:px-6 space-y-10 xl:space-y-16">
+              <div className="grid max-w-[1300px] mx-auto gap-4 px-4 sm:px-6 md:px-10 md:grid-cols-2 md:gap-16">
+                <div>
+                  <h1 className="lg:leading-tighter text-3xl font-bold tracking-tighter sm:text-4xl md:text-5xl xl:text-[3.4rem] 2xl:text-[3.75rem]">
+                    The Best Experts in the World
+                  </h1>
+                </div>
+                <div className="flex flex-col items-start space-y-4">
+                  <p className="mx-auto max-w-[700px] text-gray-500 md:text-xl dark:text-gray-400">
+                    Explore our wide range of consultants and find the right one
+                    for your business.
+                  </p>
+                  <div className="space-x-4">
+                    <Link
+                      className="inline-flex h-9 items-center justify-center rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-gray-50 shadow transition-colors hover:bg-gray-900/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gray-950 disabled:pointer-events-none disabled:opacity-50 dark:bg-gray-50 dark:text-gray-900 dark:hover:bg-gray-50/90 dark:focus-visible:ring-gray-300"
+                      href="#"
+                    >
+                      Get Started
+                    </Link>
+                  </div>
+                </div>
               </div>
+              <Image
+                alt="Hero"
+                className="mx-auto aspect-[3/1] overflow-hidden rounded-t-xl object-cover"
+                height="300"
+                src="/placeholder.svg"
+                width="1270"
+              />
             </div>
-          </div>
-          <Image
-            alt="Hero"
-            className="mx-auto aspect-[3/1] overflow-hidden rounded-t-xl object-cover"
-            height="300"
-            src="/placeholder.svg"
-            width="1270"
-          />
-        </div>
-      </section>
-         
+          </section>
+
           <section className="w-full py-12 md:py-24 lg:py-32 bg-gray-100">
             <div className="px-4 md:px-6">
               <div className="grid items-center text-center gap-4">

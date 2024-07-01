@@ -16,6 +16,7 @@ model User {
   email         String?   @unique
   emailVerified DateTime?
   image         String?
+  phone         String?
   accounts      Account[] // This refers to the accounts that the user has connected
   sessions      Session[] // This refers to the sessions that the user has opened
 
@@ -26,19 +27,44 @@ model User {
   consultantProfileId String?
   consulteeProfileId  String?
 
-  attachments      Attachment[]
-  comments         Comment[]
-  commentLikes     CommentLike[]
-  images           Image[]
-  imageLikes       ImageLike[]
-  posts            Post[]
-  postLikes        PostLike[]
-  postsAttachments PostsAttachment[]
-  usersImages      UsersImage[]
+  attachments             Attachment[]
+  comments                Comment[]
+  commentLikes            CommentLike[]
+  images                  Image[]
+  imageLikes              ImageLike[]
+  posts                   Post[]
+  postLikes               PostLike[]
+  postsAttachments        PostsAttachment[]
+  usersImages             UsersImage[]
+  cookiePreferences       CookiePreference? // Added relation to CookiePreference
+  notificationPreferences NotificationPreference? // Added relation to NotificationPreference
 
   @@index([consultantProfileId])
   @@index([consulteeProfileId])
   @@map("users")
+}
+
+model CookiePreference {
+  id        String  @id @default(cuid())
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String  @unique
+  essential Boolean @default(true)
+  analytics Boolean @default(false)
+  marketing Boolean @default(false)
+
+  @@map("cookie_preferences")
+}
+
+model NotificationPreference {
+  id               String  @id @default(cuid())
+  user             User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId           String  @unique
+  allNotifications Boolean @default(true)
+  mentions         Boolean @default(false)
+  directMessages   Boolean @default(false)
+  updates          Boolean @default(false)
+
+  @@map("notification_preferences")
 }
 
 model Account {
