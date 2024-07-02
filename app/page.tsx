@@ -12,6 +12,7 @@ import { AnimatePresence } from "framer-motion";
 import Image from "next/image";
 import Link from "next/link";
 import bannerImage from "../public/static/assets/images/main-banner.jpeg";
+import {AvatarFallback, AvatarImage} from "@/components/ui/avatar";
 
 export default function Home() {
   return (
@@ -334,8 +335,136 @@ export default function Home() {
         </main>
         <Faq />
         <TestimonialsSection />
+        <MeetTheTeam />
         <Newsletter />
       </AnimatePresence>
     </ReduxProvider>
   );
+}
+
+/**
+ * v0 by Vercel.
+ * @see https://v0.dev/t/pbezvcjADh4
+ * Documentation: https://v0.dev/docs#integrating-generated-code-into-your-nextjs-app
+ */
+
+function MeetTheTeam() {
+  return (
+    <section className="w-full py-12 md:py-24 lg:py-32">
+      <div className="px-4 md:px-6">
+        <div className="space-y-4 text-center">
+          <h2 className="text-3xl font-bold tracking-tighter sm:text-4xl md:text-5xl">Meet the Team</h2>
+          <p className="text-muted-foreground md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed">
+            Get to know the talented individuals behind our company.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 gap-6 pt-10 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+          <div className="flex flex-col items-center justify-center space-y-4 rounded-lg bg-background p-6 shadow-lg transition-transform duration-300 ease-in-out hover:-translate-y-2 hover:shadow-xl">
+            <Avatar>
+              <AvatarImage src="/placeholder-user.jpg" />
+              <AvatarFallback>JD</AvatarFallback>
+            </Avatar>
+            <div className="space-y-1 text-center">
+              <h4 className="text-lg font-semibold">John Doe</h4>
+              <p className="text-sm text-muted-foreground">CEO</p>
+              <p className="text-sm text-muted-foreground">
+                John is the visionary behind our company, leading the team to new heights.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-col items-center justify-center space-y-4 rounded-lg bg-background p-6 shadow-lg transition-transform duration-300 ease-in-out hover:-translate-y-2 hover:shadow-xl">
+            <Avatar>
+              <AvatarImage src="/placeholder-user.jpg" />
+              <AvatarFallback>JA</AvatarFallback>
+            </Avatar>
+            <div className="space-y-1 text-center">
+              <h4 className="text-lg font-semibold">Jane Appleseed</h4>
+              <p className="text-sm text-muted-foreground">CTO</p>
+              <p className="text-sm text-muted-foreground">
+                Jane leads our engineering team, ensuring our products are cutting-edge and reliable.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-col items-center justify-center space-y-4 rounded-lg bg-background p-6 shadow-lg transition-transform duration-300 ease-in-out hover:-translate-y-2 hover:shadow-xl">
+            <Avatar>
+              <AvatarImage src="/placeholder-user.jpg" />
+              <AvatarFallback>KS</AvatarFallback>
+            </Avatar>
+            <div className="space-y-1 text-center">
+              <h4 className="text-lg font-semibold">Kara Sato</h4>
+              <p className="text-sm text-muted-foreground">Head of Design</p>
+              <p className="text-sm text-muted-foreground">
+                Kara leads our design team, ensuring our products have a beautiful and intuitive user experience.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-col items-center justify-center space-y-4 rounded-lg bg-background p-6 shadow-lg transition-transform duration-300 ease-in-out hover:-translate-y-2 hover:shadow-xl">
+            <Avatar>
+              <AvatarImage src="/placeholder-user.jpg" />
+              <AvatarFallback>MR</AvatarFallback>
+            </Avatar>
+            <div className="space-y-1 text-center">
+              <h4 className="text-lg font-semibold">Michael Reeves</h4>
+              <p className="text-sm text-muted-foreground">Head of Marketing</p>
+              <p className="text-sm text-muted-foreground">
+                Michael leads our marketing efforts, ensuring our brand resonates with our target audience.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-col items-center justify-center space-y-4 rounded-lg bg-background p-6 shadow-lg transition-transform duration-300 ease-in-out hover:-translate-y-2 hover:shadow-xl">
+            <Avatar>
+              <AvatarImage src="/placeholder-user.jpg" />
+              <AvatarFallback>LS</AvatarFallback>
+            </Avatar>
+            <div className="space-y-1 text-center">
+              <h4 className="text-lg font-semibold">Lisa Simmons</h4>
+              <p className="text-sm text-muted-foreground">Head of Sales</p>
+              <p className="text-sm text-muted-foreground">
+                Lisa leads our sales team, ensuring our customers receive top-notch service.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-col items-center justify-center space-y-4 rounded-lg bg-background p-6 shadow-lg transition-transform duration-300 ease-in-out hover:-translate-y-2 hover:shadow-xl">
+            <Avatar>
+              <AvatarImage src="/placeholder-user.jpg" />
+              <AvatarFallback>JB</AvatarFallback>
+            </Avatar>
+            <div className="space-y-1 text-center">
+              <h4 className="text-lg font-semibold">John Bauer</h4>
+              <p className="text-sm text-muted-foreground">Head of Customer Support</p>
+              <p className="text-sm text-muted-foreground">
+                John leads our customer support team, ensuring our customers have a seamless experience.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-col items-center justify-center space-y-4 rounded-lg bg-background p-6 shadow-lg transition-transform duration-300 ease-in-out hover:-translate-y-2 hover:shadow-xl">
+            <Avatar>
+              <AvatarImage src="/placeholder-user.jpg" />
+              <AvatarFallback>SM</AvatarFallback>
+            </Avatar>
+            <div className="space-y-1 text-center">
+              <h4 className="text-lg font-semibold">Sarah Mayer</h4>
+              <p className="text-sm text-muted-foreground">Head of Human Resources</p>
+              <p className="text-sm text-muted-foreground">
+                Sarah leads our HR team, ensuring our employees have the support they need to thrive.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-col items-center justify-center space-y-4 rounded-lg bg-background p-6 shadow-lg transition-transform duration-300 ease-in-out hover:-translate-y-2 hover:shadow-xl">
+            <Avatar>
+              <AvatarImage src="/placeholder-user.jpg" />
+              <AvatarFallback>DW</AvatarFallback>
+            </Avatar>
+            <div className="space-y-1 text-center">
+              <h4 className="text-lg font-semibold">David Wong</h4>
+              <p className="text-sm text-muted-foreground">Head of Finance</p>
+              <p className="text-sm text-muted-foreground">
+                David leads our finance team, ensuring our company remains financially sound.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  )
 }
