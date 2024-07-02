@@ -1,20 +1,49 @@
 "use client";
+
 import TestimonialsSection from "@/components/testimonials";
 import store from "@/redux/store";
 import { Provider as ReduxProvider } from "react-redux";
 
 import { Faq } from "@/components/faq";
 import { Newsletter } from "@/components/newsletter";
-import { Avatar } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { fetchImagesFromSupabaseStorage } from "@/lib/supabase";
 import { AnimatePresence } from "framer-motion";
 import Image from "next/image";
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import bannerImage from "../public/static/assets/images/main-banner.jpeg";
-import {AvatarFallback, AvatarImage} from "@/components/ui/avatar";
+
+type TImage = {
+  url: string;
+  name: string;
+  bucket_id: string;
+  owner: string;
+  id: string;
+  updated_at: string;
+  created_at: string;
+  last_accessed_at: string;
+  metadata: Record<string, any>;
+};
 
 export default function Home() {
+  const [images, setImages] = useState<TImage[]>([]);
+
+  useEffect(() => {
+    const getImages = async () => {
+      const fetchedImages = await fetchImagesFromSupabaseStorage(
+        "consultx_bucket",
+        "assets/images"
+      );
+      setImages(fetchedImages);
+      console.log("Fetched images:", fetchedImages);
+    };
+
+    getImages();
+  }, []);
+
   return (
     <ReduxProvider store={store}>
       <AnimatePresence>
@@ -61,15 +90,16 @@ export default function Home() {
           </section>
           <section className="w-full py-12 md:py-24 lg:py-32 flex flex-col justify-around items-center">
             <div className="grid items-center gap-6 lg:gap-12 xl:grid-cols-[1fr_550px] px-10 sm:w-full md:w-2/3 lg:w-5/6 xl:w-6/7">
-              <Image
-                // src={servicesImage}
-                src="/placeholder.svg"
-                className="mx-auto aspect-video overflow-hidden rounded-xl object-cover object-center sm:w-full lg:order-last"
-                width={550}
-                height={300}
-                alt="Image"
-                loading="eager"
-              />
+              {images.length > 0 && images[0].url && (
+                <Image
+                  key={images[0].id}
+                  src={images[0].url}
+                  width={550}
+                  height={310}
+                  alt={images[0].name}
+                  className="mx-auto aspect-video overflow-hidden rounded-xl object-cover object-center sm:w-full lg:order-last"
+                />
+              )}
               <div className="flex flex-col justify-around space-y-4">
                 <div className="space-y-2">
                   <h2 className="text-3xl sm:text-4xl md:text-5xl lg:text-6xl xl:text-7xl font-bold tracking-tighter">
@@ -353,7 +383,9 @@ function MeetTheTeam() {
     <section className="w-full py-12 md:py-24 lg:py-32">
       <div className="px-4 md:px-6">
         <div className="space-y-4 text-center">
-          <h2 className="text-3xl font-bold tracking-tighter sm:text-4xl md:text-5xl">Meet the Team</h2>
+          <h2 className="text-3xl font-bold tracking-tighter sm:text-4xl md:text-5xl">
+            Meet the Team
+          </h2>
           <p className="text-muted-foreground md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed">
             Get to know the talented individuals behind our company.
           </p>
@@ -368,7 +400,8 @@ function MeetTheTeam() {
               <h4 className="text-lg font-semibold">John Doe</h4>
               <p className="text-sm text-muted-foreground">CEO</p>
               <p className="text-sm text-muted-foreground">
-                John is the visionary behind our company, leading the team to new heights.
+                John is the visionary behind our company, leading the team to
+                new heights.
               </p>
             </div>
           </div>
@@ -381,7 +414,8 @@ function MeetTheTeam() {
               <h4 className="text-lg font-semibold">Jane Appleseed</h4>
               <p className="text-sm text-muted-foreground">CTO</p>
               <p className="text-sm text-muted-foreground">
-                Jane leads our engineering team, ensuring our products are cutting-edge and reliable.
+                Jane leads our engineering team, ensuring our products are
+                cutting-edge and reliable.
               </p>
             </div>
           </div>
@@ -394,7 +428,8 @@ function MeetTheTeam() {
               <h4 className="text-lg font-semibold">Kara Sato</h4>
               <p className="text-sm text-muted-foreground">Head of Design</p>
               <p className="text-sm text-muted-foreground">
-                Kara leads our design team, ensuring our products have a beautiful and intuitive user experience.
+                Kara leads our design team, ensuring our products have a
+                beautiful and intuitive user experience.
               </p>
             </div>
           </div>
@@ -407,7 +442,8 @@ function MeetTheTeam() {
               <h4 className="text-lg font-semibold">Michael Reeves</h4>
               <p className="text-sm text-muted-foreground">Head of Marketing</p>
               <p className="text-sm text-muted-foreground">
-                Michael leads our marketing efforts, ensuring our brand resonates with our target audience.
+                Michael leads our marketing efforts, ensuring our brand
+                resonates with our target audience.
               </p>
             </div>
           </div>
@@ -420,7 +456,8 @@ function MeetTheTeam() {
               <h4 className="text-lg font-semibold">Lisa Simmons</h4>
               <p className="text-sm text-muted-foreground">Head of Sales</p>
               <p className="text-sm text-muted-foreground">
-                Lisa leads our sales team, ensuring our customers receive top-notch service.
+                Lisa leads our sales team, ensuring our customers receive
+                top-notch service.
               </p>
             </div>
           </div>
@@ -431,9 +468,12 @@ function MeetTheTeam() {
             </Avatar>
             <div className="space-y-1 text-center">
               <h4 className="text-lg font-semibold">John Bauer</h4>
-              <p className="text-sm text-muted-foreground">Head of Customer Support</p>
               <p className="text-sm text-muted-foreground">
-                John leads our customer support team, ensuring our customers have a seamless experience.
+                Head of Customer Support
+              </p>
+              <p className="text-sm text-muted-foreground">
+                John leads our customer support team, ensuring our customers
+                have a seamless experience.
               </p>
             </div>
           </div>
@@ -444,9 +484,12 @@ function MeetTheTeam() {
             </Avatar>
             <div className="space-y-1 text-center">
               <h4 className="text-lg font-semibold">Sarah Mayer</h4>
-              <p className="text-sm text-muted-foreground">Head of Human Resources</p>
               <p className="text-sm text-muted-foreground">
-                Sarah leads our HR team, ensuring our employees have the support they need to thrive.
+                Head of Human Resources
+              </p>
+              <p className="text-sm text-muted-foreground">
+                Sarah leads our HR team, ensuring our employees have the support
+                they need to thrive.
               </p>
             </div>
           </div>
@@ -459,12 +502,13 @@ function MeetTheTeam() {
               <h4 className="text-lg font-semibold">David Wong</h4>
               <p className="text-sm text-muted-foreground">Head of Finance</p>
               <p className="text-sm text-muted-foreground">
-                David leads our finance team, ensuring our company remains financially sound.
+                David leads our finance team, ensuring our company remains
+                financially sound.
               </p>
             </div>
           </div>
         </div>
       </div>
     </section>
-  )
+  );
 }

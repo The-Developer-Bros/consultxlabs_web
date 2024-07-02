@@ -11,6 +11,9 @@ module.exports = {
       {
         hostname: "firebasestorage.googleapis.com",
       },
+      {
+        hostname: "spyhtvtmrektuyogsxze.supabase.co",
+      },
     ],
   },
 };
