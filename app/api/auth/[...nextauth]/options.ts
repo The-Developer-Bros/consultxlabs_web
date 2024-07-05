@@ -4,7 +4,6 @@ import { AdapterUser } from "next-auth/adapters";
 import { JWT } from "next-auth/jwt";
 import GitHubProvider from "next-auth/providers/github";
 import GoogleProvider from "next-auth/providers/google";
-
 import prisma from "@/lib/prisma";
 
 // DONT EXPORT authOptions if using Docker
@@ -27,8 +26,6 @@ const authOptions: NextAuthOptions = {
   },
 
   callbacks: {
-    // The callbacks are arranged in the order they are called in when authenticating a user.
-
     async signIn({
       user,
       account,
@@ -42,7 +39,14 @@ const authOptions: NextAuthOptions = {
       email?: string | { verificationRequest?: boolean };
       credentials?: any;
     }): Promise<boolean | string> {
-      return true;
+      try {
+        // Add any custom sign-in logic here
+        return true;
+      } catch (error) {
+        console.error("Error during sign-in:", error);
+        // Handle the error as needed
+        return false; // or redirect to an error page
+      }
     },
 
     async jwt({
@@ -58,11 +62,22 @@ const authOptions: NextAuthOptions = {
       profile?: Profile;
       isNewUser?: boolean;
     }): Promise<any> {
-      if (user) {
-        token.sub = user.id;
+      try {
+        if (user) {
+          token.sub = user.id;
+        } else if (account?.providerAccountId) {
+          token.accountId = account.providerAccountId;
+        } else if (profile) {
+          token.profile = profile;
+        }
+        // Optionally handle isNewUser or other properties
+        return token;
+      } catch (error) {
+        console.error("Error during JWT callback:", error);
+        // Handle the error as needed
+        return token; // Ensure token is returned even in error cases
       }
-      return token;
-    },
+    },  
 
     async session({
       session,
@@ -73,28 +88,30 @@ const authOptions: NextAuthOptions = {
       token: JWT;
       user: User | AdapterUser;
     }): Promise<any> {
-      //////////////////////////// DO NOT REMOVE ////////////////////////////
+      try {
+        if (session?.user && token.sub) {
+          session.user.id = token.sub;
 
-      if (session?.user && token.sub) {
-        session.user.id = token.sub;
+          const user = await prisma.user.findUnique({
+            where: {
+              email: session.user.email ?? "",
+            },
+          });
 
-        const user = await prisma.user.findUnique({
-          where: {
-            email: session.user.email ?? "",
-          },
-        });
-
-        session.user.email = user?.email;
-        session.user.name = user?.name;
-        session.user.image = user?.image;
-        session.user.phone = user?.phone ?? "";
-        session.user.address = user?.address ?? "";
-        session.user.onboardingCompleted = user?.onboardingCompleted ?? false;
-        session.user.role = user?.role ?? "CONSULTEE";
-
+          session.user.email = user?.email;
+          session.user.name = user?.name;
+          session.user.image = user?.image;
+          session.user.phone = user?.phone ?? "";
+          session.user.address = user?.address ?? "";
+          session.user.onboardingCompleted = user?.onboardingCompleted ?? false;
+          session.user.role = user?.role ?? "CONSULTEE";
+        }
+        return session;
+      } catch (error) {
+        console.error("Error during session callback:", error);
+        // Handle the error as needed, such as setting default values
+        return session;
       }
-
-      return session;
     },
 
     async redirect({
@@ -104,7 +121,13 @@ const authOptions: NextAuthOptions = {
       url: string;
       baseUrl: string;
     }): Promise<string> {
-      return baseUrl + "/dashboard";
+      try {
+        return baseUrl + "/dashboard";
+      } catch (error) {
+        console.error("Error during redirect callback:", error);
+        // Handle the error as needed
+        return baseUrl;
+      }
     },
   },
   // theme: {
