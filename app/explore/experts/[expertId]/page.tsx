@@ -12,12 +12,57 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { useToast } from "@/components/ui/use-toast";
 import Image from "next/image";
+import { useEffect, useState } from "react";
+
+import { Dialog, DialogContent, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
+
+type TComment = {
+  name: string;
+  date: string;
+  feedback: string;
+  rating: number;
+};
+
+const comments: TComment[] = [
+  {
+    name: "Amit Kumar",
+    date: "June 27, 2023",
+    feedback: "Good doctor, highly recommend 👍",
+    rating: 5,
+  },
+  {
+    name: "Rohit Singh",
+    date: "June 27, 2023",
+    feedback: "good",
+    rating: 4,
+  },
+  {
+    name: "Sneha Verma",
+    date: "June 27, 2023",
+    feedback: "so much good",
+    rating: 5,
+  },
+];
+
+type TSlotsOfAvailability = {
+  id: string;
+  availabilitySlots: TSlotTiming[];
+};
+
+type TSlotTiming = {
+  slotId: string;
+  day: string;
+  startTime: string;
+  endTime: string;
+};
+
 
 export default function ExpertProfile({
   params,
 }: {
-  readonly params: { expertId: string };
+  readonly params: { consultantId: string };
 }) {
   // Route	params Type Definition
   // app/blog/[slug]/page.js	{ slug: string }
@@ -26,156 +71,213 @@ export default function ExpertProfile({
 
   // TODO: Fetch data from API
 
+  const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined);
+  const [availableSlots, setAvailableSlots] = useState<TSlotsOfAvailability>();
+  const [selectedSlot, setSelectedSlot] = useState<TSlotTiming | undefined>();
+  const { toast } = useToast();
+
+  useEffect(() => {
+
+    const fetchAvailableSlots = async (date: { toISOString: () => any }) => {
+      const response = await fetch(
+        `/api/slots?consultantId=${params.consultantId}&date=${date.toISOString()}`
+      );
+      const data = await response.json();
+      setAvailableSlots(data);
+    };
+    if (selectedDate) {
+      fetchAvailableSlots(selectedDate);
+    }
+  }, [params.consultantId, selectedDate]);
+
+  const handleBooking = async () => {
+    if (!selectedSlot) {
+      toast({ title: "Please select a time slot", variant: "destructive" });
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/book-consultation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          consultantId: params.consultantId,
+          slotId: selectedSlot.slotId,
+          date: selectedDate,
+        }),
+      });
+
+      if (response.ok) {
+        toast({ title: "Booking request sent successfully" });
+      } else {
+        toast({
+          title: "Failed to send booking request",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error("Booking error:", error);
+      toast({ title: "An error occurred", variant: "destructive" });
+    }
+  };
+
   return (
-      <div key={params.expertId} className="flex justify-center py-40">
-        <div className="flex flex-col w-1/2">
-          <div className="flex items-center mb-6 text-lg">
-            <div className="flex flex-col">
-              <Badge className="mb-1" variant="secondary">
-                neurologist
-              </Badge>
-              <h2 className="text-3xl font-semibold">Dr. Muhibur Rahman</h2>
-              <div className="flex items-center my-2">
-                <StarIcon className="text-blue-500 w-5 h-5" />
-                <StarIcon className="text-blue-500 w-5 h-5" />
-                <StarIcon className="text-blue-500 w-5 h-5" />
-                <StarIcon className="text-blue-500 w-5 h-5" />
-                <StarIcon className="text-gray-300 w-5 h-5" />
-                <span className="ml-2 text-base">(3)</span>
-              </div>
-              <p className="text-lg">Specialization in Neurologist</p>
+    <div key={params.consultantId} className="flex justify-center py-40">
+      <div className="flex flex-col w-1/2">
+        <div className="flex items-center mb-6 text-lg">
+          <div className="flex flex-col">
+            <Badge className="mb-1" variant="secondary">
+              neurologist
+            </Badge>
+            <h2 className="text-3xl font-semibold">Dr. Aditya Sharma</h2>
+            <div className="flex items-center my-2">
+              <StarIcon className="text-blue-500 w-5 h-5" />
+              <StarIcon className="text-blue-500 w-5 h-5" />
+              <StarIcon className="text-blue-500 w-5 h-5" />
+              <StarIcon className="text-blue-500 w-5 h-5" />
+              <StarIcon className="text-gray-300 w-5 h-5" />
+              <span className="ml-2 text-base">(3)</span>
             </div>
-          </div>
-          <div className="mb-6">
-            <h3>
-              About
-              <p className="mt-2 text-gray-500">
-                Dr. Muhibur Rahman is a highly experienced neurologist with over
-                20 years of experience in the field. He specializes in treating
-                a wide range of neurological conditions and is known for his
-                patient-centric approach.
-              </p>
-              Qualification and Education
-              <p className="mt-2 text-gray-500">
-                Dr. Rahman completed his MBBS from the University of Dhaka,
-                followed by a specialization in Neurology from the same
-                institution. He has also undergone extensive training in
-                advanced neurological procedures.
-              </p>
-              Feedback
-              <p className="mt-2 text-gray-500">
-                Patients appreciate Dr. Rahman for his thorough understanding,
-                detailed explanations, and compassionate care. He is highly
-                recommended for neurological consultations.
-              </p>
-            </h3>
-            <h3>Qualification and Education</h3>
-            <h3>Feedback</h3>
-          </div>
-          <div>
-            <h3 className="font-semibold text-lg mb-4">All Reviews (3)</h3>
-            <div className="space-y-4">
-              <div>
-                <div className="flex items-center mb-1">
-                  <Avatar className="w-8 h-8 mr-2" />
-                  <div>
-                    <p className="font-semibold">Ahmed Ali</p>
-                    <p className="text-sm text-gray-500">June 27, 2023</p>
-                  </div>
-                </div>
-                <p>Good doctor, highly recommend 👍</p>
-                <div className="flex">
-                  <StarIcon className="text-blue-500 w-4 h-4" />
-                  <StarIcon className="text-blue-500 w-4 h-4" />
-                  <StarIcon className="text-blue-500 w-4 h-4" />
-                  <StarIcon className="text-blue-500 w-4 h-4" />
-                  <StarIcon className="text-blue-500 w-4 h-4" />
-                </div>
-              </div>
-              <div>
-                <div className="flex items-center mb-1">
-                  <Avatar className="w-8 h-8 mr-2" />
-                  <div>
-                    <p className="font-semibold">rakib</p>
-                    <p className="text-sm text-gray-500">June 27, 2023</p>
-                  </div>
-                </div>
-                <p>good</p>
-                <div className="flex">
-                  <StarIcon className="text-blue-500 w-4 h-4" />
-                  <StarIcon className="text-blue-500 w-4 h-4" />
-                  <StarIcon className="text-blue-500 w-4 h-4" />
-                  <StarIcon className="text-blue-500 w-4 h-4" />
-                  <StarIcon className="text-gray-300 w-4 h-4" />
-                </div>
-              </div>
-              <div>
-                <div className="flex items-center mb-1">
-                  <Avatar className="w-8 h-8 mr-2" />
-                  <div>
-                    <p className="font-semibold">emran</p>
-                    <p className="text-sm text-gray-500">June 27, 2023</p>
-                  </div>
-                </div>
-                <p>so much good</p>
-                <div className="flex">
-                  <StarIcon className="text-blue-500 w-4 h-4" />
-                  <StarIcon className="text-blue-500 w-4 h-4" />
-                  <StarIcon className="text-blue-500 w-4 h-4" />
-                  <StarIcon className="text-blue-500 w-4 h-4" />
-                  <StarIcon className="text-blue-500 w-4 h-4" />
-                </div>
-              </div>
-            </div>
+            <p className="text-lg">Specialization in Neurologist</p>
           </div>
         </div>
-        <div className="flex flex-col items-center w-1/4 ml-10">
-          <Image
-            alt="Profile"
-            className="rounded-full mb-6"
-            height="1350"
-            src="/placeholder.svg"
-            style={{
-              aspectRatio: "1080/1350",
-              objectFit: "cover",
-            }}
-            width="1080"
-          />
-          <div className="card p-6 bg-white shadow-lg rounded-lg w-full">
-            <h3 className="text-lg font-semibold mb-4">Ticket Price</h3>
-            <p className="text-3xl font-bold mb-6">1000 BDT</p>
-            <h4 className="font-semibold mb-2">Available Time Slots:</h4>
-            <ul className="mb-6">
-              <li>Saturday: 5:30 pm - 8:50 pm</li>
-              <li>Monday: 10:00 am - 3:00 pm</li>
-              <li>Wednesday: 5:00 pm - 9:30 pm</li>
-            </ul>
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button
-                  className="w-full bg-gray-900 text-white justify-start text-left font-normal mb-4"
-                  id="date"
-                  variant="outline"
-                >
-                  <CalendarDaysIcon className="mr-1 h-4 w-4 -translate-x-1" />
-                  Schedule a Session
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent align="start" className="w-auto p-0">
-                <Calendar initialFocus mode="range" numberOfMonths={2} />
-              </PopoverContent>
-            </Popover>
-            <Button
-              className="w-full bg-gray-900 text-white justify-start text-left font-normal"
-              variant="outline"
-            >
-              Join Classes
-            </Button>
+        <div className="mb-6">
+          <h3>
+            About
+            <p className="mt-2 text-gray-500">
+              Dr. Aditya Sharma is a highly experienced neurologist with over 20
+              years of experience in the field. He specializes in treating a
+              wide range of neurological conditions and is known for his
+              patient-centric approach.
+            </p>
+            Qualification and Education
+            <p className="mt-2 text-gray-500">
+              Dr. Sharma completed his MBBS from the All India Institute of
+              Medical Sciences, followed by a specialization in Neurology from
+              the same institution. He has also undergone extensive training in
+              advanced neurological procedures.
+            </p>
+            Feedback
+            <p className="mt-2 text-gray-500">
+              Patients appreciate Dr. Sharma for his thorough understanding,
+              detailed explanations, and compassionate care. He is highly
+              recommended for neurological consultations.
+            </p>
+          </h3>
+          <h3>Qualification and Education</h3>
+          <h3>Feedback</h3>
+        </div>
+        <div>
+          <h3 className="font-semibold text-lg mb-4">All Reviews (3)</h3>
+          <div className="space-y-4">
+            {comments.map((comment) => (
+              <Comment key={comment.name} {...comment} />
+            ))}
           </div>
         </div>
       </div>
+      <div className="flex flex-col items-center w-1/4 ml-10">
+        <Image
+          alt="Profile"
+          className="rounded-full mb-6"
+          height="1350"
+          src="/placeholder.svg"
+          style={{
+            aspectRatio: "1080/1350",
+            objectFit: "cover",
+          }}
+          width="1080"
+        />
+        <div className="card p-6 bg-white shadow-lg rounded-lg w-full">
+          <h3 className="text-lg font-semibold mb-4">Ticket Price</h3>
+          <p className="text-3xl font-bold mb-6">1000 BDT</p>
+          <h4 className="font-semibold mb-2">Available Time Slots:</h4>
+          <ul className="mb-6">
+            <li>Saturday: 5:30 pm - 8:50 pm</li>
+            <li>Monday: 10:00 am - 3:00 pm</li>
+            <li>Wednesday: 5:00 pm - 9:30 pm</li>
+          </ul>
+          <Dialog>
+      <DialogTrigger asChild>
+        <Button>Book Consultation</Button>
+      </DialogTrigger>
+      <DialogContent className="w-full max-w-[800px] grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="bg-gray-100 dark:bg-gray-800 rounded-lg p-6">
+          <h3 className="text-lg font-semibold mb-4">Select a Date</h3>
+          <Calendar 
+            mode="single" 
+            selected={selectedDate}
+            onSelect={setSelectedDate}
+          />
+        </div>
+        <div className="bg-gray-100 dark:bg-gray-800 rounded-lg p-6">
+          <h3 className="text-lg font-semibold mb-4">Available Time Slots</h3>
+          <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-1 lg:grid-cols-2">
+            {availableSlots?.availabilitySlots.map((slot) => (
+              <Button 
+                key={slot.slotId}
+                size="sm" 
+                variant={selectedSlot?.slotId === slot.slotId ? "default" : "outline"}
+                onClick={() => setSelectedSlot(slot)}
+              >
+                {slot.startTime} - {slot.endTime}
+              </Button>
+            ))}
+          </div>
+        </div>
+        <DialogFooter className="col-start-1 col-end-3 flex justify-end gap-4">
+          <Button variant="outline">Cancel</Button>
+          <Button onClick={handleBooking}>Book Consultation</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                className="w-full bg-gray-900 text-white justify-start text-left font-normal mb-4"
+                id="date"
+                variant="outline"
+              >
+                <CalendarDaysIcon className="mr-1 h-4 w-4 -translate-x-1" />
+                Schedule a Session
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-auto p-0">
+              <Calendar initialFocus mode="range" numberOfMonths={2} />
+            </PopoverContent>
+          </Popover>
+          <Button
+            className="w-full bg-gray-900 text-white justify-start text-left font-normal"
+            variant="outline"
+          >
+            Join Classes
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
+
+const Comment = ({ name, date, feedback, rating }: TComment) => (
+  <div>
+    <div className="flex items-center mb-1">
+      <Avatar className="w-8 h-8 mr-2" />
+      <div>
+        <p className="font-semibold">{name}</p>
+        <p className="text-sm text-gray-500">{date}</p>
+      </div>
+    </div>
+    <p>{feedback}</p>
+    <div className="flex">
+      {[...Array(rating)].map((_, i) => (
+        <StarIcon key={`${name}-${rating}-${i}`} className="text-blue-500 w-4 h-4" />
+      ))}
+      {[...Array(5 - rating)].map((_, i) => (
+        <StarIcon key={`${name}-${rating}-${i}`} className="text-gray-300 w-4 h-4" />
+      ))}
+    </div>
+  </div>
+);
 
 function StarIcon(props: any) {
   return (
