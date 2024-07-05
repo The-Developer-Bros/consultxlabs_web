@@ -10,7 +10,7 @@ const fetchImagesFromSupabaseStorage = async (bucket: string, path: string) => {
         const { data, error } = await supabase.storage.from(bucket).list(path, {
             limit: 10,
             offset: 0,
-            sortBy: { column: "created_at", order: "desc" },
+            sortBy: { column: "name", order: "asc" },
         });
 
         if (error) {

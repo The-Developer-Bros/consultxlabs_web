@@ -15,6 +15,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import bannerImage from "../public/static/assets/images/main-banner.jpeg";
+import renderImage from "@/lib/image";
 
 type TImage = {
   url: string;
@@ -90,16 +91,7 @@ export default function Home() {
           </section>
           <section className="w-full py-12 md:py-24 lg:py-32 flex flex-col justify-around items-center">
             <div className="grid items-center gap-6 lg:gap-12 xl:grid-cols-[1fr_550px] px-10 sm:w-full md:w-2/3 lg:w-5/6 xl:w-6/7">
-              {images.length > 0 && images[0].url && (
-                <Image
-                  key={images[0].id}
-                  src={images[0].url}
-                  width={550}
-                  height={310}
-                  alt={images[0].name}
-                  className="mx-auto aspect-video overflow-hidden rounded-xl object-cover object-center sm:w-full lg:order-last"
-                />
-              )}
+              {renderImage(images, 0, "/placeholder.svg", 550, 310)}
               <div className="flex flex-col justify-around space-y-4">
                 <div className="space-y-2">
                   <h2 className="text-3xl sm:text-4xl md:text-5xl lg:text-6xl xl:text-7xl font-bold tracking-tighter">
@@ -179,13 +171,7 @@ export default function Home() {
                     </li>
                   </ul>
                 </div>
-                <Image
-                  src="/placeholder.svg"
-                  width="550"
-                  height="310"
-                  alt="Features"
-                  className="mx-auto aspect-video overflow-hidden rounded-xl object-cover object-center sm:w-full lg:order-last"
-                />
+                {renderImage(images, 1, "/placeholder.svg", 550, 310)}
               </div>
             </div>
           </section>
@@ -212,13 +198,7 @@ export default function Home() {
                   </div>
                 </div>
               </div>
-              <Image
-                alt="Hero"
-                className="mx-auto aspect-[3/1] overflow-hidden rounded-t-xl object-cover"
-                height="300"
-                src="/placeholder.svg"
-                width="1270"
-              />
+              {renderImage(images, 2, "/placeholder.svg", 1000, 300)}
             </div>
           </section>
 
