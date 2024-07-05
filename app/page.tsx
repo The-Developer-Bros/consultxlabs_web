@@ -9,13 +9,12 @@ import { Newsletter } from "@/components/newsletter";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import renderImage from "@/lib/image";
 import { fetchImagesFromSupabaseStorage } from "@/lib/supabase";
 import { AnimatePresence } from "framer-motion";
-import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import bannerImage from "../public/static/assets/images/main-banner.jpeg";
-import renderImage from "@/lib/image";
 
 type TImage = {
   url: string;
@@ -198,7 +197,7 @@ export default function Home() {
                   </div>
                 </div>
               </div>
-              {renderImage(images, 2, "/placeholder.svg", 1000, 300)}
+              {renderImage(images, 2, "/placeholder.svg", 6016, 4016)}
             </div>
           </section>
 
