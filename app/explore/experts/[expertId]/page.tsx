@@ -7,16 +7,15 @@ import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
 import { useToast } from "@/components/ui/use-toast";
 import Image from "next/image";
 import { useEffect, useState } from "react";
-
-import { Dialog, DialogContent, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 
 type TComment = {
   name: string;
@@ -58,26 +57,17 @@ type TSlotTiming = {
   endTime: string;
 };
 
-
 export default function ExpertProfile({
   params,
 }: {
   readonly params: { consultantId: string };
 }) {
-  // Route	params Type Definition
-  // app/blog/[slug]/page.js	{ slug: string }
-  // app/shop/[...slug]/page.js	{ slug: string[] }
-  // app/[categoryId]/[itemId]/page.js	{ categoryId: string, itemId: string }
-
-  // TODO: Fetch data from API
-
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined);
   const [availableSlots, setAvailableSlots] = useState<TSlotsOfAvailability>();
   const [selectedSlot, setSelectedSlot] = useState<TSlotTiming | undefined>();
   const { toast } = useToast();
 
   useEffect(() => {
-
     const fetchAvailableSlots = async (date: { toISOString: () => any }) => {
       const response = await fetch(
         `/api/slots?consultantId=${params.consultantId}&date=${date.toISOString()}`
@@ -190,68 +180,51 @@ export default function ExpertProfile({
         />
         <div className="card p-6 bg-white shadow-lg rounded-lg w-full">
           <h3 className="text-lg font-semibold mb-4">Ticket Price</h3>
-          <p className="text-3xl font-bold mb-6">1000 BDT</p>
-          <h4 className="font-semibold mb-2">Available Time Slots:</h4>
+          <p className="text-3xl font-bold mb-6">INR 599</p>
+          <h4 className="font-semibold mb-2">General Schedule:</h4>
           <ul className="mb-6">
             <li>Saturday: 5:30 pm - 8:50 pm</li>
             <li>Monday: 10:00 am - 3:00 pm</li>
             <li>Wednesday: 5:00 pm - 9:30 pm</li>
           </ul>
           <Dialog>
-      <DialogTrigger asChild>
-        <Button>Book Consultation</Button>
-      </DialogTrigger>
-      <DialogContent className="w-full max-w-[800px] grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-gray-100 dark:bg-gray-800 rounded-lg p-6">
-          <h3 className="text-lg font-semibold mb-4">Select a Date</h3>
-          <Calendar 
-            mode="single" 
-            selected={selectedDate}
-            onSelect={setSelectedDate}
-          />
-        </div>
-        <div className="bg-gray-100 dark:bg-gray-800 rounded-lg p-6">
-          <h3 className="text-lg font-semibold mb-4">Available Time Slots</h3>
-          <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-1 lg:grid-cols-2">
-            {availableSlots?.availabilitySlots.map((slot) => (
-              <Button 
-                key={slot.slotId}
-                size="sm" 
-                variant={selectedSlot?.slotId === slot.slotId ? "default" : "outline"}
-                onClick={() => setSelectedSlot(slot)}
-              >
-                {slot.startTime} - {slot.endTime}
-              </Button>
-            ))}
-          </div>
-        </div>
-        <DialogFooter className="col-start-1 col-end-3 flex justify-end gap-4">
-          <Button variant="outline">Cancel</Button>
-          <Button onClick={handleBooking}>Book Consultation</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-          <Popover>
-            <PopoverTrigger asChild>
+            <DialogTrigger asChild>
               <Button
-                className="w-full bg-gray-900 text-white justify-start text-left font-normal mb-4"
-                id="date"
-                variant="outline"
-              >
-                <CalendarDaysIcon className="mr-1 h-4 w-4 -translate-x-1" />
-                Schedule a Session
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="start" className="w-auto p-0">
-              <Calendar initialFocus mode="range" numberOfMonths={2} />
-            </PopoverContent>
-          </Popover>
-          <Button
-            className="w-full bg-gray-900 text-white justify-start text-left font-normal"
-            variant="outline"
-          >
-            Join Classes
-          </Button>
+               variant="night"
+              >Book Consultation</Button>
+            </DialogTrigger>
+            <DialogContent className="w-full max-w-[800px] grid grid-cols-1 md:grid-cols-2 gap-6 bg-white rounded-lg p-6">
+              <div className="bg-white rounded-lg p-6">
+                <h3 className="text-lg font-semibold mb-4">Select a Date</h3>
+                <Calendar 
+                  mode="single" 
+                  selected={selectedDate}
+                  onSelect={setSelectedDate}
+                />
+              </div>
+              <div className="bg-white rounded-lg p-6">
+                <h3 className="text-lg font-semibold mb-4">Available Time Slots</h3>
+                <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-1 lg:grid-cols-2">
+                  {availableSlots?.availabilitySlots.map((slot) => (
+                    <Button 
+                      key={slot.slotId}
+                      size="sm" 
+                      variant={selectedSlot?.slotId === slot.slotId ? "night" : "outline"}
+                      onClick={() => setSelectedSlot(slot)}
+                    >
+                      {slot.startTime} - {slot.endTime}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+              <DialogFooter className="col-start-1 col-end-3 flex justify-end gap-4">
+                <Button variant="default">Cancel</Button>
+                <Button onClick={handleBooking}
+                 variant={selectedSlot ? "night" : "outline"}
+                >Book Consultation</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
     </div>
@@ -294,34 +267,6 @@ function StarIcon(props: any) {
       strokeLinejoin="round"
     >
       <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-    </svg>
-  );
-}
-
-function CalendarDaysIcon(props: any) {
-  return (
-    <svg
-      {...props}
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <rect width="18" height="18" x="3" y="4" rx="2" ry="2" />
-      <line x1="16" x2="16" y1="2" y2="6" />
-      <line x1="8" x2="8" y1="2" y2="6" />
-      <line x1="3" x2="21" y1="10" y2="10" />
-      <path d="M8 14h.01" />
-      <path d="M12 14h.01" />
-      <path d="M16 14h.01" />
-      <path d="M8 18h.01" />
-      <path d="M12 18h.01" />
-      <path d="M16 18h.01" />
     </svg>
   );
 }
