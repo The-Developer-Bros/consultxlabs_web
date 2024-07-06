@@ -1,14 +1,14 @@
 import { faker } from '@faker-js/faker';
+import { UserRole } from '@prisma/client';
 import * as dotenv from 'dotenv';
 import prisma from '../lib/prisma';
 dotenv.config({ path: ".env" });
 
-async function main() {
-  // Generate Users
-  try {
-    for (let i = 0; i < 40; i++) {
-      const userRole = faker.helpers.arrayElement(['CONSULTANT', 'CONSULTEE', 'ADMIN', 'STAFF'] as const);
-      console.log(`Creating user with role: ${userRole}`);
+async function createUsers() {
+  for (let i = 0; i < 40; i++) {
+    const userRole = faker.helpers.arrayElement(['CONSULTANT', 'CONSULTEE', 'ADMIN', 'STAFF']);
+    console.log(`Creating user with role: ${userRole}`);
+    try {
       await prisma.user.create({
         data: {
           name: faker.person.fullName(),
@@ -18,7 +18,7 @@ async function main() {
           phone: faker.phone.number(),
           address: faker.location.streetAddress(),
           onboardingCompleted: faker.datatype.boolean(),
-          role: userRole,
+          role: userRole as UserRole,
           ...(userRole === 'CONSULTANT' && {
             consultantProfile: {
               create: {
@@ -44,19 +44,17 @@ async function main() {
           }),
         }
       });
+    } catch (error) {
+      console.error('Failed to create user:', error);
     }
-  } catch (error) {
-    console.error('Failed to create users:', error);
   }
+}
 
-  // Generate Consultations
+async function createConsultations() {
   const consultants = await prisma.consultantProfile.findMany();
   const consultees = await prisma.consulteeProfile.findMany();
 
-  // Shuffle and select a subset of consultees
-  const selectedConsultees = consultees
-    .toSorted(() => 0.5 - Math.random())
-    .slice(0, Math.min(30, consultees.length));
+  const selectedConsultees = consultees.toSorted(() => 0.5 - Math.random()).slice(0, Math.min(30, consultees.length));
 
   for (const consultee of selectedConsultees) {
     try {
@@ -70,7 +68,7 @@ async function main() {
             create: {
               appointmentSlots: {
                 create: {
-                  day: faker.helpers.arrayElement(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']),
+                  dateInISO: faker.date.future().toISOString(),
                   startTime: faker.date.future(),
                   endTime: faker.date.future(),
                 }
@@ -83,8 +81,12 @@ async function main() {
       console.error(`Failed to create consultation for consultee ${consultee.id}:`, error);
     }
   }
+}
 
-  // Generate Subscriptions
+async function createSubscriptions() {
+  const consultants = await prisma.consultantProfile.findMany();
+  const consultees = await prisma.consulteeProfile.findMany();
+
   for (let i = 0; i < 30; i++) {
     try {
       console.log('Creating subscription');
@@ -100,8 +102,12 @@ async function main() {
       console.error('Failed to create subscription:', error);
     }
   }
+}
 
-  // Generate Webinars
+async function createWebinars() {
+  const consultants = await prisma.consultantProfile.findMany();
+  const consultees = await prisma.consulteeProfile.findMany();
+
   for (let i = 0; i < 30; i++) {
     try {
       console.log('Creating webinar');
@@ -116,7 +122,7 @@ async function main() {
             create: {
               appointmentSlots: {
                 create: {
-                  day: faker.helpers.arrayElement(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']),
+                  dateInISO: faker.date.future().toISOString(),
                   startTime: faker.date.future(),
                   endTime: faker.date.future(),
                 }
@@ -129,8 +135,12 @@ async function main() {
       console.error('Failed to create webinar:', error);
     }
   }
+}
 
-  // Generate Classes
+async function createClasses() {
+  const consultants = await prisma.consultantProfile.findMany();
+  const consultees = await prisma.consulteeProfile.findMany();
+
   for (let i = 0; i < 30; i++) {
     try {
       console.log('Creating class');
@@ -149,8 +159,9 @@ async function main() {
       console.error('Failed to create class:', error);
     }
   }
+}
 
-  // Generate Newsletters
+async function createNewsletters() {
   for (let i = 0; i < 40; i++) {
     try {
       console.log('Creating newsletter');
@@ -163,8 +174,11 @@ async function main() {
       console.error('Failed to create newsletter:', error);
     }
   }
+}
 
-  // Generate SlotsOfAvailability
+async function createSlotsOfAvailability() {
+  const consultants = await prisma.consultantProfile.findMany();
+
   for (let i = 0; i < 30; i++) {
     try {
       console.log('Creating slots of availability');
@@ -173,7 +187,7 @@ async function main() {
           consultantProfileId: faker.helpers.arrayElement(consultants).id,
           availabilitySlots: {
             create: Array.from({ length: faker.number.int({ min: 1, max: 5 }) }, () => ({
-              day: faker.helpers.arrayElement(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']),
+              dateInISO: faker.date.future().toISOString(),
               startTime: faker.date.future(),
               endTime: faker.date.future(),
             }))
@@ -184,13 +198,44 @@ async function main() {
       console.error('Failed to create slots of availability:', error);
     }
   }
+}
+
+async function createSlotRequests() {
+  const slotTimings = await prisma.slotTiming.findMany();
+  const consultees = await prisma.consulteeProfile.findMany();
+
+  for (const consultee of consultees) {
+    try {
+      console.log(`Creating slot request for consultee: ${consultee.id}`);
+      await prisma.slotRequest.create({
+        data: {
+          consulteeProfileId: consultee.id,
+          slotTimingId: faker.helpers.arrayElement(slotTimings).slotId,
+          status: 'PENDING',
+        }
+      });
+    } catch (error) {
+      console.error(`Failed to create slot request for consultee ${consultee.id}:`, error);
+    }
+  }
+}
+
+async function seed() {
+  await createUsers();
+  await createConsultations();
+  await createSubscriptions();
+  await createWebinars();
+  await createClasses();
+  await createNewsletters();
+  await createSlotsOfAvailability();
+  await createSlotRequests();
 
   console.log('Seed data inserted successfully.');
 }
 
-main()
+seed()
   .catch((e) => {
-    console.error('Error in main function:', e);
+    console.error('Error in seed function:', e);
     process.exit(1);
   })
   .finally(async () => {

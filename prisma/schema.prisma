@@ -381,6 +381,7 @@ model ConsulteeProfile {
   subscriptions Subscription[]
   webinars      Webinar[]
   classes       Class[]
+  slotRequests  SlotRequest[] // Add this relation field
 
   user   User   @relation(fields: [userId], references: [id])
   userId String @unique
@@ -469,25 +470,33 @@ model SlotsOfAppointment {
 }
 
 model SlotTiming {
-  slotId    String         @id @default(uuid())
-  day       DaysOfWeekEnum
-  startTime DateTime?
-  endTime   DateTime?
-
+  slotId                String               @id @default(uuid())
+  dateInISO             String
+  startTime             DateTime?
+  endTime               DateTime?
   slotsOfAvailability   SlotsOfAvailability? @relation(fields: [slotsOfAvailabilityId], references: [id])
   slotsOfAvailabilityId String?
   SlotsOfAppointment    SlotsOfAppointment?  @relation(fields: [slotsOfAppointmentId], references: [id])
   slotsOfAppointmentId  String?
+  slotRequests          SlotRequest[] // Add this relation field
 }
 
-enum DaysOfWeekEnum {
-  Monday
-  Tuesday
-  Wednesday
-  Thursday
-  Friday
-  Saturday
-  Sunday
+model SlotRequest {
+  id                 String           @id @default(uuid())
+  requestedAt        DateTime         @default(now())
+  status             RequestStatus    @default(PENDING)
+  consultee          ConsulteeProfile @relation(fields: [consulteeProfileId], references: [id])
+  consulteeProfileId String
+  slotTiming         SlotTiming       @relation(fields: [slotTimingId], references: [slotId])
+  slotTimingId       String
+
+  @@unique([consulteeProfileId, slotTimingId])
+}
+
+enum RequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 enum UserRole {
