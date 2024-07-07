@@ -370,6 +370,11 @@ model ConsultantProfile {
 
   user   User   @relation(fields: [userId], references: [id])
   userId String @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+
+  @@index([userId])
 }
 
 model ConsulteeProfile {
@@ -385,11 +390,15 @@ model ConsulteeProfile {
 
   user   User   @relation(fields: [userId], references: [id])
   userId String @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+
+  @@index([userId])
 }
 
 model Consultation {
   id        String   @id @default(uuid())
-  createdAt DateTime @default(now())
   price     Int?
 
   consultantProfile   ConsultantProfile @relation(fields: [consultantProfileId], references: [id])
@@ -398,11 +407,15 @@ model Consultation {
   consulteeProfileId  String            @unique
 
   slotOfAppointment SlotsOfAppointment?
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+
+  @@index([consultantProfileId])
 }
 
 model Subscription {
   id         String    @id @default(uuid())
-  createdAt  DateTime  @default(now())
   expiryDate DateTime?
   price      Int?
 
@@ -412,6 +425,11 @@ model Subscription {
   consulteeProfileId  String
 
   slotsOfAppointment SlotsOfAppointment[]
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @default(now())
+
+  @@index([consultantProfileId])
 }
 
 model Webinar {
@@ -423,13 +441,17 @@ model Webinar {
   consulteeProfiles   ConsulteeProfile[]
 
   slotOfAppointment SlotsOfAppointment?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+
+  @@index([consultantProfileId])
 }
 
 model Class {
   id           String    @id @default(uuid())
   consultantId String?
-  createdAt    DateTime  @default(now())
-  expiryDate   DateTime?
+  expiryDate   DateTime? @db.Timestamp(3)
   price        Int?
 
   consultantProfile   ConsultantProfile  @relation(fields: [consultantProfileId], references: [id])
@@ -438,13 +460,19 @@ model Class {
 
   slotOfAppointment SlotsOfAppointment[]
 
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+
+  @@index([consultantProfileId])
   @@index([consultantId])
 }
 
 model Newsletter {
   id        String   @id @default(uuid())
   email     String   @unique
+
   createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
 }
 
 model SlotsOfAvailability {
@@ -470,10 +498,11 @@ model SlotsOfAppointment {
 }
 
 model SlotTiming {
-  slotId                String               @id @default(uuid())
-  dateInISO             String
-  startTime             DateTime?
-  endTime               DateTime?
+  slotId      String    @id @default(uuid())
+  dateInISO   DateTime  @db.Date
+  timeTzStart DateTime? @db.Timetz()
+  timeTzEnd   DateTime? @db.Timetz()
+
   slotsOfAvailability   SlotsOfAvailability? @relation(fields: [slotsOfAvailabilityId], references: [id])
   slotsOfAvailabilityId String?
   SlotsOfAppointment    SlotsOfAppointment?  @relation(fields: [slotsOfAppointmentId], references: [id])
@@ -483,12 +512,16 @@ model SlotTiming {
 
 model SlotRequest {
   id                 String           @id @default(uuid())
-  requestedAt        DateTime         @default(now())
+
   status             RequestStatus    @default(PENDING)
   consultee          ConsulteeProfile @relation(fields: [consulteeProfileId], references: [id])
   consulteeProfileId String
+
   slotTiming         SlotTiming       @relation(fields: [slotTimingId], references: [slotId])
   slotTimingId       String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
 
   @@unique([consulteeProfileId, slotTimingId])
 }

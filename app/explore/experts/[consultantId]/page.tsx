@@ -45,11 +45,6 @@ const comments: TComment[] = [
   },
 ];
 
-type TSlotsOfAvailability = {
-  id: string;
-  availabilitySlots: TSlotTiming[];
-};
-
 type TSlotTiming = {
   slotId: string;
   day: string;
@@ -62,23 +57,81 @@ export default function ExpertProfile({
 }: {
   readonly params: { consultantId: string };
 }) {
-  const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined);
-  const [availableSlots, setAvailableSlots] = useState<TSlotsOfAvailability>();
+  // Check if the consultantId is exists in the database and display the details of the consultant
+  // If the consultantId is not found in the database, display an error message
+  // If the consultantId is found in the database, display the details of the consultant
+
+  const [selectedDateTime, setSelectedDateTime] = useState<Date | undefined>(undefined);
+  // const [availableSlots, setAvailableSlots] = useState<TSlotsOfAvailability>();
+  const [slotTimings, setSlotTimings] = useState<TSlotTiming[]>([]);
   const [selectedSlot, setSelectedSlot] = useState<TSlotTiming | undefined>();
   const { toast } = useToast();
 
   useEffect(() => {
-    const fetchAvailableSlots = async (date: { toISOString: () => any }) => {
-      const response = await fetch(
-        `/api/slots?consultantId=${params.consultantId}&date=${date.toISOString()}`
-      );
-      const data = await response.json();
-      setAvailableSlots(data);
+    // Fetch consultant details
+    const fetchConsultantDetails = async () => {
+      try {
+        const response = await fetch(
+          `/api/user/consultants/${params.consultantId}`
+        );
+        if (!response.ok) {
+          throw new Error("Failed to fetch consultant details");
+        }
+        const data = await response.json();
+        console.log("Consultant details:", data);
+        toast({
+          title: "Consultant details fetched successfully",
+          description: data,
+          variant: "default",
+        });
+      } catch (error: any) {
+        console.error("Error fetching consultant details:", error);
+        toast({
+          title: "Error fetching consultant details",
+          description: error.message,
+          variant: "destructive",
+        });
+        // TODO: Redirect to the 404 page
+      }
     };
-    if (selectedDate) {
-      fetchAvailableSlots(selectedDate);
+    fetchConsultantDetails();
+  }, [params.consultantId, toast]);
+
+  useEffect(() => {
+    // Fetch available slots for the selected date
+    const fetchSlotTimings = async (date: { toISOString: () => any }) => {
+      try {
+        const response = await fetch(
+          `/api/slots/timing/${params.consultantId}?date=${date.toISOString()}`
+        );
+        if (!response.ok) {
+          throw new Error("Failed to fetch available slots");
+        }
+        const data = await response.json();
+
+        const formattedSlots = data.map((slot: TSlotTiming) => {
+          return {
+            ...slot,
+            startTime: new Date(slot.startTime).toLocaleTimeString(),
+            endTime: new Date(slot.endTime).toLocaleTimeString(),
+          };
+        });
+        console.log("Slots Timings:", formattedSlots);
+        setSlotTimings(formattedSlots);
+        toast({ title: "Slots fetched successfully", variant: "default" });
+      } catch (error: any) {
+        console.error("Error fetching slots:", error);
+        toast({
+          title: "Error fetching slots",
+          description: error.message,
+          variant: "destructive",
+        });
+      }
+    };
+    if (selectedDateTime) {
+      fetchSlotTimings(selectedDateTime);
     }
-  }, [params.consultantId, selectedDate]);
+  }, [selectedDateTime, params.consultantId, toast]);
 
   const handleBooking = async () => {
     if (!selectedSlot) {
@@ -93,7 +146,7 @@ export default function ExpertProfile({
         body: JSON.stringify({
           consultantId: params.consultantId,
           slotId: selectedSlot.slotId,
-          date: selectedDate,
+          date: selectedDateTime,
         }),
       });
 
@@ -181,47 +234,58 @@ export default function ExpertProfile({
         <div className="card p-6 bg-white shadow-lg rounded-lg w-full">
           <h3 className="text-lg font-semibold mb-4">Ticket Price</h3>
           <p className="text-3xl font-bold mb-6">INR 599</p>
-          <h4 className="font-semibold mb-2">General Schedule:</h4>
+          <h4 className="font-semibold mb-2">Duration based pricing:</h4>
           <ul className="mb-6">
-            <li>Saturday: 5:30 pm - 8:50 pm</li>
-            <li>Monday: 10:00 am - 3:00 pm</li>
-            <li>Wednesday: 5:00 pm - 9:30 pm</li>
+            <li>1 hour - INR 599</li>
+            <li>2 hours - INR 999</li>
+            <li>3 hours - INR 1499</li>
           </ul>
           <Dialog>
             <DialogTrigger asChild>
-              <Button
-               variant="night"
-              >Book Consultation</Button>
+              <Button variant="night">Book Consultation</Button>
             </DialogTrigger>
             <DialogContent className="w-full max-w-[800px] grid grid-cols-1 md:grid-cols-2 gap-6 bg-white rounded-lg p-6">
               <div className="bg-white rounded-lg p-6">
                 <h3 className="text-lg font-semibold mb-4">Select a Date</h3>
-                <Calendar 
-                  mode="single" 
-                  selected={selectedDate}
-                  onSelect={setSelectedDate}
+                <Calendar
+                  mode="single"
+                  selected={selectedDateTime}
+                  onSelect={setSelectedDateTime}
                 />
               </div>
               <div className="bg-white rounded-lg p-6">
-                <h3 className="text-lg font-semibold mb-4">Available Time Slots</h3>
+                <h3 className="text-lg font-semibold mb-4">
+                  Available Time Slots
+                </h3>
                 <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-1 lg:grid-cols-2">
-                  {availableSlots?.availabilitySlots.map((slot) => (
-                    <Button 
-                      key={slot.slotId}
-                      size="sm" 
-                      variant={selectedSlot?.slotId === slot.slotId ? "night" : "outline"}
-                      onClick={() => setSelectedSlot(slot)}
-                    >
-                      {slot.startTime} - {slot.endTime}
-                    </Button>
-                  ))}
+                  {slotTimings ? (
+                    slotTimings.map((slot) => (
+                      <Button
+                        key={slot.slotId}
+                        size="sm"
+                        variant={
+                          selectedSlot?.slotId === slot.slotId
+                            ? "night"
+                            : "outline"
+                        }
+                        onClick={() => setSelectedSlot(slot)}
+                      >
+                        {slot.startTime} - {slot.endTime}
+                      </Button>
+                    ))
+                  ) : (
+                    <p>No available slots. Please select a date to refresh.</p>
+                  )}
                 </div>
               </div>
               <DialogFooter className="col-start-1 col-end-3 flex justify-end gap-4">
                 <Button variant="default">Cancel</Button>
-                <Button onClick={handleBooking}
-                 variant={selectedSlot ? "night" : "outline"}
-                >Book Consultation</Button>
+                <Button
+                  onClick={handleBooking}
+                  variant={selectedSlot ? "night" : "outline"}
+                >
+                  Book Consultation
+                </Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>
@@ -243,10 +307,16 @@ const Comment = ({ name, date, feedback, rating }: TComment) => (
     <p>{feedback}</p>
     <div className="flex">
       {[...Array(rating)].map((_, i) => (
-        <StarIcon key={`${name}-${rating}-${i}`} className="text-blue-500 w-4 h-4" />
+        <StarIcon
+          key={`${name}-${rating}-${i}`}
+          className="text-blue-500 w-4 h-4"
+        />
       ))}
       {[...Array(5 - rating)].map((_, i) => (
-        <StarIcon key={`${name}-${rating}-${i}`} className="text-gray-300 w-4 h-4" />
+        <StarIcon
+          key={`${name}-${rating}-${i}`}
+          className="text-gray-300 w-4 h-4"
+        />
       ))}
     </div>
   </div>

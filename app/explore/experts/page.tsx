@@ -27,36 +27,6 @@ import { useEffect, useState } from "react";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-const dummyConsultants = [
-  {
-    title: "Consultant Category 1",
-    expertise: "Business Strategy",
-    rating: "4.5",
-    location: "London",
-  },
-  {
-    title: "Consultant Category 2",
-    expertise: "Finance",
-    rating: "4.3",
-    location: "New York",
-  },
-  {
-    title: "Consultant Category 3",
-    expertise: "IT Services",
-    rating: "4.2",
-    location: "Los Angeles",
-  },
-  {
-    title: "Consultant Category 4",
-    expertise: "Marketing",
-    rating: "4.7",
-    location: "Chicago",
-  },
-];
-
-type Domain = string;
-type Subdomain = string;
-
 export default function ExploreExperts() {
   return (
     <>
@@ -156,7 +126,7 @@ export default function ExploreExperts() {
  */
 import Image from "next/image";
 
-type Profile = {
+type TProfile = {
   name: string;
   username: string;
   description: string;
@@ -164,12 +134,12 @@ type Profile = {
   skills: string[];
 };
 
-type Category = {
+type TCategory = {
   title: string;
-  profiles: Profile[];
+  profiles: TProfile[];
 };
 
-const data: Category[] = [
+const data: TCategory[] = [
   {
     title: "Tech",
     profiles: [
@@ -223,15 +193,15 @@ const data: Category[] = [
 ];
 
 function FindExperts() {
-  const [domains, setDomains] = useState<Domain[]>([]);
-  const [subdomains, setSubdomains] = useState<Subdomain[]>([]);
+  const [domains, setDomains] = useState<string[]>([]);
+  const [subdomains, setSubdomains] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     async function fetchData() {
       setIsLoading(true);
       try {
-        const response = await fetch("/api/consultant/info");
+        const response = await fetch("/api/consultants/meta");
         const data = await response.json();
         if (data.data.domains && Array.isArray(data.data.domains)) {
           setDomains(data.data.domains);

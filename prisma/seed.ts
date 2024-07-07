@@ -1,5 +1,5 @@
 import { faker } from '@faker-js/faker';
-import { UserRole } from '@prisma/client';
+import { UserRole, RequestStatus } from '@prisma/client';
 import * as dotenv from 'dotenv';
 import prisma from '../lib/prisma';
 dotenv.config({ path: ".env" });
@@ -42,6 +42,21 @@ async function createUsers() {
               }
             }
           }),
+          cookiePreferences: {
+            create: {
+              essential: true,
+              analytics: faker.datatype.boolean(),
+              marketing: faker.datatype.boolean(),
+            }
+          },
+          notificationPreferences: {
+            create: {
+              allNotifications: true,
+              mentions: faker.datatype.boolean(),
+              directMessages: faker.datatype.boolean(),
+              updates: faker.datatype.boolean(),
+            }
+          },
         }
       });
     } catch (error) {
@@ -54,11 +69,13 @@ async function createConsultations() {
   const consultants = await prisma.consultantProfile.findMany();
   const consultees = await prisma.consulteeProfile.findMany();
 
-  const selectedConsultees = consultees.toSorted(() => 0.5 - Math.random()).slice(0, Math.min(30, consultees.length));
+  const selectedConsultees = consultees.sort(() => 0.5 - Math.random()).slice(0, Math.min(30, consultees.length));
 
   for (const consultee of selectedConsultees) {
     try {
       console.log(`Creating consultation for consultee: ${consultee.id}`);
+      const startTime = faker.date.between({ from: '2024-07-01T08:00:00Z', to: '2024-07-01T17:00:00Z' });
+      const endTime = new Date(startTime.getTime() + 60 * 60 * 1000); // 1 hour later
       await prisma.consultation.create({
         data: {
           price: faker.number.int({ min: 50, max: 500 }),
@@ -69,8 +86,8 @@ async function createConsultations() {
               appointmentSlots: {
                 create: {
                   dateInISO: faker.date.future().toISOString(),
-                  startTime: faker.date.future(),
-                  endTime: faker.date.future(),
+                  timeTzStart: startTime,
+                  timeTzEnd: endTime,
                 }
               }
             }
@@ -111,6 +128,8 @@ async function createWebinars() {
   for (let i = 0; i < 30; i++) {
     try {
       console.log('Creating webinar');
+      const startTime = faker.date.between({ from: '2024-07-01T08:00:00Z', to: '2024-07-01T17:00:00Z' });
+      const endTime = new Date(startTime.getTime() + 2 * 60 * 60 * 1000); // 2 hours later
       await prisma.webinar.create({
         data: {
           price: faker.number.int({ min: 20, max: 200 }),
@@ -123,8 +142,8 @@ async function createWebinars() {
               appointmentSlots: {
                 create: {
                   dateInISO: faker.date.future().toISOString(),
-                  startTime: faker.date.future(),
-                  endTime: faker.date.future(),
+                  timeTzStart: startTime,
+                  timeTzEnd: endTime,
                 }
               }
             }
@@ -144,6 +163,8 @@ async function createClasses() {
   for (let i = 0; i < 30; i++) {
     try {
       console.log('Creating class');
+      const startTime = faker.date.between({ from: '2024-07-01T08:00:00Z', to: '2024-07-01T17:00:00Z' });
+      const endTime = new Date(startTime.getTime() + 3 * 60 * 60 * 1000); // 3 hours later
       await prisma.class.create({
         data: {
           consultantId: faker.string.uuid(),
@@ -153,6 +174,17 @@ async function createClasses() {
           consulteeProfiles: {
             connect: faker.helpers.arrayElements(consultees, { min: 1, max: 10 }).map(c => ({ id: c.id }))
           },
+          slotOfAppointment: {
+            create: {
+              appointmentSlots: {
+                create: {
+                  dateInISO: faker.date.future().toISOString(),
+                  timeTzStart: startTime,
+                  timeTzEnd: endTime,
+                }
+              }
+            }
+          }
         }
       });
     } catch (error) {
@@ -186,11 +218,15 @@ async function createSlotsOfAvailability() {
         data: {
           consultantProfileId: faker.helpers.arrayElement(consultants).id,
           availabilitySlots: {
-            create: Array.from({ length: faker.number.int({ min: 1, max: 5 }) }, () => ({
-              dateInISO: faker.date.future().toISOString(),
-              startTime: faker.date.future(),
-              endTime: faker.date.future(),
-            }))
+            create: Array.from({ length: faker.number.int({ min: 1, max: 5 }) }, () => {
+              const startTime = faker.date.between({ from: '2024-07-01T08:00:00Z', to: '2024-07-01T17:00:00Z' });
+              const endTime = new Date(startTime.getTime() + 60 * 60 * 1000); // 1 hour later
+              return {
+                dateInISO: faker.date.future().toISOString(),
+                timeTzStart: startTime,
+                timeTzEnd: endTime,
+              };
+            })
           }
         }
       });
@@ -211,7 +247,7 @@ async function createSlotRequests() {
         data: {
           consulteeProfileId: consultee.id,
           slotTimingId: faker.helpers.arrayElement(slotTimings).slotId,
-          status: 'PENDING',
+          status: RequestStatus.PENDING,
         }
       });
     } catch (error) {

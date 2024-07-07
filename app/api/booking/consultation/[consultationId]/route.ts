@@ -66,8 +66,8 @@ export async function PUT(
                   slotId: consultationId, // Assuming you have a way to identify the slot
                 },
                 data: {
-                  startTime,
-                  endTime,
+                  timeTzStart: startTime,
+                  timeTzEnd: endTime,
                 },
               },
             },
