@@ -9,17 +9,15 @@ export async function GET(req: NextRequest, params: { consultantId: string }) {
 
         // Filter slots only by the date and not time
         const date = dateTime ? dateTime.split("T")[0] : null;
-
+        const formattedDate = date ? new Date(date) : null;
+        
         if (date) {
             const slots = await prisma.slotTiming.findMany({
                 where: {
                     slotsOfAvailability: {
                         consultantProfileId: params.consultantId
                     },
-                    dateInISO: date
-                },
-                include: {
-                    slotRequests: true
+                    dateInISO: formattedDate!
                 }
             });
             return NextResponse.json(slots, { status: 200 });
@@ -29,9 +27,6 @@ export async function GET(req: NextRequest, params: { consultantId: string }) {
                     slotsOfAvailability: {
                         consultantProfileId: params.consultantId
                     }
-                },
-                include: {
-                    slotRequests: true
                 }
             });
             return NextResponse.json(slots, { status: 200 });

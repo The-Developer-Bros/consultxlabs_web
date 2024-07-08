@@ -45,9 +45,27 @@ const comments: TComment[] = [
   },
 ];
 
+type TConsultantDetails = {
+  id: string;
+  rating: number;
+  specialization: string;
+  experience: string;
+  location: string;
+  onlineStatus: boolean;
+  domain: string;
+  subDomains: string[];
+  userId: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type TSlotTiming = {
   slotId: string;
-  day: string;
+  dateInISO: string;
+  timeTzStart: string;
+  timeTzEnd: string;
+  slotsOfAvailabilityId: string;
+  slotsOfAppointmentId: string;
   startTime: string;
   endTime: string;
 };
@@ -61,7 +79,12 @@ export default function ExpertProfile({
   // If the consultantId is not found in the database, display an error message
   // If the consultantId is found in the database, display the details of the consultant
 
-  const [selectedDateTime, setSelectedDateTime] = useState<Date | undefined>(undefined);
+  const [consultantDetails, setConsultantDetails] =
+    useState<TConsultantDetails>();
+
+  const [selectedDateTime, setSelectedDateTime] = useState<Date | undefined>(
+    undefined
+  );
   // const [availableSlots, setAvailableSlots] = useState<TSlotsOfAvailability>();
   const [slotTimings, setSlotTimings] = useState<TSlotTiming[]>([]);
   const [selectedSlot, setSelectedSlot] = useState<TSlotTiming | undefined>();
@@ -78,12 +101,9 @@ export default function ExpertProfile({
           throw new Error("Failed to fetch consultant details");
         }
         const data = await response.json();
-        console.log("Consultant details:", data);
-        toast({
-          title: "Consultant details fetched successfully",
-          description: data,
-          variant: "default",
-        });
+
+        setConsultantDetails(data);
+        console.log("Consultant Details:", consultantDetails);
       } catch (error: any) {
         console.error("Error fetching consultant details:", error);
         toast({
@@ -95,7 +115,7 @@ export default function ExpertProfile({
       }
     };
     fetchConsultantDetails();
-  }, [params.consultantId, toast]);
+  }, [consultantDetails, params.consultantId, toast]);
 
   useEffect(() => {
     // Fetch available slots for the selected date
@@ -108,12 +128,11 @@ export default function ExpertProfile({
           throw new Error("Failed to fetch available slots");
         }
         const data = await response.json();
-
         const formattedSlots = data.map((slot: TSlotTiming) => {
           return {
             ...slot,
-            startTime: new Date(slot.startTime).toLocaleTimeString(),
-            endTime: new Date(slot.endTime).toLocaleTimeString(),
+            startTime: new Date(slot.timeTzStart).toLocaleTimeString(),
+            endTime: new Date(slot.timeTzEnd).toLocaleTimeString(),
           };
         });
         console.log("Slots Timings:", formattedSlots);
@@ -258,7 +277,7 @@ export default function ExpertProfile({
                   Available Time Slots
                 </h3>
                 <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-1 lg:grid-cols-2">
-                  {slotTimings ? (
+                  {slotTimings && slotTimings.length > 0 ? (
                     slotTimings.map((slot) => (
                       <Button
                         key={slot.slotId}
