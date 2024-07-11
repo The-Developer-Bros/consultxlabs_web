@@ -1,5 +1,5 @@
 "use client";
-// components/MultiStepForm.tsx
+
 import { zodResolver } from "@hookform/resolvers/zod";
 import React, { useState } from "react";
 import { FormProvider, useForm } from "react-hook-form";
@@ -7,73 +7,113 @@ import ConsultantProfileForm from "../components/ConsultantProfileForm";
 import ConsulteeProfileForm from "../components/ConsulteeProfileForm";
 import PersonalInfoAndRoleForm from "../components/PersonalInfoAndRoleForm";
 import StaffProfileForm from "../components/StaffProfileForm";
-import { ConsultantProfile, ConsulteeProfile, PersonalInfoAndRole, personalInfoAndRoleSchema, StaffProfile } from "../schemas/userSchema";
+import {
+  ConsultantProfile,
+  ConsulteeProfile,
+  PersonalInfoAndRole,
+  personalInfoAndRoleSchema,
+  StaffProfile,
+} from "../schemas/userSchema";
 
 type FormData = PersonalInfoAndRole & ConsultantProfile & ConsulteeProfile & StaffProfile;
 
 const MultiStepForm: React.FC = () => {
   const [step, setStep] = useState(0);
-  const methods = useForm<FormData>({ resolver: zodResolver(personalInfoAndRoleSchema) });
+  const methods = useForm<FormData>({
+    resolver: zodResolver(personalInfoAndRoleSchema),
+  });
 
-  const handleNext = (data: FormData) => {
+  const handleNext = async () => {
+    const role = methods.getValues().role;
     if (step === 0) {
-      methods.trigger().then(isValid => {
-        if (isValid) setStep(prevStep => prevStep + 1);
-      });
-    } else if (step === 1) {
-      if (methods.getValues().role === "CONSULTANT") {
-        methods.trigger().then(isValid => {
-          if (isValid) setStep(prevStep => prevStep + 1);
-        });
-      } else if (methods.getValues().role === "CONSULTEE") {
-        methods.trigger().then(isValid => {
-          if (isValid) setStep(prevStep => prevStep + 2);
-        });
-      } else {
-        methods.trigger().then(isValid => {
-          if (isValid) setStep(prevStep => prevStep + 3);
-        });
+      if (!role) {
+        alert("Please select a role.");
+        return;
       }
+      const isValid = await methods.trigger();
+      if (isValid) setStep(1);
+    } else if (step === 1) {
+      const isValid = await methods.trigger();
+      if (isValid) setStep(2);
     }
   };
 
-  const handleBack = () => setStep(prevStep => prevStep - 1);
+  const handleBack = () => setStep((prevStep) => prevStep - 1);
 
   const handleSubmit = (data: FormData) => {
     console.log("Submitted Data:", data);
     // Handle form submission here
   };
 
+  const renderFormStep = () => {
+    const role = methods.getValues().role;
+    switch (step) {
+      case 0:
+        return <PersonalInfoAndRoleForm onNext={handleNext} />;
+      case 1:
+        switch (role) {
+          case "CONSULTANT":
+            return <ConsultantProfileForm onNext={handleNext} onBack={handleBack} />;
+          case "CONSULTEE":
+            return <ConsulteeProfileForm onNext={handleNext} onBack={handleBack} />;
+          case "STAFF":
+            return <StaffProfileForm onSubmit={methods.handleSubmit(handleSubmit)} onBack={handleBack} />;
+          default:
+            return null;
+        }
+      default:
+        return null;
+    }
+  };
+
   return (
     <FormProvider {...methods}>
       <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50">
-        <header className="flex items-center space-x-2 mb-8">
-          <LogInIcon className="w-8 h-8 text-primary" />
-          <h1 className="text-2xl font-bold">ConsultX</h1>
-        </header>
-        <div className="flex items-center space-x-4 mb-8">
-          <div className={`flex items-center justify-center w-10 h-10 rounded-full ${step === 0 ? "bg-black text-white" : "bg-gray-200 text-gray-500"}`}>1</div>
-          <div className="w-10 h-0.5 bg-gray-300" />
-          <div className={`flex items-center justify-center w-10 h-10 rounded-full ${step === 1 ? "bg-black text-white" : "bg-gray-200 text-gray-500"}`}>2</div>
-          <div className="w-10 h-0.5 bg-gray-300" />
-          <div className={`flex items-center justify-center w-10 h-10 rounded-full ${step === 2 ? "bg-black text-white" : "bg-gray-200 text-gray-500"}`}>3</div>
-          <div className="w-10 h-0.5 bg-gray-300" />
-          <div className={`flex items-center justify-center w-10 h-10 rounded-full ${step === 3 || step === 4 ? "bg-black text-white" : "bg-gray-200 text-gray-500"}`}>4</div>
-        </div>
-        <div className="text-center mb-8">
-          <h2 className="text-2xl font-bold">Welcome! First things first...</h2>
-          <p className="text-muted-foreground">You can always change them later.</p>
-        </div>
-        {step === 0 && <PersonalInfoAndRoleForm onNext={() => handleNext(methods.getValues())} />}
-        {step === 1 && methods.getValues().role === "CONSULTANT" && <ConsultantProfileForm onNext={() => handleNext(methods.getValues())} onBack={handleBack} />}
-        {step === 2 && methods.getValues().role === "CONSULTEE" && <ConsulteeProfileForm onNext={() => handleNext(methods.getValues())} onBack={handleBack} />}
-        {step === 3 && methods.getValues().role === "STAFF" && <StaffProfileForm onSubmit={methods.handleSubmit(handleSubmit)} onBack={handleBack} />}
+        <Header />
+        <ProgressIndicator currentStep={step} />
+        <WelcomeMessage />
+        {renderFormStep()}
       </div>
     </FormProvider>
   );
 };
 
-function LogInIcon(props: any) {
+const Header = () => (
+  <header className="flex items-center space-x-2 mb-8">
+    <LogInIcon className="w-8 h-8 text-primary" />
+    <h1 className="text-2xl font-bold">ConsultX</h1>
+  </header>
+);
+
+const ProgressIndicator = ({ currentStep }: { currentStep: number }) => (
+  <div className="flex items-center space-x-4 mb-8">
+    {[1, 2, 3, 4].map((step) => (
+      <React.Fragment key={step}>
+        <StepCircle step={step} currentStep={currentStep} />
+        {step < 4 && <div className="w-10 h-0.5 bg-gray-300" />}
+      </React.Fragment>
+    ))}
+  </div>
+);
+
+const StepCircle = ({ step, currentStep }: { step: number; currentStep: number }) => (
+  <div
+    className={`flex items-center justify-center w-10 h-10 rounded-full ${
+      currentStep + 1 >= step ? "bg-black text-white" : "bg-gray-200 text-gray-500"
+    }`}
+  >
+    {step}
+  </div>
+);
+
+const WelcomeMessage = () => (
+  <div className="text-center mb-8">
+    <h2 className="text-2xl font-bold">Welcome! First things first...</h2>
+    <p className="text-muted-foreground">You can always change them later.</p>
+  </div>
+);
+
+function LogInIcon(props: React.SVGProps<SVGSVGElement>) {
   return (
     <svg
       {...props}

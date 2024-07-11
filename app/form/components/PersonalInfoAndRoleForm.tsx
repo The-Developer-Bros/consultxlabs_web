@@ -1,46 +1,53 @@
-import React from "react";
-import { useFormContext } from "react-hook-form";
-import { PersonalInfoAndRole } from "../schemas/userSchema";
-import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import React from "react";
+import { useFormContext, useWatch } from "react-hook-form";
+import { PersonalInfoAndRole } from "../schemas/userSchema";
 
 interface Props {
   onNext: () => void;
 }
-
 const PersonalInfoAndRoleForm: React.FC<Props> = ({ onNext }) => {
   const {
     register,
     handleSubmit,
     formState: { errors },
     setValue,
-    getValues,
+    control,
   } = useFormContext<PersonalInfoAndRole>();
 
-  const handleRoleSelect = (role: "CONSULTANT" | "CONSULTEE" | "STAFF") => {
-    setValue("role", role);
+  const role = useWatch({
+    control,
+    name: "role",
+  });
+
+  const handleRoleSelect = (selectedRole: "CONSULTANT" | "CONSULTEE" | "STAFF") => {
+    setValue("role", selectedRole, { shouldValidate: true });
   };
 
   return (
     <form onSubmit={handleSubmit(onNext)} className="w-full max-w-md space-y-4">
       <div className="flex justify-center space-x-4 mb-8">
         <Button
-          variant={getValues("role") === "CONSULTEE" ? "night" : "outline"}
+          type="button"
+          variant={role === "CONSULTEE" ? "night" : "outline"}
           className="w-32"
           onClick={() => handleRoleSelect("CONSULTEE")}
         >
           Consultee
         </Button>
         <Button
-          variant={getValues("role") === "CONSULTANT" ? "night" : "outline"}
+          type="button"
+          variant={role === "CONSULTANT" ? "night" : "outline"}
           className="w-32"
           onClick={() => handleRoleSelect("CONSULTANT")}
         >
           Consultant
         </Button>
         <Button
-          variant={getValues("role") === "STAFF" ? "night" : "outline"}
+          type="button"
+          variant={role === "STAFF" ? "night" : "outline"}
           className="w-32"
           onClick={() => handleRoleSelect("STAFF")}
         >
@@ -68,25 +75,5 @@ const PersonalInfoAndRoleForm: React.FC<Props> = ({ onNext }) => {
   );
 };
 
-function LogInIcon(props: React.JSX.IntrinsicAttributes & React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg
-      {...props}
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
-      <polyline points="10 17 15 12 10 7" />
-      <line x1="15" x2="3" y1="12" y2="12" />
-    </svg>
-  );
-}
 
 export default PersonalInfoAndRoleForm;
