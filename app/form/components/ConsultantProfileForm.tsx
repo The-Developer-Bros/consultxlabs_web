@@ -2,6 +2,9 @@
 import React from "react";
 import { useFormContext } from "react-hook-form";
 import { ConsultantProfile } from "../schemas/userSchema";
+import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 
 interface Props {
   onNext: () => void;
@@ -12,26 +15,28 @@ const ConsultantProfileForm: React.FC<Props> = ({ onNext, onBack }) => {
   const { register, handleSubmit, formState: { errors } } = useFormContext<ConsultantProfile>();
 
   return (
-    <form onSubmit={handleSubmit(onNext)}>
-      <div>
-        <label>Rating</label>
-        <input type="number" {...register("rating")} />
-        {errors.rating && <p>{errors.rating.message}</p>}
+    <form onSubmit={handleSubmit(onNext)} className="w-full max-w-md space-y-4">
+      <div className="space-y-2">
+        <Label htmlFor="rating">Rating</Label>
+        <Input type="number" id="rating" {...register("rating")} />
+        {errors.rating && <p className="text-red-500">{errors.rating.message}</p>}
       </div>
-      <div>
-        <label>Specialization</label>
-        <input {...register("specialization")} />
+      <div className="space-y-2">
+        <Label htmlFor="specialization">Specialization</Label>
+        <Input id="specialization" {...register("specialization")} />
       </div>
-      <div>
-        <label>Experience</label>
-        <input {...register("experience")} />
+      <div className="space-y-2">
+        <Label htmlFor="experience">Experience</Label>
+        <Input id="experience" {...register("experience")} />
       </div>
-      <div>
-        <label>Location</label>
-        <input {...register("location")} />
+      <div className="space-y-2">
+        <Label htmlFor="location">Location</Label>
+        <Input id="location" {...register("location")} />
       </div>
-      <button type="button" onClick={onBack}>Back</button>
-      <button type="submit">Next</button>
+      <div className="flex space-x-2">
+        <Button type="button" onClick={onBack} variant="outline">Back</Button>
+        <Button type="submit" variant="night">Next</Button>
+      </div>
     </form>
   );
 };

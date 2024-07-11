@@ -1,17 +1,13 @@
+// schemas/userSchema.ts
 import { z } from "zod";
 
-export const personalInfoSchema = z.object({
+export const personalInfoAndRoleSchema = z.object({
   name: z.string().min(1, "Name is required"),
   email: z.string().email("Invalid email address"),
-});
-
-export type PersonalInfo = z.infer<typeof personalInfoSchema>;
-
-export const roleSchema = z.object({
   role: z.enum(["CONSULTANT", "CONSULTEE", "STAFF"]),
 });
 
-export type RoleInfo = z.infer<typeof roleSchema>;
+export type PersonalInfoAndRole = z.infer<typeof personalInfoAndRoleSchema>;
 
 export const consultantProfileSchema = z.object({
   rating: z.number().min(0).max(5),
