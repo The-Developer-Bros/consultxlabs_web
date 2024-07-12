@@ -14,6 +14,7 @@ import {
   personalInfoAndRoleSchema,
   StaffProfile,
 } from "../schemas/userSchema";
+import PreferredScheduleForm from "../components/PreferredScheduleForm";
 
 type FormData = PersonalInfoAndRole & ConsultantProfile & ConsulteeProfile & StaffProfile;
 
@@ -61,6 +62,11 @@ const MultiStepForm: React.FC = () => {
           default:
             return null;
         }
+      case 2:
+        if (role === "CONSULTANT") {
+          return <PreferredScheduleForm onNext={handleNext} onBack={handleBack} />;
+        }
+        return null;
       default:
         return null;
     }

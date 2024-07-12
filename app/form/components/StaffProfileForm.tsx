@@ -25,27 +25,29 @@ const StaffProfileForm: React.FC<Props> = ({ onSubmit, onBack }) => {
     >
       <div className="space-y-2">
         <Label htmlFor="department">Department</Label>
-        <Input id="department" {...register("department")} />
+        <Input
+          id="department"
+          {...register("department", { required: "Department is required" })}
+        />
         {errors.department && (
           <p className="text-red-500">{errors.department.message}</p>
         )}
       </div>
       <div className="space-y-2">
         <Label htmlFor="position">Position</Label>
-        <Input id="position" {...register("position")} />
+        <Input
+          id="position"
+          {...register("position", { required: "Position is required" })}
+        />
         {errors.position && (
           <p className="text-red-500">{errors.position.message}</p>
         )}
       </div>
       <div className="flex space-x-2">
-        <Button
-          type="button"
-          onClick={onBack}
-          className="bg-gray-200 text-gray-700"
-        >
+        <Button type="button" onClick={onBack} variant="outline">
           Back
         </Button>
-        <Button type="submit" className="bg-primary text-white">
+        <Button type="submit" variant="night">
           Submit
         </Button>
       </div>

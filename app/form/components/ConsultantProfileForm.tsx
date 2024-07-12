@@ -17,23 +17,31 @@ const ConsultantProfileForm: React.FC<Props> = ({ onNext, onBack }) => {
   return (
     <form onSubmit={handleSubmit(onNext)} className="w-full max-w-md space-y-4">
       <div className="space-y-2">
-        <Label htmlFor="rating">Rating</Label>
-        <Input type="number" id="rating" {...register("rating")} />
-        {errors.rating && <p className="text-red-500">{errors.rating.message}</p>}
-      </div>
-      <div className="space-y-2">
         <Label htmlFor="specialization">Specialization</Label>
-        <Input id="specialization" {...register("specialization")} />
+        <Input id="specialization" {...register("specialization", { required: true })} />
+        {errors.specialization && <span className="text-red-500">{errors.specialization.message}</span>}
       </div>
       <div className="space-y-2">
         <Label htmlFor="experience">Experience</Label>
-        <Input id="experience" {...register("experience")} />
+        <Input id="experience" {...register("experience", { required: true })} />
+        {errors.experience && <span className="text-red-500">{errors.experience.message}</span>}
       </div>
       <div className="space-y-2">
         <Label htmlFor="location">Location</Label>
-        <Input id="location" {...register("location")} />
+        <Input id="location" {...register("location", { required: true })} />
+        {errors.location && <span className="text-red-500">{errors.location.message}</span>}
       </div>
-      <div className="flex space-x-2">
+      <div className="space-y-2">
+        <Label htmlFor="domain">Domain</Label>
+        <Input id="domain" {...register("domain", { required: true })} />
+        {errors.domain && <span className="text-red-500">{errors.domain.message}</span>}
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="subDomains">Sub-Domains (comma-separated)</Label>
+        <Input id="subDomains" {...register("subDomains", { required: true })} />
+        {errors.subDomains && <span className="text-red-500">{errors.subDomains.message}</span>}
+      </div> 
+      <div className="w-full justify-around flex space-x-4">
         <Button type="button" onClick={onBack} variant="outline">Back</Button>
         <Button type="submit" variant="night">Next</Button>
       </div>

@@ -56,21 +56,23 @@ const PersonalInfoAndRoleForm: React.FC<Props> = ({ onNext }) => {
       </div>
       <div className="space-y-2">
         <Label htmlFor="name">Full Name</Label>
-        <Input id="name" placeholder="Steve Jobs" {...register("name")} />
+        <Input id="name" {...register("name", { required: "Name is required" })} />
         {errors.name && <p className="text-red-500">{errors.name.message}</p>}
       </div>
       <div className="space-y-2">
         <Label htmlFor="email">Email</Label>
-        <Input
-          id="email"
-          placeholder="example@domain.com"
-          {...register("email")}
-        />
+        <Input id="email" type="email" {...register("email", { required: "Email is required" })} />
         {errors.email && <p className="text-red-500">{errors.email.message}</p>}
       </div>
-      <Button type="submit" variant="night" className="w-full">
-        Next
-      </Button>
+      <div className="space-y-2">
+        <Label htmlFor="phone">Phone</Label>
+        <Input id="phone" {...register("phone")} />
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="address">Address</Label>
+        <Input id="address" {...register("address")} />
+      </div>
+      <Button type="submit" variant="night" className="w-full">Next</Button>
     </form>
   );
 };
