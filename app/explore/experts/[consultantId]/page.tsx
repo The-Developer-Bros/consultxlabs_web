@@ -122,7 +122,9 @@ export default function ExpertProfile({
     const fetchSlotTimings = async (date: { toISOString: () => any }) => {
       try {
         const response = await fetch(
-          `/api/slots/timing/${params.consultantId}?date=${date.toISOString()}`
+          `/api/slots/availability/${
+            params.consultantId
+          }?date=${date.toISOString()}`
         );
         if (!response.ok) {
           throw new Error("Failed to fetch available slots");
