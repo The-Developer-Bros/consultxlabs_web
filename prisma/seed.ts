@@ -1,5 +1,5 @@
 import { faker } from '@faker-js/faker';
-import { UserRole, RequestStatus } from '@prisma/client';
+import { UserRole, RequestStatus, ScheduleType, DayOfWeek } from '@prisma/client';
 import * as dotenv from 'dotenv';
 import prisma from '../lib/prisma';
 dotenv.config({ path: ".env" });
@@ -31,6 +31,7 @@ async function createUsers() {
                 subDomains: faker.helpers.arrayElements([
                   'Risk Management', 'Training', 'Digital Marketing', 'Data Analysis', 'Supply Chain'
                 ], { min: 1, max: 3 }),
+                scheduleType: faker.helpers.arrayElement(['WEEKLY', 'CUSTOM']) as ScheduleType,
               }
             }
           }),
@@ -74,7 +75,7 @@ async function createConsultations() {
   for (const consultee of selectedConsultees) {
     try {
       console.log(`Creating consultation for consultee: ${consultee.id}`);
-      const startTime = faker.date.between({ from: '2024-07-01T08:00:00Z', to: '2024-07-01T17:00:00Z' });
+      const startTime = faker.date.between({ from: '2024-07-01T08:00:00Z', to: '2030-07-01T17:00:00Z' });
       const endTime = new Date(startTime.getTime() + 60 * 60 * 1000); // 1 hour later
       await prisma.consultation.create({
         data: {
@@ -85,7 +86,7 @@ async function createConsultations() {
             create: {
               appointmentSlots: {
                 create: {
-                  dateInISO: faker.date.future().toISOString(),
+                  dateInISO: startTime.toISOString(),
                   timeTzStart: startTime,
                   timeTzEnd: endTime,
                 }
@@ -128,7 +129,7 @@ async function createWebinars() {
   for (let i = 0; i < 30; i++) {
     try {
       console.log('Creating webinar');
-      const startTime = faker.date.between({ from: '2024-07-01T08:00:00Z', to: '2024-07-01T17:00:00Z' });
+      const startTime = faker.date.between({ from: '2024-07-01T08:00:00Z', to: '2030-07-01T17:00:00Z' });
       const endTime = new Date(startTime.getTime() + 2 * 60 * 60 * 1000); // 2 hours later
       await prisma.webinar.create({
         data: {
@@ -141,7 +142,7 @@ async function createWebinars() {
             create: {
               appointmentSlots: {
                 create: {
-                  dateInISO: faker.date.future().toISOString(),
+                  dateInISO: startTime.toISOString(),
                   timeTzStart: startTime,
                   timeTzEnd: endTime,
                 }
@@ -163,7 +164,7 @@ async function createClasses() {
   for (let i = 0; i < 30; i++) {
     try {
       console.log('Creating class');
-      const startTime = faker.date.between({ from: '2024-07-01T08:00:00Z', to: '2024-07-01T17:00:00Z' });
+      const startTime = faker.date.between({ from: '2024-07-01T08:00:00Z', to: '2030-07-01T17:00:00Z' });
       const endTime = new Date(startTime.getTime() + 3 * 60 * 60 * 1000); // 3 hours later
       await prisma.class.create({
         data: {
@@ -178,7 +179,7 @@ async function createClasses() {
             create: {
               appointmentSlots: {
                 create: {
-                  dateInISO: faker.date.future().toISOString(),
+                  dateInISO: startTime.toISOString(),
                   timeTzStart: startTime,
                   timeTzEnd: endTime,
                 }
@@ -208,45 +209,101 @@ async function createNewsletters() {
   }
 }
 
-async function createSlotsOfAvailability() {
+async function createSlotsOfAvailabilityWeekly() {
   const consultants = await prisma.consultantProfile.findMany();
 
-  for (let i = 0; i < 30; i++) {
-    try {
-      console.log('Creating slots of availability');
-      await prisma.slotsOfAvailability.create({
-        data: {
-          consultantProfileId: faker.helpers.arrayElement(consultants).id,
-          availabilitySlots: {
-            create: Array.from({ length: faker.number.int({ min: 1, max: 5 }) }, () => {
-              const startTime = faker.date.between({ from: '2024-07-01T08:00:00Z', to: '2024-07-01T17:00:00Z' });
-              const endTime = new Date(startTime.getTime() + 60 * 60 * 1000); // 1 hour later
-              return {
-                dateInISO: faker.date.future().toISOString(),
-                timeTzStart: startTime,
-                timeTzEnd: endTime,
-              };
-            })
+  for (const consultant of consultants) {
+    if (consultant.scheduleType === 'WEEKLY') {
+      try {
+        console.log('Creating weekly slots of availability');
+        await prisma.slotsOfAvailabilityWeekly.create({
+          data: {
+            consultantProfileId: consultant.id,
+            dayOfWeek: faker.helpers.arrayElement(Object.values(DayOfWeek)),
+            slotTimings: {
+              create: Array.from({ length: faker.number.int({ min: 1, max: 5 }) }, () => {
+                const startTime = faker.date.between({ from: '2024-07-01T08:00:00Z', to: '2030-07-01T17:00:00Z' });
+                const endTime = new Date(startTime.getTime() + 60 * 60 * 1000); // 1 hour later
+                return {
+                  dateInISO: startTime.toISOString(),
+                  timeTzStart: startTime,
+                  timeTzEnd: endTime,
+                };
+              })
+            }
           }
-        }
-      });
-    } catch (error) {
-      console.error('Failed to create slots of availability:', error);
+        });
+      } catch (error) {
+        console.error('Failed to create weekly slots of availability:', error);
+      }
+    }
+  }
+}
+
+async function createSlotsOfAvailabilityCustom() {
+  const consultants = await prisma.consultantProfile.findMany();
+
+  for (const consultant of consultants) {
+    if (consultant.scheduleType === 'CUSTOM') {
+      try {
+        console.log('Creating custom slots of availability');
+        await prisma.slotsOfAvailabilityCustom.create({
+          data: {
+            consultantProfileId: consultant.id,
+            dateInISO: faker.date.future().toISOString(),
+            slotTimings: {
+              create: Array.from({ length: faker.number.int({ min: 1, max: 5 }) }, () => {
+                const startTime = faker.date.between({ from: '2024-07-01T08:00:00Z', to: '2030-07-01T17:00:00Z' });
+                const endTime = new Date(startTime.getTime() + 60 * 60 * 1000); // 1 hour later
+                return {
+                  dateInISO: startTime.toISOString(),
+                  timeTzStart: startTime,
+                  timeTzEnd: endTime,
+                };
+              })
+            }
+          }
+        });
+      } catch (error) {
+        console.error('Failed to create custom slots of availability:', error);
+      }
     }
   }
 }
 
 async function createSlotRequests() {
-  const slotTimings = await prisma.slotTiming.findMany();
+  const slotTimings = await prisma.slotTiming.findMany({
+    include: {
+      slotsOfAvailabilityWeekly: {
+        select: {
+          consultantProfileId: true
+        }
+      },
+      slotsOfAvailabilityCustom: {
+        select: {
+          consultantProfileId: true
+        }
+      }
+    }
+  });
   const consultees = await prisma.consulteeProfile.findMany();
 
   for (const consultee of consultees) {
     try {
       console.log(`Creating slot request for consultee: ${consultee.id}`);
+      const slotTiming = faker.helpers.arrayElement(slotTimings);
+      const consultantProfileId = slotTiming.slotsOfAvailabilityWeekly?.consultantProfileId || slotTiming.slotsOfAvailabilityCustom?.consultantProfileId;
+
+      if (!consultantProfileId) {
+        console.error(`No consultantProfileId found for slotTiming: ${slotTiming.slotId}`);
+        continue;
+      }
+
       await prisma.slotRequest.create({
         data: {
+          consultantProfileId: consultantProfileId,
           consulteeProfileId: consultee.id,
-          slotTimingId: faker.helpers.arrayElement(slotTimings).slotId,
+          slotTimingId: slotTiming.slotId,
           status: RequestStatus.PENDING,
         }
       });
@@ -256,6 +313,7 @@ async function createSlotRequests() {
   }
 }
 
+
 async function seed() {
   await createUsers();
   await createConsultations();
@@ -263,7 +321,8 @@ async function seed() {
   await createWebinars();
   await createClasses();
   await createNewsletters();
-  await createSlotsOfAvailability();
+  await createSlotsOfAvailabilityWeekly();
+  await createSlotsOfAvailabilityCustom();
   await createSlotRequests();
 
   console.log('Seed data inserted successfully.');
