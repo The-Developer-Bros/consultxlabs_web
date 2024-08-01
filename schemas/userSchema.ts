@@ -71,3 +71,30 @@ export const staffProfileSchema = z.object({
 });
 
 export type StaffProfile = z.infer<typeof staffProfileSchema>;
+
+export const WeeklySlotSchema = z.object({
+  day: z.enum(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']),
+  startTime: z.string(),
+  endTime: z.string(),
+});
+
+export const CustomSlotSchema = z.object({
+  date: z.string(), // ISO date string
+  startTime: z.string(),
+  endTime: z.string(),
+});
+
+export const slotSchema = z.object({
+  startTime: z.string(),
+  endTime: z.string(),
+});
+
+export const preferredScheduleSchema = z.object({
+  scheduleType: z.enum(['weekly', 'custom']),
+  weeklySlots: z.record(z.array(slotSchema)),
+  customSlots: z.record(z.array(slotSchema)),
+});
+
+export type WeeklySlot = z.infer<typeof WeeklySlotSchema>;
+export type CustomSlot = z.infer<typeof CustomSlotSchema>;
+export type PreferredSchedule = z.infer<typeof preferredScheduleSchema>;

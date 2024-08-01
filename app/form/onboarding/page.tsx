@@ -1,103 +1,108 @@
 "use client";
-
-import { zodResolver } from "@hookform/resolvers/zod";
 import React, { useState } from "react";
 import { FormProvider, useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import PersonalInfoAndRoleForm from "../components/PersonalInfoAndRoleForm";
 import ConsultantProfileForm from "../components/ConsultantProfileForm";
 import ConsulteeProfileForm from "../components/ConsulteeProfileForm";
-import PersonalInfoAndRoleForm from "../components/PersonalInfoAndRoleForm";
 import StaffProfileForm from "../components/StaffProfileForm";
+import PreferredScheduleForm from "../components/PreferredScheduleForm";
 import {
   ConsultantProfile,
   ConsulteeProfile,
   PersonalInfoAndRole,
-  personalInfoAndRoleSchema,
   StaffProfile,
+  PreferredSchedule,
+  personalInfoAndRoleSchema,
 } from "../../../schemas/userSchema";
-import PreferredScheduleForm from "../components/PreferredScheduleForm";
+
+type SlotType = {
+  startTime: string;
+  endTime: string;
+};
+
+type WeeklySlotsType = Record<string, SlotType[]>;
+type CustomSlotsType = Record<string, SlotType[]>;
 
 type FormData = PersonalInfoAndRole &
-  ConsultantProfile &
-  ConsulteeProfile &
-  StaffProfile;
+  Partial<ConsultantProfile> &
+  Partial<ConsulteeProfile> &
+  Partial<StaffProfile> &
+  Partial<{
+    scheduleType: "weekly" | "custom";
+    weeklySlots: WeeklySlotsType;
+    customSlots: CustomSlotsType;
+  }>;
 
 const MultiStepForm: React.FC = () => {
   const [step, setStep] = useState(0);
+  const [formData, setFormData] = useState<FormData>({} as FormData);
+
   const methods = useForm<FormData>({
     resolver: zodResolver(personalInfoAndRoleSchema),
+    defaultValues: {} as FormData,
   });
 
-  const handleNext = async () => {
-    const role = methods.getValues().role;
-    if (step === 0) {
-      if (!role) {
-        alert("Please select a role.");
-        return;
-      }
-      const isValid = await methods.trigger();
-      if (isValid) setStep(1);
-    } else if (step === 1) {
-      const isValid = await methods.trigger();
-      if (isValid) setStep(2);
-    }
+  const handleNext = (stepData: Partial<FormData>) => {
+    console.log("handleNext called with:", stepData);
+    const updatedData = { ...formData, ...stepData };
+    setFormData(updatedData);
+    setStep((prevStep) => {
+      console.log("Updating step from", prevStep, "to", prevStep + 1);
+      return prevStep + 1;
+    });
   };
 
   const handleBack = () => setStep((prevStep) => prevStep - 1);
 
-  const handleSubmit = async (data: FormData) => {
-    console.log("Final Submitted Data:", data);
-    // try {
-    //   const response = await fetch("/api/onboarding", {
-    //     method: "POST",
-    //     headers: {
-    //       "Content-Type": "application/json",
-    //     },
-    //     body: JSON.stringify(data),
-    //   });
-
-    //   if (response.ok) {
-    //     // For example, redirect to a dashboard
-    //     window.location.href = "/dashboard";
-    //   } else {
-    //     // Handle errors
-    //     console.error("Failed to submit data");
-    //   }
-    // } catch (error) {
-    //   console.error("An error occurred during submission:", error);
-    // }
+  const handleSubmit = (data: Partial<FormData>) => {
+    const finalData = { ...formData, ...data };
+    console.log("Final Submitted Data:", finalData);
+    // Here you would typically send the data to your API
+    // For example:
+    // submitDataToAPI(finalData);
   };
 
   const renderFormStep = () => {
-    const role = methods.getValues().role;
     switch (step) {
       case 0:
-        return <PersonalInfoAndRoleForm onNext={handleNext} />;
+        return <PersonalInfoAndRoleForm onNext={handleNext} initialData={formData} />;
       case 1:
-        switch (role) {
+        switch (formData.role) {
           case "CONSULTANT":
             return (
-              <ConsultantProfileForm onNext={handleNext} onBack={handleBack} />
+              <ConsultantProfileForm
+                onNext={handleNext as any} // Type assertion to bypass strict checking
+                onBack={handleBack}
+                initialData={formData}
+              />
             );
           case "CONSULTEE":
             return (
-              <ConsulteeProfileForm onNext={handleNext} onBack={handleBack} />
+              <ConsulteeProfileForm
+                onNext={handleNext as any} // Type assertion to bypass strict checking
+                onBack={handleBack}
+                initialData={formData}
+              />
             );
           case "STAFF":
             return (
               <StaffProfileForm
-                onSubmit={methods.handleSubmit(handleSubmit)}
+                onSubmit={(data: StaffProfile) => handleSubmit(data)}
                 onBack={handleBack}
+                initialData={formData}
               />
             );
           default:
             return null;
         }
       case 2:
-        if (role === "CONSULTANT") {
+        if (formData.role === "CONSULTANT") {
           return (
             <PreferredScheduleForm
-              onSubmit={methods.handleSubmit(handleSubmit)}
+              onSubmit={(data: PreferredSchedule) => handleSubmit(data as any)} // Type assertion to bypass strict checking
               onBack={handleBack}
+              initialData={formData as any} // Type assertion to bypass strict checking
             />
           );
         }
@@ -119,14 +124,19 @@ const MultiStepForm: React.FC = () => {
   );
 };
 
-const Header = () => (
+
+const Header: React.FC = () => (
   <header className="flex items-center space-x-2 mb-8">
     <LogInIcon className="w-8 h-8 text-primary" />
     <h1 className="text-2xl font-bold">ConsultX</h1>
   </header>
 );
 
-const ProgressIndicator = ({ currentStep }: { currentStep: number }) => (
+type ProgressIndicatorProps = {
+  readonly currentStep: number;
+};
+
+const ProgressIndicator: React.FC<ProgressIndicatorProps> = ({ currentStep }) => (
   <div className="flex items-center space-x-4 mb-8">
     {[1, 2, 3, 4].map((step) => (
       <React.Fragment key={step}>
@@ -137,13 +147,12 @@ const ProgressIndicator = ({ currentStep }: { currentStep: number }) => (
   </div>
 );
 
-const StepCircle = ({
-  step,
-  currentStep,
-}: {
-  step: number;
-  currentStep: number;
-}) => (
+type StepCircleProps = {
+  readonly step: number;
+  readonly currentStep: number;
+};
+
+const StepCircle: React.FC<StepCircleProps> = ({ step, currentStep }) => (
   <div
     className={`flex items-center justify-center w-10 h-10 rounded-full ${
       currentStep + 1 >= step
@@ -155,7 +164,7 @@ const StepCircle = ({
   </div>
 );
 
-const WelcomeMessage = () => (
+const WelcomeMessage: React.FC = () => (
   <div className="text-center mb-8">
     <h2 className="text-2xl font-bold">Welcome! First things first...</h2>
     <p className="text-muted-foreground">You can always change them later.</p>
