@@ -20,12 +20,12 @@ import { Calendar } from "@/components/ui/calendar";
 import { Input } from "@/components/ui/input";
 
 interface Props {
-  onNext: () => void;
+  onSubmit: () => void;
   onBack: () => void;
 }
 
-const PreferredScheduleForm: React.FC<Props> = ({ onNext, onBack }) => {
-  const { handleSubmit, watch, setValue } = useFormContext();
+const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack }) => {
+  const { handleSubmit, watch, setValue, formState: { errors } } = useFormContext();
   const scheduleType = watch("scheduleType");
   const [weeklySlots, setWeeklySlots] = useState<
     Record<string, Array<{ startTime: string; endTime: string }>>
@@ -112,7 +112,7 @@ const PreferredScheduleForm: React.FC<Props> = ({ onNext, onBack }) => {
   };
 
   return (
-    <form onSubmit={handleSubmit(onNext)} className="w-full max-w-md">
+    <form onSubmit={handleSubmit(onSubmit)} className="w-full max-w-md">
       <Card className="w-full">
         <CardHeader>
           <CardTitle>Preferred Schedule</CardTitle>

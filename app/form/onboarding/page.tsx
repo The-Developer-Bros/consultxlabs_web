@@ -13,10 +13,13 @@ import {
   PersonalInfoAndRole,
   personalInfoAndRoleSchema,
   StaffProfile,
-} from "../schemas/userSchema";
+} from "../../../schemas/userSchema";
 import PreferredScheduleForm from "../components/PreferredScheduleForm";
 
-type FormData = PersonalInfoAndRole & ConsultantProfile & ConsulteeProfile & StaffProfile;
+type FormData = PersonalInfoAndRole &
+  ConsultantProfile &
+  ConsulteeProfile &
+  StaffProfile;
 
 const MultiStepForm: React.FC = () => {
   const [step, setStep] = useState(0);
@@ -41,9 +44,27 @@ const MultiStepForm: React.FC = () => {
 
   const handleBack = () => setStep((prevStep) => prevStep - 1);
 
-  const handleSubmit = (data: FormData) => {
-    console.log("Submitted Data:", data);
-    // Handle form submission here
+  const handleSubmit = async (data: FormData) => {
+    console.log("Final Submitted Data:", data);
+    // try {
+    //   const response = await fetch("/api/onboarding", {
+    //     method: "POST",
+    //     headers: {
+    //       "Content-Type": "application/json",
+    //     },
+    //     body: JSON.stringify(data),
+    //   });
+
+    //   if (response.ok) {
+    //     // For example, redirect to a dashboard
+    //     window.location.href = "/dashboard";
+    //   } else {
+    //     // Handle errors
+    //     console.error("Failed to submit data");
+    //   }
+    // } catch (error) {
+    //   console.error("An error occurred during submission:", error);
+    // }
   };
 
   const renderFormStep = () => {
@@ -54,17 +75,31 @@ const MultiStepForm: React.FC = () => {
       case 1:
         switch (role) {
           case "CONSULTANT":
-            return <ConsultantProfileForm onNext={handleNext} onBack={handleBack} />;
+            return (
+              <ConsultantProfileForm onNext={handleNext} onBack={handleBack} />
+            );
           case "CONSULTEE":
-            return <ConsulteeProfileForm onNext={handleNext} onBack={handleBack} />;
+            return (
+              <ConsulteeProfileForm onNext={handleNext} onBack={handleBack} />
+            );
           case "STAFF":
-            return <StaffProfileForm onSubmit={methods.handleSubmit(handleSubmit)} onBack={handleBack} />;
+            return (
+              <StaffProfileForm
+                onSubmit={methods.handleSubmit(handleSubmit)}
+                onBack={handleBack}
+              />
+            );
           default:
             return null;
         }
       case 2:
         if (role === "CONSULTANT") {
-          return <PreferredScheduleForm onNext={handleNext} onBack={handleBack} />;
+          return (
+            <PreferredScheduleForm
+              onSubmit={methods.handleSubmit(handleSubmit)}
+              onBack={handleBack}
+            />
+          );
         }
         return null;
       default:
@@ -102,10 +137,18 @@ const ProgressIndicator = ({ currentStep }: { currentStep: number }) => (
   </div>
 );
 
-const StepCircle = ({ step, currentStep }: { step: number; currentStep: number }) => (
+const StepCircle = ({
+  step,
+  currentStep,
+}: {
+  step: number;
+  currentStep: number;
+}) => (
   <div
     className={`flex items-center justify-center w-10 h-10 rounded-full ${
-      currentStep + 1 >= step ? "bg-black text-white" : "bg-gray-200 text-gray-500"
+      currentStep + 1 >= step
+        ? "bg-black text-white"
+        : "bg-gray-200 text-gray-500"
     }`}
   >
     {step}
@@ -119,7 +162,7 @@ const WelcomeMessage = () => (
   </div>
 );
 
-function LogInIcon(props: React.SVGProps<SVGSVGElement>) {
+function LogInIcon(props: Readonly<React.SVGProps<SVGSVGElement>>) {
   return (
     <svg
       {...props}

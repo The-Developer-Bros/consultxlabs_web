@@ -3,7 +3,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import React from "react";
 import { useFormContext, useWatch } from "react-hook-form";
-import { PersonalInfoAndRole } from "../schemas/userSchema";
+import { PersonalInfoAndRole } from "../../../schemas/userSchema";
 
 interface Props {
   onNext: () => void;

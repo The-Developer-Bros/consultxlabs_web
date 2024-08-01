@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import React from "react";
 import { useFormContext } from "react-hook-form";
-import { ConsulteeProfile } from "../schemas/userSchema";
+import { ConsulteeProfile } from "../../../schemas/userSchema";
 
 interface Props {
   onNext: () => void;
