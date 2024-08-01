@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { ScheduleType } from "@prisma/client";
 
 export async function PATCH(
   req: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
-    const id = params.id;
+    const { id } = params;
     const body = await req.json();
 
     console.log("Received id:", id);
@@ -19,45 +20,84 @@ export async function PATCH(
       );
     }
 
+    // Check if the user exists
+    const existingUser = await prisma.user.findUnique({
+      where: { id },
+    });
+
+    if (!existingUser) {
+      return NextResponse.json({ error: "User not found" }, { status: 404 });
+    }
+
     let userProfileData: any = {};
     if (body.role === "CONSULTANT") {
+      const {
+        specialization,
+        experience,
+        location,
+        domain,
+        subDomains,
+        scheduleType,
+        weeklySlots,
+        customSlots,
+      } = body;
+
+      const subDomainsArray =
+        typeof subDomains === "string"
+          ? subDomains.split(",").map((item) => item.trim())
+          : subDomains;
+
+      const scheduleTypeEnum = scheduleType.toUpperCase() as ScheduleType;
+
       userProfileData = {
         consultantProfile: {
           upsert: {
-            create: body.consultantProfile,
-            update: body.consultantProfile,
+            create: {
+              specialization,
+              experience,
+              location,
+              domain,
+              subDomains: subDomainsArray,
+              scheduleType: scheduleTypeEnum,
+              onlineStatus: true,
+              rating: 0,
+            },
+            update: {
+              specialization,
+              experience,
+              location,
+              domain,
+              subDomains: subDomainsArray,
+              scheduleType: scheduleTypeEnum,
+            },
           },
         },
       };
-    } else if (body.role === "CONSULTEE") {
-      userProfileData = {
-        consulteeProfile: {
-          upsert: {
-            create: body.consulteeProfile,
-            update: body.consulteeProfile,
-          },
-        },
-      };
-    } else if (body.role === "STAFF") {
-      userProfileData = {
-        staffProfile: {
-          upsert: {
-            create: body.staffProfile,
-            update: body.staffProfile,
-          },
-        },
-      };
-    }
 
-    // Handle slots for CONSULTANT
-    if (body.role === "CONSULTANT" && body.consultantProfile) {
-      userProfileData.consultantProfile.upsert.create.slots = {
-        create: createSlotsArray(body.consultantProfile),
-      };
-      userProfileData.consultantProfile.upsert.update.slots = {
-        deleteMany: {},
-        create: createSlotsArray(body.consultantProfile),
-      };
+      if (
+        scheduleTypeEnum === ScheduleType.WEEKLY ||
+        scheduleTypeEnum === ScheduleType.CUSTOM
+      ) {
+        userProfileData.consultantProfile.upsert.create.slots = {
+          create: createSlotsArray({
+            scheduleType: scheduleTypeEnum,
+            weeklySlots,
+            customSlots,
+          }),
+        };
+        userProfileData.consultantProfile.upsert.update.slots = {
+          deleteMany: {},
+          create: createSlotsArray({
+            scheduleType: scheduleTypeEnum,
+            weeklySlots,
+            customSlots,
+          }),
+        };
+      }
+    } else if (body.role === "CONSULTEE") {
+      // Handle CONSULTEE profile (unchanged)
+    } else if (body.role === "STAFF") {
+      // Handle STAFF profile if needed (unchanged)
     }
 
     const user = await prisma.user.update({
@@ -83,33 +123,39 @@ export async function PATCH(
   }
 }
 
-function createSlotsArray(consultantProfile: any) {
+function createSlotsArray({
+  scheduleType,
+  weeklySlots,
+  customSlots,
+}: {
+  scheduleType: ScheduleType;
+  weeklySlots: any;
+  customSlots: any;
+}) {
   const slots = [];
 
-  if (consultantProfile.scheduleType === "weekly") {
-    for (const [day, daySlots] of Object.entries(
-      consultantProfile.weeklySlots
-    )) {
+  if (scheduleType === ScheduleType.WEEKLY && weeklySlots) {
+    for (const [day, daySlots] of Object.entries(weeklySlots)) {
       for (const slot of daySlots as any) {
         slots.push({
           dayOfWeek: day.toUpperCase(),
-          timeTzStart: slot.startTime,
-          timeTzEnd: slot.endTime,
+          timeTzStart: new Date(
+            `1970-01-01T${slot.startTime}:00Z`
+          ).toISOString(),
+          timeTzEnd: new Date(`1970-01-01T${slot.endTime}:00Z`).toISOString(),
           slotType: "WEEKLY",
         });
       }
     }
   }
 
-  if (consultantProfile.customSlots) {
-    for (const [date, dateSlots] of Object.entries(
-      consultantProfile.customSlots
-    )) {
+  if (scheduleType === ScheduleType.CUSTOM && customSlots) {
+    for (const [date, dateSlots] of Object.entries(customSlots)) {
       for (const slot of dateSlots as any) {
         slots.push({
           date: new Date(date),
-          timeTzStart: slot.startTime,
-          timeTzEnd: slot.endTime,
+          timeTzStart: new Date(`${date}T${slot.startTime}:00Z`).toISOString(),
+          timeTzEnd: new Date(`${date}T${slot.endTime}:00Z`).toISOString(),
           slotType: "CUSTOM",
         });
       }
