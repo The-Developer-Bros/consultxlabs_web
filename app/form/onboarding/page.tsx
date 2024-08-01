@@ -15,6 +15,7 @@ import {
   PreferredSchedule,
   personalInfoAndRoleSchema,
 } from "../../../schemas/userSchema";
+import { useSession } from "next-auth/react";
 
 type SlotType = {
   startTime: string;
@@ -35,6 +36,7 @@ type FormData = PersonalInfoAndRole &
   }>;
 
 const MultiStepForm: React.FC = () => {
+  const { data: session } = useSession();
   const [step, setStep] = useState(0);
   const [formData, setFormData] = useState<FormData>({} as FormData);
 
@@ -55,18 +57,46 @@ const MultiStepForm: React.FC = () => {
 
   const handleBack = () => setStep((prevStep) => prevStep - 1);
 
-  const handleSubmit = (data: Partial<FormData>) => {
+  const handleSubmit = async (data: Partial<FormData>) => {
     const finalData = { ...formData, ...data };
     console.log("Final Submitted Data:", finalData);
-    // Here you would typically send the data to your API
-    // For example:
-    // submitDataToAPI(finalData);
+
+    try {
+      const id = session?.user?.id;
+      if (!id) {
+        throw new Error("User ID not found");
+      }
+
+      const response = await fetch(
+        `/api/form/onboarding/${id}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(finalData),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error("Failed to update onboarding information");
+      }
+
+      const result = await response.json();
+      console.log("Onboarding update successful:", result);
+      // Handle successful update (e.g., show success message, redirect)
+    } catch (error) {
+      console.error("Error updating onboarding information:", error);
+      // Handle error (e.g., show error message)
+    }
   };
 
   const renderFormStep = () => {
     switch (step) {
       case 0:
-        return <PersonalInfoAndRoleForm onNext={handleNext} initialData={formData} />;
+        return (
+          <PersonalInfoAndRoleForm onNext={handleNext} initialData={formData} />
+        );
       case 1:
         switch (formData.role) {
           case "CONSULTANT":
@@ -124,7 +154,6 @@ const MultiStepForm: React.FC = () => {
   );
 };
 
-
 const Header: React.FC = () => (
   <header className="flex items-center space-x-2 mb-8">
     <LogInIcon className="w-8 h-8 text-primary" />
@@ -136,7 +165,9 @@ type ProgressIndicatorProps = {
   readonly currentStep: number;
 };
 
-const ProgressIndicator: React.FC<ProgressIndicatorProps> = ({ currentStep }) => (
+const ProgressIndicator: React.FC<ProgressIndicatorProps> = ({
+  currentStep,
+}) => (
   <div className="flex items-center space-x-4 mb-8">
     {[1, 2, 3, 4].map((step) => (
       <React.Fragment key={step}>

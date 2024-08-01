@@ -19,7 +19,10 @@ import {
 } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
 import { Input } from "@/components/ui/input";
-import { PreferredSchedule, preferredScheduleSchema } from "../../../schemas/userSchema";
+import {
+  PreferredSchedule,
+  preferredScheduleSchema,
+} from "../../../schemas/userSchema";
 
 interface SlotType {
   startTime: string;
@@ -42,14 +45,24 @@ interface Props {
   initialData: Partial<PreferredSchedule>;
 }
 
-const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack, initialData }) => {
-  const { handleSubmit, watch, setValue, control } = useForm<PreferredSchedule>({
-    resolver: zodResolver(preferredScheduleSchema),
-    defaultValues: initialData,
-  });
+const PreferredScheduleForm: React.FC<Props> = ({
+  onSubmit,
+  onBack,
+  initialData,
+}) => {
+  const { handleSubmit, watch, setValue, control } = useForm<PreferredSchedule>(
+    {
+      resolver: zodResolver(preferredScheduleSchema),
+      defaultValues: initialData,
+    }
+  );
   const scheduleType = watch("scheduleType");
-  const [weeklySlots, setWeeklySlots] = useState<WeeklySlotsType>(initialData.weeklySlots as WeeklySlotsType || {});
-  const [customSlots, setCustomSlots] = useState<CustomSlotsType>(initialData.customSlots as CustomSlotsType || {});
+  const [weeklySlots, setWeeklySlots] = useState<WeeklySlotsType>(
+    (initialData.weeklySlots as WeeklySlotsType) || {}
+  );
+  const [customSlots, setCustomSlots] = useState<CustomSlotsType>(
+    (initialData.customSlots as CustomSlotsType) || {}
+  );
 
   useEffect(() => {
     setValue("weeklySlots", weeklySlots);
@@ -64,25 +77,41 @@ const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack, initialData 
     const endMinutes = getMinutes(slot.endTime);
 
     console.log(`startMinutes: ${startMinutes}, endMinutes: ${endMinutes}`);
-    
+
     if (startMinutes === null || endMinutes === null) {
       return { ...slot, isValid: false, errorMessage: "Invalid time format" };
     }
 
     if (endMinutes <= startMinutes) {
-      return { ...slot, isValid: false, errorMessage: "End time must be after start time" };
+      return {
+        ...slot,
+        isValid: false,
+        errorMessage: "End time must be after start time",
+      };
     }
 
     if (startMinutes % 15 !== 0 || endMinutes % 15 !== 0) {
-      return { ...slot, isValid: false, errorMessage: "Times must be in multiples of 15 minutes" };
+      return {
+        ...slot,
+        isValid: false,
+        errorMessage: "Times must be in multiples of 15 minutes",
+      };
     }
 
     if (endMinutes - startMinutes < 30) {
-      return { ...slot, isValid: false, errorMessage: "Session must be at least 30 minutes long" };
+      return {
+        ...slot,
+        isValid: false,
+        errorMessage: "Session must be at least 30 minutes long",
+      };
     }
 
     if ((endMinutes - startMinutes) % 30 !== 0) {
-      return { ...slot, isValid: false, errorMessage: "Session duration must be in multiples of 30 minutes" };
+      return {
+        ...slot,
+        isValid: false,
+        errorMessage: "Session duration must be in multiples of 30 minutes",
+      };
     }
 
     // Check for 15-minute break between sessions
@@ -92,11 +121,17 @@ const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack, initialData 
       if (otherStartMinutes === null || otherEndMinutes === null) continue;
 
       if (
-        (startMinutes >= otherStartMinutes && startMinutes < otherEndMinutes + 15) ||
-        (endMinutes > otherStartMinutes - 15 && endMinutes <= otherEndMinutes) ||
+        (startMinutes >= otherStartMinutes &&
+          startMinutes < otherEndMinutes + 15) ||
+        (endMinutes > otherStartMinutes - 15 &&
+          endMinutes <= otherEndMinutes) ||
         (startMinutes <= otherStartMinutes && endMinutes >= otherEndMinutes)
       ) {
-        return { ...slot, isValid: false, errorMessage: "Must have at least a 15-minute break between sessions" };
+        return {
+          ...slot,
+          isValid: false,
+          errorMessage: "Must have at least a 15-minute break between sessions",
+        };
       }
     }
 
@@ -104,14 +139,17 @@ const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack, initialData 
   };
 
   const getMinutes = (time: string): number | null => {
-    const [hours, minutes] = time.split(':').map(Number);
+    const [hours, minutes] = time.split(":").map(Number);
     return !isNaN(hours) && !isNaN(minutes) ? hours * 60 + minutes : null;
   };
 
   const handleAddWeeklySlot = (day: string) => {
     setWeeklySlots((prev: WeeklySlotsType) => ({
       ...prev,
-      [day]: [...(prev[day] || []), { startTime: "", endTime: "", isValid: false }],
+      [day]: [
+        ...(prev[day] || []),
+        { startTime: "", endTime: "", isValid: false },
+      ],
     }));
   };
 
@@ -128,7 +166,10 @@ const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack, initialData 
           i === index ? { ...slot, [field]: value } : slot
         ),
       };
-      updatedSlots[day][index] = validateSlot(updatedSlots[day][index], updatedSlots[day].filter((_, i) => i !== index));
+      updatedSlots[day][index] = validateSlot(
+        updatedSlots[day][index],
+        updatedSlots[day].filter((_, i) => i !== index)
+      );
       return updatedSlots;
     });
   };
@@ -164,7 +205,10 @@ const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack, initialData 
           i === index ? { ...slot, [field]: value } : slot
         ),
       };
-      updatedSlots[dateString][index] = validateSlot(updatedSlots[dateString][index], updatedSlots[dateString].filter((_, i) => i !== index));
+      updatedSlots[dateString][index] = validateSlot(
+        updatedSlots[dateString][index],
+        updatedSlots[dateString].filter((_, i) => i !== index)
+      );
       return updatedSlots;
     });
   };
@@ -185,11 +229,11 @@ const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack, initialData 
   };
 
   const allSlotsValid = () => {
-    const weeklyValid = Object.values(weeklySlots).every(slots =>
-      slots.every(slot => slot.isValid)
+    const weeklyValid = Object.values(weeklySlots).every((slots) =>
+      slots.every((slot) => slot.isValid)
     );
-    const customValid = Object.values(customSlots).every(slots =>
-      slots.every(slot => slot.isValid)
+    const customValid = Object.values(customSlots).every((slots) =>
+      slots.every((slot) => slot.isValid)
     );
     return weeklyValid && customValid;
   };
@@ -217,10 +261,7 @@ const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack, initialData 
             control={control}
             defaultValue="weekly"
             render={({ field }) => (
-              <RadioGroup
-                onValueChange={field.onChange}
-                value={field.value}
-              >
+              <RadioGroup onValueChange={field.onChange} value={field.value}>
                 <div className="flex items-center justify-between">
                   <Label htmlFor="weekly" className="font-medium">
                     Weekly Recurring
@@ -228,11 +269,10 @@ const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack, initialData 
                   <RadioGroupItem id="weekly" value="weekly" />
                 </div>
                 <div
-                  className={`grid gap-4 mt-4 ${
-                    scheduleType !== "weekly"
+                  className={`grid gap-4 mt-4 ${scheduleType !== "weekly"
                       ? "opacity-50 pointer-events-none"
                       : ""
-                  }`}
+                    }`}
                 >
                   {[
                     "Monday",
@@ -245,49 +285,57 @@ const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack, initialData 
                   ].map((day) => (
                     <div key={day} className="grid gap-2">
                       <Label>{day}</Label>
-                      {weeklySlots[day]?.map((slot: SlotType, index: number) => (
-                        <div key={index} className="grid gap-2">
-                          <div className="grid grid-cols-5 gap-2 items-center">
-                            <Input
-                              type="time"
-                              value={slot.startTime}
-                              onChange={(e) =>
-                                handleUpdateWeeklySlot(
-                                  day,
-                                  index,
-                                  "startTime",
-                                  e.target.value
-                                )
-                              }
-                              className={`col-span-2 ${!slot.isValid ? "border-red-500" : ""}`}
-                              required
-                              step="900" // 15 minutes in seconds
-                            />
-                            <Input
-                              type="time"
-                              value={slot.endTime}
-                              onChange={(e) =>
-                                handleUpdateWeeklySlot(
-                                  day,
-                                  index,
-                                  "endTime",
-                                  e.target.value
-                                )
-                              }
-                              className={`col-span-2 ${!slot.isValid ? "border-red-500" : ""}`}
-                              required
-                              step="900" // 15 minutes in seconds
-                            />
-                            <TrashIcon
-                              className="w-5 h-5 cursor-pointer"
-                              onClick={() => handleDeleteWeeklySlot(day, index)}
-                            />
+                      {weeklySlots[day]?.map(
+                        (slot: SlotType, index: number) => (
+                          <div key={index} className="grid gap-2">
+                            <div className="grid grid-cols-5 gap-2 items-center">
+                              <Input
+                                type="time"
+                                value={slot.startTime}
+                                onChange={(e) =>
+                                  handleUpdateWeeklySlot(
+                                    day,
+                                    index,
+                                    "startTime",
+                                    e.target.value
+                                  )
+                                }
+                                className={`col-span-2 ${!slot.isValid ? "border-red-500" : ""
+                                  }`}
+                                required
+                                step="900" // 15 minutes in seconds
+                              />
+                              <Input
+                                type="time"
+                                value={slot.endTime}
+                                onChange={(e) =>
+                                  handleUpdateWeeklySlot(
+                                    day,
+                                    index,
+                                    "endTime",
+                                    e.target.value
+                                  )
+                                }
+                                className={`col-span-2 ${!slot.isValid ? "border-red-500" : ""
+                                  }`}
+                                required
+                                step="900" // 15 minutes in seconds
+                              />
+                              <TrashIcon
+                                className="w-5 h-5 cursor-pointer"
+                                onClick={() =>
+                                  handleDeleteWeeklySlot(day, index)
+                                }
+                              />
+                            </div>
+                            {!slot.isValid && slot.errorMessage && (
+                              <p className="text-red-500 text-sm">
+                                {slot.errorMessage}
+                              </p>
+                            )}
                           </div>
-                          {!slot.isValid && slot.errorMessage && (
-                            <p className="text-red-500 text-sm">{slot.errorMessage}</p>
-                          )}
-                        </div>
-                      ))}
+                        )
+                      )}
                       <Button
                         type="button"
                         variant="outline"
@@ -305,11 +353,10 @@ const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack, initialData 
                   <RadioGroupItem id="custom" value="custom" />
                 </div>
                 <div
-                  className={`grid gap-4 mt-4 ${
-                    scheduleType !== "custom"
+                  className={`grid gap-4 mt-4 ${scheduleType !== "custom"
                       ? "opacity-50 pointer-events-none"
                       : ""
-                  }`}
+                    }`}
                 >
                   <Popover>
                     <PopoverTrigger asChild>
@@ -328,23 +375,32 @@ const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack, initialData 
                           if (days) {
                             const newCustomSlots = { ...customSlots };
                             days.forEach((day) => {
-                              const dateString = day.toISOString().split("T")[0];
+                              const dateString = day
+                                .toISOString()
+                                .split("T")[0];
                               if (!newCustomSlots[dateString]) {
                                 newCustomSlots[dateString] = [
-                                  { startTime: "", endTime: "", isValid: false },
+                                  {
+                                    startTime: "",
+                                    endTime: "",
+                                    isValid: false,
+                                  },
                                 ];
                               }
                             });
-                            Object.keys(newCustomSlots).forEach((dateString) => {
-                              if (
-                                !days.some(
-                                  (day) =>
-                                    day.toISOString().split("T")[0] === dateString
-                                )
-                              ) {
-                                delete newCustomSlots[dateString];
+                            Object.keys(newCustomSlots).forEach(
+                              (dateString) => {
+                                if (
+                                  !days.some(
+                                    (day) =>
+                                      day.toISOString().split("T")[0] ===
+                                      dateString
+                                  )
+                                ) {
+                                  delete newCustomSlots[dateString];
+                                }
                               }
-                            });
+                            );
                             setCustomSlots(newCustomSlots);
                           }
                         }}
@@ -369,7 +425,8 @@ const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack, initialData 
                                   e.target.value
                                 )
                               }
-                              className={`col-span-2 ${!slot.isValid ? "border-red-500" : ""}`}
+                              className={`col-span-2 ${!slot.isValid ? "border-red-500" : ""
+                                }`}
                               required
                               step="900" // 15 minutes in seconds
                             />
@@ -384,7 +441,8 @@ const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack, initialData 
                                   e.target.value
                                 )
                               }
-                              className={`col-span-2 ${!slot.isValid ? "border-red-500" : ""}`}
+                              className={`col-span-2 ${!slot.isValid ? "border-red-500" : ""
+                                }`}
                               required
                               step="900" // 15 minutes in seconds
                             />
@@ -396,14 +454,18 @@ const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack, initialData 
                             />
                           </div>
                           {!slot.isValid && slot.errorMessage && (
-                            <p className="text-red-500 text-sm">{slot.errorMessage}</p>
+                            <p className="text-red-500 text-sm">
+                              {slot.errorMessage}
+                            </p>
                           )}
                         </div>
                       ))}
                       <Button
                         type="button"
                         variant="outline"
-                        onClick={() => handleAddCustomSlot(new Date(dateString))}
+                        onClick={() =>
+                          handleAddCustomSlot(new Date(dateString))
+                        }
                       >
                         Add Slot
                       </Button>

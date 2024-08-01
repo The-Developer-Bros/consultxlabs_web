@@ -12,7 +12,11 @@ interface Props {
   initialData: Partial<StaffProfile>;
 }
 
-const StaffProfileForm: React.FC<Props> = ({ onSubmit, onBack, initialData }) => {
+const StaffProfileForm: React.FC<Props> = ({
+  onSubmit,
+  onBack,
+  initialData,
+}) => {
   const {
     register,
     handleSubmit,
@@ -27,17 +31,24 @@ const StaffProfileForm: React.FC<Props> = ({ onSubmit, onBack, initialData }) =>
   };
 
   return (
-    <form onSubmit={handleSubmit(onSubmitForm)} className="w-full max-w-md space-y-4">
+    <form
+      onSubmit={handleSubmit(onSubmitForm)}
+      className="w-full max-w-md space-y-4"
+    >
       <div className="space-y-2">
         <Label htmlFor="department">Department</Label>
         <Input id="department" {...register("department")} />
-        {errors.department && <p className="text-red-500">{errors.department.message}</p>}
+        {errors.department && (
+          <p className="text-red-500">{errors.department.message}</p>
+        )}
       </div>
 
       <div className="space-y-2">
         <Label htmlFor="position">Position</Label>
         <Input id="position" {...register("position")} />
-        {errors.position && <p className="text-red-500">{errors.position.message}</p>}
+        {errors.position && (
+          <p className="text-red-500">{errors.position.message}</p>
+        )}
       </div>
 
       <div className="flex justify-between">

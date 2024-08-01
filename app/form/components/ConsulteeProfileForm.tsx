@@ -4,7 +4,10 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ConsulteeProfile, consulteeProfileSchema } from "../../../schemas/userSchema";
+import {
+  ConsulteeProfile,
+  consulteeProfileSchema,
+} from "../../../schemas/userSchema";
 
 interface Props {
   onNext: (data: Partial<ConsulteeProfile>) => void;
@@ -12,7 +15,11 @@ interface Props {
   initialData: Partial<ConsulteeProfile>;
 }
 
-const ConsulteeProfileForm: React.FC<Props> = ({ onNext, onBack, initialData }) => {
+const ConsulteeProfileForm: React.FC<Props> = ({
+  onNext,
+  onBack,
+  initialData,
+}) => {
   const {
     register,
     handleSubmit,
@@ -27,11 +34,16 @@ const ConsulteeProfileForm: React.FC<Props> = ({ onNext, onBack, initialData }) 
   };
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="w-full max-w-md space-y-4">
+    <form
+      onSubmit={handleSubmit(onSubmit)}
+      className="w-full max-w-md space-y-4"
+    >
       <div className="space-y-2">
         <Label htmlFor="location">Location</Label>
         <Input id="location" {...register("location")} />
-        {errors.location && <p className="text-red-500">{errors.location.message}</p>}
+        {errors.location && (
+          <p className="text-red-500">{errors.location.message}</p>
+        )}
       </div>
 
       <div className="flex justify-between">
