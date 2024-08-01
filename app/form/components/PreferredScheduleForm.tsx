@@ -25,6 +25,7 @@ interface SlotType {
   startTime: string;
   endTime: string;
   isValid: boolean;
+  errorMessage?: string;
 }
 
 interface WeeklySlotsType {
@@ -58,8 +59,53 @@ const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack, initialData 
     setValue("customSlots", customSlots);
   }, [customSlots, setValue]);
 
-  const validateSlot = (slot: SlotType): boolean => {
-    return slot.startTime !== "" && slot.endTime !== "";
+  const validateSlot = (slot: SlotType, otherSlots: SlotType[]): SlotType => {
+    const startMinutes = getMinutes(slot.startTime);
+    const endMinutes = getMinutes(slot.endTime);
+
+    console.log(`startMinutes: ${startMinutes}, endMinutes: ${endMinutes}`);
+    
+    if (startMinutes === null || endMinutes === null) {
+      return { ...slot, isValid: false, errorMessage: "Invalid time format" };
+    }
+
+    if (endMinutes <= startMinutes) {
+      return { ...slot, isValid: false, errorMessage: "End time must be after start time" };
+    }
+
+    if (startMinutes % 15 !== 0 || endMinutes % 15 !== 0) {
+      return { ...slot, isValid: false, errorMessage: "Times must be in multiples of 15 minutes" };
+    }
+
+    if (endMinutes - startMinutes < 30) {
+      return { ...slot, isValid: false, errorMessage: "Session must be at least 30 minutes long" };
+    }
+
+    if ((endMinutes - startMinutes) % 30 !== 0) {
+      return { ...slot, isValid: false, errorMessage: "Session duration must be in multiples of 30 minutes" };
+    }
+
+    // Check for 15-minute break between sessions
+    for (const otherSlot of otherSlots) {
+      const otherStartMinutes = getMinutes(otherSlot.startTime);
+      const otherEndMinutes = getMinutes(otherSlot.endTime);
+      if (otherStartMinutes === null || otherEndMinutes === null) continue;
+
+      if (
+        (startMinutes >= otherStartMinutes && startMinutes < otherEndMinutes + 15) ||
+        (endMinutes > otherStartMinutes - 15 && endMinutes <= otherEndMinutes) ||
+        (startMinutes <= otherStartMinutes && endMinutes >= otherEndMinutes)
+      ) {
+        return { ...slot, isValid: false, errorMessage: "Must have at least a 15-minute break between sessions" };
+      }
+    }
+
+    return { ...slot, isValid: true, errorMessage: undefined };
+  };
+
+  const getMinutes = (time: string): number | null => {
+    const [hours, minutes] = time.split(':').map(Number);
+    return !isNaN(hours) && !isNaN(minutes) ? hours * 60 + minutes : null;
   };
 
   const handleAddWeeklySlot = (day: string) => {
@@ -82,7 +128,7 @@ const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack, initialData 
           i === index ? { ...slot, [field]: value } : slot
         ),
       };
-      updatedSlots[day][index].isValid = validateSlot(updatedSlots[day][index]);
+      updatedSlots[day][index] = validateSlot(updatedSlots[day][index], updatedSlots[day].filter((_, i) => i !== index));
       return updatedSlots;
     });
   };
@@ -118,7 +164,7 @@ const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack, initialData 
           i === index ? { ...slot, [field]: value } : slot
         ),
       };
-      updatedSlots[dateString][index].isValid = validateSlot(updatedSlots[dateString][index]);
+      updatedSlots[dateString][index] = validateSlot(updatedSlots[dateString][index], updatedSlots[dateString].filter((_, i) => i !== index));
       return updatedSlots;
     });
   };
@@ -150,7 +196,7 @@ const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack, initialData 
 
   const onSubmitForm = (data: PreferredSchedule) => {
     if (!allSlotsValid()) {
-      alert("Please fill in all slot times before submitting.");
+      alert("Please correct all slot times before submitting.");
       return;
     }
     onSubmit(data);
@@ -200,42 +246,46 @@ const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack, initialData 
                     <div key={day} className="grid gap-2">
                       <Label>{day}</Label>
                       {weeklySlots[day]?.map((slot: SlotType, index: number) => (
-                        <div
-                          key={index}
-                          className="grid grid-cols-5 gap-2 items-center"
-                        >
-                          <Input
-                            type="time"
-                            value={slot.startTime}
-                            onChange={(e) =>
-                              handleUpdateWeeklySlot(
-                                day,
-                                index,
-                                "startTime",
-                                e.target.value
-                              )
-                            }
-                            className={`col-span-2 ${!slot.isValid && slot.startTime === "" ? "border-red-500" : ""}`}
-                            required
-                          />
-                          <Input
-                            type="time"
-                            value={slot.endTime}
-                            onChange={(e) =>
-                              handleUpdateWeeklySlot(
-                                day,
-                                index,
-                                "endTime",
-                                e.target.value
-                              )
-                            }
-                            className={`col-span-2 ${!slot.isValid && slot.endTime === "" ? "border-red-500" : ""}`}
-                            required
-                          />
-                          <TrashIcon
-                            className="w-5 h-5 cursor-pointer"
-                            onClick={() => handleDeleteWeeklySlot(day, index)}
-                          />
+                        <div key={index} className="grid gap-2">
+                          <div className="grid grid-cols-5 gap-2 items-center">
+                            <Input
+                              type="time"
+                              value={slot.startTime}
+                              onChange={(e) =>
+                                handleUpdateWeeklySlot(
+                                  day,
+                                  index,
+                                  "startTime",
+                                  e.target.value
+                                )
+                              }
+                              className={`col-span-2 ${!slot.isValid ? "border-red-500" : ""}`}
+                              required
+                              step="900" // 15 minutes in seconds
+                            />
+                            <Input
+                              type="time"
+                              value={slot.endTime}
+                              onChange={(e) =>
+                                handleUpdateWeeklySlot(
+                                  day,
+                                  index,
+                                  "endTime",
+                                  e.target.value
+                                )
+                              }
+                              className={`col-span-2 ${!slot.isValid ? "border-red-500" : ""}`}
+                              required
+                              step="900" // 15 minutes in seconds
+                            />
+                            <TrashIcon
+                              className="w-5 h-5 cursor-pointer"
+                              onClick={() => handleDeleteWeeklySlot(day, index)}
+                            />
+                          </div>
+                          {!slot.isValid && slot.errorMessage && (
+                            <p className="text-red-500 text-sm">{slot.errorMessage}</p>
+                          )}
                         </div>
                       ))}
                       <Button
@@ -306,44 +356,48 @@ const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack, initialData 
                     <div key={dateString} className="grid gap-2">
                       <Label>{new Date(dateString).toDateString()}</Label>
                       {slots.map((slot: SlotType, index: number) => (
-                        <div
-                          key={index}
-                          className="grid grid-cols-5 gap-2 items-center"
-                        >
-                          <Input
-                            type="time"
-                            value={slot.startTime}
-                            onChange={(e) =>
-                              handleUpdateCustomSlot(
-                                dateString,
-                                index,
-                                "startTime",
-                                e.target.value
-                              )
-                            }
-                            className={`col-span-2 ${!slot.isValid && slot.startTime === "" ? "border-red-500" : ""}`}
-                            required
-                          />
-                          <Input
-                            type="time"
-                            value={slot.endTime}
-                            onChange={(e) =>
-                              handleUpdateCustomSlot(
-                                dateString,
-                                index,
-                                "endTime",
-                                e.target.value
-                              )
-                            }
-                            className={`col-span-2 ${!slot.isValid && slot.endTime === "" ? "border-red-500" : ""}`}
-                            required
-                          />
-                          <TrashIcon
-                            className="w-5 h-5 cursor-pointer"
-                            onClick={() =>
-                              handleDeleteCustomSlot(dateString, index)
-                            }
-                          />
+                        <div key={index} className="grid gap-2">
+                          <div className="grid grid-cols-5 gap-2 items-center">
+                            <Input
+                              type="time"
+                              value={slot.startTime}
+                              onChange={(e) =>
+                                handleUpdateCustomSlot(
+                                  dateString,
+                                  index,
+                                  "startTime",
+                                  e.target.value
+                                )
+                              }
+                              className={`col-span-2 ${!slot.isValid ? "border-red-500" : ""}`}
+                              required
+                              step="900" // 15 minutes in seconds
+                            />
+                            <Input
+                              type="time"
+                              value={slot.endTime}
+                              onChange={(e) =>
+                                handleUpdateCustomSlot(
+                                  dateString,
+                                  index,
+                                  "endTime",
+                                  e.target.value
+                                )
+                              }
+                              className={`col-span-2 ${!slot.isValid ? "border-red-500" : ""}`}
+                              required
+                              step="900" // 15 minutes in seconds
+                            />
+                            <TrashIcon
+                              className="w-5 h-5 cursor-pointer"
+                              onClick={() =>
+                                handleDeleteCustomSlot(dateString, index)
+                              }
+                            />
+                          </div>
+                          {!slot.isValid && slot.errorMessage && (
+                            <p className="text-red-500 text-sm">{slot.errorMessage}</p>
+                          )}
                         </div>
                       ))}
                       <Button
@@ -373,7 +427,7 @@ const PreferredScheduleForm: React.FC<Props> = ({ onSubmit, onBack, initialData 
   );
 };
 
-function CalendarDaysIcon(props: React.SVGProps<SVGSVGElement>) {
+function CalendarDaysIcon(props: Readonly<React.SVGProps<SVGSVGElement>>) {
   return (
     <svg
       {...props}
@@ -401,7 +455,7 @@ function CalendarDaysIcon(props: React.SVGProps<SVGSVGElement>) {
   );
 }
 
-function TrashIcon(props: React.SVGProps<SVGSVGElement>) {
+function TrashIcon(props: Readonly<React.SVGProps<SVGSVGElement>>) {
   return (
     <svg
       {...props}
