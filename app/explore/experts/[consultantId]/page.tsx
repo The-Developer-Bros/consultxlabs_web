@@ -45,6 +45,20 @@ const comments: TComment[] = [
   },
 ];
 
+type TUserDetails = {
+  id: string;
+  name: string;
+  email: string;
+  emailVerified: string;
+  image: string;
+  phone: string;
+  address: string;
+  onboardingCompleted: boolean;
+  role: string;
+  consultantProfileId: string | null;
+  consulteeProfileId: string | null;
+};
+
 type TConsultantDetails = {
   id: string;
   rating: number;
@@ -62,12 +76,38 @@ type TConsultantDetails = {
 type TSlotTiming = {
   slotId: string;
   dateInISO: string;
-  timeTzStart: string;
-  timeTzEnd: string;
+  slotStartTimeInUTC: string;
+  slotEndTimeInUTC: string;
   slotsOfAvailabilityId: string;
   slotsOfAppointmentId: string;
   startTime: string;
   endTime: string;
+};
+
+const fetchConsultantDetails = async (id: string) => {
+  try {
+    const response = await fetch(`/api/user/consultants/${id}`);
+    if (!response.ok) {
+      throw new Error("Failed to fetch consultant details");
+    }
+    return response.json();
+  } catch (error: any) {
+    console.error("Error fetching consultant details:", error);
+    throw new Error("Failed to fetch consultant details");
+  }
+};
+
+const fetchUserDetails = async (id: string) => {
+  try {
+    const response = await fetch(`/api/user/${id}`);
+    if (!response.ok) {
+      throw new Error("Failed to fetch user details");
+    }
+    return response.json();
+  } catch (error: any) {
+    console.error("Error fetching user details:", error);
+    throw new Error("Failed to fetch user details");
+  }
 };
 
 export default function ExpertProfile({
@@ -78,6 +118,8 @@ export default function ExpertProfile({
   // Check if the consultantId is exists in the database and display the details of the consultant
   // If the consultantId is not found in the database, display an error message
   // If the consultantId is found in the database, display the details of the consultant
+
+  const [userDetails, setUserDetails] = useState<TUserDetails>();
 
   const [consultantDetails, setConsultantDetails] =
     useState<TConsultantDetails>();
@@ -92,18 +134,13 @@ export default function ExpertProfile({
 
   useEffect(() => {
     // Fetch consultant details
-    const fetchConsultantDetails = async () => {
+    const fetchConsultantAndUserInfo = async () => {
       try {
-        const response = await fetch(
-          `/api/user/consultants/${params.consultantId}`
-        );
-        if (!response.ok) {
-          throw new Error("Failed to fetch consultant details");
-        }
-        const data = await response.json();
-
+        const data = await fetchConsultantDetails(params.consultantId);
         setConsultantDetails(data);
-        console.log("Consultant Details:", consultantDetails);
+
+        const userData = await fetchUserDetails(data.userId);
+        setUserDetails(userData.data);
       } catch (error: any) {
         console.error("Error fetching consultant details:", error);
         toast({
@@ -111,31 +148,33 @@ export default function ExpertProfile({
           description: error.message,
           variant: "destructive",
         });
-        // TODO: Redirect to the 404 page
       }
     };
-    fetchConsultantDetails();
-  }, [consultantDetails, params.consultantId, toast]);
+
+    fetchConsultantAndUserInfo();
+  }, [params.consultantId, toast]);
 
   useEffect(() => {
     // Fetch available slots for the selected date
-    const fetchSlotTimings = async (date: { toISOString: () => any }) => {
+    const fetchSlotTimings = async (date: Date) => {
       try {
         const response = await fetch(
-          `/api/slots/timing/${params.consultantId}?date=${date.toISOString()}`
+          `/api/slots/availability/${params.consultantId}?date=${date}`
         );
+
         if (!response.ok) {
           throw new Error("Failed to fetch available slots");
         }
+
         const data = await response.json();
         const formattedSlots = data.map((slot: TSlotTiming) => {
           return {
             ...slot,
-            startTime: new Date(slot.timeTzStart).toLocaleTimeString(),
-            endTime: new Date(slot.timeTzEnd).toLocaleTimeString(),
+            startTime: new Date(slot.slotStartTimeInUTC).toLocaleTimeString(),
+            endTime: new Date(slot.slotEndTimeInUTC).toLocaleTimeString(),
           };
         });
-        console.log("Slots Timings:", formattedSlots);
+
         setSlotTimings(formattedSlots);
         toast({ title: "Slots fetched successfully", variant: "default" });
       } catch (error: any) {
@@ -147,6 +186,7 @@ export default function ExpertProfile({
         });
       }
     };
+
     if (selectedDateTime) {
       fetchSlotTimings(selectedDateTime);
     }
@@ -188,10 +228,10 @@ export default function ExpertProfile({
       <div className="flex flex-col w-1/2">
         <div className="flex items-center mb-6 text-lg">
           <div className="flex flex-col">
-            <Badge className="mb-1" variant="secondary">
-              neurologist
+            <Badge className="mb-1" variant="outline">
+              {consultantDetails?.specialization}
             </Badge>
-            <h2 className="text-3xl font-semibold">Dr. Aditya Sharma</h2>
+            <h2 className="text-3xl font-semibold">{userDetails?.name}</h2>
             <div className="flex items-center my-2">
               <StarIcon className="text-blue-500 w-5 h-5" />
               <StarIcon className="text-blue-500 w-5 h-5" />
@@ -200,34 +240,36 @@ export default function ExpertProfile({
               <StarIcon className="text-gray-300 w-5 h-5" />
               <span className="ml-2 text-base">(3)</span>
             </div>
-            <p className="text-lg">Specialization in Neurologist</p>
+            <p className="text-lg">
+              {consultantDetails?.subDomains.join(", ")}
+            </p>
           </div>
         </div>
         <div className="mb-6">
           <h3>
             About
             <p className="mt-2 text-gray-500">
-              Dr. Aditya Sharma is a highly experienced neurologist with over 20
-              years of experience in the field. He specializes in treating a
-              wide range of neurological conditions and is known for his
-              patient-centric approach.
+              Mr. John Doe is a seasoned business strategist with over 25 years
+              of experience in the corporate sector. He has a proven track
+              record of driving business growth through innovative strategies
+              and leadership. His expertise spans multiple industries, with a
+              particular focus on market expansion and operational efficiency.
             </p>
-            Qualification and Education
+            Expertise and Education
             <p className="mt-2 text-gray-500">
-              Dr. Sharma completed his MBBS from the All India Institute of
-              Medical Sciences, followed by a specialization in Neurology from
-              the same institution. He has also undergone extensive training in
-              advanced neurological procedures.
+              Mr. Doe holds an MBA from Harvard Business School and a Bachelor’s
+              degree in Economics from Stanford University. His professional
+              journey includes leadership roles in Fortune 500 companies and he
+              is known for his ability to lead complex business transformations.
             </p>
-            Feedback
+            Client Testimonials
             <p className="mt-2 text-gray-500">
-              Patients appreciate Dr. Sharma for his thorough understanding,
-              detailed explanations, and compassionate care. He is highly
-              recommended for neurological consultations.
+              Clients commend Mr. Doe for his strategic insights, comprehensive
+              planning, and result-oriented approach. His ability to identify
+              growth opportunities and drive successful implementations has made
+              him a trusted advisor to many leading businesses.
             </p>
           </h3>
-          <h3>Qualification and Education</h3>
-          <h3>Feedback</h3>
         </div>
         <div>
           <h3 className="font-semibold text-lg mb-4">All Reviews (3)</h3>
@@ -268,8 +310,17 @@ export default function ExpertProfile({
                 <h3 className="text-lg font-semibold mb-4">Select a Date</h3>
                 <Calendar
                   mode="single"
-                  selected={selectedDateTime}
-                  onSelect={setSelectedDateTime}
+                  selected={
+                    selectedDateTime ? new Date(selectedDateTime) : undefined
+                  }
+                  onSelect={(date) => {
+                    if (date) {
+                      // setSelectedDateTime(new Date(date.toISOString().split('T')[0]));
+                      setSelectedDateTime(new Date(date.toLocaleDateString()));
+                    } else {
+                      setSelectedDateTime(undefined);
+                    }
+                  }}
                 />
               </div>
               <div className="bg-white rounded-lg p-6">

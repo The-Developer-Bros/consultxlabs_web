@@ -16,8 +16,8 @@ model User {
   email         String?   @unique
   emailVerified DateTime?
   image         String?
-  phone         String?
-  address       String?
+  phone         String?   @unique
+  address       String?   @unique
   accounts      Account[] // This refers to the accounts that the user has connected
   sessions      Session[] // This refers to the sessions that the user has opened
 
@@ -25,8 +25,8 @@ model User {
   role                UserRole?          @default(CONSULTEE)
   consultantProfile   ConsultantProfile?
   consulteeProfile    ConsulteeProfile?
-  consultantProfileId String?
-  consulteeProfileId  String?
+  consultantProfileId String?            @unique
+  consulteeProfileId  String?            @unique
 
   attachments             Attachment[]
   comments                Comment[]
@@ -47,7 +47,7 @@ model User {
 
 model CookiePreference {
   id        String  @id @default(cuid())
-  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User    @relation(fields: [userId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   userId    String  @unique
   essential Boolean @default(true)
   analytics Boolean @default(false)
@@ -58,7 +58,7 @@ model CookiePreference {
 
 model NotificationPreference {
   id               String  @id @default(cuid())
-  user             User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user             User    @relation(fields: [userId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   userId           String  @unique
   allNotifications Boolean @default(true)
   mentions         Boolean @default(false)
@@ -362,13 +362,11 @@ model ConsultantProfile {
   domain         String?
   subDomains     String[]
 
-  slotsOfAvailability SlotsOfAvailability[]
-  consultations       Consultation[]
-  subscriptions       Subscription[]
-  webinars            Webinar[]
-  classes             Class[]
+  scheduleType ScheduleType
 
-  user   User   @relation(fields: [userId], references: [id])
+  slots Slot[]
+
+  user   User   @relation(fields: [userId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   userId String @unique
 
   createdAt DateTime @default(now())
@@ -382,13 +380,9 @@ model ConsulteeProfile {
   location     String?
   onlineStatus Boolean
 
-  consultations Consultation[]
-  subscriptions Subscription[]
-  webinars      Webinar[]
-  classes       Class[]
-  slotRequests  SlotRequest[] // Add this relation field
+  slotRequests SlotRequest[]
 
-  user   User   @relation(fields: [userId], references: [id])
+  user   User   @relation(fields: [userId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   userId String @unique
 
   createdAt DateTime @default(now())
@@ -397,133 +391,139 @@ model ConsulteeProfile {
   @@index([userId])
 }
 
-model Consultation {
-  id        String   @id @default(uuid())
-  price     Int?
-
-  consultantProfile   ConsultantProfile @relation(fields: [consultantProfileId], references: [id])
-  consultantProfileId String
-  consulteeProfile    ConsulteeProfile  @relation(fields: [consulteeProfileId], references: [id])
-  consulteeProfileId  String            @unique
-
-  slotOfAppointment SlotsOfAppointment?
-  
-  createdAt DateTime @default(now())
-  updatedAt DateTime @default(now())
-
-  @@index([consultantProfileId])
-}
-
-model Subscription {
-  id         String    @id @default(uuid())
-  expiryDate DateTime?
-  price      Int?
-
-  consultantProfile   ConsultantProfile @relation(fields: [consultantProfileId], references: [id])
-  consultantProfileId String
-  consulteeProfile    ConsulteeProfile  @relation(fields: [consulteeProfileId], references: [id])
-  consulteeProfileId  String
-
-  slotsOfAppointment SlotsOfAppointment[]
-
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @default(now())
-
-  @@index([consultantProfileId])
-}
-
-model Webinar {
-  id    String @id @default(uuid())
-  price Int?
-
-  consultantProfile   ConsultantProfile  @relation(fields: [consultantProfileId], references: [id])
-  consultantProfileId String
-  consulteeProfiles   ConsulteeProfile[]
-
-  slotOfAppointment SlotsOfAppointment?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @default(now())
-
-  @@index([consultantProfileId])
-}
-
-model Class {
-  id           String    @id @default(uuid())
-  consultantId String?
-  expiryDate   DateTime? @db.Timestamp(3)
-  price        Int?
-
-  consultantProfile   ConsultantProfile  @relation(fields: [consultantProfileId], references: [id])
-  consultantProfileId String
-  consulteeProfiles   ConsulteeProfile[]
-
-  slotOfAppointment SlotsOfAppointment[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @default(now())
-
-  @@index([consultantProfileId])
-  @@index([consultantId])
-}
-
-model Newsletter {
-  id        String   @id @default(uuid())
-  email     String   @unique
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @default(now())
-}
-
-model SlotsOfAvailability {
-  id                String       @id @default(uuid())
-  availabilitySlots SlotTiming[]
-
-  consultantProfile   ConsultantProfile? @relation(fields: [consultantProfileId], references: [id])
+model Slot {
+  id                  String             @id @default(uuid())
+  date                DateTime?          @db.Date
+  dayOfWeek           DayOfWeek?
+  slotStartTimeInUTC         DateTime?          @db.Timetz()
+  slotEndTimeInUTC           DateTime?          @db.Timetz()
+  consultantProfile   ConsultantProfile? @relation(fields: [consultantProfileId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   consultantProfileId String?
-}
 
-model SlotsOfAppointment {
-  id               String       @id @default(uuid())
-  appointmentSlots SlotTiming[]
+  slotType SlotType
 
-  subscription   Subscription? @relation(fields: [subscriptionId], references: [id])
-  subscriptionId String?
-  class          Class?        @relation(fields: [classId], references: [id])
-  classId        String?
-  consultation   Consultation? @relation(fields: [consultationId], references: [id])
-  consultationId String?       @unique
-  webinar        Webinar?      @relation(fields: [webinarId], references: [id])
-  webinarId      String?       @unique
-}
+  slotRequests SlotRequest[]
 
-model SlotTiming {
-  slotId      String    @id @default(uuid())
-  dateInISO   DateTime  @db.Date
-  timeTzStart DateTime? @db.Timetz()
-  timeTzEnd   DateTime? @db.Timetz()
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
 
-  slotsOfAvailability   SlotsOfAvailability? @relation(fields: [slotsOfAvailabilityId], references: [id])
-  slotsOfAvailabilityId String?
-  SlotsOfAppointment    SlotsOfAppointment?  @relation(fields: [slotsOfAppointmentId], references: [id])
-  slotsOfAppointmentId  String?
-  slotRequests          SlotRequest[] // Add this relation field
+  @@index([consultantProfileId])
 }
 
 model SlotRequest {
-  id                 String           @id @default(uuid())
+  id     String        @id @default(uuid())
+  status RequestStatus @default(PENDING)
 
-  status             RequestStatus    @default(PENDING)
-  consultee          ConsulteeProfile @relation(fields: [consulteeProfileId], references: [id])
+  consulteeProfile   ConsulteeProfile @relation(fields: [consulteeProfileId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   consulteeProfileId String
 
-  slotTiming         SlotTiming       @relation(fields: [slotTimingId], references: [slotId])
-  slotTimingId       String
+  slot   Slot   @relation(fields: [slotId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  slotId String
+
+  appointment SlotOfAppointment?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now())
 
-  @@unique([consulteeProfileId, slotTimingId])
+  @@unique([consulteeProfileId, slotId])
+}
+
+model SlotOfAppointment {
+  id     String        @id @default(uuid())
+  status RequestStatus @default(PENDING)
+
+  appointmentsType AppointmentsType
+
+  slotRequest   SlotRequest @relation(fields: [slotRequestId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  slotRequestId String      @unique
+
+  consultation   Consultation? @relation(fields: [consultationId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  consultationId String?       @unique
+
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  subscriptionId String?       @unique
+
+  webinar   Webinar? @relation(fields: [webinarId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  webinarId String?
+
+  class   Class?  @relation(fields: [classId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  classId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+}
+
+model Consultation {
+  id               String             @id @default(uuid())
+  price            Int?
+  slotAppointments SlotOfAppointment?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+}
+
+model Subscription {
+  id               String             @id @default(uuid())
+  expiryDate       DateTime
+  price            Int?
+  slotAppointments SlotOfAppointment?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+}
+
+model Webinar {
+  id               String              @id @default(uuid())
+  price            Int?
+  slotAppointments SlotOfAppointment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+}
+
+model Class {
+  id               String              @id @default(uuid())
+  expiryDate       DateTime?           @db.Timestamp(3)
+  price            Int?
+  slotAppointments SlotOfAppointment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+}
+
+model Newsletter {
+  id    String @id @default(uuid())
+  email String @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+}
+
+enum UserRole {
+  CONSULTANT
+  CONSULTEE
+  ADMIN
+  STAFF
+}
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+enum ScheduleType {
+  WEEKLY
+  CUSTOM
+}
+
+enum SlotType {
+  WEEKLY
+  CUSTOM
 }
 
 enum RequestStatus {
@@ -532,9 +532,9 @@ enum RequestStatus {
   REJECTED
 }
 
-enum UserRole {
-  CONSULTANT
-  CONSULTEE
-  ADMIN
-  STAFF
+enum AppointmentsType {
+  CONSULTATION
+  SUBSCRIPTION
+  WEBINAR
+  CLASS
 }
