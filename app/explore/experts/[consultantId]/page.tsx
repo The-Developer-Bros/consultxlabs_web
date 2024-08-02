@@ -62,12 +62,25 @@ type TConsultantDetails = {
 type TSlotTiming = {
   slotId: string;
   dateInISO: string;
-  timeTzStart: string;
-  timeTzEnd: string;
+  slotStartTimeInUTC: string;
+  slotEndTimeInUTC: string;
   slotsOfAvailabilityId: string;
   slotsOfAppointmentId: string;
   startTime: string;
   endTime: string;
+};
+
+const fetchConsultantDetails = async (id: string) => {
+  try {
+    const response = await fetch(`/api/user/consultants/${id}`);
+    if (!response.ok) {
+      throw new Error("Failed to fetch consultant details");
+    }
+    return response.json();
+  } catch (error: any) {
+    console.error("Error fetching consultant details:", error);
+    throw new Error("Failed to fetch consultant details");
+  }
 };
 
 export default function ExpertProfile({
@@ -92,18 +105,11 @@ export default function ExpertProfile({
 
   useEffect(() => {
     // Fetch consultant details
-    const fetchConsultantDetails = async () => {
+    const fetchConsultant = async () => {
       try {
-        const response = await fetch(
-          `/api/user/consultants/${params.consultantId}`
-        );
-        if (!response.ok) {
-          throw new Error("Failed to fetch consultant details");
-        }
-        const data = await response.json();
-
+        const data = await fetchConsultantDetails(params.consultantId);
         setConsultantDetails(data);
-        console.log("Consultant Details:", consultantDetails);
+        toast({ title: "Consultant details fetched successfully" });
       } catch (error: any) {
         console.error("Error fetching consultant details:", error);
         toast({
@@ -111,33 +117,33 @@ export default function ExpertProfile({
           description: error.message,
           variant: "destructive",
         });
-        // TODO: Redirect to the 404 page
       }
     };
-    fetchConsultantDetails();
-  }, [consultantDetails, params.consultantId, toast]);
+
+    fetchConsultant();
+  }, [params.consultantId, toast]);
 
   useEffect(() => {
     // Fetch available slots for the selected date
-    const fetchSlotTimings = async (date: { toISOString: () => any }) => {
+    const fetchSlotTimings = async (date: Date) => {
       try {
         const response = await fetch(
-          `/api/slots/availability/${
-            params.consultantId
-          }?date=${date.toISOString()}`
+          `/api/slots/availability/${params.consultantId}?date=${date}`
         );
+
         if (!response.ok) {
           throw new Error("Failed to fetch available slots");
         }
+
         const data = await response.json();
         const formattedSlots = data.map((slot: TSlotTiming) => {
           return {
             ...slot,
-            startTime: new Date(slot.timeTzStart).toLocaleTimeString(),
-            endTime: new Date(slot.timeTzEnd).toLocaleTimeString(),
+            startTime: new Date(slot.slotStartTimeInUTC).toLocaleTimeString(),
+            endTime: new Date(slot.slotEndTimeInUTC).toLocaleTimeString(),
           };
         });
-        console.log("Slots Timings:", formattedSlots);
+
         setSlotTimings(formattedSlots);
         toast({ title: "Slots fetched successfully", variant: "default" });
       } catch (error: any) {
@@ -149,6 +155,7 @@ export default function ExpertProfile({
         });
       }
     };
+
     if (selectedDateTime) {
       fetchSlotTimings(selectedDateTime);
     }
@@ -270,8 +277,17 @@ export default function ExpertProfile({
                 <h3 className="text-lg font-semibold mb-4">Select a Date</h3>
                 <Calendar
                   mode="single"
-                  selected={selectedDateTime}
-                  onSelect={setSelectedDateTime}
+                  selected={
+                    selectedDateTime ? new Date(selectedDateTime) : undefined
+                  }
+                  onSelect={(date) => {
+                    if (date) {
+                      // setSelectedDateTime(new Date(date.toISOString().split('T')[0]));
+                      setSelectedDateTime(new Date(date.toLocaleDateString()));
+                    } else {
+                      setSelectedDateTime(undefined);
+                    }
+                  }}
                 />
               </div>
               <div className="bg-white rounded-lg p-6">

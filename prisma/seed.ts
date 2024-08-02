@@ -114,8 +114,8 @@ async function createConsultations() {
                   slot: {
                     create: {
                       date: startTime,
-                      timeTzStart: startTime,
-                      timeTzEnd: endTime,
+                      slotStartTimeInUTC: startTime,
+                      slotEndTimeInUTC: endTime,
                       slotType: SlotType.CUSTOM,
                       consultantProfileId:
                         faker.helpers.arrayElement(consultants).id,
@@ -162,8 +162,8 @@ async function createSubscriptions() {
                   slot: {
                     create: {
                       date: faker.date.future(),
-                      timeTzStart: faker.date.recent(),
-                      timeTzEnd: faker.date.soon(),
+                      slotStartTimeInUTC: faker.date.recent(),
+                      slotEndTimeInUTC: faker.date.soon(),
                       slotType: SlotType.CUSTOM,
                       consultantProfileId:
                         faker.helpers.arrayElement(consultants).id,
@@ -208,8 +208,8 @@ async function createWebinars() {
                   slot: {
                     create: {
                       date: startTime,
-                      timeTzStart: startTime,
-                      timeTzEnd: endTime,
+                      slotStartTimeInUTC: startTime,
+                      slotEndTimeInUTC: endTime,
                       slotType: SlotType.CUSTOM,
                       consultantProfileId:
                         faker.helpers.arrayElement(consultants).id,
@@ -255,8 +255,8 @@ async function createClasses() {
                   slot: {
                     create: {
                       date: startTime,
-                      timeTzStart: startTime,
-                      timeTzEnd: endTime,
+                      slotStartTimeInUTC: startTime,
+                      slotEndTimeInUTC: endTime,
                       slotType: SlotType.CUSTOM,
                       consultantProfileId:
                         faker.helpers.arrayElement(consultants).id,
@@ -312,8 +312,8 @@ async function createSlots() {
             slotType === SlotType.WEEKLY
               ? faker.helpers.arrayElement(Object.values(DayOfWeek))
               : null,
-          timeTzStart: faker.date.recent(),
-          timeTzEnd: faker.date.soon(),
+          slotStartTimeInUTC: faker.date.recent(),
+          slotEndTimeInUTC: faker.date.soon(),
           slotType,
           consultantProfileId: consultant.id,
         },

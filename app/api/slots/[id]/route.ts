@@ -32,8 +32,8 @@ export async function POST(req: NextRequest, res: NextResponse) {
       data: {
         date: body.date,
         dayOfWeek: body.dayOfWeek,
-        timeTzStart: body.timeTzStart,
-        timeTzEnd: body.timeTzEnd,
+        slotStartTimeInUTC: body.slotStartTimeInUTC,
+        slotEndTimeInUTC: body.slotEndTimeInUTC,
         slotType: body.slotType,
         consultantProfileId: body.consultantProfileId,
         // Additional fields can be added here if needed
@@ -63,8 +63,8 @@ export async function PUT(
       data: {
         date: body.date,
         dayOfWeek: body.dayOfWeek,
-        timeTzStart: body.timeTzStart,
-        timeTzEnd: body.timeTzEnd,
+        slotStartTimeInUTC: body.slotStartTimeInUTC,
+        slotEndTimeInUTC: body.slotEndTimeInUTC,
         slotType: body.slotType,
         consultantProfileId: body.consultantProfileId,
         // Replace all fields, even if some remain unchanged
@@ -94,8 +94,8 @@ export async function PATCH(
       data: {
         date: body.date, // Update only if provided
         dayOfWeek: body.dayOfWeek, // Update only if provided
-        timeTzStart: body.timeTzStart, // Update only if provided
-        timeTzEnd: body.timeTzEnd, // Update only if provided
+        slotStartTimeInUTC: body.slotStartTimeInUTC, // Update only if provided
+        slotEndTimeInUTC: body.slotEndTimeInUTC, // Update only if provided
         slotType: body.slotType, // Update only if provided
         consultantProfileId: body.consultantProfileId, // Update only if provided
         // Add other fields as necessary

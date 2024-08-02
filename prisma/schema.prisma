@@ -47,7 +47,7 @@ model User {
 
 model CookiePreference {
   id        String  @id @default(cuid())
-  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User    @relation(fields: [userId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   userId    String  @unique
   essential Boolean @default(true)
   analytics Boolean @default(false)
@@ -58,7 +58,7 @@ model CookiePreference {
 
 model NotificationPreference {
   id               String  @id @default(cuid())
-  user             User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user             User    @relation(fields: [userId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   userId           String  @unique
   allNotifications Boolean @default(true)
   mentions         Boolean @default(false)
@@ -366,7 +366,7 @@ model ConsultantProfile {
 
   slots Slot[]
 
-  user   User   @relation(fields: [userId], references: [id])
+  user   User   @relation(fields: [userId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   userId String @unique
 
   createdAt DateTime @default(now())
@@ -382,7 +382,7 @@ model ConsulteeProfile {
 
   slotRequests SlotRequest[]
 
-  user   User   @relation(fields: [userId], references: [id])
+  user   User   @relation(fields: [userId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   userId String @unique
 
   createdAt DateTime @default(now())
@@ -395,9 +395,9 @@ model Slot {
   id                  String             @id @default(uuid())
   date                DateTime?          @db.Date
   dayOfWeek           DayOfWeek?
-  timeTzStart         DateTime?          @db.Timetz()
-  timeTzEnd           DateTime?          @db.Timetz()
-  consultantProfile   ConsultantProfile? @relation(fields: [consultantProfileId], references: [id], onDelete: Cascade)
+  slotStartTimeInUTC         DateTime?          @db.Timetz()
+  slotEndTimeInUTC           DateTime?          @db.Timetz()
+  consultantProfile   ConsultantProfile? @relation(fields: [consultantProfileId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   consultantProfileId String?
 
   slotType SlotType
@@ -414,10 +414,10 @@ model SlotRequest {
   id     String        @id @default(uuid())
   status RequestStatus @default(PENDING)
 
-  consulteeProfile   ConsulteeProfile @relation(fields: [consulteeProfileId], references: [id])
+  consulteeProfile   ConsulteeProfile @relation(fields: [consulteeProfileId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   consulteeProfileId String
 
-  slot   Slot   @relation(fields: [slotId], references: [id])
+  slot   Slot   @relation(fields: [slotId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   slotId String
 
   appointment SlotOfAppointment?
@@ -434,19 +434,19 @@ model SlotOfAppointment {
 
   appointmentsType AppointmentsType
 
-  slotRequest   SlotRequest @relation(fields: [slotRequestId], references: [id])
+  slotRequest   SlotRequest @relation(fields: [slotRequestId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   slotRequestId String      @unique
 
-  consultation   Consultation? @relation(fields: [consultationId], references: [id])
+  consultation   Consultation? @relation(fields: [consultationId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   consultationId String?       @unique
 
-  subscription   Subscription? @relation(fields: [subscriptionId], references: [id])
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   subscriptionId String?       @unique
 
-  webinar   Webinar? @relation(fields: [webinarId], references: [id])
+  webinar   Webinar? @relation(fields: [webinarId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   webinarId String?
 
-  class   Class?  @relation(fields: [classId], references: [id])
+  class   Class?  @relation(fields: [classId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   classId String?
 
   createdAt DateTime @default(now())

@@ -10,9 +10,6 @@ export async function PATCH(
     const { id } = params;
     const body = await req.json();
 
-    console.log("Received id:", id);
-    console.log("Received body:", body);
-
     if (!id) {
       return NextResponse.json(
         { error: "User ID is required" },
@@ -139,10 +136,12 @@ function createSlotsArray({
       for (const slot of daySlots as any) {
         slots.push({
           dayOfWeek: day.toUpperCase(),
-          timeTzStart: new Date(
-            `1970-01-01T${slot.startTime}:00Z`
+          slotStartTimeInUTC: new Date(
+            Date.UTC(1970, 0, 1, ...slot.startTime.split(":").map(Number))
           ).toISOString(),
-          timeTzEnd: new Date(`1970-01-01T${slot.endTime}:00Z`).toISOString(),
+          slotEndTimeInUTC: new Date(
+            Date.UTC(1970, 0, 1, ...slot.endTime.split(":").map(Number))
+          ).toISOString(),
           slotType: "WEEKLY",
         });
       }
@@ -152,10 +151,29 @@ function createSlotsArray({
   if (scheduleType === ScheduleType.CUSTOM && customSlots) {
     for (const [date, dateSlots] of Object.entries(customSlots)) {
       for (const slot of dateSlots as any) {
+        const dateObj = new Date(date);
+        const slotStartTimeInUTC = new Date(
+          Date.UTC(
+            dateObj.getUTCFullYear(),
+            dateObj.getUTCMonth(),
+            dateObj.getUTCDate(),
+            ...slot.startTime.split(":").map(Number)
+          )
+        ).toISOString();
+
+        const slotEndTimeInUTC = new Date(
+          Date.UTC(
+            dateObj.getUTCFullYear(),
+            dateObj.getUTCMonth(),
+            dateObj.getUTCDate(),
+            ...slot.endTime.split(":").map(Number)
+          )
+        ).toISOString();
+
         slots.push({
-          date: new Date(date),
-          timeTzStart: new Date(`${date}T${slot.startTime}:00Z`).toISOString(),
-          timeTzEnd: new Date(`${date}T${slot.endTime}:00Z`).toISOString(),
+          date: dateObj.toISOString(),
+          slotStartTimeInUTC,
+          slotEndTimeInUTC,
           slotType: "CUSTOM",
         });
       }
