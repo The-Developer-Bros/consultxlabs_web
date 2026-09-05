@@ -765,3 +765,99 @@ describe("hourInTz / weekdayInTz", () => {
     ).toBe(0);
   });
 });
+
+/**
+ * #1340 — the supersede sweep must skip the proposal being confirmed.
+ *
+ * `resolveConsumedPreferenceRequests` runs at the end of every allocating
+ * transaction and DECLINEs each open reschedule proposal whose released slots
+ * this allocation just replaced: placing times IS the answer, so a competing
+ * ask must not keep `openForAppointmentId` reserved. The confirmation callers
+ * (auto-confirm and the explicit accept) place THEIR OWN proposal's times, so
+ * their row matched that predicate too — it was declined here, and the
+ * `PENDING_REVIEW → AUTO_ACCEPTED/ACCEPTED` CAS that followed matched zero rows
+ * on a booking that had already moved. The exclusion is asserted against the
+ * WHERE the sweep actually issues, not against a stubbed outcome.
+ */
+describe("#1340 — resolveConsumedPreferenceRequests and the confirming proposal", () => {
+  const SELF = "resched-being-confirmed";
+  const STALE = "resched-stale-other";
+
+  interface SweepWhere {
+    id?: { not?: string };
+    proposedSlots?: unknown;
+  }
+
+  /** A transaction stub that answers the sweep's reads the way Postgres would. */
+  function makeTx(openProposalIds: string[]) {
+    const declined: string[] = [];
+    const tx = {
+      rescheduleRequest: {
+        // Two reads in order: the preference-only rows first, then every OTHER
+        // open proposal on the same released slots.
+        findMany: jest.fn(async ({ where }: { where: SweepWhere }) => {
+          if (where.proposedSlots) return [];
+          const excluded = where.id?.not;
+          return openProposalIds
+            .filter((id) => id !== excluded)
+            .map((id) => ({ id }));
+        }),
+        findUnique: jest.fn(async () => ({
+          status: "PENDING_REVIEW",
+          appointmentId: "appt-1",
+        })),
+        updateMany: jest.fn(
+          async ({
+            where,
+            data,
+          }: {
+            where: { id: string };
+            data: { status: string };
+          }) => {
+            if (data.status === "DECLINED") declined.push(where.id);
+            return { count: 1 };
+          },
+        ),
+      },
+      bookingStatusHistory: { create: jest.fn(async () => ({})) },
+    };
+    return { tx, declined };
+  }
+
+  const runSweep = (
+    tx: unknown,
+    releasedSlotIds: string[],
+    excludeRescheduleRequestId?: string,
+  ): Promise<void> =>
+    (
+      SlotAllocationService as unknown as {
+        resolveConsumedPreferenceRequests: (...a: unknown[]) => Promise<void>;
+      }
+    ).resolveConsumedPreferenceRequests(
+      tx,
+      releasedSlotIds,
+      excludeRescheduleRequestId,
+    );
+
+  it("declines a different stale proposal on the same slots but never the excluded one", async () => {
+    const { tx, declined } = makeTx([SELF, STALE]);
+
+    await runSweep(tx, ["released-slot-1"], SELF);
+
+    expect(declined).toEqual([STALE]);
+    const supersedeRead = tx.rescheduleRequest.findMany.mock.calls
+      .map(([arg]) => arg.where)
+      .find((where) => !where.proposedSlots);
+    expect(supersedeRead?.id).toEqual({ not: SELF });
+  });
+
+  it("still declines every open proposal when no confirmation is in flight", async () => {
+    const { tx, declined } = makeTx([SELF, STALE]);
+
+    await runSweep(tx, ["released-slot-1"]);
+
+    // The consultant placing different times by hand supersedes them all; the
+    // exclusion is opt-in and must not weaken that.
+    expect(declined.sort()).toEqual([SELF, STALE].sort());
+  });
+});

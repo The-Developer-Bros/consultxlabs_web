@@ -91,6 +91,13 @@ export async function tryAutoConfirmProposal(
     // pass the per-week cap on a stale count (#860 shards for throughput; GiST
     // backstops overlap, but a cap is a count, not an overlap).
     wideLock: true,
+    // #1340 — the allocator closes every open proposal on these released slots
+    // as DECLINED, because placing times supersedes them. THIS proposal is the
+    // one being confirmed, not superseded: without the exclusion it was
+    // DECLINED inside the allocator's transaction, the AUTO_ACCEPTED CAS below
+    // matched zero rows, and the route reported `autoConfirmed: false` on a
+    // booking that had already moved.
+    excludeRescheduleRequestId: request.id,
   });
 
   if (!result.success) {
