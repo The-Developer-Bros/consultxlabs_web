@@ -10,8 +10,8 @@
 | **Slot grouping**        | Consecutive + same day    | 1 call/day max, consecutive within day                   | Consecutive               | Max 2-3 sessions/day, consecutive within session            | Single slot                      |
 | **Scheduling period**    | None                      | Required [startDate, endDate]                            | None                      | Required [startDate, endDate]                               | None                             |
 | **Appointments created** | 1                         | 1 per call (many)                                        | 1                         | 1 per session (many)                                        | 1                                |
-| **Weekly limit**         | N/A                       | `sessionsPerWeek` (0-7)                                     | N/A                       | `sessionsPerWeek`                                           | N/A                              |
-| **Status field**         | `status`           | `status`                                          | `status`                  | `status`                                                    | `status` (TrialSessionStatus)    |
+| **Weekly limit**         | N/A                       | `sessionsPerWeek` (0-7)                                  | N/A                       | `sessionsPerWeek`                                           | N/A                              |
+| **Status field**         | `status`                  | `status`                                                 | `status`                  | `status`                                                    | `status` (TrialSessionStatus)    |
 | **Allocation modes**     | auto, manual, requested   | auto, manual, requested                                  | auto, manual              | auto, manual                                                | Consultant-scheduled             |
 | **Min duration**         | 0.5h                      | 0.5h per session                                         | 0.5h                      | 0.5h per session                                            | 0.5h (fixed)                     |
 | **Payment**              | Required                  | Required                                                 | Required                  | Required                                                    | Free                             |
@@ -265,7 +265,8 @@ This catches partial overlaps that exact-match would miss.
 
 **Schedule matching** (weekly availability):
 
-- Uses `startDay`/`endDay` DayOfWeek enum as the source of truth for day-of-week
+- Uses the `startDay`/`endDay` DayOfWeek enum as the source of truth for which day, and that day is the **consultant's local** day, not a UTC day and never the viewer's (ADR B4).
+- Derives the UTC weekday the row actually starts on with `utcStartDayIndex` (`utils/schedule/weekly-projection.ts`), which applies the row's own frozen `utcOffsetMinutes`: `utcDay = (localDay − floor((startTimeUtc + offset) / 1440)) mod 7`. `isMinuteWithinWeeklySlot` and the allocator's `getNextOccurrenceWeekly` and `matchWeeklySlotToDay` all call it, so the validator and the generator cannot disagree about which day a row belongs to.
 - Compares `startTimeUtc`/`endTimeUtc` Int fields (minutes since midnight UTC, 0-1439)
 - Handles overnight (cross-midnight) slots where `endTimeUtc <= startTimeUtc`
 - Slot must start >= availability start AND end <= availability end
@@ -289,9 +290,11 @@ Consultants configure one of two schedule types:
 
 Recurring weekly patterns stored in `SlotOfAvailabilityWeekly`:
 
-- `startDay`: DayOfWeek enum (SUNDAY, MONDAY, ..., SATURDAY) -- **source of truth** for which day
+- `startDay`: DayOfWeek enum (SUNDAY, MONDAY, ..., SATURDAY) -- **source of truth** for which day, expressed in the consultant's own local calendar
 - `startTimeUtc`: Int (minutes since midnight UTC, 0-1439)
 - `endTimeUtc`: Int (minutes since midnight UTC, 0-1439)
+- `endDay`: DayOfWeek enum recording whether the row crosses midnight **in UTC**, which is a narrower question than whether it crosses midnight locally; an Asia/Kolkata 23:00–02:00 row is 17:30–20:30 UTC and is therefore stored as a single same-day row
+- `utcOffsetMinutes`: Int frozen at write time, derived from the consultant's `User.timezone` by `lib/scheduling/weeklyUtcOffset.ts` and never accepted from the request body
 
 ### Custom
 

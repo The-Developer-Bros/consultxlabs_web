@@ -1,7 +1,8 @@
 import { DayOfWeek } from "@prisma/client";
-import { addDays, endOfDay, isBefore, startOfDay } from "date-fns";
+import { addDays, isBefore, startOfDay } from "date-fns";
 import { toZonedTime, fromZonedTime } from "date-fns-tz";
 import { TSlotTiming } from "@/types/slots";
+import { weeklyRowOccurrencesInRange } from "@/utils/schedule/weekly-projection";
 
 // Booking status constants and types
 export const BOOKING_STATUS = {
@@ -37,12 +38,20 @@ export const dayToNumber: Record<DayOfWeek, number> = {
   SATURDAY: 6,
 };
 
+/**
+ * A weekly availability row as the grid consumes it — the stored columns, not
+ * a pair of synthetic 1970 dates. #1342: the old shape called `startDay`
+ * "dayOfWeekforStartTimeInUTC", which is what led the grid to match it against
+ * the VIEWER's weekday, and it dropped `utcOffsetMinutes` so the row's own
+ * projection could not be computed at all.
+ */
 export interface WeeklySlot {
   id: string;
-  dayOfWeekforStartTimeInUTC: DayOfWeek;
-  startsAt: Date;
-  dayOfWeekforEndTimeInUTC: DayOfWeek;
-  endsAt: Date;
+  startDay: DayOfWeek;
+  endDay: DayOfWeek;
+  startTimeUtc: number;
+  endTimeUtc: number;
+  utcOffsetMinutes: number | null;
 }
 
 export interface CustomSlot {
@@ -214,13 +223,22 @@ export function hasTimeOverlap(
 }
 
 /**
- * Process weekly slots for a specific date range
+ * Process weekly slots for a specific date range.
+ *
+ * #1342 — the range is walked in UTC and each row is projected through its own
+ * frozen offset by the shared generator, so the instants this returns are the
+ * ones checkout's validator accepts and do not depend on who is looking. The
+ * old body walked the range in the VIEWER's timezone, bucketed a row onto the
+ * viewer's weekday and rebuilt the local wall-clock from the stored instant, so
+ * a New York viewer was shown an IST pre-05:30 row one day away from the day it
+ * publishes — and checkout rejected every booking made on it. Display zoning
+ * happens downstream in `splitSlotsByDay` and `groupSlotsByDate`, which is why
+ * the timezone argument is gone.
  */
 export function processWeeklySlots(
   weeklySlots: WeeklySlot[],
   startDate: Date,
   endDate: Date,
-  timezone: string,
 ): ProcessedSlot[] {
   const processedSlots: ProcessedSlot[] = [];
 
@@ -245,64 +263,33 @@ export function processWeeklySlots(
     return processedSlots;
   }
 
-  // Convert start and end dates to target timezone
-  const startDateTz = toZonedTime(startDate, timezone);
-  const endDateTz = toZonedTime(endDate, timezone);
-  let currentDateTz = startOfDay(startDateTz);
+  for (const slot of weeklySlots) {
+    // Defensive: Skip slots with invalid data
+    if (
+      !slot ||
+      !slot.id ||
+      !slot.startDay ||
+      typeof slot.startTimeUtc !== "number" ||
+      typeof slot.endTimeUtc !== "number"
+    ) {
+      console.warn(
+        `⚠️ processWeeklySlots: skipping slot with missing required fields`,
+      );
+      continue;
+    }
 
-  while (isBefore(currentDateTz, endDateTz)) {
-    const currentDayOfWeek = currentDateTz.getDay();
-    const dayOfWeekEnum = dayMap[currentDayOfWeek];
-
-    weeklySlots.forEach((slot) => {
-      // Defensive: Skip slots with invalid data
-      if (!slot || !slot.id || !slot.startsAt || !slot.endsAt) {
-        console.warn(
-          `⚠️ processWeeklySlots: skipping slot with missing required fields`,
-        );
-        return;
-      }
-      if (slot.dayOfWeekforStartTimeInUTC === dayOfWeekEnum) {
-        // Extract LOCAL time patterns from the stored weekly slot
-        // Convert the stored UTC times to the target timezone to get the local time pattern
-        const startTimeLocal = toZonedTime(slot.startsAt, timezone);
-        const endTimeLocal = toZonedTime(slot.endsAt, timezone);
-
-        const startHour = startTimeLocal.getHours();
-        const startMinute = startTimeLocal.getMinutes();
-        const endHour = endTimeLocal.getHours();
-        const endMinute = endTimeLocal.getMinutes();
-
-        // Create start time for this specific occurrence in the target timezone
-        const startDateTime = new Date(currentDateTz);
-        startDateTime.setHours(startHour, startMinute, 0, 0);
-
-        // Create end time for this specific occurrence
-        const endDateTime = new Date(currentDateTz);
-        endDateTime.setHours(endHour, endMinute, 0, 0);
-
-        // Handle overnight slots: if end hour < start hour, the slot crosses midnight
-        if (
-          endHour < startHour ||
-          (endHour === startHour && endMinute < startMinute)
-        ) {
-          endDateTime.setDate(endDateTime.getDate() + 1);
-        }
-
-        // Convert the timezone-aware datetimes to UTC for storage/API response
-        const startUTC = fromZonedTime(startDateTime, timezone);
-        const endUTC = fromZonedTime(endDateTime, timezone);
-
-        processedSlots.push({
-          start: startUTC,
-          end: endUTC,
-          availabilityId: slot.id,
-          type: "WEEKLY",
-        });
-      }
-    });
-
-    currentDateTz = addDays(currentDateTz, 1);
+    for (const occurrence of weeklyRowOccurrencesInRange(
+      slot,
+      startDate,
+      endDate,
+    )) {
+      processedSlots.push({
+        start: occurrence.start,
+        end: occurrence.end,
+        availabilityId: slot.id,
+        type: "WEEKLY",
+      });
+    }
   }
 
   return processedSlots;
@@ -391,21 +378,21 @@ export function splitSlotsByDay(
     while (isBefore(current, slot.end)) {
       const zonedCurrent = toZonedTime(current, timezone);
       const dayStart = startOfDay(zonedCurrent);
-      const dayEnd = endOfDay(zonedCurrent);
+      // #1415 — day segments are half-open: a segment ends at the NEXT day's
+      // midnight, not at 23:59:59.999. The old `endOfDay` bound cut the last
+      // millisecond off every block that runs to local midnight, and a
+      // 23:30–23:59:59.999 remainder is not a 30-minute atom, so a block
+      // ending at midnight silently lost its final bookable slot everywhere.
+      const nextDayStart = fromZonedTime(addDays(dayStart, 1), timezone);
 
-      const slotPartEndCandidate = isBefore(
-        slot.end,
-        fromZonedTime(dayEnd, timezone),
-      )
+      const slotPartEnd = isBefore(slot.end, nextDayStart)
         ? slot.end
-        : fromZonedTime(dayEnd, timezone);
+        : nextDayStart;
 
       // Skip zero-length segments
-      if (slotPartEndCandidate.getTime() === current.getTime()) {
+      if (slotPartEnd.getTime() === current.getTime()) {
         break;
       }
-
-      const slotPartEnd = slotPartEndCandidate;
 
       // Push valid segment
       if (isBefore(current, slotPartEnd)) {
@@ -417,7 +404,6 @@ export function splitSlotsByDay(
         });
       }
 
-      const nextDayStart = fromZonedTime(addDays(dayStart, 1), timezone);
       if (
         isBefore(nextDayStart, current) ||
         nextDayStart.getTime() === current.getTime()
@@ -849,7 +835,6 @@ export function processAvailabilitySlots(
     weeklySlots,
     startDate,
     endDate,
-    timezone,
   );
   const processedCustomSlots = processCustomSlots(
     customSlots,

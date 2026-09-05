@@ -10,8 +10,12 @@ import { isValidTimeRange } from "@/utils/timeSlotValidation";
 import {
   validateWeeklySlotTimeOrder,
   slotsOverlap,
-  getTimezoneOffsetMinutes,
 } from "@/utils/slotAllocation/slotTimeUtils";
+import {
+  resolveWeeklyTimezone,
+  resolveWeeklyUtcOffsetMinutes,
+  weeklyRowLocalColumns,
+} from "@/lib/scheduling/weeklyUtcOffset";
 import { notifyNewConsultantApplication } from "@/lib/novu";
 import type { OnboardingData, ConsultantProfileCreateData } from "./onboarding";
 import {
@@ -142,7 +146,15 @@ async function syncAvailabilitySlots(
   tx: Tx,
   timezone?: string,
 ) {
-  const utcOffsetMinutes = timezone ? getTimezoneOffsetMinutes(timezone) : 0;
+  // #1326 — this path stored 0 for a consultant with no onboarding timezone,
+  // so their whole published week projected as if they lived in UTC. One
+  // resolver now answers for every write path, and a conflicting caller value
+  // throws into the failed transaction rather than being written.
+  const utcOffsetMinutes = resolveWeeklyUtcOffsetMinutes({
+    profileTimezone: timezone,
+    consultantProfileId,
+  });
+  const rowTimezone = resolveWeeklyTimezone(timezone);
   if (scheduleType === ScheduleType.WEEKLY) {
     await tx.slotOfAvailabilityCustom.deleteMany({
       where: { consultantProfileId },
@@ -191,14 +203,26 @@ async function syncAvailabilitySlots(
 
       // #1320 — adjacent entries ("3:30–4:30" + "4:30–5:30") become one row so
       // storage matches the window the customer is shown and can book.
+      //
+      // #1326 — the offset is stamped BEFORE the merge: mergeAdjacentWeeklyRows
+      // refuses to fold rows whose offsets differ, and every row here carried
+      // an absent offset until after the fold, so that guard was comparing
+      // undefined with undefined and could never fire.
+      // #872 — the five DST columns are derived from the MERGED row, which is
+      // the one actually stored. No reader consults them until the reader flip.
+      const rowsWithOffset = weeklySlotsToCreate.map((slot) => ({
+        ...slot,
+        utcOffsetMinutes,
+      }));
       await tx.slotOfAvailabilityWeekly.createMany({
-        data: mergeAdjacentWeeklyRows(weeklySlotsToCreate).map((slot) => ({
+        data: mergeAdjacentWeeklyRows(rowsWithOffset).map((slot) => ({
           startDay: slot.startDay,
           startTimeUtc: slot.startTimeUtc,
           endDay: slot.endDay,
           endTimeUtc: slot.endTimeUtc,
           consultantProfileId,
           utcOffsetMinutes,
+          ...weeklyRowLocalColumns(slot, rowTimezone, utcOffsetMinutes),
         })),
       });
     }
