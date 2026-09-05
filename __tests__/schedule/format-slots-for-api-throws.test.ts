@@ -31,6 +31,12 @@ describe("formatSlotsForApi is all-or-nothing (#1125)", () => {
     const result = formatSlotsForApi(slots, true, "UTC");
 
     expect(result).toHaveLength(3);
+    // #1343 — the day the consultant published, not the UTC day the instant
+    // happens to land on.
+    expect(
+      (result[0] as { dayOfWeekforStartTimeInUTC: string })
+        .dayOfWeekforStartTimeInUTC,
+    ).toBe("MONDAY");
   });
 
   it("formats every custom slot it is given", () => {

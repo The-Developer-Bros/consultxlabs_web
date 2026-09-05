@@ -11,9 +11,13 @@
   at row creation. That frozen offset — NOT an IANA zone — is the live source
   of truth for projecting weekly rows onto concrete dates.
 - The DST-correct representation (local wall-clock + IANA `timezone` +
-  `localStartMinutes/localEndMinutes/localStartDay`) **already exists as
-  nullable columns but is unwritten everywhere**. Going DST-aware needs no
-  migration; it needs the algorithm + UI work tracked in #872.
+  `localStartMinutes`/`localEndMinutes`/`localStartDay`/`localEndDay`) exists as
+  nullable columns and is **dual-written from 2026-09-05 and read by nothing**.
+  Every weekly write path fills the five columns from
+  `weeklyRowLocalColumns` (`utils/schedule/weekly-projection.ts`), so the reader
+  flip inherits correct values for every row written from that date onward
+  without a backfill; going DST-aware still needs no migration, only the
+  algorithm and UI work tracked in #872.
 - Custom availability (`SlotOfAvailabilityCustom`) stores absolute UTC instants
   — unaffected by the stub.
 - Event bucketing (`dayKey`/`weekKey`, ADR B9) uses each event's
@@ -30,18 +34,35 @@ every surface renders in viewer-local time.
 
 ## Rules until #872 lands
 
-1. Never write the local\* columns from new code — they are reserved for the
-   #872 migration; writing them half-way creates two sources of truth.
-2. Any NEW consumer of weekly availability MUST go through
-   `isMinuteWithinWeeklySlot` / `getNextOccurrenceWeekly` /
-   `matchWeeklySlotToDay` (utils/slotAllocation/slotTimeUtils.ts +
-   SlotAllocationService) so the frozen-offset semantics stay in one place.
+1. Never READ the local\* columns from new code, and never write them by hand.
+   They are dual-written for the #872 reader flip and nothing else consults
+   them, so a reader added now would be a second source of truth against a
+   frozen offset that is still the live one. Write them only by calling
+   `weeklyRowLocalColumns`, and if you add a write path that creates or
+   recreates weekly rows — `coalesceConsultantWeeklyRows` is the one that
+   deletes and recreates — carry the five columns across, or the next coalesce
+   silently unwrites them.
+2. Any NEW consumer of weekly availability MUST go through the shared
+   projection helpers — `utcStartDayIndex`, `weeklyRowDurationMinutes` and
+   `weeklyRowOccurrencesInRange` in `utils/schedule/weekly-projection.ts`, or
+   the `isMinuteWithinWeeklySlot` / `getNextOccurrenceWeekly` /
+   `matchWeeklySlotToDay` wrappers that call them — so the frozen-offset
+   semantics stay in one place. Deriving a weekday from the viewer's clock is
+   the specific mistake this rule exists to stop (#1342).
 3. Do not "fix" a +5:30 mismatch by editing offsets by hand — regenerate the
-   consultant's availability rows instead.
-4. A cheap pre-#872 guard worth building when touched next: on weekly
-   availability edit, compare the stored `utcOffsetMinutes` against the
-   consultant's CURRENT profile timezone offset and warn on drift
-   (tracked inside #872's scope).
+   consultant's availability rows instead. `utcOffsetMinutes` is never taken
+   from a request body either: `resolveWeeklyUtcOffsetMinutes`
+   (`lib/scheduling/weeklyUtcOffset.ts`) derives it from the consultant's
+   `User.timezone`, falls back to 330 when the profile carries no usable zone,
+   and answers a caller-supplied value that contradicts the profile with a 400
+   carrying `code: "UTC_OFFSET_CONFLICT"` (#1326, #1348).
+4. The drift warning asked for here now exists. Every weekly save whose
+   consultant profile names a zone other than `Asia/Kolkata` reports one
+   Sentry warning per write (never one per row), which is the signal that a
+   consultant is publishing from outside the launch market and that the #872
+   reader work has become due. `PIN_TO_LAUNCH_OFFSET` in the same module is the
+   one-line switch that hard-pins every row to IST if that answer is ever
+   preferred to the profile's own offset.
 
 ## Related
 
