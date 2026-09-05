@@ -163,11 +163,15 @@ function makeMockTx(appointmentData: any) {
     },
     consultation: {
       update: jest.fn(),
+      // Each transition helper reads the from-status before its CAS.
+      findUnique: jest.fn().mockResolvedValue({ status: "APPROVED" }),
       // B2 — the cancel/reschedule CAS guards use updateMany.
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     subscription: {
       update: jest.fn(),
+      // Each transition helper reads the from-status before its CAS.
+      findUnique: jest.fn().mockResolvedValue({ status: "APPROVED" }),
       // B2 — the cancel/reschedule CAS guards use updateMany.
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       // #448 — a PARTIAL (slotIds) subscription reschedule only terminal-guards
@@ -177,15 +181,26 @@ function makeMockTx(appointmentData: any) {
     },
     webinar: {
       update: jest.fn(),
+      // Each transition helper reads the from-status before its CAS.
+      findUnique: jest.fn().mockResolvedValue({ status: "SCHEDULED" }),
       // B2 — the cancel/reschedule CAS guards use updateMany.
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     class: {
       update: jest.fn(),
+      // Each transition helper reads the from-status before its CAS.
+      findUnique: jest.fn().mockResolvedValue({ status: "SCHEDULED" }),
       // B2 — the cancel/reschedule CAS guards use updateMany.
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
-    slotOfAppointment: { updateMany: jest.fn(), deleteMany: jest.fn() },
+    // transitionSlotCompletion reads the from-status, then moves the cohort
+    // with updateManyAndReturn so each moved id gets its history row.
+    slotOfAppointment: {
+      findMany: jest.fn().mockResolvedValue([]),
+      updateManyAndReturn: jest.fn().mockResolvedValue([{ id: "slot-1" }]),
+      deleteMany: jest.fn(),
+    },
+    bookingStatusHistory: { create: jest.fn().mockResolvedValue({}) },
   };
 }
 

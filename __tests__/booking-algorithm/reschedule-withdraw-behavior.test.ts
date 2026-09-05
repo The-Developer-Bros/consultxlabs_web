@@ -48,9 +48,18 @@ interface StatusCas {
   where: { id: string; status?: { in: string[] } };
   data: Data;
 }
+/** transitionSlotCompletion's shape: the from-set is an `in` list. */
 interface SlotCas {
-  where: { id: { in: string[] }; completionStatus: string };
+  where: { id: { in: string[] }; completionStatus: { in: string[] } };
   data: Data;
+}
+
+function matchSlots(where: SlotCas["where"]): SlotRow[] {
+  return state.slots.filter(
+    (s) =>
+      where.id.in.includes(s.id) &&
+      where.completionStatus.in.includes(s.completionStatus),
+  );
 }
 
 function makeTx() {
@@ -70,14 +79,16 @@ function makeTx() {
       }),
     },
     slotOfAppointment: {
-      updateMany: jest.fn(async ({ where, data }: SlotCas) => {
-        const targets = state.slots.filter(
-          (s) =>
-            where.id.in.includes(s.id) &&
-            s.completionStatus === where.completionStatus,
-        );
+      findMany: jest.fn(async ({ where }: SlotCas) =>
+        matchSlots(where).map((s) => ({
+          id: s.id,
+          completionStatus: s.completionStatus,
+        })),
+      ),
+      updateManyAndReturn: jest.fn(async ({ where, data }: SlotCas) => {
+        const targets = matchSlots(where);
         targets.forEach((s) => Object.assign(s, data));
-        return { count: targets.length };
+        return targets.map((s) => ({ id: s.id }));
       }),
     },
     subscription: {

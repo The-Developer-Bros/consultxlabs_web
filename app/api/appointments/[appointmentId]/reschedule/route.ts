@@ -10,6 +10,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-server";
 import { isPrivileged } from "@/lib/auth-helpers";
 import type {
+  Prisma,
   RescheduleInitiatorRole,
   ReschedulePreferredDays,
   ReschedulePreferredTimeOfDay,
@@ -38,6 +39,11 @@ import {
   EVENT_ALLOWED_FROM,
   RESCHEDULABLE_FROM,
   SLOT_RESCHEDULABLE_FROM,
+  transitionClassEvent,
+  transitionConsultationRequest,
+  transitionSlotCompletion,
+  transitionSubscriptionRequest,
+  transitionWebinarEvent,
 } from "@/lib/booking/transitions";
 import { isOrgAdminOfAppointment } from "@/lib/booking/org-actor";
 import { IllegalTransitionError } from "@/lib/enterprise/transitions";
@@ -382,6 +388,36 @@ export async function POST(
             }
           }
 
+          // Audit attribution for every BookingStatusHistory row this
+          // reschedule writes (#1322 A12). `appointmentId` is added per call
+          // site: a whole-subscription or whole-class release moves slots of
+          // sibling appointments, whose history belongs on their own timeline.
+          const auditMeta = {
+            actorUserId: session.user.id,
+            reason: reason ?? null,
+            organizationId: appointment.organizationId,
+          };
+          // Every slot flip below releases the row in place: RESCHEDULED plus
+          // tentative, never a tombstone. The reschedule keeps these rows —
+          // the proposal's releasedSlotIds point at them and a withdrawal
+          // restores them — so `deletedAt` is the cancel path's business only.
+          //
+          // From-state guard on every slot flip: a reschedule must never
+          // resurrect COMPLETED/CANCELLED history to RESCHEDULED (#837). It
+          // rides in `fromIn`, not in `where`, because the helper overwrites
+          // `completionStatus` in the caller's WHERE with its own from-set.
+          // `allowZero` keeps the pre-existing contract: a release that matches
+          // no live row answers 200 with `slotsAffected: 0`, not a 409.
+          const releaseSlots = (where: Prisma.SlotOfAppointmentWhereInput) =>
+            transitionSlotCompletion(tx, {
+              ...auditMeta,
+              where,
+              to: "RESCHEDULED",
+              data: { isTentative: true },
+              fromIn: SLOT_RESCHEDULABLE_FROM,
+              allowZero: true,
+            });
+
           // Mark the appropriate slots as tentative
           if (
             slotIds &&
@@ -394,14 +430,8 @@ export async function POST(
             const affectedAppointmentIds = Array.from(
               new Set(slotsToReschedule.map((s) => s.appointmentId)),
             );
-            // From-state guard on every slot flip: a reschedule must never
-            // resurrect COMPLETED/CANCELLED history to RESCHEDULED (#837).
-            await tx.slotOfAppointment.updateMany({
-              where: {
-                appointmentId: { in: affectedAppointmentIds },
-                completionStatus: { in: SLOT_RESCHEDULABLE_FROM },
-              },
-              data: { isTentative: true, completionStatus: "RESCHEDULED" },
+            await releaseSlots({
+              appointmentId: { in: affectedAppointmentIds },
             });
           } else if (
             derivedType === "SUBSCRIPTION" &&
@@ -415,13 +445,7 @@ export async function POST(
               })
             ).map((a) => a.id);
 
-            await tx.slotOfAppointment.updateMany({
-              where: {
-                appointmentId: { in: allAppointmentIds },
-                completionStatus: { in: SLOT_RESCHEDULABLE_FROM },
-              },
-              data: { isTentative: true, completionStatus: "RESCHEDULED" },
-            });
+            await releaseSlots({ appointmentId: { in: allAppointmentIds } });
           } else if (derivedType === "CLASS" && appointment.class) {
             // Entire class reschedule - mark ALL slots in ALL appointments
             const allAppointmentIds = (
@@ -431,36 +455,24 @@ export async function POST(
               })
             ).map((a) => a.id);
 
-            await tx.slotOfAppointment.updateMany({
-              where: {
-                appointmentId: { in: allAppointmentIds },
-                completionStatus: { in: SLOT_RESCHEDULABLE_FROM },
-              },
-              data: { isTentative: true, completionStatus: "RESCHEDULED" },
-            });
+            await releaseSlots({ appointmentId: { in: allAppointmentIds } });
           } else {
             // Non-multi-appointment: mark all slots in the single appointment
-            await tx.slotOfAppointment.updateMany({
-              where: {
-                appointmentId,
-                completionStatus: { in: SLOT_RESCHEDULABLE_FROM },
-              },
-              data: { isTentative: true, completionStatus: "RESCHEDULED" },
-            });
+            await releaseSlots({ appointmentId });
           }
 
-          // Update status based on appointment type — CAS-guarded (B2): a
-          // reschedule racing a cancel/completion must not resurrect the
-          // booking; count 0 means the from-state was terminal → 409. The
-          // set lives in lib/booking/transitions.ts so the map is canonical.
-          let movedStatus = 1; // group events validated below
-          if (appointment.consultation) {
-            movedStatus = (
-              await tx.consultation.updateMany({
-                where: {
-                  id: appointment.consultation.id,
-                  status: { in: [...RESCHEDULABLE_FROM] },
-                },
+          // Update status based on appointment type — through the CAS helpers
+          // (B2): a reschedule racing a cancel/completion must not resurrect
+          // the booking, so the allowed-from set rides the WHERE and a zero-row
+          // match throws instead of writing. The set lives in
+          // lib/booking/transitions.ts so the map is canonical.
+          try {
+            if (appointment.consultation) {
+              await transitionConsultationRequest(tx, {
+                ...auditMeta,
+                appointmentId,
+                where: { id: appointment.consultation.id },
+                to: "PENDING",
                 // requestedAt rides along deliberately: the stale-request
                 // expiry sweep keys its PENDING cohort on requestedAt, so a
                 // reschedule re-entering PENDING must refresh the clock or the
@@ -468,62 +480,67 @@ export async function POST(
                 // booking older than 48h that is "stale", and the sweep would
                 // terminalise (EXPIRED) and fully refund a live booking the
                 // consultee is actively trying to move.
-                data: { status: "PENDING", requestedAt: new Date() },
-              })
-            ).count;
-          } else if (appointment.subscription) {
-            // #448 — a single/multi-session reschedule must NOT flip the WHOLE
-            // subscription to PENDING. Subscription has no per-session status;
-            // the affected slots already carry isTentative + RESCHEDULED, so the
-            // session-level state is captured there. Only a full-subscription
-            // reschedule (no slotIds) genuinely re-enters PENDING. The partial
-            // path still terminal-guards (count, no write): rescheduling a
-            // session of a cancelled/completed subscription stays a 409.
-            const isPartialSubscriptionReschedule = Boolean(
-              slotIds && slotIds.length > 0,
-            );
-            movedStatus = isPartialSubscriptionReschedule
-              ? await tx.subscription.count({
+                data: { requestedAt: new Date() },
+                fromIn: [...RESCHEDULABLE_FROM],
+              });
+            } else if (appointment.subscription) {
+              // #448 — a single/multi-session reschedule must NOT flip the WHOLE
+              // subscription to PENDING. Subscription has no per-session status;
+              // the affected slots already carry isTentative + RESCHEDULED, so the
+              // session-level state is captured there. Only a full-subscription
+              // reschedule (no slotIds) genuinely re-enters PENDING. The partial
+              // path still terminal-guards (count, no write): rescheduling a
+              // session of a cancelled/completed subscription stays a 409.
+              const isPartialSubscriptionReschedule = Boolean(
+                slotIds && slotIds.length > 0,
+              );
+              if (isPartialSubscriptionReschedule) {
+                const live = await tx.subscription.count({
                   where: {
                     id: appointment.subscription.id,
                     status: { in: [...RESCHEDULABLE_FROM] },
                   },
-                })
-              : (
-                  await tx.subscription.updateMany({
-                    where: {
-                      id: appointment.subscription.id,
-                      status: { in: [...RESCHEDULABLE_FROM] },
-                    },
-                    // Same clock-refresh rationale as the consultation flip
-                    // above: expirePendingSubscriptions keys on requestedAt.
-                    data: { status: "PENDING", requestedAt: new Date() },
-                  })
-                ).count;
-          } else if (appointment.webinar) {
-            // Explicit allowed-from (was notIn) — robust against future enum
-            // additions (#837).
-            movedStatus = (
-              await tx.webinar.updateMany({
-                where: {
-                  id: appointment.webinar.id,
-                  status: { in: EVENT_ALLOWED_FROM.SCHEDULED },
-                },
-                data: { status: "SCHEDULED" },
-              })
-            ).count;
-          } else if (appointment.class) {
-            movedStatus = (
-              await tx.class.updateMany({
-                where: {
-                  id: appointment.class.id,
-                  status: { in: CLASS_EVENT_ALLOWED_FROM.SCHEDULED },
-                },
-                data: { status: "SCHEDULED" },
-              })
-            ).count;
-          }
-          if (movedStatus === 0) {
+                });
+                // No status moves on this path, so there is nothing to CAS and
+                // nothing to record; the throw only reuses the 409 below.
+                if (live === 0) {
+                  throw new IllegalTransitionError("Subscription", "PENDING");
+                }
+              } else {
+                await transitionSubscriptionRequest(tx, {
+                  ...auditMeta,
+                  appointmentId,
+                  where: { id: appointment.subscription.id },
+                  to: "PENDING",
+                  // Same clock-refresh rationale as the consultation flip
+                  // above: expirePendingSubscriptions keys on requestedAt.
+                  data: { requestedAt: new Date() },
+                  fromIn: [...RESCHEDULABLE_FROM],
+                });
+              }
+            } else if (appointment.webinar) {
+              // Explicit allowed-from (was notIn) — robust against future enum
+              // additions (#837).
+              await transitionWebinarEvent(tx, {
+                ...auditMeta,
+                appointmentId,
+                where: { id: appointment.webinar.id },
+                to: "SCHEDULED",
+                fromIn: EVENT_ALLOWED_FROM.SCHEDULED,
+              });
+            } else if (appointment.class) {
+              await transitionClassEvent(tx, {
+                ...auditMeta,
+                appointmentId,
+                where: { id: appointment.class.id },
+                to: "SCHEDULED",
+                fromIn: CLASS_EVENT_ALLOWED_FROM.SCHEDULED,
+              });
+            }
+          } catch (err) {
+            // The helper's zero-row throw IS the old `movedStatus === 0`; the
+            // client contract stays NOT_RESCHEDULABLE.
+            if (!(err instanceof IllegalTransitionError)) throw err;
             throw Object.assign(
               new Error(
                 "This appointment can no longer be rescheduled (already cancelled or completed).",

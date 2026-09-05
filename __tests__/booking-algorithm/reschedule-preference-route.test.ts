@@ -134,15 +134,31 @@ function makeMockTx() {
         { id: "apt-2", slotsOfAppointment: [SIBLING_SLOTS[1]] },
       ]),
     },
+    // Each transition helper reads the from-status before its CAS and appends
+    // one BookingStatusHistory row after it.
     subscription: {
+      findUnique: jest.fn().mockResolvedValue({ status: "APPROVED" }),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       count: jest.fn().mockResolvedValue(1),
     },
-    consultation: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
-    webinar: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
-    class: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    consultation: {
+      findUnique: jest.fn().mockResolvedValue({ status: "APPROVED" }),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    webinar: {
+      findUnique: jest.fn().mockResolvedValue({ status: "SCHEDULED" }),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    class: {
+      findUnique: jest.fn().mockResolvedValue({ status: "SCHEDULED" }),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    bookingStatusHistory: { create: jest.fn().mockResolvedValue({}) },
     slotOfAppointment: {
-      updateMany: jest.fn().mockResolvedValue({ count: 2 }),
+      findMany: jest.fn().mockResolvedValue([]),
+      updateManyAndReturn: jest
+        .fn()
+        .mockResolvedValue([{ id: "slot-1" }, { id: "slot-2" }]),
     },
     rescheduleRequest: {
       create: jest.fn().mockImplementation(({ data }) => {
