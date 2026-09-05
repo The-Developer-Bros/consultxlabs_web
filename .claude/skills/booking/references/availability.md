@@ -20,9 +20,22 @@ rather than unioning both tables.
 
 `SlotOfAvailabilityWeekly` holds recurring rows as `startDay`/`endDay`
 (`DayOfWeek`) plus `startTimeUtc`/`endTimeUtc` as minutes since midnight UTC
-(0–1439), with `utcOffsetMinutes` as the live source of truth. Its `timezone`,
-`localStartMinutes`, `localEndMinutes`, `localStartDay` and `localEndDay`
-columns are frozen in for a future DST posture and are deliberately unwritten.
+(0–1439), with `utcOffsetMinutes` as the live source of truth. `startDay` is the
+**consultant's local** day (ADR B4): the UTC weekday is derived per row from
+that frozen offset by `utcStartDayIndex`
+(`utils/schedule/weekly-projection.ts`), and no surface may derive it from the
+viewer's clock. `endDay` answers the narrower question of whether the row
+crosses midnight **in UTC**, which is why an Asia/Kolkata 23:00–02:00 row is
+stored as a single same-day row. The offset is never accepted from a request
+body: `resolveWeeklyUtcOffsetMinutes` (`lib/scheduling/weeklyUtcOffset.ts`)
+derives it from `User.timezone`, defaults to 330 when the profile carries no
+usable zone, and answers a contradicting caller value with a 400 carrying
+`code: "UTC_OFFSET_CONFLICT"`. Its `timezone`, `localStartMinutes`,
+`localEndMinutes`, `localStartDay` and `localEndDay` columns are the DST-correct
+representation; they are dual-written from 2026-09-05 by `weeklyRowLocalColumns`
+on every write path and read by nothing until the #872 reader flip, so write
+them only through that helper and carry them through any path that recreates
+rows.
 `SlotOfAvailabilityCustom` holds date-specific rows as `startsAt`/`endsAt` and
 has no `isAvailable`, so a custom row is purely additive and can never express a
 blackout. Both models gained a `deletedAt` tombstone in wave 5 (#1322, schema
@@ -43,7 +56,10 @@ covers both modes, and the two rules differ because the row shapes do.
 Weekly rows merge only on exact adjacency and only when both are single-day,
 share a `startDay`, are not overnight and carry the same `utcOffsetMinutes`;
 overnight and cross-offset rows are left alone. `coalesceConsultantWeeklyRows`
-deletes and recreates, so every weekly row id changes.
+deletes and recreates, so every weekly row id changes, and it recomputes the
+five dual-written DST columns for the merged row rather than copying them —
+a fold moves the row's end, and a row written before the dual-write has no zone
+to recompute from and keeps its nulls.
 
 Custom rows merge on adjacency **or overlap**, keeping the later `endsAt`, and
 `coalesceConsultantCustomRows` preserves the surviving row's id, deleting only
@@ -94,6 +110,28 @@ whose 10:30 atom no row publishes, which checkout's union coverage then rejects.
 generator. Generation happens in two places that must agree:
 `processAvailabilitySlots` (`utils/timeSlotsProcessing.ts`) for the grid and the
 private `SlotAllocationService.findAvailableSlots` for the allocator.
+
+What makes them agree is that both project weekly rows through the same
+generator, `weeklyRowOccurrencesInRange` (`utils/schedule/weekly-projection.ts`),
+which walks the requested range in UTC and emits half-open `[start, end)`
+occurrences on the row's derived UTC weekday, starting one day early so an
+overnight row keeps the tail that falls inside the range. Checkout then
+re-checks each atom through `isMinuteWithinWeeklySlot`, which derives the
+weekday through the same helper — the invariant is that the grid offers only
+atoms the validator accepts, pinned in
+`__tests__/booking-algorithm/weekly-day-semantics.test.ts`. The grid used to
+bucket rows on the **viewer's** weekday instead, so an overseas customer was
+shown an IST pre-05:30 row a day away from the day checkout would accept
+(#1342); if you touch either generator, keep them on the shared helper.
+
+Segmentation and merging carry two more boundary rules. `splitSlotsByDay` cuts a
+window at the next local day's midnight rather than at 23:59:59.999, because a
+23:30–23:59:59.999 remainder is not a thirty-minute atom and a block published
+up to local midnight otherwise lost its last slot (#1415). Both merge functions
+— `mergeConsecutiveSlots` for booking and `mergeConsecutiveSlotsForDisplay`
+(`app/explore/experts/[consultantId]/utils/mergeSlots.ts`) for the expert page —
+require exact adjacency, and differ only in which atoms are eligible; a
+tolerance on either side advertises a seam no row publishes (#1416).
 
 The grid is `GET /api/slots/availability-with-allocation/[consultantId]` with
 `startDateInUtc`, `endDateInUtc` and `timezone`, public in `middleware.ts`.

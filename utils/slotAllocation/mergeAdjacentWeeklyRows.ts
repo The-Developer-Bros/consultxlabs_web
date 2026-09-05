@@ -1,6 +1,7 @@
 import type { DayOfWeek, Prisma } from "@prisma/client";
 import type { Tx } from "@/lib/prisma";
 import { MAX_DURATION_MINUTES } from "@/utils/timeSlotValidation";
+import { weeklyRowLocalColumns } from "@/utils/schedule/weekly-projection";
 
 /**
  * #1320 — availability is one row per contiguous published window.
@@ -20,6 +21,8 @@ export interface WeeklyRowShape {
   startTimeUtc: number;
   endTimeUtc: number;
   utcOffsetMinutes?: number | null;
+  /** #872 — the dual-written IANA zone, when the row carries one. */
+  timezone?: string | null;
 }
 
 /**
@@ -97,12 +100,18 @@ export async function coalesceConsultantWeeklyRows(
       startTimeUtc: true,
       endTimeUtc: true,
       utcOffsetMinutes: true,
+      timezone: true,
     },
   });
   const merged = mergeAdjacentWeeklyRows(rows);
   if (merged.length === rows.length) {
     return { before: rows.length, after: rows.length };
   }
+  // #872 — this pass deletes and recreates every row, so the dual-written DST
+  // columns have to be carried across or the next coalesce silently unwrites
+  // them. They are recomputed rather than copied because a fold moves the
+  // row's end. A row written before the dual-write has no zone to recompute
+  // from and keeps its nulls.
   const data: Prisma.SlotOfAvailabilityWeeklyCreateManyInput[] = merged.map(
     (r) => ({
       consultantProfileId,
@@ -111,6 +120,9 @@ export async function coalesceConsultantWeeklyRows(
       startTimeUtc: r.startTimeUtc,
       endTimeUtc: r.endTimeUtc,
       utcOffsetMinutes: r.utcOffsetMinutes ?? 0,
+      ...(r.timezone
+        ? weeklyRowLocalColumns(r, r.timezone, r.utcOffsetMinutes ?? 0)
+        : {}),
     }),
   );
   await db.slotOfAvailabilityWeekly.deleteMany({

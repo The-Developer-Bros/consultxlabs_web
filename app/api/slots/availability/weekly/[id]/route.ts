@@ -7,8 +7,13 @@ import {
   minutesToTimeString,
   validateWeeklySlotTimeOrder,
   buildWeeklyOverlapWhere,
-  getTimezoneOffsetMinutes,
 } from "@/utils/slotAllocation/slotTimeUtils";
+import {
+  resolveWeeklyTimezone,
+  resolveWeeklyUtcOffsetMinutes,
+  WeeklyOffsetConflictError,
+  weeklyRowLocalColumns,
+} from "@/lib/scheduling/weeklyUtcOffset";
 import { getSession } from "@/lib/auth-server";
 import * as Sentry from "@sentry/nextjs";
 
@@ -37,7 +42,38 @@ async function applyWeeklySlotEdit(
     startTimeUtc: number;
     endTimeUtc: number;
   },
+  callerSuppliedOffsetMinutes: number | null,
 ) {
+  // #1326 — the profile timezone decides the offset for every write path, and
+  // a caller may only agree with it. This route used to default a consultant
+  // with no profile timezone to UTC 0 rather than to the launch offset, so
+  // every row it touched projected five and a half hours away from where it
+  // was published. Resolved before the transaction so a contradiction costs no
+  // write.
+  const profileTimezone = currentSlot.consultantProfile.user?.timezone ?? null;
+  let utcOffsetMinutes: number;
+  try {
+    utcOffsetMinutes = resolveWeeklyUtcOffsetMinutes({
+      profileTimezone,
+      callerSupplied: callerSuppliedOffsetMinutes,
+      consultantProfileId: currentSlot.consultantProfileId,
+    });
+  } catch (error) {
+    if (error instanceof WeeklyOffsetConflictError) {
+      return NextResponse.json(
+        { error: error.message, code: error.code },
+        { status: 400 },
+      );
+    }
+    throw error;
+  }
+  // #872 — dual-written, read by nothing until the reader flip.
+  const localColumns = weeklyRowLocalColumns(
+    next,
+    resolveWeeklyTimezone(profileTimezone),
+    utcOffsetMinutes,
+  );
+
   return withSerializableRetry(() =>
     prisma.$transaction(
       async (tx) => {
@@ -63,17 +99,11 @@ async function applyWeeklySlotEdit(
           );
         }
 
-        const utcOffsetMinutes = currentSlot.consultantProfile.user?.timezone
-          ? getTimezoneOffsetMinutes(
-              currentSlot.consultantProfile.user.timezone,
-            )
-          : 0;
-
         // No `include`: the coalesce below can fold this row away, so the
         // covering row — not this one — is what the client is answered with.
         const updatedSlot = await tx.slotOfAvailabilityWeekly.update({
           where: { id },
-          data: { ...next, utcOffsetMinutes },
+          data: { ...next, utcOffsetMinutes, ...localColumns },
         });
 
         const covering = await coalesceAndResolve(
@@ -287,6 +317,7 @@ export async function PUT(
         startTimeUtc,
         endTimeUtc,
       },
+      body.utcOffsetMinutes ?? null,
     );
   } catch (error) {
     return weeklySlotErrorResponse(error, "updating", "updating");
@@ -400,12 +431,17 @@ export async function PATCH(
 
     // PATCH omits what it does not change, so the effective day pair is what
     // both the overlap check and the write use.
-    return await applyWeeklySlotEdit(id, currentSlot, {
-      startDay: effectiveStartDay,
-      endDay: effectiveEndDay,
-      startTimeUtc,
-      endTimeUtc,
-    });
+    return await applyWeeklySlotEdit(
+      id,
+      currentSlot,
+      {
+        startDay: effectiveStartDay,
+        endDay: effectiveEndDay,
+        startTimeUtc,
+        endTimeUtc,
+      },
+      body.utcOffsetMinutes ?? null,
+    );
   } catch (error) {
     return weeklySlotErrorResponse(error, "partially updating", "updating");
   }

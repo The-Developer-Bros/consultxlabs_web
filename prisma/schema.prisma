@@ -3386,9 +3386,10 @@ model SlotOfAvailabilityWeekly {
   // the frozen utcOffsetMinutes above is the live source of truth. The columns
   // below are the DST-correct representation (RFC 5545 / Calendly-style: local
   // wall-clock + IANA zone, materialized to UTC per occurrence — a frozen offset
-  // drifts across DST). They are frozen into the launch schema now but left
-  // nullable + UNWRITTEN until the post-MVP algorithm + UI lands, so going
-  // DST-aware needs no post-launch migration.
+  // drifts across DST). They are WRITTEN from 2026-09-05 by every weekly save
+  // path (lib/scheduling/weeklyUtcOffset.ts) and READ BY NOTHING until the
+  // reader flip lands with the post-MVP algorithm + UI, so going DST-aware
+  // needs no post-launch migration and no backfill.
   timezone          String?    @db.VarChar(64) // IANA zone, e.g. "Asia/Kolkata"
   localStartMinutes Int?       @db.SmallInt
   localEndMinutes   Int?       @db.SmallInt
