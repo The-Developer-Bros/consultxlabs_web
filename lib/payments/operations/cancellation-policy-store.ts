@@ -18,6 +18,7 @@ import { Prisma } from "@prisma/client";
 
 import type { PrismaLike, Tx } from "@/lib/prisma";
 import {
+  isTwoDecimalPercent,
   PLATFORM_DEFAULT_TERMS,
   tiersFromBps,
   validateTierLadder,
@@ -92,10 +93,17 @@ export function termsFromPolicyRow(
 /**
  * Make sure the platform default row exists, and answer its id.
  *
- * A fresh database must never fail a checkout because nobody ran the seed, so the
- * resolver calls this rather than assuming. The P2002 catch covers two checkouts
+ * A fresh database must never fail a checkout because nobody ran the seed, so
+ * checkout calls this rather than assuming. The P2002 catch covers two checkouts
  * racing on an empty database: the loser re-reads the winner's row instead of
  * failing the sale.
+ *
+ * Call it on the GLOBAL Prisma client only, never through a `tx` (#1513 review).
+ * Inside a Serializable transaction a P2002 aborts the whole transaction, so the
+ * recovery below cannot run: the loser's re-read would fail with
+ * "current transaction is aborted" and take the sale down with it. On the global
+ * client each statement is its own autocommit unit, so the loser really does get
+ * to re-read the winner's row.
  */
 export async function ensurePlatformCancellationPolicy(
   db: PrismaLike,
@@ -140,6 +148,14 @@ export async function ensurePlatformCancellationPolicy(
  * `version: desc` with `take: 1` rather than a bare "the ACTIVE one": until the
  * staged partial unique lands, two ACTIVE rows are prevented only by the Serializable
  * rotation, and the newest version is the deterministic answer if that ever slips.
+ *
+ * This resolver is READ-ONLY (#1513 review), because its one caller runs it inside
+ * checkout's Serializable transaction and a write that recovers from P2002 cannot
+ * survive there. Provisioning the platform row is `ensurePlatformCancellationPolicy`,
+ * which `handleCheckout` awaits on the global client just before opening that
+ * transaction — so by the time this runs the row exists and the throw below is
+ * unreachable. It is a loud failure rather than a silent null because a sale that
+ * cites no policy version has no terms to refund under.
  */
 export async function resolveCheckoutCancellationPolicyId(
   db: PrismaLike,
@@ -153,7 +169,12 @@ export async function resolveCheckoutCancellationPolicyId(
     });
     if (orgPolicy) return orgPolicy.id;
   }
-  return ensurePlatformCancellationPolicy(db);
+  const platform = await db.cancellationPolicy.findUnique({
+    where: { id: PLATFORM_CANCELLATION_POLICY_ID },
+    select: { id: true },
+  });
+  if (!platform) throw new Error("PLATFORM_CANCELLATION_POLICY_MISSING");
+  return platform.id;
 }
 
 /** Load the terms a booking was sold under, by policy id. */
@@ -192,8 +213,7 @@ export async function publishOrgCancellationPolicy(
   if (
     params.consultantInitiatedPct < 0 ||
     params.consultantInitiatedPct > 100 ||
-    Math.round(params.consultantInitiatedPct * 100) !==
-      params.consultantInitiatedPct * 100
+    !isTwoDecimalPercent(params.consultantInitiatedPct)
   ) {
     throw Object.assign(
       new Error(

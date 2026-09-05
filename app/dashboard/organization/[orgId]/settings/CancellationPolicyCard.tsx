@@ -59,7 +59,7 @@ function toRows(terms: PolicyTerms): TierRow[] {
 
 export function CancellationPolicyCard({ orgId }: { orgId: string }) {
   const queryClient = useQueryClient();
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: policyQueryKey(orgId),
     queryFn: () => fetchPolicy(orgId),
   });
@@ -81,17 +81,38 @@ export function CancellationPolicyCard({ orgId }: { orgId: string }) {
 
   const mutation = useMutation({
     mutationFn: async () => {
+      // #1513 review — every field is a string from a text input, and
+      // `Number("")` is 0. An OWNER who cleared a box and hit publish would have
+      // published an immutable version carrying a 0-hour, 0% rung they never
+      // typed, and immutable means there is no editing it back. Refuse instead.
+      const tiers = rows.map((row) => ({
+        hoursBefore: row.hoursBefore.trim(),
+        refundPct: row.refundPct.trim(),
+      }));
+      const consultantPct = consultantInitiatedPct.trim();
+      const isNumeric = (value: string) =>
+        value !== "" && Number.isFinite(Number(value));
+      const everyFieldFilled =
+        tiers.every(
+          (tier) => isNumeric(tier.hoursBefore) && isNumeric(tier.refundPct),
+        ) && isNumeric(consultantPct);
+      if (!everyFieldFilled) {
+        throw new Error(
+          "Every tier needs a notice period and a refund percentage",
+        );
+      }
+
       const res = await fetch(
         `/api/organizations/${orgId}/cancellation-policy`,
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            tiers: rows.map((row) => ({
-              hoursBefore: Number(row.hoursBefore),
-              refundPct: Number(row.refundPct),
+            tiers: tiers.map((tier) => ({
+              hoursBefore: Number(tier.hoursBefore),
+              refundPct: Number(tier.refundPct),
             })),
-            consultantInitiatedPct: Number(consultantInitiatedPct),
+            consultantInitiatedPct: Number(consultantPct),
           }),
         },
       );
@@ -114,6 +135,33 @@ export function CancellationPolicyCard({ orgId }: { orgId: string }) {
       setError(err.message);
     },
   });
+
+  // #1513 review — a failed load used to render nothing at all, so an OWNER on
+  // a flaky connection saw a settings page with no cancellation policy on it and
+  // no way to tell that from an organisation that has none. Say so, and offer
+  // the retry.
+  if (isError) {
+    return (
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle>Cancellation policy</CardTitle>
+        </CardHeader>
+        <CardContent className="flex items-center gap-3">
+          <p className="text-sm text-red-600">
+            We could not load your cancellation policy.
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void refetch()}
+          >
+            Retry
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
 
   if (isLoading || !data) return null;
 

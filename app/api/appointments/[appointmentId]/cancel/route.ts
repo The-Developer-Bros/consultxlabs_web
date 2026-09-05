@@ -584,6 +584,22 @@ export async function POST(
               freeErr instanceof Error ? freeErr : new Error(String(freeErr)),
               { tags: { subsystem: "bookings" } },
             );
+            // #1513 review — the monetary branch below lands a failed refund on
+            // the durable ops surface, and this branch owes the same: a credit
+            // the buyer is owed but did not get back is money, and Sentry is an
+            // alert channel rather than a queue anyone works.
+            await recordSystemError({
+              organizationId: appointment.organizationId ?? null,
+              category: "PAYMENT",
+              summary:
+                "Credit-funded booking cancelled but the credit restoration failed",
+              err: freeErr,
+              context: {
+                appointmentId,
+                paymentId: paidPayment.id,
+                tierRefundPct: quote.tierRefundPct,
+              },
+            }).catch(() => {});
             refund = {
               amountRefundedPaise: 0,
               refundPct: 100,

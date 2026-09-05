@@ -99,6 +99,18 @@ describe("validateTierLadder — the one ladder rule", () => {
       [{ hoursBefore: 0, refundPct: 12.345 }],
       "A refund percentage may carry at most two decimal places",
     ],
+    // #1513 review — `0.07 * 100` is 7.000000000000001 in IEEE 754, so the
+    // exact-equality form of this check refused a legal two-decimal rung.
+    [
+      "two decimal places that float badly",
+      [{ hoursBefore: 0, refundPct: 0.07 }],
+      null,
+    ],
+    [
+      "three decimal places below one percent",
+      [{ hoursBefore: 0, refundPct: 0.075 }],
+      "A refund percentage may carry at most two decimal places",
+    ],
     [
       "fractional notice hours",
       [{ hoursBefore: 1.5, refundPct: 0 }],

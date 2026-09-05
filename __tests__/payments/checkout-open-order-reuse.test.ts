@@ -160,6 +160,9 @@ jest.mock("../../lib/novu/org-workflows", () => ({
 // #1499 — checkout now resolves a policy VERSION id rather than freezing Json.
 jest.mock("../../lib/payments/operations/cancellation-policy-store", () => ({
   __esModule: true,
+  // #1513 review — the platform row is provisioned on the global client just
+  // before the booking transaction opens, so the mock has to answer that too.
+  ensurePlatformCancellationPolicy: jest.fn(async () => "policy-platform"),
   resolveCheckoutCancellationPolicyId: jest.fn(async () => "policy-1"),
 }));
 

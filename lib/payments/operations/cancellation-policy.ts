@@ -57,6 +57,21 @@ export const PLATFORM_DEFAULT_TERMS: CancellationPolicyTerms = {
 /** A version may not carry more rungs than this — see `validateTierLadder`. */
 export const MAX_POLICY_TIERS = 6;
 
+/**
+ * Whether a percentage carries at most two decimal places, i.e. whether it
+ * survives the `Math.round(pct * 100)` that stores it as basis points.
+ *
+ * The obvious test, `Math.round(v * 100) !== v * 100`, rejects perfectly legal
+ * percentages: `0.07 * 100` is `7.000000000000001` in IEEE 754, so a 0.07% rung
+ * an OWNER typed was refused as "more than two decimal places". Compare against
+ * a tolerance instead — 1e-6 basis points is far below anything a percentage can
+ * legitimately mean, and far above the representation error (#1513 review).
+ */
+export function isTwoDecimalPercent(v: number): boolean {
+  const bps = v * 100;
+  return Number.isFinite(bps) && Math.abs(bps - Math.round(bps)) < 1e-6;
+}
+
 /** Basis-point rows as stored → the percent tiers the maths and the API use. */
 export function tiersFromBps(
   rows: { hoursBefore: number; refundBps: number }[],
@@ -86,7 +101,7 @@ export function validateTierLadder(tiers: RefundTier[]): string | null {
       return "Each tier's notice must be a whole number of hours, zero or more";
     if (tier.refundPct < 0 || tier.refundPct > 100)
       return "Each tier's refund must be between 0 and 100 percent";
-    if (Math.round(tier.refundPct * 100) !== tier.refundPct * 100)
+    if (!isTwoDecimalPercent(tier.refundPct))
       return "A refund percentage may carry at most two decimal places";
     if (index > 0 && sorted[index - 1].hoursBefore === tier.hoursBefore)
       return "Two tiers may not share the same notice period";

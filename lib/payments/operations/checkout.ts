@@ -111,7 +111,10 @@ import {
 } from "@/lib/novu/org-workflows";
 import { sumPaise } from "@/lib/payments/utils/money";
 import { MARKETPLACE_VISIBILITY } from "@/lib/api/plans/visibility";
-import { resolveCheckoutCancellationPolicyId } from "@/lib/payments/operations/cancellation-policy-store";
+import {
+  ensurePlatformCancellationPolicy,
+  resolveCheckoutCancellationPolicyId,
+} from "@/lib/payments/operations/cancellation-policy-store";
 import { isBusinessErrorCode } from "@/lib/errors/classification/payment-error-classification";
 
 // Re-export for backward compatibility
@@ -3399,6 +3402,18 @@ export async function handleCheckout(
       const exhaustedBell: { programAssignmentId: string | null } = {
         programAssignmentId: null,
       };
+
+      // #1513 review — provision the platform policy row HERE, on the global
+      // client, not from inside the transaction below. The provisioner recovers
+      // from a P2002 by re-reading the winner's row, and inside a Serializable
+      // transaction a P2002 aborts the transaction, so that re-read would fail
+      // and take the sale with it. On the global client every statement is its
+      // own autocommit unit, so the loser of the race really does get to re-read.
+      // It must also stay OUTSIDE any `$transaction` callback: PG_POOL_MAX=1
+      // means a global-client query issued while a transaction holds the single
+      // connection deadlocks (#1435, see lib/prisma.ts).
+      await ensurePlatformCancellationPolicy(prisma);
+
       const result = await withSerializableRetry(async () => {
         await renewOrAbort(perAttemptTtl);
         return prisma.$transaction(

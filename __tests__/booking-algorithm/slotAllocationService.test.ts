@@ -1874,6 +1874,30 @@ describe("createAppointments - grouping and validation", () => {
     }
   });
 
+  // #1499 — a session allocated after checkout must cite the policy VERSION the
+  // booking was sold under, read off the originating appointment. Resolving one
+  // afresh here would hand the buyer whatever ladder the org has published
+  // since, which is exactly what immutable versions exist to prevent.
+  it("should inherit the originating appointment's cancellation policy", async () => {
+    mockTx.consultation.findUnique.mockResolvedValue(makeConsultationEvent());
+    mockTx.appointment.findFirst.mockResolvedValue({
+      cancellationPolicyId: "policy-abc",
+    });
+
+    await SlotAllocationService.allocate({
+      eventType: "consultation",
+      eventId: "consult-1",
+      mode: "manual",
+      slots: ["2025-01-06T10:00:00Z", "2025-01-06T10:30:00Z"],
+    });
+
+    expect(mockTx.appointment.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ cancellationPolicyId: "policy-abc" }),
+      }),
+    );
+  });
+
   it("should only connect consultant when no consultee (webinar)", async () => {
     mockTx.webinar.findUnique.mockResolvedValue(makeWebinarEvent());
 
