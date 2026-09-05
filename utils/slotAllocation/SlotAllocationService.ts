@@ -17,6 +17,7 @@ import prisma, {
 import {
   Appointment,
   AppointmentsType,
+  type DayOfWeek,
   Prisma,
   AppointmentStatus,
   ScheduleType,
@@ -75,10 +76,13 @@ import {
 } from "@/lib/booking/transitions";
 import { IllegalTransitionError } from "@/lib/enterprise/transitions";
 import {
-  DAY_OF_WEEK_TO_INDEX,
   isMinuteWithinWeeklySlot,
   TWENTY_FOUR_HOURS_IN_MS,
 } from "./slotTimeUtils";
+import {
+  utcStartDayIndex,
+  weeklyRowDurationMinutes,
+} from "@/utils/schedule/weekly-projection";
 import {
   AllocationValidationError,
   AllocationNotFoundError,
@@ -2706,10 +2710,8 @@ export class SlotAllocationService {
             slot.utcOffsetMinutes,
           );
           if (week > 0) start.setUTCDate(start.getUTCDate() + week * 7);
-          const durationMin =
-            slot.startDay === slot.endDay
-              ? slot.endTimeUtc - slot.startTimeUtc
-              : 1440 - slot.startTimeUtc + slot.endTimeUtc;
+          // #1342 — the same duration rule the validator applies, in one place.
+          const durationMin = weeklyRowDurationMinutes(slot);
           rowStarts.push({
             start,
             endMs: start.getTime() + durationMin * 60_000,
@@ -3086,10 +3088,8 @@ export class SlotAllocationService {
                 slot.utcOffsetMinutes,
               );
               if (!start) return null;
-              const durationMin =
-                slot.startDay === slot.endDay
-                  ? slot.endTimeUtc - slot.startTimeUtc
-                  : 1440 - slot.startTimeUtc + slot.endTimeUtc;
+              // #1342 — shared duration rule (see bestBlockForSingleSession).
+              const durationMin = weeklyRowDurationMinutes(slot);
               return {
                 start,
                 endMs: start.getTime() + durationMin * 60_000,
@@ -3309,16 +3309,15 @@ export class SlotAllocationService {
     utcOffsetMinutes: number = 0,
   ): Date {
     const now = new Date();
-    const localDay = DAY_OF_WEEK_TO_INDEX[startDay];
-    if (localDay === undefined) {
+    // #1342 — one shared derivation for the row's UTC weekday.
+    const targetDay = utcStartDayIndex({
+      startDay: startDay as DayOfWeek,
+      startTimeUtc,
+      utcOffsetMinutes,
+    });
+    if (targetDay === -1) {
       throw new Error(`Invalid day of week: ${startDay}`);
     }
-
-    // Compute the actual UTC day-of-week, matching isMinuteWithinWeeklySlot() logic.
-    // Formula: utcDay = (localDay - floor((startTimeUtc + offset) / 1440)) mod 7
-    const localStartMinutes = startTimeUtc + utcOffsetMinutes;
-    const dayAdjust = Math.floor(localStartMinutes / 1440);
-    const targetDay = (((localDay - dayAdjust) % 7) + 7) % 7;
 
     const targetHours = Math.floor(startTimeUtc / 60);
     const targetMinutes = startTimeUtc % 60;
@@ -3360,13 +3359,13 @@ export class SlotAllocationService {
     targetDay: Date,
     utcOffsetMinutes: number = 0,
   ): Date | null {
-    const localDay = DAY_OF_WEEK_TO_INDEX[startDay];
-    if (localDay === undefined) return null;
-
-    // Compute actual UTC day-of-week (same formula as isMinuteWithinWeeklySlot)
-    const localStartMinutes = startTimeUtc + utcOffsetMinutes;
-    const dayAdjust = Math.floor(localStartMinutes / 1440);
-    const slotDayOfWeek = (((localDay - dayAdjust) % 7) + 7) % 7;
+    // #1342 — one shared derivation for the row's UTC weekday.
+    const slotDayOfWeek = utcStartDayIndex({
+      startDay: startDay as DayOfWeek,
+      startTimeUtc,
+      utcOffsetMinutes,
+    });
+    if (slotDayOfWeek === -1) return null;
 
     const targetDayOfWeek = targetDay.getUTCDay();
 
