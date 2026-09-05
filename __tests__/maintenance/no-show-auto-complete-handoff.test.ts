@@ -64,19 +64,29 @@ jest.mock("../../lib/cron/with-cron-lock", () => ({
   LONG_JOB_TTL_MS: 35 * 60 * 1000,
 }));
 
-jest.mock("../../lib/prisma", () => ({
-  __esModule: true,
-  default: {
-    consultation: { findMany: jest.fn(), updateMany: jest.fn() },
+// #1493 — the no-show detector's claim now runs through
+// transitionConsultationRequest inside prisma.$transaction, which needs
+// consultation.findUnique (the helper's pre-read) and bookingStatusHistory
+// (the audit row it appends) alongside $transaction itself.
+jest.mock("../../lib/prisma", () => {
+  const client: Record<string, unknown> = {
+    consultation: {
+      findMany: jest.fn(),
+      updateMany: jest.fn(),
+      findUnique: jest.fn(),
+    },
     webinar: { findMany: jest.fn(), updateMany: jest.fn() },
     class: { findMany: jest.fn(), updateMany: jest.fn() },
     subscription: { findMany: jest.fn(), updateMany: jest.fn() },
     trialSession: { findMany: jest.fn() },
     slotOfAppointment: { findMany: jest.fn(), updateMany: jest.fn() },
     supportTicket: { findFirst: jest.fn() },
+    bookingStatusHistory: { create: jest.fn() },
     $disconnect: jest.fn(),
-  },
-}));
+  };
+  client.$transaction = jest.fn((fn: (tx: unknown) => unknown) => fn(client));
+  return { __esModule: true, default: client };
+});
 
 import prisma from "../../lib/prisma";
 import { autoCompleteAppointments } from "../../scripts/appointments/auto-complete-appointments";
@@ -147,6 +157,11 @@ beforeEach(() => {
     db[model].updateMany?.mockResolvedValue({ count: 1 });
   }
   db.supportTicket.findFirst.mockResolvedValue(null);
+  db.consultation.findUnique.mockResolvedValue({
+    status: "APPROVED",
+    appointment: { id: "appt-1" },
+  });
+  db.bookingStatusHistory.create.mockResolvedValue({});
   refundBookingPayment.mockResolvedValue({
     amountRefundedPaise: 150000,
     rail: "GATEWAY",

@@ -49,11 +49,19 @@ publish" is the editor flow.
 
 `RescheduleRequestStatus` via `transitionRescheduleRequest`:
 
-- Open states: `PENDING_REVIEW`, `COUNTERED`.
-- `ACCEPTED ← [PENDING_REVIEW, COUNTERED]`; `DECLINED ←` open states;
-  `WITHDRAWN ←` open states (initiator only); `EXPIRED ← [PENDING_REVIEW,
-  COUNTERED]` (hourly sweep). `openForAppointmentId @unique` enforces at most
-  one live reschedule per appointment.
+- Open state: `PENDING_REVIEW`. `COUNTERED` is still declared in the enum and
+  in `RESCHEDULE_ALLOWED_FROM`, but no writer ever transitions a row to it —
+  the counter-round was specified and never built, and `lib/booking/reschedule-proposals.ts`
+  documents the removal — so treat it as an unreachable edge, not a live state.
+- `AUTO_ACCEPTED` is a second terminal-acceptance state alongside `ACCEPTED`,
+  written by `lib/booking/reschedule-auto-confirm.ts` when the responding
+  party lets the reschedule window lapse without a reply; it deliberately
+  carries no allowed-from entry in the map because that helper is the one
+  caller.
+- `ACCEPTED ← [PENDING_REVIEW]`; `DECLINED ←` open state; `WITHDRAWN ←` open
+  state (initiator only); `EXPIRED ← [PENDING_REVIEW]` (hourly sweep).
+  `openForAppointmentId @unique` enforces at most one live reschedule per
+  appointment.
 - Decline/withdraw deliberately LEAVE slots released (the booking belongs in
   the consultant's allocate queue); only withdrawal restores them.
 - A confirmation is two ordered steps: the allocator commits the new times,
