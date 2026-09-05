@@ -64,6 +64,14 @@ publish" is the editor flow.
   appointment.
 - Decline/withdraw deliberately LEAVE slots released (the booking belongs in
   the consultant's allocate queue); only withdrawal restores them.
+- A confirmation is two ordered steps: the allocator commits the new times,
+  and only then does the caller compare-and-swap the proposal to
+  `AUTO_ACCEPTED` or `ACCEPTED`. Because the allocator's supersede sweep
+  closes every OTHER open proposal on the same released slots as `DECLINED`,
+  a confirming caller passes `excludeRescheduleRequestId` to keep its own row
+  out of that set; without it the sweep declined the very row the caller was
+  about to accept, the compare-and-swap matched nothing, and the booking moved
+  with a refusal in its audit trail (#1340).
 
 ## Known raw-status writers (CAS-bypass inventory)
 
