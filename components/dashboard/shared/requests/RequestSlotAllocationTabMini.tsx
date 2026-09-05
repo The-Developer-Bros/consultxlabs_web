@@ -47,12 +47,16 @@ export function RequestSlotAllocationTabMini() {
     const fetchData = async () => {
       try {
         setLoading(true);
+        // #1345 — orgScope is explicit rather than implied. An absent param
+        // only defaults to personal for non-privileged callers, so an
+        // ADMIN/STAFF consultant used to get an unfiltered list here while the
+        // Home badge and NeedsYou beside it stayed personal.
         const [consultationsRes, subscriptionsRes] = await Promise.all([
           fetch(
-            `/api/bookings/consultations?consultantProfileId=${consultantId}&status=PENDING`,
+            `/api/bookings/consultations?consultantProfileId=${consultantId}&status=PENDING&orgScope=personal`,
           ),
           fetch(
-            `/api/bookings/subscriptions?consultantProfileId=${consultantId}&status=PENDING`,
+            `/api/bookings/subscriptions?consultantProfileId=${consultantId}&status=PENDING&orgScope=personal`,
           ),
         ]);
 
@@ -87,7 +91,10 @@ export function RequestSlotAllocationTabMini() {
 
         setRequests(requests);
       } catch (err) {
-        Sentry.captureException(err instanceof Error ? err : new Error(String(err)), { tags: { subsystem: "client" } });
+        Sentry.captureException(
+          err instanceof Error ? err : new Error(String(err)),
+          { tags: { subsystem: "client" } },
+        );
         setError(
           err instanceof Error ? err.message : "Failed to load requests",
         );
