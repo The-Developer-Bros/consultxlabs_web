@@ -62,13 +62,14 @@ function rescheduleOutcomeToast(outcome: {
 type CancelRefund = {
   amountRefundedPaise: number;
   refundPct: number;
-  status?:
-    | "REFUNDED"
-    | "FAILED"
-    | "NOTHING_REFUNDABLE"
-    | "POLICY_ZERO"
-    | "MANUAL_REVIEW";
+  status?: "REFUNDED" | "FAILED" | "NOTHING_REFUNDABLE" | "POLICY_ZERO";
   requiresManualReview?: boolean;
+  /**
+   * Which rail returned the money. The cancel route has answered this since
+   * #1325 and the toast ignored it, so an org-funded learner — whose card was
+   * never charged — was told a refund was on its way back to them.
+   */
+  rail?: "GATEWAY" | "INTERNAL" | "CREDITS";
 } | null;
 
 function describeRefund(refund: CancelRefund): string {
@@ -79,8 +80,6 @@ function describeRefund(refund: CancelRefund): string {
   // equally "the policy owes nothing", "the balance was already exhausted" and
   // "the gateway refused", and only one of those deserves an apology.
   switch (refund.status) {
-    case "MANUAL_REVIEW":
-      return "Because sessions had already been delivered, our team is reviewing your refund and will be in touch.";
     case "FAILED":
       return "We could not complete your refund automatically — our team has been alerted and will sort it out.";
     case "NOTHING_REFUNDABLE":
@@ -90,6 +89,21 @@ function describeRefund(refund: CancelRefund): string {
       return "No refund applies under the cancellation policy for this booking.";
     default:
       break;
+  }
+
+  // An org-funded booking reverses in the ledger against the org's wallet,
+  // invoice or licence — the learner's card was never charged, so "on its way
+  // back to you" is a promise nobody kept. Checked before the credit sentence so
+  // an internal reversal can never be described as a referral credit.
+  if (refund.rail === "INTERNAL") {
+    return "The refund goes back to your organisation's account.";
+  }
+
+  // #1500 — a credit-funded booking settles as a REFUNDED restoration that moves no
+  // gateway money, so the amount is legitimately zero and the sentence has to come
+  // from the status rather than the number.
+  if (refund.status === "REFUNDED" && refund.amountRefundedPaise === 0) {
+    return "Your referral credit has been restored in full.";
   }
 
   if (refund.amountRefundedPaise > 0) {
@@ -197,9 +211,7 @@ export function useEventActions({
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: Object.keys(payload).length
-          ? JSON.stringify(payload)
-          : undefined,
+        body: Object.keys(payload).length ? JSON.stringify(payload) : undefined,
       });
 
       const data = await response.json();

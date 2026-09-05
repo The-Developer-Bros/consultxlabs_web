@@ -146,25 +146,27 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  invitations               Invitation[]
-  ssoproviders              SsoProvider[]
-  erasureRequests           ErasureRequest[]
+  invitations                   Invitation[]
+  ssoproviders                  SsoProvider[]
+  erasureRequests               ErasureRequest[]
   /// Erasure requests this user processed as an admin. Named relation
   /// distinguishes it from `erasureRequests` above (requests filed
   /// against this user) — Prisma requires the disambiguation since
   /// both edges target ErasureRequest.
-  erasureRequestsProcessed  ErasureRequest[]      @relation("ErasureRequestProcessor")
+  erasureRequestsProcessed      ErasureRequest[]      @relation("ErasureRequestProcessor")
   // Disputes this admin owns (#269).
-  disputesAssigned          Dispute[]             @relation("DisputeAssignee")
+  disputesAssigned              Dispute[]             @relation("DisputeAssignee")
   // A8 — documents this consultant reviewed (back-relation for the FK-ified
   // AppointmentDocument.reviewedById; named to avoid the implicit-relation guess).
-  documentsReviewed         AppointmentDocument[] @relation("DocumentReviewer")
+  documentsReviewed             AppointmentDocument[] @relation("DocumentReviewer")
   // Soft-delete audit — who tombstoned an appointment document.
-  documentsDeleted          AppointmentDocument[] @relation("DocumentDeleter")
+  documentsDeleted              AppointmentDocument[] @relation("DocumentDeleter")
   // #366 — publish-time redistribution-consent attestations made by consultants.
-  recordingsConsentAttested Recording[]           @relation("RecordingConsentAttestor")
+  recordingsConsentAttested     Recording[]           @relation("RecordingConsentAttestor")
   // #366 — replay purchases this user made.
-  recordingPurchases        RecordingPurchase[]   @relation("RecordingPurchaseBuyer")
+  recordingPurchases            RecordingPurchase[]   @relation("RecordingPurchaseBuyer")
+  // #1499 — cancellation-policy versions this OWNER published, for the audit trail.
+  publishedCancellationPolicies CancellationPolicy[]  @relation("CancellationPolicyPublisher")
 
   @@index([consultantProfileId])
   @@index([consulteeProfileId])
@@ -1032,6 +1034,8 @@ model Organization {
   // #674 personal-vs-org scope split — appointments / recordings booked or
   // produced by org members. Mirrors TrialsByOrg.
   appointmentsByOrg       Appointment[]            @relation("AppointmentByOrg")
+  // #1499 — every version of this org's cancellation ladder, live and archived.
+  cancellationPolicies    CancellationPolicy[]     @relation("CancellationPolicyByOrg")
   rescheduleRequests      RescheduleRequest[]      @relation("RescheduleByOrg")
   appointmentParticipants AppointmentParticipant[] @relation("AppointmentParticipantByOrg")
   bookingStatusHistory    BookingStatusHistory[]   @relation("BookingStatusHistoryByOrg")
@@ -4179,12 +4183,20 @@ enum WaitlistSource {
 // Generic Appointment Model
 
 model Appointment {
-  /// Refund-policy snapshot taken at booking (2026-06-10 decision): tiered
-  /// time-based windows (e.g. [{hoursBefore:24,refundPct:100},...]) resolved
-  /// from org/platform defaults at checkout, so later policy edits never
-  /// retroactively change a buyer's terms. Read by the cancel flow; null =
-  /// pre-snapshot booking (platform default tiers apply).
+  /// FROZEN as of #1499 (2026-09-05): never written and never read. The refund terms
+  /// that govern a booking now live in typed versioned rows behind
+  /// `cancellationPolicyId`. The column stays because production code read it until
+  /// this release and a column a running deploy still reads must never be dropped
+  /// under it; it is removed at the pre-MVP reset (doctrine section 6, no backfill).
   cancellationPolicySnapshot Json?
+
+  /// #1499 — the exact CancellationPolicy version that governed this sale. NULL means
+  /// the platform ladder applies, which is also what a pre-feature row reads as, so the
+  /// two are deliberately indistinguishable. SetNull rather than Cascade: a booking must
+  /// survive its org being torn down, and losing the pointer degrades to the platform
+  /// ladder rather than deleting money history.
+  cancellationPolicy   CancellationPolicy? @relation(fields: [cancellationPolicyId], references: [id], onDelete: SetNull)
+  cancellationPolicyId String?
 
   id                 String              @id @default(uuid())
   appointmentType    AppointmentsType
@@ -4271,6 +4283,9 @@ model Appointment {
   @@index([chatChannelEnsuredAt, deletedAt, createdAt])
   // #1169 PR 9 — `deletedAt: null` rides nearly every hot filter unindexed.
   @@index([deletedAt])
+  // #1499 — the org policy editor asks "how many bookings cite this version" and the
+  // SetNull on teardown scans by policy id.
+  @@index([cancellationPolicyId])
 }
 
 /// #1319 A9 (adopted, schema-only) — the participant edge the implicit
@@ -4370,6 +4385,58 @@ enum AppointmentsType {
   WEBINAR
   CLASS
   TRIAL
+}
+
+/// #1499 — the refund policy that governed a booking, as typed versioned rows.
+/// A published version is IMMUTABLE: an edit publishes a NEW row at version+1 and
+/// archives the old one, because Appointment.cancellationPolicyId points at the exact
+/// row that governed the sale.
+/// Scope: exactly one row has organizationId = NULL (the platform default, fixed id
+/// PLATFORM_CANCELLATION_POLICY_ID, provisioned by the seed and idempotently on first
+/// use); every other row belongs to one organization. At most one ACTIVE row per scope,
+/// enforced by the Serializable rotation in publishOrgCancellationPolicy; the structural
+/// partial unique index is staged for the reset in prisma/sql/check-constraints.sql
+/// (doctrine section 6).
+model CancellationPolicy {
+  id                     String                   @id @default(uuid())
+  organization           Organization?            @relation("CancellationPolicyByOrg", fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationId         String?
+  version                Int                      @default(1)
+  status                 CancellationPolicyStatus @default(ACTIVE)
+  /// Basis points (repo integer convention: RateCard.platformBps, TdsRate.rateBps);
+  /// the API speaks percent.
+  consultantInitiatedBps Int                      @default(10000)
+  /// The org's prose policy at publication time, for the support trail; never read by
+  /// the maths.
+  policyText             String?                  @db.Text
+  tiers                  CancellationPolicyTier[]
+  appointments           Appointment[]
+  publishedBy            User?                    @relation("CancellationPolicyPublisher", fields: [publishedByUserId], references: [id], onDelete: SetNull)
+  publishedByUserId      String?
+  createdAt              DateTime                 @default(now()) @db.Timestamptz
+  archivedAt             DateTime?                @db.Timestamptz
+
+  @@unique([organizationId, version])
+  @@index([organizationId, status])
+}
+
+/// One rung of a version's notice ladder. Immutable with its parent. The lowest rung is
+/// always hoursBefore 0, so the ladder is total.
+model CancellationPolicyTier {
+  id          String             @id @default(uuid())
+  policy      CancellationPolicy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  policyId    String
+  hoursBefore Int
+  /// 0-10000. Basis points for the same reason consultantInitiatedBps is.
+  refundBps   Int
+
+  @@unique([policyId, hoursBefore])
+  @@index([policyId])
+}
+
+enum CancellationPolicyStatus {
+  ACTIVE
+  ARCHIVED
 }
 
 /// A request to move booked slots, carrying the concrete times proposed to

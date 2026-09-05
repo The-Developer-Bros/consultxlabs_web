@@ -21,6 +21,7 @@ import type {
 } from "@prisma/client";
 
 import { useOrgRole, useRequireOrgAccess } from "../useOrgRole";
+import { CancellationPolicyCard } from "./CancellationPolicyCard";
 import { orgDetailsQueryKey } from "@/lib/api/organizations/org-details";
 import { PanelHeader } from "@/components/dashboard/PageScaffold";
 import { Button } from "@/components/ui/button";
@@ -824,6 +825,11 @@ export function GeneralPanel({ orgId }: { orgId: string }) {
             )}
           </Card>
         )}
+
+        {/* #1499 — the org's refund ladder. OWNER-only, matching the free-text
+            defaultCancellationPolicy field in the org PATCH: MemberRole has no
+            ADMIN, so OWNER is the narrowest role that can already write policy. */}
+        {isAtLeast("OWNER") && <CancellationPolicyCard orgId={orgId} />}
 
         <AlertDialog
           open={pendingDisable !== null}

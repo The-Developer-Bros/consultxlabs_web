@@ -18,10 +18,11 @@ import {
   refundBookingPayment,
   type FundingRail,
 } from "./booking-refund";
+import { computeRefundPct } from "./cancellation-policy";
 import {
-  computeRefundPct,
-  parsePolicySnapshot,
-} from "./cancellation-policy";
+  POLICY_TERMS_INCLUDE,
+  termsFromPolicyRow,
+} from "./cancellation-policy-store";
 import { findLiveEventSlot } from "@/lib/appointments/live-event-slot";
 
 /**
@@ -133,7 +134,11 @@ export async function refundWholeEventPayments(
   // handles any CHARGE_MEMBER overage credit-back internally).
   for (const p of gateway) {
     try {
-      const r = await refundPayment({ paymentId: p.id, reason, initiatedByUserId });
+      const r = await refundPayment({
+        paymentId: p.id,
+        reason,
+        initiatedByUserId,
+      });
       summary.refundsIssued += 1;
       summary.refundedPaise += r.amountRefundedPaise;
       summary.childRefundIds.push(r.refundId);
@@ -177,7 +182,11 @@ export async function refundWholeEventPayments(
               refundId: `event:${kind}:${eventId}`,
               initiatedByUserId,
             }),
-          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, maxWait: 10_000, timeout: 15_000 },
+          {
+            isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+            maxWait: 10_000,
+            timeout: 15_000,
+          },
         ),
       );
       summary.refundsIssued += result.childRefundIds.length;
@@ -185,7 +194,9 @@ export async function refundWholeEventPayments(
       summary.childRefundIds.push(...result.childRefundIds);
       for (const c of result.cascades) {
         if (c.memberOverageRefundDue) {
-          memberOverageFollowUps.push(c.memberOverageRefundDue.overagePaymentId);
+          memberOverageFollowUps.push(
+            c.memberOverageRefundDue.overagePaymentId,
+          );
         }
       }
     } catch (err) {
@@ -218,7 +229,10 @@ export async function refundWholeEventPayments(
         (err.code === "ALREADY_FULLY_REFUNDED" ||
           err.code === "PAYMENT_NOT_SUCCEEDED");
       if (!benign) {
-        summary.failures.push({ paymentId: overagePaymentId, error: errMsg(err) });
+        summary.failures.push({
+          paymentId: overagePaymentId,
+          error: errMsg(err),
+        });
         void recordSystemError({
           organizationId: null,
           category: "PAYMENT",
@@ -286,7 +300,8 @@ export async function refundRemovedAttendeeSeat(args: {
       ? { webinarId: args.eventId }
       : { classId: args.eventId };
   // Missing flag = legacy organiser path; do not flip the money default.
-  const isOrganiserInitiated = (args.initiatedBy ?? "organiser") === "organiser";
+  const isOrganiserInitiated =
+    (args.initiatedBy ?? "organiser") === "organiser";
 
   // Hoisted so the catch can scope its ops event to the funding organisation;
   // a failure reported against `null` never reaches the org that is owed it.
@@ -313,7 +328,7 @@ export async function refundRemovedAttendeeSeat(args: {
         currency: true,
         organizationId: true,
         ...REFUNDABLE_BALANCE_SELECT,
-        appointment: { select: { cancellationPolicySnapshot: true } },
+        appointment: { select: { cancellationPolicy: POLICY_TERMS_INCLUDE } },
       },
     });
     if (!payment) return null;
@@ -340,7 +355,7 @@ export async function refundRemovedAttendeeSeat(args: {
     }
 
     const refundPct = computeRefundPct(
-      parsePolicySnapshot(payment.appointment?.cancellationPolicySnapshot),
+      termsFromPolicyRow(payment.appointment?.cancellationPolicy),
       hoursUntilStart,
       isOrganiserInitiated,
     );
@@ -363,7 +378,8 @@ export async function refundRemovedAttendeeSeat(args: {
       policyRefundPaise,
       refundableBalancePaise(grossPaise, payment),
     );
-    if (amountPaise <= 0) return { amountRefundedPaise: 0, refundPct, rail: null };
+    if (amountPaise <= 0)
+      return { amountRefundedPaise: 0, refundPct, rail: null };
 
     const actorLabel = isOrganiserInitiated ? "organiser" : "attendee";
     const result = await refundBookingPayment({

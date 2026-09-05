@@ -98,7 +98,6 @@ import {
   assertCollaboratorsAvailableForWindows,
   CollaboratorUnavailableError,
 } from "@/lib/collaborators/availability";
-import { resolveCancellationPolicySnapshot } from "@/lib/payments/operations/cancellation-policy";
 import {
   notifyAppointmentBooked,
   notifyAppointmentPartiallyScheduled,
@@ -3525,6 +3524,24 @@ export class SlotAllocationService {
       );
     }
 
+    // #1499 — sessions allocated later inherit the terms the booking was SOLD
+    // under, read off the row checkout created (the oldest appointment of this
+    // event). Resolving fresh here would hand a buyer whatever ladder the org
+    // published since, which is precisely what versioning exists to prevent. A
+    // reused appointment already carries its own FK, so it is skipped.
+    let inheritedPolicyId: string | null = null;
+    if (!reuseAppointmentId) {
+      const relationField = this.getEventRelationField(eventType);
+      const originating = await tx.appointment.findFirst({
+        where: {
+          [`${relationField}Id`]: eventId,
+        } as Prisma.AppointmentWhereInput,
+        orderBy: { createdAt: "asc" },
+        select: { cancellationPolicyId: true },
+      });
+      inheritedPolicyId = originating?.cancellationPolicyId ?? null;
+    }
+
     // Create appointment for each call. A concurrent booking that overlaps an
     // existing confirmed slot trips the #440 exclusion constraint (or the unique
     // guard); convert it to a typed 409 here at the source so classifyError can
@@ -3557,8 +3574,8 @@ export class SlotAllocationService {
 
           // #898 — REUSE the preserved 1:1 appointment: attach the new slots to
           // it rather than creating a second row on the @unique event FK. Its
-          // event link and booking-time cancellationPolicySnapshot are already
-          // set, so leave them untouched.
+          // event link and booking-time cancellationPolicyId are already set, so
+          // leave them untouched.
           if (reuseAppointmentId) {
             return tx.appointment.update({
               where: { id: reuseAppointmentId },
@@ -3582,10 +3599,8 @@ export class SlotAllocationService {
               },
               ...idempotencyData,
               ...(organizationId ? { organizationId } : {}),
-              // B1 — freeze the refund terms at booking (see cancellation-policy.ts).
-              cancellationPolicySnapshot: JSON.parse(
-                JSON.stringify(resolveCancellationPolicySnapshot()),
-              ),
+              // B1/#1499 — inherit the terms the booking was sold under.
+              cancellationPolicyId: inheritedPolicyId,
               slotsOfAppointment: {
                 create: slotsToCreate,
               },
