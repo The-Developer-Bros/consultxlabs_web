@@ -17,6 +17,7 @@ import { StatusBadge } from "@/components/dashboard/StatusBadge";
 import { eventUnionStatusBadge } from "@/lib/appointments/status";
 import type { AppointmentActionAdapter } from "@/lib/appointments/adapter";
 import type { AppointmentVM } from "@/lib/appointments/view-model";
+import { trialCheckoutHref } from "@/lib/appointments/trial-checkout-href";
 import { CountdownBadge } from "./CountdownBadge";
 import { KIND_LABEL } from "./AppointmentRow";
 import { RowPrimaryAction } from "./RowPrimaryAction";
@@ -200,14 +201,12 @@ export function AppointmentSheet({
                   size="sm"
                   className="w-full bg-amber-500 hover:bg-amber-600 text-white dark:bg-amber-600 dark:hover:bg-amber-500"
                   onClick={() => {
-                    // #1167 — a trial has our own branded checkout page, which
-                    // names the amount and the hold deadline before handing
-                    // off to the gateway. The vm id is `trial-<TrialSession
-                    // id>`, which is the only place that id survives.
-                    if (vm.kind === "TRIAL" && vm.id.startsWith("trial-")) {
-                      window.location.href = `/checkout/plans/trial/${vm.id.slice(
-                        "trial-".length,
-                      )}`;
+                    // #1167/#1429 — a trial goes to our own branded checkout
+                    // page, not the raw gateway link. The branch lives in the
+                    // shared helper so every Pay Now surface answers alike.
+                    const trialHref = trialCheckoutHref(vm);
+                    if (trialHref) {
+                      window.location.href = trialHref;
                       return;
                     }
                     if (/^https?:\/\//.test(vm.pendingPaymentUrl!)) {

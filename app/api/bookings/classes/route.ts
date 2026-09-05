@@ -199,7 +199,14 @@ export async function GET(request: NextRequest) {
               },
             },
           },
-          appointments: true,
+          // #1346 — the planner card shows a class's first session, so the
+          // allocated slots have to travel with the run; `appointments: true`
+          // alone left the card falling back to the authoring window.
+          appointments: {
+            include: {
+              slotsOfAppointment: { orderBy: { startsAt: "asc" } },
+            },
+          },
         },
       });
     } else {

@@ -162,7 +162,12 @@ export function busyRetryToast(waitSeconds: number): {
 // Common success handling logic for different appointment types
 export function createHandleCheckoutSuccess(
   toast: ReturnType<typeof useToast>["toast"],
-  appointmentType: "CONSULTATION" | "WEBINAR" | "CLASS" | "SUBSCRIPTION",
+  appointmentType:
+    | "CONSULTATION"
+    | "WEBINAR"
+    | "CLASS"
+    | "SUBSCRIPTION"
+    | "TRIAL",
 ) {
   return (
     data: { skipPayment?: boolean; [key: string]: unknown },
@@ -193,6 +198,16 @@ export function createHandleCheckoutSuccess(
         mock: "Mock payment processed. Your subscription has been activated. Check your dashboard for details.",
         prod: "Redirecting to secure payment gateway. Complete your payment to activate the subscription.",
         successTitle: "✅ Subscription Activated Successfully!",
+      },
+      // #1429 — TRIAL is the fifth AppointmentsType and now reaches the
+      // branded checkout like the other four, so the lookup below must resolve
+      // for it; an absent arm would read `undefined.successTitle` the moment
+      // the trial page mints its own order instead of handing off a pay-link.
+      TRIAL: {
+        dev: "Your trial session is confirmed. Check your dashboard for details.",
+        mock: "Mock payment processed. Your trial session is confirmed. Check your dashboard for details.",
+        prod: "Redirecting to secure payment gateway. Complete your payment to confirm the trial session.",
+        successTitle: "✅ Trial Session Booked Successfully!",
       },
     };
 

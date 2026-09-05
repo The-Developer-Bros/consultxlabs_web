@@ -347,6 +347,38 @@ These are well-structured and not the focus of this assessment, but a few notes:
 | **Earnings has no visualization** | Medium | Just a table. A consultant wants to see "Am I earning more this month?" at a glance — a simple line chart would answer this instantly. |
 | **No way to see consultee feedback** | Medium | Consultant reviews exist in the schema but there's no dedicated page for consultants to view and respond to their reviews. |
 
+### Consultant Dashboard — The Scope of the Home Counts
+
+Every number on the consultant Home page is a personal (B2C) number, and that
+is a deliberate consequence of ADR 19: the dashboards are split by the org-ness
+of the underlying work, so a booking an organisation funds is reported on that
+organisation's dashboard rather than here. `lib/data/consultant-dashboard.ts`
+expresses this with a single `PERSONAL_ORG_PIN`, taken from the shared scope
+projector in `lib/api/scope/parse.ts` so that "what personal means" has exactly
+one definition on the platform, and it applies that pin to the earnings
+aggregates, the session-completion rate and the active book.
+
+The Pending Requests badge is part of that family. It is a `count()` rather than
+the length of the list beside it, because the list is capped and a capped list
+made the badge disagree with the "Needs you" card inches below it (#1101), and
+as of #1345 it is built from the very predicates that "Needs you" uses:
+`pendingConsultationWhere` and `pendingSubscriptionWhere` are exported from
+`lib/data/needs-you.ts` and called with the personal scope. Sharing the builder
+rather than re-typing the filter is what keeps the two numbers identical for a
+consultant who also delivers through an organisation; before that change the
+badge counted every `PENDING` request with no org filter at all, so one screen
+could show three different totals for the same cohort. The third of those
+totals was the mini request list, which relied on the list API's implicit
+default; it now sends `orgScope=personal` explicitly, because that default only
+resolves to personal for non-privileged callers and left an ADMIN or STAFF
+consultant looking at an unfiltered list.
+
+Two exceptions are intentional and should not be "fixed". The payout figures in
+the Financial Summary are deliberately global, because payouts settle one
+instrument across every context. The preview list under the badge keeps a
+ninety-day bound that the badge does not, because a stale request is still worth
+counting even when it is no longer worth showing.
+
 ### Consultee Dashboard — Notes
 
 - Uses a completely different navigation pattern (top nav instead of sidebar). This is actually correct UX — consultees have fewer features and a top nav is less intimidating.
