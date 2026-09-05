@@ -8,17 +8,23 @@
  * The preview route exists for exactly one reason: to tell somebody, before
  * they click, what cancelling will return to them. That promise is only worth
  * something if the two agree, and until now nothing checked that they did.
- * Both sides computed the same four steps — notice tier, snapshot policy,
+ * Both sides computed the same four steps — notice tier, the booking's policy,
  * per-session proration, clamp to the refundable balance — inline, in two
  * files, with two sets of comments explaining the same reasoning. Two copies of
  * a money rule drift; that is what copies do.
+ *
+ * #1499 — the tiers are typed rows behind `Appointment.cancellationPolicyId` now,
+ * so the fixtures below are stored basis-point ladders rather than Json snapshots.
+ * #1500 adds the credit-funded row: its quote is a full restoration on the credits
+ * rail, which pays zero gateway money, so the parity assertions branch on what the
+ * preview says happens rather than on the amount alone.
  *
  * `quoteBookingRefund` is now the single implementation and both routes call
  * it, but a shared function is only half the guarantee: each route still feeds
  * it, and each route could feed it differently. So this suite drives the real
  * GET and the real POST over one prisma stub and compares the quote the buyer
  * read against the amount `refundBookingPayment` was actually asked for, across
- * a matrix of snapshot tiers, notice windows, paid amounts and prior partial
+ * a matrix of policy ladders, notice windows, paid amounts and prior partial
  * refunds.
  *
  * The stub models the ordering the database imposes, borrowed from
@@ -144,7 +150,7 @@ jest.mock("../../lib/activity/log-activity", () => ({
 
 import { POST as cancelHandler } from "@/app/api/appointments/[appointmentId]/cancel/route";
 import { GET as previewHandler } from "@/app/api/appointments/[appointmentId]/cancel/preview/route";
-import type { CancellationPolicySnapshot } from "@/lib/payments/operations/cancellation-policy";
+import type { RefundTier } from "@/lib/payments/operations/cancellation-policy";
 
 const HOUR = 3_600_000;
 const APPT = "appt-1";
@@ -216,10 +222,36 @@ function appointmentRow(kind: "consultation" | "subscription") {
   };
 }
 
+/** A stored policy version, in the shape `POLICY_TERMS_INCLUDE` selects. */
+type PolicyFixture = {
+  tiers: RefundTier[];
+  consultantInitiatedPct?: number;
+  organizationId?: string | null;
+};
+
+function policyRow(policy: PolicyFixture) {
+  return {
+    id: "policy-1",
+    organizationId: policy.organizationId ?? null,
+    version: 1,
+    consultantInitiatedBps: Math.round(
+      (policy.consultantInitiatedPct ?? 100) * 100,
+    ),
+    tiers: [...policy.tiers]
+      .sort((a, b) => b.hoursBefore - a.hoursBefore)
+      .map((tier) => ({
+        hoursBefore: tier.hoursBefore,
+        refundBps: Math.round(tier.refundPct * 100),
+      })),
+  };
+}
+
 type Case = {
   name: string;
   kind: "consultation" | "subscription";
-  snapshot: CancellationPolicySnapshot | null;
+  policy: PolicyFixture | null;
+  /** Defaults to a gateway intent; `free_` drives the #1500 credit rail. */
+  paymentIntent?: string;
   /** Hours until each undelivered session. */
   liveSlotHours: number[];
   /** Hours (negative = past) of each already-delivered session. */
@@ -242,12 +274,12 @@ function bookingRows(c: Case) {
   return [
     {
       id: APPT,
-      cancellationPolicySnapshot: c.snapshot,
+      cancellationPolicy: c.policy ? policyRow(c.policy) : null,
       payment: [
         {
           id: "pay-1",
           amount: c.grossPaise,
-          paymentIntent: "pi_gateway_1",
+          paymentIntent: c.paymentIntent ?? "pi_gateway_1",
           refunds: c.priorRefundPaise
             ? [{ amountPaise: c.priorRefundPaise, status: "SUCCEEDED" }]
             : [],
@@ -283,46 +315,42 @@ function makeParams(id: string) {
 }
 
 /** The tiers a platform-default booking is quoted against. */
-const DEFAULT_SNAPSHOT: CancellationPolicySnapshot = {
-  version: 1,
-  source: "PLATFORM_DEFAULT",
+const DEFAULT_POLICY: PolicyFixture = {
   tiers: [
     { hoursBefore: 24, refundPct: 100 },
     { hoursBefore: 2, refundPct: 50 },
     { hoursBefore: 0, refundPct: 0 },
   ],
-  consultantInitiatedPct: 100,
 };
 
-/** A stricter org-shaped snapshot: nothing is ever fully refundable. */
-const STRICT_SNAPSHOT: CancellationPolicySnapshot = {
-  version: 1,
-  source: "ORG_DEFAULT",
+/** A stricter org-published ladder: nothing is ever fully refundable. */
+const STRICT_POLICY: PolicyFixture = {
+  organizationId: "org-1",
   tiers: [
     { hoursBefore: 72, refundPct: 80 },
     { hoursBefore: 24, refundPct: 40 },
     { hoursBefore: 0, refundPct: 10 },
   ],
-  consultantInitiatedPct: 100,
-  orgPolicyText: "Acme cancellation terms",
 };
 
-/** A two-step snapshot whose thresholds are deliberately out of order. */
-const UNSORTED_SNAPSHOT: CancellationPolicySnapshot = {
-  version: 1,
-  source: "ORG_DEFAULT",
+/**
+ * A two-step ladder whose thresholds arrive out of order. The store orders tiers
+ * on read, so this fixture skips that ordering deliberately: `computeRefundPct`
+ * sorts for itself, and a caller that hands it raw rows must still be quoted right.
+ */
+const UNSORTED_POLICY: PolicyFixture = {
+  organizationId: "org-1",
   tiers: [
     { hoursBefore: 1, refundPct: 25 },
     { hoursBefore: 48, refundPct: 90 },
   ],
-  consultantInitiatedPct: 100,
 };
 
 const CASES: Case[] = [
   {
     name: "platform default, five days out, whole price",
     kind: "consultation",
-    snapshot: DEFAULT_SNAPSHOT,
+    policy: DEFAULT_POLICY,
     liveSlotHours: [120],
     grossPaise: 500_000,
     actor: "consultee",
@@ -330,7 +358,7 @@ const CASES: Case[] = [
   {
     name: "platform default, six hours out, mid tier",
     kind: "consultation",
-    snapshot: DEFAULT_SNAPSHOT,
+    policy: DEFAULT_POLICY,
     liveSlotHours: [6],
     grossPaise: 500_000,
     actor: "consultee",
@@ -338,15 +366,15 @@ const CASES: Case[] = [
   {
     name: "platform default, inside the final two hours",
     kind: "consultation",
-    snapshot: DEFAULT_SNAPSHOT,
+    policy: DEFAULT_POLICY,
     liveSlotHours: [1],
     grossPaise: 500_000,
     actor: "consultee",
   },
   {
-    name: "no snapshot at all falls back to the platform tiers",
+    name: "no policy row at all falls back to the platform tiers",
     kind: "consultation",
-    snapshot: null,
+    policy: null,
     liveSlotHours: [6],
     grossPaise: 500_000,
     actor: "consultee",
@@ -354,7 +382,7 @@ const CASES: Case[] = [
   {
     name: "consultant-initiated inside the zero tier still refunds in full",
     kind: "consultation",
-    snapshot: DEFAULT_SNAPSHOT,
+    policy: DEFAULT_POLICY,
     liveSlotHours: [1],
     grossPaise: 500_000,
     actor: "consultant",
@@ -362,7 +390,7 @@ const CASES: Case[] = [
   {
     name: "strict org tiers, four days out",
     kind: "consultation",
-    snapshot: STRICT_SNAPSHOT,
+    policy: STRICT_POLICY,
     liveSlotHours: [96],
     grossPaise: 333_333,
     actor: "consultee",
@@ -370,7 +398,7 @@ const CASES: Case[] = [
   {
     name: "strict org tiers, thirty hours out",
     kind: "consultation",
-    snapshot: STRICT_SNAPSHOT,
+    policy: STRICT_POLICY,
     liveSlotHours: [30],
     grossPaise: 333_333,
     actor: "consultee",
@@ -378,7 +406,7 @@ const CASES: Case[] = [
   {
     name: "strict org tiers, inside the day, never fully unrefundable",
     kind: "consultation",
-    snapshot: STRICT_SNAPSHOT,
+    policy: STRICT_POLICY,
     liveSlotHours: [3],
     grossPaise: 333_333,
     actor: "consultee",
@@ -386,7 +414,7 @@ const CASES: Case[] = [
   {
     name: "unsorted tiers resolve to the highest threshold cleared",
     kind: "consultation",
-    snapshot: UNSORTED_SNAPSHOT,
+    policy: UNSORTED_POLICY,
     liveSlotHours: [50],
     grossPaise: 250_000,
     actor: "consultee",
@@ -394,7 +422,7 @@ const CASES: Case[] = [
   {
     name: "a prior partial refund clamps the remainder",
     kind: "consultation",
-    snapshot: DEFAULT_SNAPSHOT,
+    policy: DEFAULT_POLICY,
     liveSlotHours: [120],
     grossPaise: 500_000,
     priorRefundPaise: 200_000,
@@ -403,7 +431,7 @@ const CASES: Case[] = [
   {
     name: "a prior partial refund below the tiered amount is untouched",
     kind: "consultation",
-    snapshot: DEFAULT_SNAPSHOT,
+    policy: DEFAULT_POLICY,
     liveSlotHours: [6],
     grossPaise: 500_000,
     priorRefundPaise: 100_000,
@@ -412,7 +440,7 @@ const CASES: Case[] = [
   {
     name: "a subscription half consumed prorates the base",
     kind: "subscription",
-    snapshot: DEFAULT_SNAPSHOT,
+    policy: DEFAULT_POLICY,
     liveSlotHours: [120, 300, 480],
     completedSlotHours: [-200, -100, -50],
     grossPaise: 900_000,
@@ -421,7 +449,7 @@ const CASES: Case[] = [
   {
     name: "a subscription prorating to an indivisible base rounds down",
     kind: "subscription",
-    snapshot: STRICT_SNAPSHOT,
+    policy: STRICT_POLICY,
     liveSlotHours: [96, 200],
     completedSlotHours: [-10],
     grossPaise: 100_001,
@@ -430,7 +458,7 @@ const CASES: Case[] = [
   {
     name: "a prorated subscription also clamped by a prior refund",
     kind: "subscription",
-    snapshot: DEFAULT_SNAPSHOT,
+    policy: DEFAULT_POLICY,
     liveSlotHours: [120, 300],
     completedSlotHours: [-40, -20],
     grossPaise: 800_000,
@@ -440,9 +468,30 @@ const CASES: Case[] = [
   {
     name: "a subscription with every session still owed refunds the whole price",
     kind: "subscription",
-    snapshot: DEFAULT_SNAPSHOT,
+    policy: DEFAULT_POLICY,
     liveSlotHours: [120, 300, 480, 600],
     grossPaise: 640_000,
+    actor: "consultee",
+  },
+  {
+    // #1500 — six hours out is the 50% rung, and a credit cannot be halved, so the
+    // quote and the charge both settle at a full restoration of zero gateway paise.
+    name: "a credit-funded booking inside a partial tier restores the credit in full",
+    kind: "consultation",
+    policy: DEFAULT_POLICY,
+    paymentIntent: "free_credit_1",
+    liveSlotHours: [6],
+    grossPaise: 0,
+    actor: "consultee",
+  },
+  {
+    // #1500 — and the 0% rung still returns nothing, exactly as it does for a card.
+    name: "a credit-funded booking inside the zero tier restores nothing",
+    kind: "consultation",
+    policy: DEFAULT_POLICY,
+    paymentIntent: "free_credit_1",
+    liveSlotHours: [1],
+    grossPaise: 0,
     actor: "consultee",
   },
 ];
@@ -463,12 +512,13 @@ beforeEach(() => {
     currency: "INR",
     paymentIntent: "pi_gateway_1",
   });
+  // The credits rail refuses an amount and restores the whole credit, so it reports
+  // zero paise moved — which is why the parity assertions below read the status.
   mockRefundBookingPayment.mockImplementation(
-    async ({ amountPaise }: { amountPaise: number }) => ({
-      refundId: "r1",
-      amountRefundedPaise: amountPaise,
-      rail: "GATEWAY",
-    }),
+    async ({ amountPaise }: { amountPaise?: number }) =>
+      amountPaise === undefined
+        ? { refundId: "r1", amountRefundedPaise: 0, rail: "CREDITS" }
+        : { refundId: "r1", amountRefundedPaise: amountPaise, rail: "GATEWAY" },
   );
 });
 
@@ -477,6 +527,12 @@ async function quoteThenCancel(c: Case) {
   mockGetSession.mockResolvedValue(sessionAs(c.actor));
   mockAppointmentFindUnique.mockResolvedValue(appointmentRow(c.kind));
   mockAppointmentFindMany.mockImplementation(async () => bookingRows(c));
+  // The preview names the rail off its own payment lookup, so it has to see the
+  // same intent the booking rows carry.
+  mockPaymentFindFirst.mockResolvedValue({
+    currency: "INR",
+    paymentIntent: c.paymentIntent ?? "pi_gateway_1",
+  });
 
   const previewRes = await previewHandler(
     new Request(`http://localhost/api/appointments/${APPT}/cancel/preview`),
@@ -514,20 +570,24 @@ describe("the cancel preview quotes what the cancel actually pays", () => {
     // A zero quote is a promise too: nothing is paid and nothing is attempted.
     // Reading the calls off the mock rather than branching keeps this one
     // assertion for both outcomes.
-    expect(
-      mockRefundBookingPayment.mock.calls.map(([arg]) => ({
-        paymentId: (arg as { paymentId: string }).paymentId,
-        amountPaise: (arg as { amountPaise: number }).amountPaise,
-      })),
-    ).toEqual(
-      preview.estimatedRefundPaise > 0
-        ? [{ paymentId: "pay-1", amountPaise: preview.estimatedRefundPaise }]
-        : [],
+    const calls = mockRefundBookingPayment.mock.calls.map(([arg]) => ({
+      paymentId: (arg as { paymentId: string }).paymentId,
+      amountPaise: (arg as { amountPaise?: number }).amountPaise,
+    }));
+    // #1500 — a full credit restoration is issued with NO amount, because the
+    // credits rail refuses a partial one. Everything else pays exactly the quote.
+    expect(calls).toEqual(
+      preview.creditRestoresInFull
+        ? [{ paymentId: "pay-1", amountPaise: undefined }]
+        : preview.estimatedRefundPaise > 0
+          ? [{ paymentId: "pay-1", amountPaise: preview.estimatedRefundPaise }]
+          : [],
     );
 
-    // The route's own three-way: paid, or one of the two different zeros.
+    // The route's own outcomes: paid, restored in full, or one of the two
+    // different zeros.
     expect(cancelled.refund.status).toBe(
-      preview.estimatedRefundPaise > 0
+      preview.creditRestoresInFull || preview.estimatedRefundPaise > 0
         ? "REFUNDED"
         : preview.refundPct > 0
           ? "NOTHING_REFUNDABLE"
@@ -570,7 +630,7 @@ describe("the quote's own numbers hold up", () => {
     const c: Case = {
       name: "never scheduled",
       kind: "subscription",
-      snapshot: DEFAULT_SNAPSHOT,
+      policy: DEFAULT_POLICY,
       liveSlotHours: [],
       grossPaise: 500_000,
       actor: "consultee",

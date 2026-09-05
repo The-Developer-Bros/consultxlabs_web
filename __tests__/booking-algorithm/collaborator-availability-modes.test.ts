@@ -107,6 +107,10 @@ function makeMockTx() {
     bookingStatusHistory: { create: jest.fn().mockResolvedValue({}) },
     appointment: {
       findMany: jest.fn().mockResolvedValue([]),
+      // #1499 — createAppointments reads the originating appointment to
+      // inherit the policy version the booking was sold under. Null here:
+      // these fixtures predate the FK, so the created rows carry no policy.
+      findFirst: jest.fn().mockResolvedValue(null),
       create: jest
         .fn()
         .mockResolvedValue({ id: "apt-1", slotsOfAppointment: [] }),

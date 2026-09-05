@@ -111,7 +111,10 @@ import {
 } from "@/lib/novu/org-workflows";
 import { sumPaise } from "@/lib/payments/utils/money";
 import { MARKETPLACE_VISIBILITY } from "@/lib/api/plans/visibility";
-import { resolveCancellationPolicySnapshot } from "@/lib/payments/operations/cancellation-policy";
+import {
+  ensurePlatformCancellationPolicy,
+  resolveCheckoutCancellationPolicyId,
+} from "@/lib/payments/operations/cancellation-policy-store";
 import { isBusinessErrorCode } from "@/lib/errors/classification/payment-error-classification";
 
 // Re-export for backward compatibility
@@ -2227,6 +2230,11 @@ export async function handleConsultationCheckout(
    * was flagged in the May 2026 production-readiness audit.
    */
   organizationId: string | null,
+  /**
+   * #1499 — the CancellationPolicy version this sale is governed by, resolved once
+   * by the caller so every appointment of one checkout cites the same row.
+   */
+  cancellationPolicyId: string,
 ) {
   const plan = await tx.consultationPlan.findUnique({
     where: { id: data.planId },
@@ -2290,10 +2298,9 @@ export async function handleConsultationCheckout(
       appointmentType: AppointmentsType.CONSULTATION,
       consultationId: consultation.id,
       organizationId,
-      // B1 — freeze the refund terms at booking; the cancel flow reads this.
-      cancellationPolicySnapshot: JSON.parse(
-        JSON.stringify(resolveCancellationPolicySnapshot()),
-      ),
+      // B1/#1499 — freeze the refund terms at booking by pointing at the immutable
+      // policy version; the cancel flow reads it back through this FK.
+      cancellationPolicyId,
       slotsOfAppointment: { create: slotAtoms },
     },
   });
@@ -2328,6 +2335,8 @@ export async function handleSubscriptionCheckout(
   _skipPayment: boolean,
   /** Resolved org context — see handleConsultationCheckout for rationale. */
   organizationId: string | null,
+  /** #1499 — see handleConsultationCheckout. */
+  cancellationPolicyId: string,
 ): Promise<SubscriptionCheckoutResult> {
   const plan = await tx.subscriptionPlan.findUnique({
     where: { id: data.planId },
@@ -2442,6 +2451,12 @@ export async function handleSubscriptionCheckout(
       appointmentType: AppointmentsType.SUBSCRIPTION,
       subscriptionId: subscription.id,
       organizationId,
+      // #1499 — the placeholder carries the money, so it must carry the terms too:
+      // the sessions allocated later inherit this row's policy, and `cancellation-
+      // scope` reads the terms off whichever row the Payment hangs on. The old Json
+      // snapshot was never written here, which is why the fallback in that module
+      // existed at all.
+      cancellationPolicyId,
       // No slots created - consultant allocates later via Requests tab
     },
   });
@@ -2571,6 +2586,11 @@ export async function handleWebinarCheckout(
     // the first registrant's booking org. This makes "events we host"
     // discoverable in the org dashboard, and avoids first-registrant-
     // wins org leakage.
+    // #1499 — for the same reason no cancellationPolicyId is stamped: one row
+    // cannot carry one buyer's terms when several orgs are seated on it. A null
+    // FK reads as the platform ladder, which is what whole-event refunds already
+    // assume. Org tiers therefore do not reach event seats — a documented
+    // limitation, not an oversight.
     appointment = await tx.appointment.create({
       data: {
         appointmentType: AppointmentsType.WEBINAR,
@@ -3382,6 +3402,18 @@ export async function handleCheckout(
       const exhaustedBell: { programAssignmentId: string | null } = {
         programAssignmentId: null,
       };
+
+      // #1513 review — provision the platform policy row HERE, on the global
+      // client, not from inside the transaction below. The provisioner recovers
+      // from a P2002 by re-reading the winner's row, and inside a Serializable
+      // transaction a P2002 aborts the transaction, so that re-read would fail
+      // and take the sale with it. On the global client every statement is its
+      // own autocommit unit, so the loser of the race really does get to re-read.
+      // It must also stay OUTSIDE any `$transaction` callback: PG_POOL_MAX=1
+      // means a global-client query issued while a transaction holds the single
+      // connection deadlocks (#1435, see lib/prisma.ts).
+      await ensurePlatformCancellationPolicy(prisma);
+
       const result = await withSerializableRetry(async () => {
         await renewOrAbort(perAttemptTtl);
         return prisma.$transaction(
@@ -3459,6 +3491,15 @@ export async function handleCheckout(
             const skipPayment =
               isMockPayment || isZeroAmountPayment || isOrgSponsoredPayment;
 
+            // #1499 — whose ladder governs this sale, resolved once inside the
+            // booking transaction. Org-funded means the ORG'S MONEY moves on a
+            // refund, so the org's published version binds; a personal booking
+            // merely tagged to an org keeps the platform ladder.
+            const cancellationPolicyId =
+              await resolveCheckoutCancellationPolicyId(tx, {
+                organizationId: isOrgSponsoredPayment ? organizationId : null,
+              });
+
             // Create appointment based on type (with isTentative flag)
             switch (validatedData.appointmentType) {
               case "CONSULTATION": {
@@ -3469,6 +3510,7 @@ export async function handleCheckout(
                   userId,
                   skipPayment,
                   organizationId,
+                  cancellationPolicyId,
                 );
                 createdAppointment = consultationResult.appointment;
                 engagementsForCap = 1;
@@ -3482,6 +3524,7 @@ export async function handleCheckout(
                   consulteeProfileId,
                   skipPayment,
                   organizationId,
+                  cancellationPolicyId,
                 );
                 // Use placeholder appointment for payment linkage
                 // This ensures webhook uses NEW FLOW (confirm) not LEGACY FLOW (create duplicate)

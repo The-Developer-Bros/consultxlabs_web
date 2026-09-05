@@ -68,16 +68,33 @@ neither should be reimplemented.
 As of wave 5 (#1327), `quoteBookingRefund` in
 `lib/payments/operations/cancellation-policy.ts` is the only refund
 calculation, and both the cancel POST route and the `cancel/preview` GET route
-call it. It returns `refundPct`, `noticeHours`, `proratedBasePaise`, `prorated`
-and `refundPaise`. Unlike the price derivation it **does** use BigInt for its two
-multiplications, on the stated grounds that the products can leave the
-safe-integer range long before the amounts stop being real money. A booking that
-was never scheduled has `noticeHours` of positive infinity, so it sits in the top
-tier rather than the already-started floor. `PLATFORM_DEFAULT_TIERS` is 100% at
-24 hours, 50% at 2 hours, 0% below.
+call it. It returns `refundPct`, `tierRefundPct`, `noticeHours`,
+`proratedBasePaise`, `prorated`, `refundPaise` and `creditRestoresInFull`. Unlike
+the price derivation it **does** use BigInt for its two multiplications, on the
+stated grounds that the products can leave the safe-integer range long before the
+amounts stop being real money. A booking that was never scheduled has
+`noticeHours` of positive infinity, so it sits in the top tier rather than the
+already-started floor. `PLATFORM_DEFAULT_TIERS` is 100% at 24 hours, 50% at 2
+hours, 0% below.
 
 A quote that restates the rule is a rule that can drift from the charge. If you
 change a tier, a proration denominator or a clamp, change it here.
+
+**The tiers are typed rows, not a Json snapshot (#1499).** `CancellationPolicy` +
+`CancellationPolicyTier` hold one published, immutable version of a ladder;
+`Appointment.cancellationPolicyId` points at the version that governed the sale.
+`Appointment.cancellationPolicySnapshot` is FROZEN — never written, never read,
+dropped at the reset — so do not add a reader for it. Loading and publishing live
+in `lib/payments/operations/cancellation-policy-store.ts`
+(`POLICY_TERMS_INCLUDE`, `termsFromPolicyRow`, `ensurePlatformCancellationPolicy`,
+`resolveCheckoutCancellationPolicyId`, `publishOrgCancellationPolicy`); the maths
+module above stays Prisma-free. Checkout resolves the version once inside the
+booking transaction, and an org's ladder governs only the bookings that **org
+funds** — a personal booking merely tagged to an org keeps the platform ladder.
+Webinar and class seats always use the platform ladder, because one shared
+`Appointment` serves every registrant. Editing a ladder publishes a new version
+and archives the old one under `withSerializableRetry`; nothing updates a version
+in place.
 
 ## 5. Refunds travel on three rails, and the rail is named before the click
 
@@ -89,6 +106,18 @@ no gateway money), everything else is `GATEWAY`. The two front doors are
 `refundRemovedAttendeeSeat` for one seat; see the booking doctrine in `../SKILL.md`.
 `refundBookingPayment` refuses a partial `amountPaise` on the credits rail with
 `RefundValidationError` / `INVALID_AMOUNT`.
+
+**The credits rail cannot pay a fraction, so #1500 rounds the tier, not the
+rail.** A booking funded entirely by credit (`free_` intent **and** amount 0)
+restores its credit IN FULL inside any tier above 0%, and restores NOTHING inside
+a 0% tier — a late cancel bites a credit buyer exactly as it bites a card buyer.
+The whole rule is one predicate in `quoteBookingRefund`
+(`isFreeCreditFunded && refundPct > 0`) surfaced as `creditRestoresInFull`; the
+cancel route calls `refundBookingPayment` with no `amountPaise` when it is true
+and falls through to `POLICY_ZERO` when it is not. There is no `MANUAL_REVIEW`
+status any more. A `free_` intent with a NON-zero amount is a mixed payment that
+still settles on the money arm and is still refused `INVALID_AMOUNT`; both halves
+of the predicate are load-bearing.
 
 As of wave 5 (#1325) the rail is also computed **ahead of the refund** by
 `fundingRailForIntent` (`lib/payments/operations/booking-refund.ts`), so the

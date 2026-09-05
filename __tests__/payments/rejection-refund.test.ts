@@ -56,6 +56,7 @@ jest.mock("../../lib/enterprise/system-events", () => ({
   recordSystemError: (...a: unknown[]) => mockRecordSystemError(...a),
 }));
 
+import { PLATFORM_DEFAULT_TERMS } from "@/lib/payments/operations/cancellation-policy";
 import { refundRejectedRequest } from "../../lib/booking/rejection-refund";
 
 const PAID = {
@@ -65,7 +66,9 @@ const PAID = {
     refundablePaise: 100_000,
     paymentIntent: "pay_ABC",
   },
-  policySnapshot: null,
+  // #1499 — the context resolves terms, never a raw column; null tiers would be an
+  // impossible shape, so PLATFORM_DEFAULT_TERMS is what an unpublished booking reads.
+  policy: PLATFORM_DEFAULT_TERMS,
   hoursUntilNextSession: null,
   sessionsCompleted: 0,
   sessionsRemaining: 0,
@@ -150,7 +153,9 @@ describe("refundRejectedRequest", () => {
       actor: "CONSULTANT",
     });
 
-    expect(mockResolveContext).toHaveBeenCalledWith({ subscriptionId: "sub-1" });
+    expect(mockResolveContext).toHaveBeenCalledWith({
+      subscriptionId: "sub-1",
+    });
   });
 
   it("mints nothing for a request that was never paid", async () => {
@@ -283,7 +288,9 @@ describe("refundRejectedRequest", () => {
     expect(mockRefundBookingPayment).toHaveBeenCalledWith(
       expect.objectContaining({ paymentId: "pay-free-1" }),
     );
-    expect(mockRefundBookingPayment.mock.calls[0][0].amountPaise).toBeUndefined();
+    expect(
+      mockRefundBookingPayment.mock.calls[0][0].amountPaise,
+    ).toBeUndefined();
     expect(result).toEqual({ refundPct: 100, amountRefundedPaise: 0 });
   });
 

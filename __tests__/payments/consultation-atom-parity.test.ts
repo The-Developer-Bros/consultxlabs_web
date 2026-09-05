@@ -289,6 +289,8 @@ async function runCheckoutCreator(): Promise<SlotAtom[]> {
     CONSULTEE_USER,
     false,
     null,
+    // #1499 — the policy version the caller resolved; this suite only asserts atoms.
+    "policy-1",
   );
 
   expect(checkoutAppointmentCreate).toHaveBeenCalledTimes(1);
