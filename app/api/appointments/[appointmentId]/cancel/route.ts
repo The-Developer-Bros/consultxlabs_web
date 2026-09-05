@@ -6,7 +6,7 @@ import {
   withAppointmentLock,
 } from "@/utils/appointmentlock";
 import { setParticipantStatus } from "@/lib/booking/participants";
-import prisma from "@/lib/prisma";
+import prisma, { type Tx } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 import { CancellationReason } from "@prisma/client";
 import { notifyAppointmentCancelled } from "@/lib/novu";
@@ -39,7 +39,78 @@ import {
   EVENT_ALLOWED_FROM,
   RESCHEDULE_OPEN_STATUSES,
   SLOT_RESCHEDULABLE_FROM,
+  transitionClassEvent,
+  transitionConsultationRequest,
+  transitionRescheduleRequest,
+  transitionSlotCompletion,
+  transitionSubscriptionRequest,
+  transitionWebinarEvent,
 } from "@/lib/booking/transitions";
+import { IllegalTransitionError } from "@/lib/enterprise/transitions";
+
+/** Audit attribution shared by every CAS this cancel drives (#1322 A12). */
+type CancelAuditMeta = {
+  actorUserId: string;
+  reason: string | null;
+  organizationId: string | null;
+};
+
+/**
+ * Which rows this cancel sweeps. A whole-subscription or whole-class cancel
+ * also ends the sessions of its sibling appointments; every other booking ends
+ * only its own. The slot sweep and the participant sweep must never disagree
+ * about that, so both read the scope from here (#1383).
+ */
+function cancelSweepScope(appointment: {
+  id: string;
+  subscription: { id: string } | null;
+  class: { id: string } | null;
+}) {
+  if (appointment.subscription) {
+    return { appointment: { subscriptionId: appointment.subscription.id } };
+  }
+  if (appointment.class) {
+    return { appointment: { classId: appointment.class.id } };
+  }
+  // Consultation/webinar/trial — single appointment.
+  return { appointmentId: appointment.id };
+}
+
+/**
+ * Close any live reschedule proposal on a booking being cancelled. Leaving one
+ * open would keep `openForAppointmentId` reserved forever and let the expiry
+ * cron act on a cancelled booking. The helper CASes one row by id — hence the
+ * read — and releases the reservation itself on every terminal target, so
+ * `data` carries nothing here (#1383).
+ */
+async function declineOpenReschedules(
+  tx: Pick<Tx, "rescheduleRequest" | "bookingStatusHistory">,
+  appointmentId: string,
+  auditMeta: CancelAuditMeta,
+): Promise<void> {
+  const openProposals = await tx.rescheduleRequest.findMany({
+    where: { appointmentId, status: { in: RESCHEDULE_OPEN_STATUSES } },
+    select: { id: true },
+  });
+  for (const proposal of openProposals) {
+    try {
+      await transitionRescheduleRequest(tx, {
+        ...auditMeta,
+        appointmentId,
+        where: { id: proposal.id },
+        to: "DECLINED",
+        fromIn: RESCHEDULE_OPEN_STATUSES,
+      });
+    } catch (err) {
+      // The expiry cron holds no appointment lock, so it can answer a
+      // proposal between the read above and this CAS. Either way the
+      // booking ends with no open proposal, which is the whole point;
+      // failing the cancel over it would be the wrong outcome.
+      if (!(err instanceof IllegalTransitionError)) throw err;
+    }
+  }
+}
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ appointmentId: string }> },
@@ -272,14 +343,29 @@ export async function POST(
         })
       : null;
 
-    // Prepare cancellation data
+    // Prepare cancellation data. `status` is NOT here: the transition helpers
+    // own that column, and their `data` type excludes it so a caller cannot
+    // write a status past the CAS.
     const cancellationData = {
-      status: "CANCELLED" as const,
       cancellationReason: (validatedData.reason as CancellationReason) || null,
       cancellationNotes: validatedData.notes || null,
       cancelledAt: new Date(),
       cancelledBy: session.user.id,
     };
+
+    // Audit attribution for every BookingStatusHistory row this cancel writes
+    // (#1322 A12). `appointmentId` is added per call site rather than here: a
+    // subscription/class cancel sweeps slots belonging to sibling appointments,
+    // and stamping this appointment on those rows would file another session's
+    // history under this booking's timeline.
+    const auditMeta: CancelAuditMeta = {
+      actorUserId: session.user.id,
+      reason: validatedData.reason ?? null,
+      organizationId: appointment.organizationId,
+    };
+
+    // One scope for both sweeps below, resolved before the transaction opens.
+    const sweepScope = cancelSweepScope(appointment);
 
     // Cancellable from-states: never COMPLETED (history), never CANCELLED
     // (idempotency — a double-cancel must not re-run refunds), never
@@ -294,52 +380,58 @@ export async function POST(
     const result = await withAppointmentLock(appointmentId, () =>
       prisma.$transaction(
         async (tx) => {
-          // Update appointment status based on type — CAS-guarded.
-          let moved = 0;
-          if (appointment.consultation) {
-            moved = (
-              await tx.consultation.updateMany({
-                where: {
-                  id: appointment.consultation.id,
-                  status: { in: [...CANCELLABLE_FROM] },
-                },
+          // Update appointment status based on type — through the CAS helpers,
+          // which bake the same allowed-from set into the WHERE and append the
+          // BookingStatusHistory row this route used to skip entirely.
+          let moved = false;
+          try {
+            if (appointment.consultation) {
+              await transitionConsultationRequest(tx, {
+                ...auditMeta,
+                appointmentId,
+                where: { id: appointment.consultation.id },
+                to: "CANCELLED",
                 data: cancellationData,
-              })
-            ).count;
-          } else if (appointment.subscription) {
-            moved = (
-              await tx.subscription.updateMany({
-                where: {
-                  id: appointment.subscription.id,
-                  status: { in: [...CANCELLABLE_FROM] },
-                },
+                fromIn: [...CANCELLABLE_FROM],
+              });
+              moved = true;
+            } else if (appointment.subscription) {
+              await transitionSubscriptionRequest(tx, {
+                ...auditMeta,
+                appointmentId,
+                where: { id: appointment.subscription.id },
+                to: "CANCELLED",
                 data: cancellationData,
-              })
-            ).count;
-          } else if (appointment.webinar) {
-            // Explicit allowed-from (was notIn) — robust against future enum
-            // additions (#837).
-            moved = (
-              await tx.webinar.updateMany({
-                where: {
-                  id: appointment.webinar.id,
-                  status: { in: EVENT_ALLOWED_FROM.CANCELLED },
-                },
-                data: { status: "CANCELLED" },
-              })
-            ).count;
-          } else if (appointment.class) {
-            moved = (
-              await tx.class.updateMany({
-                where: {
-                  id: appointment.class.id,
-                  status: { in: CLASS_EVENT_ALLOWED_FROM.CANCELLED },
-                },
-                data: { status: "CANCELLED" },
-              })
-            ).count;
+                fromIn: [...CANCELLABLE_FROM],
+              });
+              moved = true;
+            } else if (appointment.webinar) {
+              // Explicit allowed-from (was notIn) — robust against future enum
+              // additions (#837).
+              await transitionWebinarEvent(tx, {
+                ...auditMeta,
+                appointmentId,
+                where: { id: appointment.webinar.id },
+                to: "CANCELLED",
+                fromIn: EVENT_ALLOWED_FROM.CANCELLED,
+              });
+              moved = true;
+            } else if (appointment.class) {
+              await transitionClassEvent(tx, {
+                ...auditMeta,
+                appointmentId,
+                where: { id: appointment.class.id },
+                to: "CANCELLED",
+                fromIn: CLASS_EVENT_ALLOWED_FROM.CANCELLED,
+              });
+              moved = true;
+            }
+          } catch (err) {
+            // The helper's zero-row throw IS the old `moved === 0`; the client
+            // contract stays NOT_CANCELLABLE rather than ILLEGAL_TRANSITION.
+            if (!(err instanceof IllegalTransitionError)) throw err;
           }
-          if (moved === 0) {
+          if (!moved) {
             throw Object.assign(
               new Error(
                 "This appointment can no longer be cancelled (already cancelled, completed, or expired).",
@@ -356,58 +448,28 @@ export async function POST(
           // SCHEDULED, so filtering on SCHEDULED alone left those rows in a
           // non-terminal state on a booking that no longer exists — and proposals
           // hang off exactly those rows.
-          const cancellableSlotStatuses = SLOT_RESCHEDULABLE_FROM;
-          if (appointment.subscription) {
-            await tx.slotOfAppointment.updateMany({
-              where: {
-                appointment: { subscriptionId: appointment.subscription.id },
-                completionStatus: { in: cancellableSlotStatuses },
-              },
-              data: { completionStatus: "CANCELLED" },
-            });
-          } else if (appointment.class) {
-            await tx.slotOfAppointment.updateMany({
-              where: {
-                appointment: { classId: appointment.class.id },
-                completionStatus: { in: cancellableSlotStatuses },
-              },
-              data: { completionStatus: "CANCELLED" },
-            });
-          } else {
-            // Consultation/webinar/trial — single appointment
-            await tx.slotOfAppointment.updateMany({
-              where: {
-                appointmentId,
-                completionStatus: { in: cancellableSlotStatuses },
-              },
-              data: { completionStatus: "CANCELLED" },
-            });
-          }
-          // #1319 A9 — every participant of the cancelled engagement.
-          await setParticipantStatus(
-            tx,
-            appointment.subscription
-              ? { appointment: { subscriptionId: appointment.subscription.id } }
-              : appointment.class
-                ? { appointment: { classId: appointment.class.id } }
-                : { appointmentId },
-            "CANCELLED",
-          );
-
-          // Close any live reschedule proposal on this booking. Leaving one open
-          // would keep openForAppointmentId reserved forever and let the expiry
-          // cron act on a cancelled booking.
-          await tx.rescheduleRequest.updateMany({
-            where: {
-              appointmentId,
-              status: { in: RESCHEDULE_OPEN_STATUSES },
-            },
-            data: {
-              status: "DECLINED",
-              openForAppointmentId: null,
-              resolvedAt: new Date(),
-            },
+          //
+          // The from-set rides in `fromIn`, never in `where`: the helper
+          // overwrites `completionStatus` in the caller's WHERE with its own
+          // from-set, so a status left there is silently discarded.
+          await transitionSlotCompletion(tx, {
+            ...auditMeta,
+            where: sweepScope,
+            to: "CANCELLED",
+            // The tombstone is half of the soft-cancel: without it the row
+            // still occupies the consultant's calendar for every reader that
+            // filters on `deletedAt: null` (#676 A10, the shape
+            // cleanup-abandoned-payments already writes).
+            data: { deletedAt: new Date() },
+            fromIn: [...SLOT_RESCHEDULABLE_FROM],
+            // A booking whose sessions are all delivered or already terminal
+            // is still cancellable; matching no live slot is not a conflict.
+            allowZero: true,
           });
+          // #1319 A9 — every participant of the cancelled engagement.
+          await setParticipantStatus(tx, sweepScope, "CANCELLED");
+
+          await declineOpenReschedules(tx, appointmentId, auditMeta);
 
           return {
             success: true,
