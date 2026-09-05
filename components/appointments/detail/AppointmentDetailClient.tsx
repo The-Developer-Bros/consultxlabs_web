@@ -26,6 +26,7 @@ import type { AppointmentActionAdapter } from "@/lib/appointments/adapter";
 import { mapAppointmentDetail } from "@/lib/appointments/map-detail";
 import { eventUnionStatusBadge } from "@/lib/appointments/status";
 import type { AppointmentVM } from "@/lib/appointments/view-model";
+import { trialCheckoutHref } from "@/lib/appointments/trial-checkout-href";
 import type { TAppointmentDetail } from "@/lib/data/appointment-detail";
 import {
   paymentStatusBadge,
@@ -234,7 +235,16 @@ export function AppointmentDetailClient({
     : undefined;
   const hasConfirmedSessions = vm.sessions.some((s) => !s.isTentative);
   const hasTentativeSessions = vm.sessions.some((s) => s.isTentative);
+  // #1429 F2 — a trial's Pay Now lands on our branded trial checkout, which
+  // names the amount and the hold deadline; only a non-trial booking falls
+  // through to the raw gateway link. #1428 added a second Pay Now here without
+  // the branch, so both entry points now ask the one shared helper.
+  const trialHref = trialCheckoutHref(vm);
   const openPendingPayment = () => {
+    if (trialHref) {
+      window.location.href = trialHref;
+      return;
+    }
     if (vm.pendingPaymentUrl && /^https?:\/\//.test(vm.pendingPaymentUrl)) {
       window.open(vm.pendingPaymentUrl, "_blank", "noopener,noreferrer");
     }
@@ -469,15 +479,7 @@ export function AppointmentDetailClient({
                     <Button
                       size="sm"
                       className="w-full bg-amber-500 hover:bg-amber-600 text-white dark:bg-amber-600 dark:hover:bg-amber-500"
-                      onClick={() => {
-                        if (/^https?:\/\//.test(vm.pendingPaymentUrl!)) {
-                          window.open(
-                            vm.pendingPaymentUrl!,
-                            "_blank",
-                            "noopener,noreferrer",
-                          );
-                        }
-                      }}
+                      onClick={openPendingPayment}
                     >
                       <CreditCard className="h-4 w-4 mr-2" />
                       Pay Now to Confirm
