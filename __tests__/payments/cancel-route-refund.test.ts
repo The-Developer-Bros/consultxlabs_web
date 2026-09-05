@@ -51,8 +51,20 @@ const txStub = {
     updateMany: jest.fn().mockResolvedValue({ count: 1 }),
   },
   bookingStatusHistory: { create: jest.fn().mockResolvedValue({}) },
-  slotOfAppointment: { updateMany: jest.fn().mockResolvedValue({ count: 2 }) },
-  rescheduleRequest: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
+  // transitionSlotCompletion reads the from-status, then moves the cohort with
+  // updateManyAndReturn so each moved id gets its own history row.
+  slotOfAppointment: {
+    findMany: jest.fn().mockResolvedValue([]),
+    updateManyAndReturn: jest
+      .fn()
+      .mockResolvedValue([{ id: "slot-1" }, { id: "slot-2" }]),
+  },
+  // The cancel route reads the open proposals, then CASes each by id.
+  rescheduleRequest: {
+    findMany: jest.fn().mockResolvedValue([]),
+    findUnique: jest.fn().mockResolvedValue({ status: "PENDING_REVIEW" }),
+    updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+  },
 };
 
 jest.mock("../../lib/prisma", () => ({
@@ -282,8 +294,12 @@ beforeEach(() => {
   txCommitted = false;
   txStub.consultation.updateMany.mockResolvedValue({ count: 1 });
   txStub.subscription.updateMany.mockResolvedValue({ count: 1 });
-  txStub.slotOfAppointment.updateMany.mockResolvedValue({ count: 2 });
-  txStub.rescheduleRequest.updateMany.mockResolvedValue({ count: 0 });
+  txStub.slotOfAppointment.findMany.mockResolvedValue([]);
+  txStub.slotOfAppointment.updateManyAndReturn.mockResolvedValue([
+    { id: "slot-1" },
+    { id: "slot-2" },
+  ]);
+  txStub.rescheduleRequest.findMany.mockResolvedValue([]);
   mockPaymentFindMany.mockResolvedValue([]);
   mockMembershipFindUnique.mockResolvedValue(null);
   mockRecordSystemError.mockResolvedValue(undefined);
@@ -734,5 +750,74 @@ describe("failure modes leave the cancellation standing", () => {
 
     expect(res.status).toBe(409);
     expect(mockRefundBookingPayment).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #1322 A12 — the route wrote its four request statuses, its slots and its
+ * open proposal with raw updateMany calls, so a successful cancel left no
+ * BookingStatusHistory row at all and the cancelled slots kept
+ * `deletedAt: null`, holding the consultant's calendar forever. The pin is on
+ * the audit trail rather than on the call shape, because that is what was
+ * empty in production.
+ */
+describe("a cancel leaves an audit trail", () => {
+  it("records the request move and every slot it moved, tombstone included", async () => {
+    mockGetSession.mockResolvedValue(sessionAs("consultee"));
+    mockAppointmentFindUnique.mockResolvedValue(consultationAppointment());
+    mockAppointmentFindMany.mockImplementation(async () =>
+      bookingRows({ liveSlotHours: [120] }),
+    );
+    txStub.consultation.findUnique.mockResolvedValue({ status: "APPROVED" });
+
+    const res = await cancelHandler(
+      makeRequest({ reason: "SCHEDULE_CONFLICT" }),
+      makeParams(APPT),
+    );
+    expect(res.status).toBe(200);
+
+    const historyRows = (
+      txStub.bookingStatusHistory.create.mock.calls as [
+        { data: Record<string, unknown> },
+      ][]
+    ).map(([args]) => args.data);
+
+    expect(historyRows).toContainEqual(
+      expect.objectContaining({
+        entity: "CONSULTATION",
+        entityId: "cons-1",
+        fromStatus: "APPROVED",
+        toStatus: "CANCELLED",
+        actorUserId: CONSULTEE_USER,
+        reason: "SCHEDULE_CONFLICT",
+        appointmentId: APPT,
+      }),
+    );
+    // One per slot the CAS actually moved — the ids come from the UPDATE's own
+    // RETURNING, so a slot a racing writer pulled out never gets a row.
+    expect(historyRows.filter((row) => row.entity === "SLOT")).toHaveLength(2);
+    expect(txStub.slotOfAppointment.updateManyAndReturn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { completionStatus: "CANCELLED", deletedAt: expect.any(Date) },
+      }),
+    );
+  });
+
+  it("keeps the 409 contract when the request has already moved", async () => {
+    mockGetSession.mockResolvedValue(sessionAs("consultee"));
+    mockAppointmentFindUnique.mockResolvedValue(consultationAppointment());
+    mockAppointmentFindMany.mockImplementation(async () =>
+      bookingRows({ liveSlotHours: [120] }),
+    );
+    txStub.consultation.updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await cancelHandler(makeRequest(), makeParams(APPT));
+    const body = await res.json();
+
+    // The helper throws ILLEGAL_TRANSITION; the client still sees the code it
+    // has always keyed its retry copy off.
+    expect(res.status).toBe(409);
+    expect(body.code).toBe("NOT_CANCELLABLE");
+    expect(txStub.bookingStatusHistory.create).not.toHaveBeenCalled();
   });
 });

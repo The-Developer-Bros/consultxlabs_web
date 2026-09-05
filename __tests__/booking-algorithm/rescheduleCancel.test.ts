@@ -273,7 +273,13 @@ function makeMockTx() {
       // B2 — the cancel/reschedule CAS guards use updateMany.
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
-    slotOfAppointment: { updateMany: jest.fn(), deleteMany: jest.fn() },
+    // transitionSlotCompletion reads the from-status, then moves the cohort
+    // with updateManyAndReturn so each moved id gets its history row.
+    slotOfAppointment: {
+      findMany: jest.fn().mockResolvedValue([]),
+      updateManyAndReturn: jest.fn().mockResolvedValue([{ id: "slot-1" }]),
+      deleteMany: jest.fn(),
+    },
     appointmentParticipant: {
       createMany: jest.fn().mockResolvedValue({ count: 1 }),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -283,6 +289,9 @@ function makeMockTx() {
     // openForAppointmentId reservation is released and the expiry cron cannot
     // act on a cancelled booking. Reschedule creates one when times are proposed.
     rescheduleRequest: {
+      // The cancel route reads the open proposals, then CASes each by id.
+      findMany: jest.fn().mockResolvedValue([]),
+      findUnique: jest.fn().mockResolvedValue({ status: "PENDING_REVIEW" }),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       create: jest.fn().mockResolvedValue({ id: "reschedule-request-1" }),
     },
@@ -552,14 +561,17 @@ describe("Reschedule Route Handler - POST", () => {
       expect(body.slotsAffected).toBe(2);
 
       // Verify slots marked tentative by appointmentId (non-subscription path)
-      expect(mockTx.slotOfAppointment.updateMany).toHaveBeenCalledWith({
-        where: {
-          appointmentId: "apt-1",
-          // #837 — reschedule never resurrects COMPLETED/CANCELLED history
-          completionStatus: { in: ["SCHEDULED", "RESCHEDULED"] },
-        },
-        data: { isTentative: true, completionStatus: "RESCHEDULED" },
-      });
+      expect(mockTx.slotOfAppointment.updateManyAndReturn).toHaveBeenCalledWith(
+        // objectContaining: `select` is the helper's own business.
+        expect.objectContaining({
+          where: {
+            appointmentId: "apt-1",
+            // #837 — reschedule never resurrects COMPLETED/CANCELLED history
+            completionStatus: { in: ["SCHEDULED", "RESCHEDULED"] },
+          },
+          data: { isTentative: true, completionStatus: "RESCHEDULED" },
+        }),
+      );
 
       // Verify consultation status reverted
       expect(mockTx.consultation.updateMany).toHaveBeenCalledWith({
@@ -617,13 +629,16 @@ describe("Reschedule Route Handler - POST", () => {
       expect(body.rescheduleType).toBe("entire_booking");
 
       // Should mark all appointment slots tentative
-      expect(mockTx.slotOfAppointment.updateMany).toHaveBeenCalledWith({
-        where: {
-          appointmentId: { in: ["apt-1", "apt-2"] },
-          completionStatus: { in: ["SCHEDULED", "RESCHEDULED"] },
-        },
-        data: { isTentative: true, completionStatus: "RESCHEDULED" },
-      });
+      expect(mockTx.slotOfAppointment.updateManyAndReturn).toHaveBeenCalledWith(
+        // objectContaining: `select` is the helper's own business.
+        expect.objectContaining({
+          where: {
+            appointmentId: { in: ["apt-1", "apt-2"] },
+            completionStatus: { in: ["SCHEDULED", "RESCHEDULED"] },
+          },
+          data: { isTentative: true, completionStatus: "RESCHEDULED" },
+        }),
+      );
 
       // Should update subscription status
       expect(mockTx.subscription.updateMany).toHaveBeenCalledWith({
@@ -668,13 +683,16 @@ describe("Reschedule Route Handler - POST", () => {
       // The route marks ALL slots belonging to the affected appointment(s), not just the
       // specified slot ID. This ensures multi-slot sessions (e.g. 1.5h = 3 × 30-min slots)
       // are rescheduled atomically — a partial-tentative session would be inconsistent.
-      expect(mockTx.slotOfAppointment.updateMany).toHaveBeenCalledWith({
-        where: {
-          appointmentId: { in: ["apt-1"] },
-          completionStatus: { in: ["SCHEDULED", "RESCHEDULED"] },
-        },
-        data: { isTentative: true, completionStatus: "RESCHEDULED" },
-      });
+      expect(mockTx.slotOfAppointment.updateManyAndReturn).toHaveBeenCalledWith(
+        // objectContaining: `select` is the helper's own business.
+        expect.objectContaining({
+          where: {
+            appointmentId: { in: ["apt-1"] },
+            completionStatus: { in: ["SCHEDULED", "RESCHEDULED"] },
+          },
+          data: { isTentative: true, completionStatus: "RESCHEDULED" },
+        }),
+      );
     });
 
     it("should return 'multiple_sessions' type when slotIds span multiple sessions", async () => {
@@ -759,14 +777,17 @@ describe("Reschedule Route Handler - POST", () => {
       expect(body.success).toBe(true);
       expect(body.rescheduleType).toBe("entire_booking");
 
-      expect(mockTx.slotOfAppointment.updateMany).toHaveBeenCalledWith({
-        where: {
-          appointmentId: "apt-1",
-          // #837 — reschedule never resurrects COMPLETED/CANCELLED history
-          completionStatus: { in: ["SCHEDULED", "RESCHEDULED"] },
-        },
-        data: { isTentative: true, completionStatus: "RESCHEDULED" },
-      });
+      expect(mockTx.slotOfAppointment.updateManyAndReturn).toHaveBeenCalledWith(
+        // objectContaining: `select` is the helper's own business.
+        expect.objectContaining({
+          where: {
+            appointmentId: "apt-1",
+            // #837 — reschedule never resurrects COMPLETED/CANCELLED history
+            completionStatus: { in: ["SCHEDULED", "RESCHEDULED"] },
+          },
+          data: { isTentative: true, completionStatus: "RESCHEDULED" },
+        }),
+      );
 
       expect(mockTx.webinar.updateMany).toHaveBeenCalledWith({
         where: { id: "web-1", status: { in: ["SCHEDULED", "IN_PROGRESS"] } },
@@ -979,16 +1000,20 @@ describe("Cancel Route Handler - POST", () => {
       // Verify slots soft-cancelled (not hard-deleted — preserves payment
       // audit trail); only live SCHEDULED slots flip, history is never
       // re-stamped.
-      expect(mockTx.slotOfAppointment.updateMany).toHaveBeenCalledWith({
-        // RESCHEDULED counts too: a slot released by a pending reschedule is
-        // not SCHEDULED, and skipping it left non-terminal rows on a booking
-        // that no longer exists.
-        where: {
-          appointmentId: "apt-1",
-          completionStatus: { in: ["SCHEDULED", "RESCHEDULED"] },
-        },
-        data: { completionStatus: "CANCELLED" },
-      });
+      expect(mockTx.slotOfAppointment.updateManyAndReturn).toHaveBeenCalledWith(
+        // objectContaining: `select` is the helper's own business.
+        expect.objectContaining({
+          // RESCHEDULED counts too: a slot released by a pending reschedule is
+          // not SCHEDULED, and skipping it left non-terminal rows on a booking
+          // that no longer exists.
+          where: {
+            appointmentId: "apt-1",
+            completionStatus: { in: ["SCHEDULED", "RESCHEDULED"] },
+          },
+          // The tombstone is the other half of the soft-cancel (#676 A10).
+          data: { completionStatus: "CANCELLED", deletedAt: expect.any(Date) },
+        }),
+      );
 
       // Verify appointment is NOT deleted (soft-cancel preserves records)
       expect(mockTx.appointment.delete).not.toHaveBeenCalled();
@@ -998,8 +1023,8 @@ describe("Cancel Route Handler - POST", () => {
       const req = makeCancelRequest("apt-1");
       await cancelHandler(req, makeParams("apt-1"));
 
-      // Soft-cancel: updateMany with completionStatus, not deleteMany
-      expect(mockTx.slotOfAppointment.updateMany).toHaveBeenCalled();
+      // Soft-cancel: a completionStatus write, not deleteMany
+      expect(mockTx.slotOfAppointment.updateManyAndReturn).toHaveBeenCalled();
       expect(mockTx.slotOfAppointment.deleteMany).not.toHaveBeenCalled();
       expect(mockTx.appointment.delete).not.toHaveBeenCalled();
     });

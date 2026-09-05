@@ -62,8 +62,20 @@ const txStub = {
     updateMany: jest.fn().mockResolvedValue({ count: 1 }),
   },
   bookingStatusHistory: { create: jest.fn().mockResolvedValue({}) },
-  slotOfAppointment: { updateMany: jest.fn().mockResolvedValue({ count: 2 }) },
-  rescheduleRequest: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
+  // transitionSlotCompletion reads the from-status, then moves the cohort with
+  // updateManyAndReturn so each moved id gets its own history row.
+  slotOfAppointment: {
+    findMany: jest.fn().mockResolvedValue([]),
+    updateManyAndReturn: jest
+      .fn()
+      .mockResolvedValue([{ id: "slot-1" }, { id: "slot-2" }]),
+  },
+  // The cancel route reads the open proposals, then CASes each by id.
+  rescheduleRequest: {
+    findMany: jest.fn().mockResolvedValue([]),
+    findUnique: jest.fn().mockResolvedValue({ status: "PENDING_REVIEW" }),
+    updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+  },
 };
 
 jest.mock("../../lib/prisma", () => ({
@@ -440,8 +452,12 @@ beforeEach(() => {
   txCommitted = false;
   txStub.consultation.updateMany.mockResolvedValue({ count: 1 });
   txStub.subscription.updateMany.mockResolvedValue({ count: 1 });
-  txStub.slotOfAppointment.updateMany.mockResolvedValue({ count: 2 });
-  txStub.rescheduleRequest.updateMany.mockResolvedValue({ count: 0 });
+  txStub.slotOfAppointment.findMany.mockResolvedValue([]);
+  txStub.slotOfAppointment.updateManyAndReturn.mockResolvedValue([
+    { id: "slot-1" },
+    { id: "slot-2" },
+  ]);
+  txStub.rescheduleRequest.findMany.mockResolvedValue([]);
   mockPaymentFindMany.mockResolvedValue([]);
   mockPaymentFindFirst.mockResolvedValue({
     currency: "INR",
