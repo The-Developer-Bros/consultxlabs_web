@@ -45,7 +45,11 @@ import { notificationScope } from "../../lib/novu/workflows";
 import { notificationHref } from "../../lib/novu/resolve-href";
 import { refundBookingPayment } from "@/lib/payments/operations/booking-refund";
 import { withCronLock } from "@/lib/cron/with-cron-lock";
-import { CANCELLABLE_FROM } from "@/lib/booking/transitions";
+import {
+  CANCELLABLE_FROM,
+  transitionConsultationRequest,
+} from "@/lib/booking/transitions";
+import { IllegalTransitionError } from "@/lib/enterprise/transitions";
 import {
   NO_SHOW_GRACE_MINUTES,
   attendedAnySession,
@@ -415,26 +419,44 @@ async function claimConsultantNoShow(
   consultationId: string,
   appointmentId: string,
 ): Promise<boolean> {
-  const claimed = await prisma.consultation.updateMany({
-    where: { id: consultationId, status: { in: CANCELLABLE_FROM } },
-    data: {
-      status: AppointmentStatus.CANCELLED,
-      cancellationReason: CancellationReason.CONSULTANT_UNAVAILABLE,
-      cancellationNotes: "#471 consultant no-show — auto-cancelled + refunded",
-      cancelledAt: new Date(),
-    },
-  });
-  if (claimed.count === 0) return false;
+  try {
+    await prisma.$transaction(async (tx) => {
+      // #1493 — route through the CAS helper so this cancel writes a
+      // BookingStatusHistory row like every other status change; the bare
+      // updateMany left no timeline entry for the no-show path.
+      await transitionConsultationRequest(tx, {
+        where: { id: consultationId },
+        to: AppointmentStatus.CANCELLED,
+        fromIn: CANCELLABLE_FROM,
+        actorUserId: null,
+        reason: "#471 consultant no-show — auto-cancelled + refunded",
+        data: {
+          cancellationReason: CancellationReason.CONSULTANT_UNAVAILABLE,
+          cancellationNotes:
+            "#471 consultant no-show — auto-cancelled + refunded",
+          cancelledAt: new Date(),
+        },
+      });
 
-  await prisma.slotOfAppointment.updateMany({
-    where: {
-      appointmentId,
-      completionStatus: {
-        in: [SlotCompletionStatus.SCHEDULED, SlotCompletionStatus.UNVERIFIED],
-      },
-    },
-    data: { completionStatus: SlotCompletionStatus.CANCELLED },
-  });
+      await tx.slotOfAppointment.updateMany({
+        where: {
+          appointmentId,
+          completionStatus: {
+            in: [
+              SlotCompletionStatus.SCHEDULED,
+              SlotCompletionStatus.UNVERIFIED,
+            ],
+          },
+        },
+        data: { completionStatus: SlotCompletionStatus.CANCELLED },
+      });
+    });
+  } catch (error) {
+    // Zero rows matched means someone else moved it between the scan and this
+    // claim — the existing skip branch at the call site, unchanged.
+    if (error instanceof IllegalTransitionError) return false;
+    throw error;
+  }
   return true;
 }
 
