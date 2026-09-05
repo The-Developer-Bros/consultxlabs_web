@@ -137,6 +137,7 @@ function makeRequest(body: Record<string, unknown> = { action: "accept" }) {
 function proposalRow(overrides: Record<string, unknown> = {}) {
   return {
     id: REQ,
+    appointmentId: APPT,
     status: "PENDING_REVIEW",
     expiresAt: new Date(Date.now() + 48 * HOUR),
     proposedSlots: [
@@ -354,6 +355,12 @@ describe("#1340 — a confirmation keeps the proposal it is confirming", () => {
     const out = await tryAutoConfirmProposal(REQ, "consultation", "cons-1");
 
     expect(out).toEqual({ confirmed: true });
+    // #1340 — auto-confirm holds the appointment atom across the allocation and
+    // the AUTO_ACCEPTED write, like accept does.
+    expect(mockWithAppointmentLock).toHaveBeenCalledWith(
+      APPT,
+      expect.any(Function),
+    );
     expect(mockAllocate).toHaveBeenCalledWith(
       expect.objectContaining({
         mode: "manual",
