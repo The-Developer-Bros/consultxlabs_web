@@ -83,6 +83,12 @@ export async function acceptProposal(args: {
     // human on the grid, so the day-sharded key would let two concurrent
     // confirmations pass a per-week cap on stale counts.
     wideLock: true,
+    // #1340 — same exclusion as auto-confirm: the allocator declines every open
+    // proposal these released slots carry, and this one is being ACCEPTED, not
+    // superseded. Without it the ACCEPTED CAS below lost against a row the
+    // allocator had just declined, so the consultee saw a 409 (and no MOVED
+    // notification) on a booking that had moved.
+    excludeRescheduleRequestId: request.id,
   });
   if (!result.success) {
     // Nothing was written; the proposal stays open.

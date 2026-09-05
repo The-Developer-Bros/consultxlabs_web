@@ -90,6 +90,19 @@ export interface AllocationRequest {
    * today's behaviour unchanged.
    */
   topUp?: boolean;
+  /**
+   * #1340 — the reschedule proposal this allocation IS the confirmation of.
+   *
+   * Placing replacement times supersedes every OTHER open proposal on the same
+   * released slots, so the allocator closes those as DECLINED. The confirming
+   * caller's own proposal used to be in that set: it was DECLINED inside the
+   * allocator's transaction, and the caller's following
+   * `PENDING_REVIEW → AUTO_ACCEPTED/ACCEPTED` CAS then matched zero rows. The
+   * booking had moved while its audit trail read "declined", auto-confirm
+   * reported `autoConfirmed: false`, and the explicit accept answered 409 with
+   * no MOVED notification. Set only by the two confirmation callers.
+   */
+  excludeRescheduleRequestId?: string;
 }
 
 /**

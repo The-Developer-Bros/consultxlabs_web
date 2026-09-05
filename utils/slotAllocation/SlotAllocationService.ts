@@ -225,6 +225,7 @@ export class SlotAllocationService {
           request.expectedTentativeSlotCount,
           request.allowPartial,
           request.topUp,
+          request.excludeRescheduleRequestId,
         );
 
       case "manual":
@@ -244,6 +245,7 @@ export class SlotAllocationService {
           request.initialAllocation,
           request.wideLock,
           request.expectedTentativeSlotCount,
+          request.excludeRescheduleRequestId,
         );
 
       case "requested":
@@ -1049,10 +1051,15 @@ export class SlotAllocationService {
    * resolvedById is left null: the allocator is reached from routes, crons and
    * the auto-confirm path, and inventing an actor here would be worse than
    * recording none.
+   *
+   * @param excludeRescheduleRequestId #1340 — the proposal this allocation is
+   * confirming, which must survive the supersede sweep below so its caller can
+   * close it as AUTO_ACCEPTED/ACCEPTED.
    */
   private static async resolveConsumedPreferenceRequests(
     tx: Tx,
     releasedSlotIds: string[],
+    excludeRescheduleRequestId?: string,
   ): Promise<void> {
     if (releasedSlotIds.length === 0) return;
 
@@ -1091,10 +1098,20 @@ export class SlotAllocationService {
     // originally proposed times, and silently deleted the just-placed
     // confirmed slots. The manual placement IS the answer: close these as
     // DECLINED so the reschedule machine releases the reservation.
+    //
+    // #1340 — "superseded" means every OTHER open proposal. A confirmation
+    // (auto-confirm or an explicit accept) places the proposal's OWN times, so
+    // without this exclusion the sweep declined the very row its caller was
+    // about to close as AUTO_ACCEPTED/ACCEPTED: the CAS matched zero rows, the
+    // booking moved, and the paperwork said the consultee's request had been
+    // refused.
     const superseded = await tx.rescheduleRequest.findMany({
       where: {
         releasedSlotIds: { hasSome: releasedSlotIds },
         status: { in: [...RESCHEDULE_OPEN_STATUSES] },
+        ...(excludeRescheduleRequestId
+          ? { id: { not: excludeRescheduleRequestId } }
+          : {}),
       },
       select: { id: true },
     });
@@ -1129,6 +1146,12 @@ export class SlotAllocationService {
      * `AllocationRequest.topUp` for why this is not the default.
      */
     topUp = false,
+    /**
+     * #1340 — see `AllocationRequest.excludeRescheduleRequestId`: the proposal
+     * this run is confirming must not be declined as superseded by its own
+     * times.
+     */
+    excludeRescheduleRequestId?: string,
   ): Promise<AllocationResult> {
     // #837 — return the prior batch on a double-submit before doing any work.
     const replay = await this.findIdempotentAllocation(
@@ -1630,7 +1653,11 @@ export class SlotAllocationService {
 
           // #1065 — these times ARE the answer to the preference, so close it
           // here rather than leaving it open for the expiry sweep to mislabel.
-          await this.resolveConsumedPreferenceRequests(tx, releasedSlotIds);
+          await this.resolveConsumedPreferenceRequests(
+            tx,
+            releasedSlotIds,
+            excludeRescheduleRequestId,
+          );
 
           return {
             success: true,
@@ -1690,6 +1717,11 @@ export class SlotAllocationService {
     initialAllocation?: boolean,
     wideLock?: boolean,
     expectedTentativeSlotCount?: number,
+    /**
+     * #1340 — see `AllocationRequest.excludeRescheduleRequestId`. Both
+     * reschedule confirmation paths reach the allocator in manual mode.
+     */
+    excludeRescheduleRequestId?: string,
   ): Promise<AllocationResult> {
     // #837 — return the prior batch on a double-submit before doing any work.
     const replay = await this.findIdempotentAllocation(
@@ -2080,7 +2112,11 @@ export class SlotAllocationService {
           );
 
           // #1065 — see autoAllocate: placing the replacement answers the ask.
-          await this.resolveConsumedPreferenceRequests(tx, releasedSlotIds);
+          await this.resolveConsumedPreferenceRequests(
+            tx,
+            releasedSlotIds,
+            excludeRescheduleRequestId,
+          );
 
           return {
             success: true,
