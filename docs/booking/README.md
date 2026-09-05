@@ -36,6 +36,7 @@ graph TD
 - **Sunday-to-Saturday weeks** -- `SlotCalculationService.countWeeks()` is the single source of truth
 - **`isTentative` flag** -- marks slots pending payment or reschedule; cleaned up by cron after 24 hours (`TENTATIVE_EXPIRATION_HOURS = 24`, reduced from 7 days by #833); users can self-release via `DELETE /api/checkout/pending/[paymentId]` (#849)
 - **`startDay`/`endDay` DayOfWeek enum + `startTimeUtc`/`endTimeUtc` Int** -- source of truth for weekly availability (minutes since midnight UTC, 0-1439; supports overnight/cross-midnight slots)
+- The canonical definitions of "slot" and "session" and the other terms this page uses live in [`docs/enterprise/00-foundations/07-slots-sessions-glossary.md`](../enterprise/00-foundations/07-slots-sessions-glossary.md), which this document assumes rather than restates.
 
 ## Reading the audit trail
 

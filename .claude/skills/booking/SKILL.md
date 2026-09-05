@@ -87,16 +87,13 @@ B-P1-05, #898). Requests are retired by status: `DELETE
 `__tests__/payments/appointment-delete-forbidden.test.ts` keeps the six sweep
 scripts free of the forbidden call shapes.
 
-Be precise about slots rather than absolute, because slot rows are _not_
-uniformly soft-deleted. `cleanup-abandoned-payments` soft-cancels them
-(`transitionSlotCompletion` to `CANCELLED` plus `deletedAt`), while
-`expire-stale-requests.ts` and `cleanup-tentative-slots.ts` under
-`scripts/appointments/` still hard-delete tentative holds — always re-checking
-`isTentative: true` in the WHERE at delete time, so a slot confirmed between the
-cohort read and the statement is never touched. If you think you need a delete
-on an Appointment or a confirmed slot, you are almost certainly wrong: reconcile
-in place, as `replaceContiguousSlotRun` does precisely so Stream
-`MeetingSession` and `Recording` rows survive.
+Slot rows are soft-deleted uniformly as of #1380/#1424: `cleanup-abandoned-payments`,
+`expire-stale-requests.ts`, and `cleanup-tentative-slots.ts` all release a
+tentative hold the same way, through `transitionSlotCompletion` to `CANCELLED`
+with `deletedAt` set in the same call, so the row's history survives the
+release. If you think you need a delete on an Appointment or a confirmed slot,
+you are almost certainly wrong: reconcile in place, as `replaceContiguousSlotRun`
+does precisely so Stream `MeetingSession` and `Recording` rows survive.
 
 ### 3. Refunds have exactly two front doors
 
@@ -156,10 +153,12 @@ rows themselves expire from `PENDING` only. The sweep that does refund is a
 different cohort — `expireApprovedUnallocatedSubscriptions` in
 `scripts/appointments/expire-stale-requests.ts` calls `refundPaymentsForExpired`,
 which routes every `SUCCEEDED` payment through `refundBookingPayment`. The
-sibling pass in that same file, `expirePaymentPendingRequests`, is the
-counter-example rather than the pattern: it flips `APPROVED_PENDING_PAYMENT` to
-`EXPIRED` with a bare `updateMany` that carries neither the money predicate nor
-the CAS helper.
+sibling pass in that same file, `expirePaymentPendingRequests`, is the pattern
+rather than a counter-example as of #1423: it flips `APPROVED_PENDING_PAYMENT`
+to `EXPIRED` through `transitionConsultationRequest`, with `fromIn:
+["APPROVED_PENDING_PAYMENT"]` and the `UNPAID_CONSULTATION` money predicate
+repeated inside the CAS `where`, the same two guards this rule requires of any
+new sweep.
 
 ### 6. There are no backfill migrations
 
