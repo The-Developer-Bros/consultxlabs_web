@@ -40,7 +40,7 @@ GitHub Actions is unchanged by this: it still owns every daily and weekly busine
 | — fail-open                             | 34    |
 | Locked by a bespoke Redis lock          | 2     |
 | Deliberately unlocked                   | 2     |
-| On the financial list                   | 20    |
+| On the financial list                   | 24    |
 | Without an `abortIfMaintenance()` guard | 3     |
 
 ## How to read the tables
