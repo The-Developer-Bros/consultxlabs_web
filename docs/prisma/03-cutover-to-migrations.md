@@ -236,10 +236,11 @@ and start being three-deploy sequences, which is the point of doing this at all.
 Generate every migration with `--create-only`, read the SQL, and replace any
 drop-and-create that was meant to be a rename before it is applied.
 
-One coexistence note for later. If the Directus CMS in
-`../roadmap/content-strategy/01-directus-cms-setup.md` is ever deployed against
-this database — it is at design status today, with no credentials configured —
-it will own its own `directus_*` and `cms_*` tables that Prisma does not model.
+One coexistence note for later. If the Directus CMS is ever deployed against
+this database — the design was deleted with `docs/roadmap/` in #1535 and the
+live question is tracked in #767; nothing is deployed and no credentials are
+configured — it will own its own `directus_*` and `cms_*` tables that Prisma
+does not model.
 Those would appear as permanent drift and must be recorded in
 `prisma/sql/known-drift.json` with an owner and an expiry, and `prisma db pull`
 would need reviewing for them. `prisma migrate reset` against a shared database
