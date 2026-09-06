@@ -22,7 +22,7 @@ None of these changes alter business logic, money handling, or authorization. Th
 | Route-level loading boundaries and skeletons | The React Query migration itself — see [`optimization-checklist.md`](./optimization-checklist.md) |
 | Client-router cache tuning and pending affordances | Hover-prefetching strategy — see [`dashboard-prefetching.md`](./dashboard-prefetching.md) |
 | Bundle composition: package-import optimization, lazy loading, dead-dependency removal | Real-time dashboard caching strategy |
-| Bounded dashboard-home queries and additive indexes | Schema design and migration mechanics — see [`../prisma/migrations-guide.md`](../prisma/migrations-guide.md) |
+| Bounded dashboard-home queries and additive indexes | Schema design and migration mechanics — see [`../prisma/01-migrations-guide.md`](../prisma/01-migrations-guide.md) |
 | Prisma slow-query observability | Stream SDK internals — see [`../stream/01-architecture.md`](../stream/01-architecture.md) |
 
 ## 3. Perceived Performance
@@ -106,7 +106,7 @@ The consultee events route, [`app/api/dashboard/consultee/[consulteeId]/events/r
 
 ## 6. Database Indexes
 
-The indexes added in this round, tracked under [#696](https://github.com/) and [#734](https://github.com/), were applied additively to the familiarise Supabase database with `CREATE INDEX CONCURRENTLY` so that no table was locked against writes during the build. See [`../prisma/migrations-guide.md`](../prisma/migrations-guide.md) for the project's broader migration conventions and the safe-operation rules around concurrent index creation.
+The indexes added in this round, tracked under [#696](https://github.com/) and [#734](https://github.com/), were applied additively to the familiarise Supabase database with `CREATE INDEX CONCURRENTLY` so that no table was locked against writes during the build. See [`../prisma/01-migrations-guide.md`](../prisma/01-migrations-guide.md) for the project's broader migration conventions and the safe-operation rules around concurrent index creation.
 
 | Index | Columns | Why |
 |---|---|---|
@@ -141,4 +141,4 @@ The third is adopting `framer-motion`'s `LazyMotion` to defer the animation runt
 - [`dashboard-prefetching.md`](./dashboard-prefetching.md) — hover-based route prefetching, which complements the loading boundaries described here.
 - [`../stream/01-architecture.md`](../stream/01-architecture.md) — Stream provider architecture, relevant to the SDK lazy-load split in [Section 4.2](#42-stream-sdk-lazy-loading).
 - [`../deployment/netlify.md`](../deployment/netlify.md) — deployment environment that serves the optimized bundle.
-- [`../prisma/migrations-guide.md`](../prisma/migrations-guide.md) — migration conventions and the rules around `CREATE INDEX CONCURRENTLY`.
+- [`../prisma/01-migrations-guide.md`](../prisma/01-migrations-guide.md) — migration conventions and the rules around `CREATE INDEX CONCURRENTLY`.

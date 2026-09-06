@@ -37,7 +37,7 @@
 | #437 | Referral qualifying actions / anti-gaming | Deferred referee bonus + consultant-referee qualification shipped |
 | #474 | Critical email retry + DLQ | `FailedEmail` model + retry worker + cron + admin requeue |
 | #475 | Sentry error tracking | Shipped via PR #901 |
-| #534 | Safe Prisma migration workflow docs | `docs/prisma/migrations-guide.md` (~95% coverage, audited) |
+| #534 | Safe Prisma migration workflow docs | `docs/prisma/01-migrations-guide.md` (~95% coverage, audited) |
 | #855 | Capture-after-cancel auto-refund | `handlers.ts:360` `capturedAfterTerminal` → auto-refund + CAS guard |
 
 ## 3. Duplicate / obsolete / wontfix

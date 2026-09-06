@@ -1,7 +1,7 @@
 # Cutover: from `db push` to versioned migrations
 
 This is the launch-day runbook for putting the database under versioned
-migrations. It is the successor to `pre-mvp-reset-runbook.md`: the reset
+migrations. It is the successor to `02-pre-mvp-reset-runbook.md`: the reset
 finalises the schema shape, and this cutover makes every change after it
 reviewable, ordered and replayable.
 
@@ -30,7 +30,7 @@ That is the trade this runbook executes.
 Do not start until every one of these holds, because the baseline captures
 whatever state the database is in and a wrong baseline is very hard to unpick.
 
-1. The pre-MVP reset in `pre-mvp-reset-runbook.md` is complete, including the staged constraint block and the legacy index removal.
+1. The pre-MVP reset in `02-pre-mvp-reset-runbook.md` is complete, including the staged constraint block and the legacy index removal.
 2. `npm run db:assert-sidecars` passes.
 3. `npx tsx scripts/ci/check-db-drift.ts` passes, and `prisma/sql/known-drift.json` contains no unexpired entries.
 4. A fresh backup exists and its identifier is recorded in the cutover ticket.
@@ -247,8 +247,8 @@ would destroy them outright, which is one more reason it has no production use.
 
 ## Related documents
 
-The general reference for every command used here is `migrations-guide.md`. The
-reset this runbook depends on is `pre-mvp-reset-runbook.md`. The portable
+The general reference for every command used here is `01-migrations-guide.md`. The
+reset this runbook depends on is `02-pre-mvp-reset-runbook.md`. The portable
 doctrine — expand and contract, the lock classes, the deploy ordering — is the
 `/schema` skill in `.claude/skills/schema/`, and its `references/this-repo.md`
 summarises the posture this runbook replaces.

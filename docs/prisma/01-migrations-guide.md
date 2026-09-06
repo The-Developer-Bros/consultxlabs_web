@@ -14,7 +14,7 @@ A comprehensive, general-purpose reference for managing database migrations with
 > `prisma/sql/`. The command reference and the safe-versus-dangerous operation
 > rules below apply in full today; the workflow, deployment and squashing
 > chapters apply after the cutover. See [README.md](./README.md) for what applies
-> when, and [cutover-to-migrations.md](./cutover-to-migrations.md) for the
+> when, and [03-cutover-to-migrations.md](./03-cutover-to-migrations.md) for the
 > procedure that closes the gap.
 
 ---
@@ -2988,10 +2988,10 @@ DIRECT_URL="postgresql://...@db.example.com:5432/mydb"
 If you're working on a specific project that uses Prisma, check for these additional docs:
 
 - [README.md](./README.md) -- The index for this directory, and which of these documents applies to the current posture.
-- [cutover-to-migrations.md](./cutover-to-migrations.md) -- The launch-day runbook that puts this database under versioned migrations, including the sidecar step a generated baseline would otherwise miss.
-- [pre-mvp-reset-runbook.md](./pre-mvp-reset-runbook.md) -- The one-time reset that finalises the launch schema, and why there is no backfill migration.
-- [prisma-7-migration.md](./prisma-7-migration.md) -- The record of the Prisma 6 to 7 upgrade and the eight issues it hit.
-- [schema-map.md](./schema-map.md) -- Domain diagrams of the schema itself.
+- [00-schema-map.md](./00-schema-map.md) -- Domain diagrams of the schema itself.
+- [02-pre-mvp-reset-runbook.md](./02-pre-mvp-reset-runbook.md) -- The one-time reset that finalises the launch schema, and why there is no backfill migration.
+- [03-cutover-to-migrations.md](./03-cutover-to-migrations.md) -- The launch-day runbook that puts this database under versioned migrations, including the sidecar step a generated baseline would otherwise miss.
+- [04-prisma-7-migration.md](./04-prisma-7-migration.md) -- The record of the Prisma 6 to 7 upgrade and the eight issues it hit.
 - `.claude/skills/schema/` -- The `/schema` skill: the change catalog with lock classes, the expand-and-contract playbooks, and the deploy-ordering rules.
 
 #### Familiarise: additive composite indexes (PR #887)

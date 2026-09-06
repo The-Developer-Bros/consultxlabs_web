@@ -95,7 +95,7 @@ constraint or trigger the change needs to the appropriate file in `prisma/sql/`
 rather than assuming `db push` will carry it. Update the seed suite so it
 populates the new shape from the first day, because the doctrine here is to
 write new tables from every code path rather than to backfill — the reasoning is
-in `docs/prisma/pre-mvp-reset-runbook.md`. Run the type-check and the affected
+in `docs/prisma/02-pre-mvp-reset-runbook.md`. Run the type-check and the affected
 jest suites locally. Then let the orchestrator run `npm run db:push` once, at
 merge, and confirm `npm run db:assert-sidecars` passes afterwards.
 
@@ -118,7 +118,7 @@ invariants or the overlap constraint. The three SQL files must be appended to
 the baseline migration, or committed as a migration that immediately follows it.
 
 The full ordered runbook, including the reset it depends on, is
-`docs/prisma/cutover-to-migrations.md`. It is the file to open on launch day,
+`docs/prisma/03-cutover-to-migrations.md`. It is the file to open on launch day,
 not this one.
 
 ## Related skills and documents
@@ -130,7 +130,7 @@ recipes to use instead. `/finance` covers the money invariants that the sidecars
 enforce, which is the reason those invariants are not expressible in the Prisma
 schema in the first place.
 
-Under `docs/prisma/`, the general reference is `migrations-guide.md`, the reset
-procedure is `pre-mvp-reset-runbook.md`, the launch cutover is
-`cutover-to-migrations.md`, the completed Prisma 6 to 7 upgrade is recorded in
-`prisma-7-migration.md`, and the model-by-model diagrams are in `schema-map.md`.
+Under `docs/prisma/`, the general reference is `01-migrations-guide.md`, the reset
+procedure is `02-pre-mvp-reset-runbook.md`, the launch cutover is
+`03-cutover-to-migrations.md`, the completed Prisma 6 to 7 upgrade is recorded in
+`04-prisma-7-migration.md`, and the model-by-model diagrams are in `00-schema-map.md`.
