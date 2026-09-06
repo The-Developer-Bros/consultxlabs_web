@@ -57,6 +57,7 @@ import {
 } from "@/lib/novu";
 import { notificationScope } from "@/lib/novu/workflows";
 import { notificationHref } from "@/lib/novu/resolve-href";
+import { planTitleOrSessionLabel } from "@/lib/novu/humanize";
 import {
   processQualifyingAction,
   processConsultantBookingReferral,
@@ -64,29 +65,6 @@ import {
 import { ensureChannelsForAppointment } from "@/lib/payments/webhooks/ensure-channels";
 import { streamLogger } from "@/lib/stream-logger";
 import { getAppUrl } from "@/lib/url";
-
-/**
- * Sentence-case label for a raw AppointmentsType, used by buyer-facing copy
- * that has no plan title to name (#1484). Deliberately not exhaustive over the
- * enum via a Record: an appointment type added later should degrade to
- * "Appointment" rather than fail the build in a notification path.
- */
-function humaniseAppointmentType(appointmentType: string): string {
-  switch (appointmentType) {
-    case AppointmentsType.CONSULTATION:
-      return "Consultation";
-    case AppointmentsType.SUBSCRIPTION:
-      return "Subscription";
-    case AppointmentsType.WEBINAR:
-      return "Webinar";
-    case AppointmentsType.CLASS:
-      return "Class";
-    case AppointmentsType.TRIAL:
-      return "Trial session";
-    default:
-      return "Appointment";
-  }
-}
 
 // ============================================================================
 // Type Definitions
@@ -1016,7 +994,7 @@ ACTION REQUIRED: Customer was charged but appointment was NOT created!
           appointmentForNotif?.subscription?.subscriptionPlan?.title ??
           appointmentForNotif?.webinar?.webinarPlan?.title ??
           appointmentForNotif?.class?.classPlan?.title ??
-          humaniseAppointmentType(metadata.appointmentType));
+          planTitleOrSessionLabel(null, metadata.appointmentType));
 
     const orgId = appointmentForNotif?.organizationId ?? null;
     const scope = notificationScope(

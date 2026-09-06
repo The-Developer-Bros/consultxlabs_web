@@ -12,6 +12,7 @@ import { CancellationReason } from "@prisma/client";
 import { notifyAppointmentCancelled } from "@/lib/novu";
 import { notificationScope } from "@/lib/novu/workflows";
 import { notificationHref } from "@/lib/novu/resolve-href";
+import { planTitleOrSessionLabel } from "@/lib/novu/humanize";
 import { CancelAppointmentSchema } from "@/schemas/appointments";
 import {
   logConsultationCancelled,
@@ -739,7 +740,12 @@ export async function POST(
         appointmentType: notificationMeta.appointmentType,
         consultantName: notificationMeta.consultantName || "Consultant",
         consulteeName: notificationMeta.consulteeName || "Consultee",
-        planTitle: notificationMeta.planTitle || "N/A",
+        // #536 — "N/A" is a developer's placeholder; it used to be the name the
+        // customer read for the session they had just lost.
+        planTitle: planTitleOrSessionLabel(
+          notificationMeta.planTitle,
+          notificationMeta.appointmentType,
+        ),
         dateTime: notificationMeta.dateTime,
         // Both parties receive one payload, so the href has to suit either.
         dashboardUrl: notificationHref(
