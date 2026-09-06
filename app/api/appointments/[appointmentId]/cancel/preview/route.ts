@@ -246,12 +246,18 @@ async function quoteIndividualBooking(
   // own code now, not a restatement of it. An unpaid booking quotes off zeros,
   // which the clamp turns into zero.
   const quote = quoteBookingRefund({
-    policySnapshot: ctx.policySnapshot,
+    policy: ctx.policy,
     hoursUntilNextSession: ctx.hoursUntilNextSession,
     slotsTotal: ctx.slotsTotal,
     sessionsRemaining: ctx.sessionsRemaining,
     isSubscription: !!appointment.subscriptionId,
     isConsultantInitiated,
+    // #1500 — a booking funded entirely by referral credit. The rail alone is not
+    // enough: `free_` with a non-zero amount is a mixed payment and settles on the
+    // money arm, so both halves of the predicate are load-bearing.
+    isFreeCreditFunded:
+      fundingRailForIntent(bookingPayment?.paymentIntent) === "CREDITS" &&
+      (ctx.paidPayment?.amountPaise ?? 0) === 0,
     grossPaise: ctx.paidPayment?.amountPaise ?? 0,
     refundablePaise: ctx.paidPayment?.refundablePaise ?? 0,
   });
@@ -259,6 +265,10 @@ async function quoteIndividualBooking(
   return {
     refundPct: quote.refundPct,
     estimatedRefundPaise: quote.refundPaise,
+    // #1500 — the dialog must say "your credit comes back in full" rather than show
+    // a ₹0 refund next to a 100% tier, which is what a credit-funded quote looks
+    // like when only the money fields are read.
+    creditRestoresInFull: quote.creditRestoresInFull,
     currency: bookingPayment?.currency ?? "INR",
     hoursUntilNextSession: ctx.hoursUntilNextSession,
     // Only true when proration actually moves the number — an untouched

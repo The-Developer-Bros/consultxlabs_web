@@ -151,6 +151,8 @@ jest.mock("../../lib/events/capacity", () => ({
 import { handlePaymentSuccess } from "../../lib/payments/webhooks/handlers";
 import { validateWebhookMetadata } from "../../schemas/webhooks/metadata";
 
+const PLAN_TITLE = "Career Strategy Deep Dive";
+
 const METADATA = {
   appointmentType: "CONSULTATION",
   userId: CONSULTEE_USER,
@@ -217,6 +219,7 @@ function primePhase1() {
     organization: null,
     consultation: {
       consultationPlan: {
+        title: PLAN_TITLE,
         consultantProfile: { user: { id: CONSULTANT_USER, name: "Dr Who" } },
       },
     },
@@ -263,6 +266,44 @@ beforeEach(() => {
 
 afterEach(() => {
   warnSpy.mockRestore();
+});
+
+describe("#1484 — the payment-success payload names the plan, not its id", () => {
+  it("both notification payloads carry the plan's title and never the planId", async () => {
+    await handlePaymentSuccess(
+      "order1",
+      METADATA as unknown as Record<string, string>,
+      10000,
+    );
+
+    for (const trigger of [notifyPaymentSuccess, notifyAppointmentBooked]) {
+      expect(trigger).toHaveBeenCalledTimes(1);
+      const payload = trigger.mock.calls[0][1] as { planTitle: string };
+      expect(payload.planTitle).toBe(PLAN_TITLE);
+      // The regression itself: `metadata.planId` won the `||`, so the buyer's
+      // confirmation named a UUID.
+      expect(payload.planTitle).not.toBe(METADATA.planId);
+    }
+  });
+
+  it("falls back to a humanised appointment type, not an id, when the plan is unreadable", async () => {
+    baseAppointmentFindUnique.mockResolvedValue(null);
+
+    await handlePaymentSuccess(
+      "order1",
+      METADATA as unknown as Record<string, string>,
+      10000,
+    );
+
+    // Both triggers read the same `resolvedPlanTitle`, and the primed slot
+    // means the booked ping is not skipped — so the fallback has to hold on
+    // both payloads, not just the first.
+    for (const trigger of [notifyPaymentSuccess, notifyAppointmentBooked]) {
+      const payload = trigger.mock.calls[0][1] as { planTitle: string };
+      expect(payload.planTitle).toBe("Consultation");
+      expect(payload.planTitle).not.toBe(METADATA.planId);
+    }
+  });
 });
 
 describe("#1446 — Phase 2 outbound steps are bounded", () => {

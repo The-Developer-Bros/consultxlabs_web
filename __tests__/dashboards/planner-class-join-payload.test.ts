@@ -45,6 +45,7 @@ jest.mock("../../lib/prisma", () => ({
     collaborator: { findMany: jest.fn() },
     consultantProfile: { findUnique: jest.fn() },
     membership: { findMany: jest.fn() },
+    slotOfAppointment: { groupBy: jest.fn() },
   },
 }));
 
@@ -54,6 +55,7 @@ const db = prisma as unknown as {
   collaborator: { findMany: jest.Mock };
   consultantProfile: { findUnique: jest.Mock };
   membership: { findMany: jest.Mock };
+  slotOfAppointment: { groupBy: jest.Mock };
 };
 const mockedAuth = requireApiAuth as unknown as jest.Mock;
 
@@ -68,6 +70,7 @@ interface StoredSlot {
   endsAt: Date;
   isTentative: boolean;
   completionStatus: string;
+  deletedAt: Date | null;
   meetingSession: {
     id: string;
     endedAt: Date | null;
@@ -93,6 +96,7 @@ function storedSlot(
     endsAt: new Date(startsAt.getTime() + 30 * 60_000),
     isTentative: false,
     completionStatus: "SCHEDULED",
+    deletedAt: null,
     meetingSession: null,
     user: [{ id: "user-attendee" }],
     ...extra,
@@ -175,6 +179,52 @@ beforeEach(() => {
     userId: "user-consultant",
   });
 
+  // #1346 — the unwindowed firstSessionAt lookup; unlike classInclude's
+  // slot select, this reads every row regardless of the ±24h window.
+  // The mock applies the predicates the route actually sends, so a regression
+  // that drops the deletedAt or completionStatus filter fails here instead of
+  // being masked by a filter the mock invented.
+  db.slotOfAppointment.groupBy.mockImplementation(
+    async (args: {
+      where: {
+        appointmentId: { in: string[] };
+        deletedAt?: null;
+        completionStatus?: { notIn: string[] };
+      };
+    }) => {
+      const ids = new Set(args.where.appointmentId.in);
+      const excludedStatuses = new Set(
+        args.where.completionStatus?.notIn ?? [],
+      );
+      const requiresNotDeleted = "deletedAt" in args.where;
+      const results: Array<{
+        appointmentId: string;
+        _min: { startsAt: Date };
+      }> = [];
+      for (const row of classRows) {
+        for (const appt of row.appointments) {
+          if (!ids.has(appt.id)) continue;
+          const live = appt.slotsOfAppointment.filter(
+            (slot) =>
+              !excludedStatuses.has(slot.completionStatus) &&
+              (!requiresNotDeleted || slot.deletedAt === null),
+          );
+          const earliest = live.reduce<Date | null>(
+            (min, slot) => (!min || slot.startsAt < min ? slot.startsAt : min),
+            null,
+          );
+          if (earliest) {
+            results.push({
+              appointmentId: appt.id,
+              _min: { startsAt: earliest },
+            });
+          }
+        }
+      }
+      return results;
+    },
+  );
+
   db.class.findMany.mockImplementation(
     async (args: {
       include?: ClassIncludeSpec;
@@ -243,6 +293,7 @@ async function plannerClasses() {
   const body = await res.json();
   return body.data.classes as Array<{
     id: string;
+    firstSessionAt: string | null;
     appointments: Array<{
       id: string;
       slotsOfAppointment?: PayloadSlot[];
@@ -301,7 +352,11 @@ describe("the planner payload carries what a class join reads", () => {
     // "joinable".
     seedClass([
       liveSitting({
-        meetingSession: { id: "ms-1", endedAt: hoursFromNow(-0.1) , endedReason: null},
+        meetingSession: {
+          id: "ms-1",
+          endedAt: hoursFromNow(-0.1),
+          endedReason: null,
+        },
       }),
     ]);
 
@@ -333,6 +388,25 @@ describe("the planner payload carries what a class join reads", () => {
     // Truncating a run mid-way would re-split the room #1061 closed, so the
     // bound has to keep every row of anything currently joinable.
     expect(ids).toEqual(["slot-a1", "slot-a2"]);
+  });
+
+  it("names the class's first session even when every slot is outside the join window", async () => {
+    // #1346 — a class whose only session is 5 days out gets zero slots from
+    // classInclude's ±24h window, so the card's date must come from the
+    // separate, unwindowed firstSessionAt field.
+    const farStart = hoursFromNow(24 * 5);
+    seedClass([
+      {
+        id: "appt-far",
+        organizationId: null,
+        slotsOfAppointment: [storedSlot("slot-far", farStart)],
+      },
+    ]);
+
+    const [cls] = await plannerClasses();
+
+    expect(cls.appointments[0].slotsOfAppointment).toHaveLength(0);
+    expect(cls.firstSessionAt).toBe(farStart.toISOString());
   });
 
   it("still counts participants from its own batched query", async () => {

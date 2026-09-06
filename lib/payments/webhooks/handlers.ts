@@ -65,6 +65,29 @@ import { ensureChannelsForAppointment } from "@/lib/payments/webhooks/ensure-cha
 import { streamLogger } from "@/lib/stream-logger";
 import { getAppUrl } from "@/lib/url";
 
+/**
+ * Sentence-case label for a raw AppointmentsType, used by buyer-facing copy
+ * that has no plan title to name (#1484). Deliberately not exhaustive over the
+ * enum via a Record: an appointment type added later should degrade to
+ * "Appointment" rather than fail the build in a notification path.
+ */
+function humaniseAppointmentType(appointmentType: string): string {
+  switch (appointmentType) {
+    case AppointmentsType.CONSULTATION:
+      return "Consultation";
+    case AppointmentsType.SUBSCRIPTION:
+      return "Subscription";
+    case AppointmentsType.WEBINAR:
+      return "Webinar";
+    case AppointmentsType.CLASS:
+      return "Class";
+    case AppointmentsType.TRIAL:
+      return "Trial session";
+    default:
+      return "Appointment";
+  }
+}
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
@@ -936,8 +959,16 @@ ACTION REQUIRED: Customer was charged but appointment was NOT created!
   try {
     // #734 — the notification only needs the consultant's id/name; the old
     // 4-level include dragged full User + profile rows for all four shapes.
-    const consultantUserSelect = {
-      select: { user: { select: { id: true, name: true } } },
+    // #1484 widens it by exactly one scalar, the plan's own title, because this
+    // is the only appointment read Phase 2 makes and the buyer's confirmation
+    // has to name what they bought.
+    const planNotifSelect = {
+      select: {
+        title: true,
+        consultantProfile: {
+          select: { user: { select: { id: true, name: true } } },
+        },
+      },
     } as const;
     const appointmentForNotif = await prisma.appointment.findUnique({
       where: { id: appointmentId },
@@ -947,32 +978,16 @@ ACTION REQUIRED: Customer was charged but appointment was NOT created!
         organizationId: true,
         organization: { select: { name: true } },
         consultation: {
-          select: {
-            consultationPlan: {
-              select: { consultantProfile: consultantUserSelect },
-            },
-          },
+          select: { consultationPlan: planNotifSelect },
         },
         subscription: {
-          select: {
-            subscriptionPlan: {
-              select: { consultantProfile: consultantUserSelect },
-            },
-          },
+          select: { subscriptionPlan: planNotifSelect },
         },
         webinar: {
-          select: {
-            webinarPlan: {
-              select: { consultantProfile: consultantUserSelect },
-            },
-          },
+          select: { webinarPlan: planNotifSelect },
         },
         class: {
-          select: {
-            classPlan: {
-              select: { consultantProfile: consultantUserSelect },
-            },
-          },
+          select: { classPlan: planNotifSelect },
         },
       },
     });
@@ -987,10 +1002,21 @@ ACTION REQUIRED: Customer was charged but appointment was NOT created!
       consultantProfileData?.user?.name || "Consultant";
     const consultantUserId = consultantProfileData?.user?.id;
 
-    const planTitle = appointmentForNotif?.consultation?.consultationPlan
-      ?.consultantProfile?.user?.name
-      ? metadata.appointmentType
-      : metadata.appointmentType || "Appointment";
+    // #1484 — name the thing that was bought. `metadata.planId` is an id and
+    // sat on the left of the `||` at both payload sites below, so every normal
+    // capture told the buyer they had purchased a UUID; the fallback it shadowed
+    // returned `metadata.appointmentType` on BOTH branches of its ternary and so
+    // could never be a plan name either. A TRIAL hangs off the parent
+    // subscription plan, whose title names the paid programme, not the free
+    // session — so it gets its own label rather than that plan's title.
+    const resolvedPlanTitle =
+      metadata.appointmentType === AppointmentsType.TRIAL
+        ? "Trial session"
+        : (appointmentForNotif?.consultation?.consultationPlan?.title ??
+          appointmentForNotif?.subscription?.subscriptionPlan?.title ??
+          appointmentForNotif?.webinar?.webinarPlan?.title ??
+          appointmentForNotif?.class?.classPlan?.title ??
+          humaniseAppointmentType(metadata.appointmentType));
 
     const orgId = appointmentForNotif?.organizationId ?? null;
     const scope = notificationScope(
@@ -1015,7 +1041,7 @@ ACTION REQUIRED: Customer was charged but appointment was NOT created!
           currency,
           consultantName: consultantNameForNotif,
           appointmentType: metadata.appointmentType,
-          planTitle: metadata.planId || planTitle,
+          planTitle: resolvedPlanTitle,
           dashboardUrl,
         }),
       ),
@@ -1065,7 +1091,7 @@ ACTION REQUIRED: Customer was charged but appointment was NOT created!
             appointmentType: metadata.appointmentType,
             consultantName: consultantNameForNotif,
             consulteeName: userName || "User",
-            planTitle: metadata.planId || planTitle,
+            planTitle: resolvedPlanTitle,
             dashboardUrl,
           }),
         ),

@@ -2,6 +2,7 @@ import { unstable_cache } from "next/cache";
 import prisma from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import type { IConsultantCardData } from "@/types/consultant";
+import { deriveDirectoryRating } from "@/lib/data/public-stats";
 
 /**
  * Server-side data access for the explore experts page.
@@ -216,32 +217,57 @@ export async function fetchExpertsMetadata() {
     prisma.tag.findMany({
       select: { id: true, name: true, domainId: true },
     }),
-    // Consultant metadata (counts, domain breakdown, avg rating)
+    // Consultant metadata (counts, domain breakdown, avg rating, sessions)
     // #781 §B — soft-deleted profiles leave public surfaces
     (async () => {
-      const [totalConsultants, consultantsByDomain, averageRating] =
-        await Promise.all([
-          prisma.consultantProfile.count({
-            where: { verificationStatus: "VERIFIED", deletedAt: null },
-          }),
-          prisma.domain.findMany({
-            select: {
-              id: true,
-              name: true,
-              _count: {
-                select: {
-                  consultantProfiles: {
-                    where: { verificationStatus: "VERIFIED", deletedAt: null },
-                  },
+      const [
+        totalConsultants,
+        consultantsByDomain,
+        ratedProfiles,
+        completedSessions,
+      ] = await Promise.all([
+        prisma.consultantProfile.count({
+          where: { verificationStatus: "VERIFIED", deletedAt: null },
+        }),
+        prisma.domain.findMany({
+          select: {
+            id: true,
+            name: true,
+            _count: {
+              select: {
+                consultantProfiles: {
+                  where: { verificationStatus: "VERIFIED", deletedAt: null },
                 },
               },
             },
-          }),
-          prisma.consultantProfile.aggregate({
-            where: { verificationStatus: "VERIFIED", deletedAt: null },
-            _avg: { rating: true },
-          }),
-        ]);
+          },
+        }),
+        // #1485 — the PUBLISHED score, not the raw `rating` mean. `rating`
+        // defaults to 0 and every unreviewed profile carries that default, so
+        // averaging it across the directory was not a number anyone could
+        // defend. `publishedRating` is NULL below the #705 suppression
+        // threshold, so filtering it out leaves only publishable scores. The
+        // rows are weighted by review in `deriveDirectoryRating` rather than
+        // by `_avg`, which cannot express a weighted mean.
+        prisma.consultantProfile.findMany({
+          where: {
+            verificationStatus: "VERIFIED",
+            deletedAt: null,
+            publishedRating: { not: null },
+          },
+          select: { publishedRating: true, reviewCount: true },
+        }),
+        // #1485 — the real "sessions completed" figure, replacing a hardcoded
+        // "50K+". The unit is the SLOT, not the appointment: a slot is one
+        // meeting, and COMPLETED means it was actually held (a MeetingSession
+        // ended, or a consultant marked it). `Appointment` carries no status
+        // of its own, and a subscription appointment spans many meetings.
+        // UNVERIFIED (past, no meeting record) is deliberately excluded — it
+        // may well have happened offline, but "may have" is not a claim.
+        prisma.slotOfAppointment.count({
+          where: { completionStatus: "COMPLETED", deletedAt: null },
+        }),
+      ]);
 
       return {
         totalConsultants,
@@ -250,7 +276,8 @@ export async function fetchExpertsMetadata() {
           name: d.name,
           consultantCount: d._count.consultantProfiles,
         })),
-        averageRating: averageRating._avg.rating || 0,
+        ...deriveDirectoryRating(ratedProfiles),
+        completedSessions,
       };
     })(),
     // Available languages — distinct across verified consultants. ORM read + JS

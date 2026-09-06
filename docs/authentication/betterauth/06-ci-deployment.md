@@ -49,7 +49,7 @@ Required secrets: `DATABASE_URL`, `DIRECT_URL`, `UPSTASH_REDIS_REST_URL`, `UPSTA
 |---|---|---|
 | `cleanup-auth-tokens.yml` | Scheduled | Purges expired BetterAuth tokens |
 | `cleanup-stale-invitations.yml` | Scheduled | Removes expired org invitations |
-| `claude-code-review.yml` | On PR | AI-assisted code review (covers auth changes) |
+| `claude-code-review.yml` | On demand (`workflow_dispatch`) | Optional supplementary AI review; CodeRabbit is the reviewer of record on every PR, including auth changes |
 
 ## 3. Docker
 

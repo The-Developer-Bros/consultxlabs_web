@@ -538,4 +538,17 @@ ALTER TABLE "OrganizationPayout" ADD CONSTRAINT "org_payout_tds_fy_format"
 --      CHECK ("totalSessions" >= 1);
 --    ALTER TABLE "ClassPlan" ADD CONSTRAINT "class_plan_total_sessions_min"
 --      CHECK ("totalSessions" >= 1);
+--
+-- 4. #1499 — "at most one ACTIVE cancellation policy per scope" and "one row per
+--    (scope, version)" are enforced today only by the Serializable rotation in
+--    publishOrgCancellationPolicy. Postgres treats NULLs as distinct in a plain
+--    unique, so the platform row (organizationId IS NULL) escapes the Prisma
+--    @@unique entirely; NULLS NOT DISTINCT closes that. These stay COMMENTED —
+--    check-db-sidecars strips comments and would demand an index that is not
+--    applied, and the partial unique can fail against pre-reset rows:
+--    CREATE UNIQUE INDEX "cancellation_policy_one_active_per_scope"
+--      ON "CancellationPolicy" ("organizationId") NULLS NOT DISTINCT
+--      WHERE "status" = 'ACTIVE';
+--    CREATE UNIQUE INDEX "cancellation_policy_scope_version"
+--      ON "CancellationPolicy" ("organizationId", "version") NULLS NOT DISTINCT;
 -- ============================================================================

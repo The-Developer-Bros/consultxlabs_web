@@ -203,7 +203,7 @@ export async function POST(req: NextRequest) {
 
   // Razorpay sends `x-razorpay-event-id`, and it is tempting as the dedup key.
   // This repo deliberately does NOT use it — see
-  // .claude/skills/razorpay/references/webhooks.md.
+  // .claude/skills/finance/references/razorpay/references/webhooks.md.
   //
   // Two reasons, and the second is the one that matters. First, the synthesized
   // key dedups on the *business fact* rather than the delivery, so two distinct

@@ -1,5 +1,19 @@
 name: Claude Code
 
+# CodeRabbit is the reviewer of record on this repository; this workflow is the
+# separate @claude mention trigger, gated by the `CLAUDE_ACTION_ENABLED`
+# repository variable so an accidental "@claude" in a comment does not run
+# and fail loudly while `CLAUDE_CODE_OAUTH_TOKEN` is expired. Every run has
+# failed since the token expired (`API Error: 401 ... OAuth access token has
+# expired`).
+#
+# To bring this back: rotate the token by running `claude setup-token`
+# locally and updating the `CLAUDE_CODE_OAUTH_TOKEN` repository secret (or
+# switch the `with:` block below to `anthropic_api_key: ${{
+# secrets.ANTHROPIC_API_KEY }}` instead), then set the `CLAUDE_ACTION_ENABLED`
+# repository variable to `true`. The action is pinned to its current major
+# tag (`@v1`) rather than `@beta` — see the migration guide at
+# https://github.com/anthropics/claude-code-action/blob/main/docs/migration-guide.md.
 on:
   issue_comment:
     types: [created]
@@ -13,10 +27,12 @@ on:
 jobs:
   claude:
     if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
-      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+      vars.CLAUDE_ACTION_ENABLED == 'true' && (
+        (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+        (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+        (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -32,7 +48,7 @@ jobs:
 
       - name: Run Claude Code
         id: claude
-        uses: anthropics/claude-code-action@beta
+        uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 

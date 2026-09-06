@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import { Sparkles, Users, Star, TrendingUp } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { FeaturedExperts } from "./components/FeaturedExperts";
 import ExpertsInteractiveContent from "./ExpertsInteractiveContent";
 import {
@@ -7,6 +8,11 @@ import {
   getCuratedExperts,
 } from "@/lib/data/explore-experts";
 import { withBuildTimeRetry } from "@/lib/data/fail-open";
+import {
+  buildExpertHeroStats,
+  type ExpertStatKey,
+  type IPublicStat,
+} from "@/lib/data/public-stats";
 
 // ISR, not force-dynamic. This listing reads no session and takes no
 // searchParams (filtering happens in the client component below), so the
@@ -29,27 +35,13 @@ import { withBuildTimeRetry } from "@/lib/data/fail-open";
 // profiles purge this path on demand at the write sites.
 export const revalidate = 300;
 
-function HeroSection({
-  totalConsultants,
-  averageRating,
-}: {
-  totalConsultants: number;
-  averageRating: number;
-}) {
-  const STATS = [
-    {
-      icon: Users,
-      value: totalConsultants > 0 ? `${totalConsultants}` : "10K+",
-      label: "Active Experts",
-    },
-    {
-      icon: Star,
-      value: averageRating > 0 ? averageRating.toFixed(1) : "4.9",
-      label: "Average Rating",
-    },
-    { icon: TrendingUp, value: "50K+", label: "Sessions Completed" },
-  ];
+const STAT_ICONS: Record<ExpertStatKey, LucideIcon> = {
+  experts: Users,
+  rating: Star,
+  sessions: TrendingUp,
+};
 
+function HeroSection({ stats }: { stats: IPublicStat<ExpertStatKey>[] }) {
   return (
     <section className="relative pt-32 pb-20 bg-zinc-950 overflow-hidden">
       <div className="absolute inset-0">
@@ -76,19 +68,31 @@ function HeroSection({
             Connect with industry experts who understand your journey.
           </p>
 
-          <div className="flex flex-wrap justify-center gap-8 md:gap-16">
-            {STATS.map((stat) => (
-              <div key={stat.label} className="text-center">
-                <div className="w-12 h-12 mx-auto mb-3 rounded-xl bg-zinc-800/50 border border-zinc-700/50 flex items-center justify-center">
-                  <stat.icon className="w-6 h-6 text-white" />
-                </div>
-                <div className="text-2xl md:text-3xl font-bold text-white">
-                  {stat.value}
-                </div>
-                <div className="text-sm text-zinc-500">{stat.label}</div>
-              </div>
-            ))}
-          </div>
+          {/* #1485 — real figures or nothing. Before launch every one of these
+              is zero, and the honest line below is what a visitor sees instead
+              of the "10K+ / 4.9 / 50K+" that used to be rendered from nowhere. */}
+          {stats.length > 0 ? (
+            <div className="flex flex-wrap justify-center gap-8 md:gap-16">
+              {stats.map((stat) => {
+                const Icon = STAT_ICONS[stat.key];
+                return (
+                  <div key={stat.key} className="text-center">
+                    <div className="w-12 h-12 mx-auto mb-3 rounded-xl bg-zinc-800/50 border border-zinc-700/50 flex items-center justify-center">
+                      <Icon className="w-6 h-6 text-white" />
+                    </div>
+                    <div className="text-2xl md:text-3xl font-bold text-white">
+                      {stat.display}
+                    </div>
+                    <div className="text-sm text-zinc-500">{stat.label}</div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-sm text-zinc-500">
+              Check back for newly verified experts.
+            </p>
+          )}
         </div>
       </div>
     </section>
@@ -109,10 +113,7 @@ export default async function ExploreExperts() {
 
   return (
     <main className="min-h-screen bg-background">
-      <HeroSection
-        totalConsultants={metadata.consultantMetadata.totalConsultants}
-        averageRating={metadata.consultantMetadata.averageRating}
-      />
+      <HeroSection stats={buildExpertHeroStats(metadata.consultantMetadata)} />
 
       <FeaturedExperts experts={featuredExperts} isLoading={false} />
 

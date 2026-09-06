@@ -44,7 +44,7 @@ Webhook delivery is how the platform learns that money moved. Everything else is
 - [ ] `RAZORPAY_WEBHOOK_SECRET` in the production environment holds the **live** webhook secret, which is a third value distinct from both the API secret and the test-mode webhook secret. A test-mode secret in production rejects every live delivery with a 400.
 - [ ] The selected events are exactly the ones the dispatcher handles: `payment.captured`, `order.paid`, `payment.failed`, `refund.created`, `refund.processed`, `refund.failed`, `refund.speed_changed`, the six `payment.dispute.*` events, and the seven `payout.*` events. Selecting an event the dispatcher does not handle is harmless because unknown events are logged and acknowledged with a 200, but omitting a handled one loses the state transition entirely.
 - [ ] The Alert Email Address on the webhook is a monitored inbox. Razorpay emails it when it disables a webhook, and that email is the only notification of the failure mode described below.
-- [ ] A signed test delivery has reached production and produced a `WebhookEvent` row. The recipe lives in the Razorpay skill at `.claude/skills/razorpay/references/local-testing.md`; the signature is an HMAC-SHA256 of the exact bytes posted, so it must be generated from the same string that is sent.
+- [ ] A signed test delivery has reached production and produced a `WebhookEvent` row. The recipe lives in the Razorpay skill at `.claude/skills/finance/references/razorpay/references/local-testing.md`; the signature is an HMAC-SHA256 of the exact bytes posted, so it must be generated from the same string that is sent.
 
 ### Why a non-2xx is dangerous here
 

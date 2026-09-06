@@ -4,6 +4,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { ConsultationPlanSchema } from "@/schemas/plans";
 import { faqReplaceNested } from "@/lib/api/plans/content";
 import { findOrCreateTopics, transformTopicsToStrings } from "@/lib/topics";
+import {
+  archivedAtForArchive,
+  parsePlanArchiveBody,
+  PLAN_ORG_GOVERNED_RESPONSE,
+  PLAN_ARCHIVE_RESPONSE_NOTE,
+} from "@/lib/api/plans/archive";
 
 import { getSession } from "@/lib/auth-server";
 import * as Sentry from "@sentry/nextjs";
@@ -187,6 +193,95 @@ export async function PUT(
     }
     Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "bookings" } });
     console.error("Error updating consultation plan:", error);
+    return NextResponse.json(
+      { error: "An error occurred while updating the consultation plan" },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * Sole-owner archive/restore (#1494) — a consultant stops selling a 1:1
+ * offering without the org-catalog bulk-archive path and without the
+ * DELETE this plan family refuses once it has associated consultations.
+ */
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ consultationPlanId: string }> },
+) {
+  try {
+    const session = await getSession();
+    if (!session?.user?.id) {
+      return NextResponse.json(
+        { error: "Authentication required" },
+        { status: 401 },
+      );
+    }
+
+    const { consultationPlanId } = await params;
+
+    const parsedBody = await parsePlanArchiveBody(request);
+    if (!parsedBody.ok) {
+      return NextResponse.json(
+        { error: parsedBody.error, details: parsedBody.details },
+        { status: 400 },
+      );
+    }
+    const { archived } = parsedBody;
+
+    const existingPlan = await prisma.consultationPlan.findUnique({
+      where: { id: consultationPlanId },
+      include: { consultantProfile: true },
+    });
+
+    if (!existingPlan) {
+      return NextResponse.json(
+        { error: "Consultation plan not found" },
+        { status: 404 },
+      );
+    }
+
+    if (existingPlan.consultantProfile.userId !== session.user.id) {
+      return NextResponse.json(
+        {
+          error: "You do not have permission to update this consultation plan",
+        },
+        { status: 403 },
+      );
+    }
+
+    if (existingPlan.organizationId) {
+      return NextResponse.json(PLAN_ORG_GOVERNED_RESPONSE, { status: 403 });
+    }
+
+    const consultationPlan = await prisma.consultationPlan.update({
+      where: { id: consultationPlanId },
+      data: {
+        archivedAt: archived
+          ? archivedAtForArchive(existingPlan.archivedAt)
+          : null,
+      },
+    });
+
+    return NextResponse.json(
+      {
+        data: { id: consultationPlan.id, archivedAt: consultationPlan.archivedAt },
+        message: PLAN_ARCHIVE_RESPONSE_NOTE,
+      },
+      { status: 200 },
+    );
+  } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2025"
+    ) {
+      return NextResponse.json(
+        { error: "Consultation plan not found" },
+        { status: 404 },
+      );
+    }
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "bookings" } });
+    console.error("Error archiving consultation plan:", error);
     return NextResponse.json(
       { error: "An error occurred while updating the consultation plan" },
       { status: 500 },

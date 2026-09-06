@@ -65,6 +65,7 @@ import { createOrgCatalog } from "./seedFiles/15b-create-org-catalog";
 
 // Phase 16: Statutory lookups (#778 §D)
 import { createTdsRates } from "./seedFiles/16a-create-tds-rates";
+import { createPlatformCancellationPolicy } from "./seedFiles/16b-create-cancellation-policy";
 
 async function seed() {
   console.log("Starting seed process...");
@@ -212,6 +213,11 @@ async function seed() {
     // Phase 16: Statutory lookups
     console.log("\n[Phase 16] Seeding statutory TDS rates...");
     await createTdsRates();
+
+    // #1499 — the platform refund ladder every booking falls back to. Appointment
+    // seeds leave the FK null on purpose, which reads as this ladder anyway.
+    console.log("Seeding the platform cancellation policy...");
+    await createPlatformCancellationPolicy();
 
     // Summary
     const endTime = Date.now();

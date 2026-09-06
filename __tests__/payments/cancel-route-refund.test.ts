@@ -51,8 +51,20 @@ const txStub = {
     updateMany: jest.fn().mockResolvedValue({ count: 1 }),
   },
   bookingStatusHistory: { create: jest.fn().mockResolvedValue({}) },
-  slotOfAppointment: { updateMany: jest.fn().mockResolvedValue({ count: 2 }) },
-  rescheduleRequest: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
+  // transitionSlotCompletion reads the from-status, then moves the cohort with
+  // updateManyAndReturn so each moved id gets its own history row.
+  slotOfAppointment: {
+    findMany: jest.fn().mockResolvedValue([]),
+    updateManyAndReturn: jest
+      .fn()
+      .mockResolvedValue([{ id: "slot-1" }, { id: "slot-2" }]),
+  },
+  // The cancel route reads the open proposals, then CASes each by id.
+  rescheduleRequest: {
+    findMany: jest.fn().mockResolvedValue([]),
+    findUnique: jest.fn().mockResolvedValue({ status: "PENDING_REVIEW" }),
+    updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+  },
 };
 
 jest.mock("../../lib/prisma", () => ({
@@ -156,7 +168,7 @@ function consultationAppointment() {
     organizationId: null,
     consultationId: "cons-1",
     subscriptionId: null,
-    cancellationPolicySnapshot: null,
+    cancellationPolicy: null,
     slotsOfAppointment: [{ startsAt: new Date(Date.now() + 120 * HOUR) }],
     consultation: {
       id: "cons-1",
@@ -230,7 +242,7 @@ function bookingRows(opts: {
   return [
     {
       id: APPT,
-      cancellationPolicySnapshot: null,
+      cancellationPolicy: null,
       payment: opts.noPayment
         ? []
         : [
@@ -282,8 +294,12 @@ beforeEach(() => {
   txCommitted = false;
   txStub.consultation.updateMany.mockResolvedValue({ count: 1 });
   txStub.subscription.updateMany.mockResolvedValue({ count: 1 });
-  txStub.slotOfAppointment.updateMany.mockResolvedValue({ count: 2 });
-  txStub.rescheduleRequest.updateMany.mockResolvedValue({ count: 0 });
+  txStub.slotOfAppointment.findMany.mockResolvedValue([]);
+  txStub.slotOfAppointment.updateManyAndReturn.mockResolvedValue([
+    { id: "slot-1" },
+    { id: "slot-2" },
+  ]);
+  txStub.rescheduleRequest.findMany.mockResolvedValue([]);
   mockPaymentFindMany.mockResolvedValue([]);
   mockMembershipFindUnique.mockResolvedValue(null);
   mockRecordSystemError.mockResolvedValue(undefined);
@@ -542,23 +558,48 @@ describe("#1161 — a credit-funded booking refunds as a credit restoration", ()
     expect(body.refund.amountRefundedPaise).toBe(25_000);
   });
 
-  it("escalates a partial window instead of guessing a partial restoration", async () => {
+  it("restores a credit-funded booking in full inside a partial window (#1500)", async () => {
     mockGetSession.mockResolvedValue(sessionAs("consultee"));
     mockAppointmentFindUnique.mockResolvedValue(consultationAppointment());
-    // Inside the day: a partial tier, which credit restoration has no rule for.
+    // Inside the day: the 50% rung. A credit cannot be halved — the rail refuses a
+    // partial amount — so the product rule is to restore it whole. This case used
+    // to escalate to MANUAL_REVIEW and move nothing at all.
     mockAppointmentFindMany.mockImplementation(async () =>
       bookingRows({ liveSlotHours: [12], ...freeFunded }),
+    );
+    mockRefundBookingPayment.mockResolvedValue({
+      refundId: "r-credits",
+      amountRefundedPaise: 0,
+      rail: "CREDITS",
+    });
+
+    const res = await cancelHandler(makeRequest(), makeParams(APPT));
+    const body = await res.json();
+
+    // No amountPaise: the credits rail restores the whole credit or nothing.
+    const call = mockRefundBookingPayment.mock.calls[0][0];
+    expect(call.paymentId).toBe("pay-1");
+    expect(call.amountPaise).toBeUndefined();
+    expect(body.refund.status).toBe("REFUNDED");
+    expect(body.refund.refundPct).toBe(100);
+    expect(mockRecordSystemError).not.toHaveBeenCalled();
+  });
+
+  it("restores nothing inside the zero tier, exactly as a card would (#1500)", async () => {
+    mockGetSession.mockResolvedValue(sessionAs("consultee"));
+    mockAppointmentFindUnique.mockResolvedValue(consultationAppointment());
+    // One hour out: the 0% rung. All-or-nothing follows the ladder, so a late
+    // cancel bites a credit buyer as it bites a card buyer.
+    mockAppointmentFindMany.mockImplementation(async () =>
+      bookingRows({ liveSlotHours: [1], ...freeFunded }),
     );
 
     const res = await cancelHandler(makeRequest(), makeParams(APPT));
     const body = await res.json();
 
     expect(mockRefundBookingPayment).not.toHaveBeenCalled();
-    expect(body.refund.status).toBe("MANUAL_REVIEW");
-    expect(body.refund.requiresManualReview).toBe(true);
-    expect(mockRecordSystemError).toHaveBeenCalledWith(
-      expect.objectContaining({ category: "PAYMENT" }),
-    );
+    expect(body.refund.status).toBe("POLICY_ZERO");
+    expect(body.refund.refundPct).toBe(0);
   });
 
   it("surfaces a failed restoration rather than reporting it as refunded", async () => {
@@ -734,5 +775,74 @@ describe("failure modes leave the cancellation standing", () => {
 
     expect(res.status).toBe(409);
     expect(mockRefundBookingPayment).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #1322 A12 — the route wrote its four request statuses, its slots and its
+ * open proposal with raw updateMany calls, so a successful cancel left no
+ * BookingStatusHistory row at all and the cancelled slots kept
+ * `deletedAt: null`, holding the consultant's calendar forever. The pin is on
+ * the audit trail rather than on the call shape, because that is what was
+ * empty in production.
+ */
+describe("a cancel leaves an audit trail", () => {
+  it("records the request move and every slot it moved, tombstone included", async () => {
+    mockGetSession.mockResolvedValue(sessionAs("consultee"));
+    mockAppointmentFindUnique.mockResolvedValue(consultationAppointment());
+    mockAppointmentFindMany.mockImplementation(async () =>
+      bookingRows({ liveSlotHours: [120] }),
+    );
+    txStub.consultation.findUnique.mockResolvedValue({ status: "APPROVED" });
+
+    const res = await cancelHandler(
+      makeRequest({ reason: "SCHEDULE_CONFLICT" }),
+      makeParams(APPT),
+    );
+    expect(res.status).toBe(200);
+
+    const historyRows = (
+      txStub.bookingStatusHistory.create.mock.calls as [
+        { data: Record<string, unknown> },
+      ][]
+    ).map(([args]) => args.data);
+
+    expect(historyRows).toContainEqual(
+      expect.objectContaining({
+        entity: "CONSULTATION",
+        entityId: "cons-1",
+        fromStatus: "APPROVED",
+        toStatus: "CANCELLED",
+        actorUserId: CONSULTEE_USER,
+        reason: "SCHEDULE_CONFLICT",
+        appointmentId: APPT,
+      }),
+    );
+    // One per slot the CAS actually moved — the ids come from the UPDATE's own
+    // RETURNING, so a slot a racing writer pulled out never gets a row.
+    expect(historyRows.filter((row) => row.entity === "SLOT")).toHaveLength(2);
+    expect(txStub.slotOfAppointment.updateManyAndReturn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { completionStatus: "CANCELLED", deletedAt: expect.any(Date) },
+      }),
+    );
+  });
+
+  it("keeps the 409 contract when the request has already moved", async () => {
+    mockGetSession.mockResolvedValue(sessionAs("consultee"));
+    mockAppointmentFindUnique.mockResolvedValue(consultationAppointment());
+    mockAppointmentFindMany.mockImplementation(async () =>
+      bookingRows({ liveSlotHours: [120] }),
+    );
+    txStub.consultation.updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await cancelHandler(makeRequest(), makeParams(APPT));
+    const body = await res.json();
+
+    // The helper throws ILLEGAL_TRANSITION; the client still sees the code it
+    // has always keyed its retry copy off.
+    expect(res.status).toBe(409);
+    expect(body.code).toBe("NOT_CANCELLABLE");
+    expect(txStub.bookingStatusHistory.create).not.toHaveBeenCalled();
   });
 });

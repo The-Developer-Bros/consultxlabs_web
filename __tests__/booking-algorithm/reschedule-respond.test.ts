@@ -26,6 +26,10 @@ const mockHasActiveDispute = jest.fn();
 // #1166 ORG-9 — what isOrgAdminOfAppointment reads to tell a payer admin's
 // initiation from a stranger's.
 const mockMembershipFindUnique = jest.fn();
+// #1340 — pass-through by default (set in beforeEach); one case makes it throw.
+const mockWithAppointmentLock = jest.fn();
+const passThroughLock = (...args: unknown[]) =>
+  (args[1] as () => Promise<unknown>)();
 
 const txStub = {
   rescheduleRequest: {
@@ -69,6 +73,34 @@ jest.mock("../../lib/observability/report", () => ({
   reportSentryError: jest.fn(),
 }));
 
+// #1340 — the accept path now serializes on the appointment atom. The real
+// module pulls @upstash/redis (ESM) in, so the lock is stubbed to a pass-through
+// that records which appointment it was asked for; the two error classes are
+// re-declared here because the route matches them with `instanceof`.
+jest.mock("../../utils/appointmentlock", () => {
+  class AppointmentBusyError extends Error {
+    readonly httpStatus = 423 as const;
+    readonly code = "APPOINTMENT_BUSY" as const;
+    constructor(readonly appointmentId: string) {
+      super("This appointment is being updated. Please try again in a moment.");
+      this.name = "AppointmentBusyError";
+    }
+  }
+  class BookingLockUnavailableError extends Error {
+    readonly httpStatus = 503 as const;
+    readonly code = "BOOKING_LOCK_UNAVAILABLE" as const;
+    constructor(readonly context: string) {
+      super(`Cannot secure a booking lock (${context}) right now.`);
+      this.name = "BookingLockUnavailableError";
+    }
+  }
+  return {
+    AppointmentBusyError,
+    BookingLockUnavailableError,
+    withAppointmentLock: (...a: unknown[]) => mockWithAppointmentLock(...a),
+  };
+});
+
 import fs from "fs";
 import path from "path";
 
@@ -76,6 +108,8 @@ import {
   acceptProposal,
   declineProposal,
 } from "@/lib/booking/reschedule-respond";
+import { tryAutoConfirmProposal } from "@/lib/booking/reschedule-auto-confirm";
+import { AppointmentBusyError } from "@/utils/appointmentlock";
 import { POST as respondHandler } from "@/app/api/appointments/[appointmentId]/reschedule/respond/route";
 
 const HOUR = 3_600_000;
@@ -103,6 +137,7 @@ function makeRequest(body: Record<string, unknown> = { action: "accept" }) {
 function proposalRow(overrides: Record<string, unknown> = {}) {
   return {
     id: REQ,
+    appointmentId: APPT,
     status: "PENDING_REVIEW",
     expiresAt: new Date(Date.now() + 48 * HOUR),
     proposedSlots: [
@@ -145,6 +180,7 @@ beforeEach(() => {
   mockRequestFindFirst.mockResolvedValue(openRequestRow());
   mockGetSession.mockResolvedValue(sessionOf(CONSULTEE_USER));
   mockMembershipFindUnique.mockResolvedValue(null);
+  mockWithAppointmentLock.mockImplementation(passThroughLock);
 });
 
 describe("accept re-validates through the allocator before anything is written", () => {
@@ -167,6 +203,9 @@ describe("accept re-validates through the allocator before anything is written",
       // Day-sharded keys would let two concurrent confirmations pass a
       // per-week cap on stale counts.
       wideLock: true,
+      // #1340 — the allocator must not close this proposal as superseded by
+      // its own times.
+      excludeRescheduleRequestId: REQ,
     });
   });
 
@@ -266,6 +305,84 @@ describe("accept re-validates through the allocator before anything is written",
   });
 });
 
+/**
+ * #1340 — a confirmation must not be superseded by its own times.
+ *
+ * The allocator's `resolveConsumedPreferenceRequests` closes every OPEN
+ * proposal whose released slots the new times replace, because placing times
+ * supersedes a competing ask. The confirming caller's own proposal matched that
+ * predicate, so it was DECLINED inside the allocator's transaction and the
+ * caller's following `PENDING_REVIEW → AUTO_ACCEPTED/ACCEPTED` CAS matched zero
+ * rows. The booking moved either way: auto-confirm swallowed the
+ * `IllegalTransitionError` and reported `autoConfirmed: false`, while the
+ * explicit accept rethrew it as a 409 and never sent the MOVED notification.
+ * Both callers now name their own proposal so the sweep skips exactly that row.
+ */
+describe("#1340 — a confirmation keeps the proposal it is confirming", () => {
+  it("accept names its own proposal to the allocator and then closes it ACCEPTED", async () => {
+    const out = await acceptProposal({
+      rescheduleRequestId: REQ,
+      eventType: "consultation",
+      eventId: "cons-1",
+      resolvedById: CONSULTEE_USER,
+    });
+
+    expect(out).toEqual({ done: true });
+    expect(mockAllocate).toHaveBeenCalledWith(
+      expect.objectContaining({ excludeRescheduleRequestId: REQ }),
+    );
+    const [args] = txStub.rescheduleRequest.updateMany.mock.calls[0] as [
+      { where: { id: string }; data: Record<string, unknown> },
+    ];
+    expect(args.where.id).toBe(REQ);
+    expect(args.data).toMatchObject({ status: "ACCEPTED" });
+  });
+
+  it("auto-confirm names its own proposal to the allocator and then closes it AUTO_ACCEPTED", async () => {
+    mockRequestFindUnique.mockResolvedValue(
+      proposalRow({
+        initiatorRole: "CONSULTEE",
+        releasedSlotIds: ["released-slot-1"],
+        proposedSlots: [
+          {
+            startsAt: new Date("2026-09-01T10:00:00.000Z"),
+            endsAt: new Date("2026-09-01T11:00:00.000Z"),
+          },
+        ],
+      }),
+    );
+
+    const out = await tryAutoConfirmProposal(REQ, "consultation", "cons-1");
+
+    expect(out).toEqual({ confirmed: true });
+    // #1340 — auto-confirm holds the appointment atom across the allocation and
+    // the AUTO_ACCEPTED write, like accept does.
+    expect(mockWithAppointmentLock).toHaveBeenCalledWith(
+      APPT,
+      expect.any(Function),
+    );
+    expect(mockAllocate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: "manual",
+        wideLock: true,
+        excludeRescheduleRequestId: REQ,
+      }),
+    );
+    const [args] = txStub.rescheduleRequest.updateMany.mock.calls[0] as [
+      {
+        where: { id: string; status: { in: string[] } };
+        data: Record<string, unknown>;
+      },
+    ];
+    expect(args.where.id).toBe(REQ);
+    expect(args.where.status.in).toEqual(["PENDING_REVIEW"]);
+    expect(args.data).toMatchObject({
+      status: "AUTO_ACCEPTED",
+      openForAppointmentId: null,
+    });
+  });
+});
+
 describe("decline ends the request and leaves the released slots released", () => {
   it("transitions to DECLINED without touching a single slot", async () => {
     const out = await declineProposal({
@@ -353,6 +470,28 @@ describe("the respond route drives the loop for the counterparty", () => {
 
     expect(res.status).toBe(200);
     expect(body.accepted).toBe(true);
+    expect(mockAllocate).toHaveBeenCalledTimes(1);
+  });
+
+  // #1340 — accept moves slots, so it belongs behind the same per-appointment
+  // atom the cancel and reschedule routes take; a concurrent cancel and accept
+  // used to interleave freely.
+  it("serializes the accept on the appointment lock and answers 423 while it is held", async () => {
+    await respondHandler(makeRequest(), makeParams());
+    expect(mockWithAppointmentLock).toHaveBeenCalledWith(
+      APPT,
+      expect.any(Function),
+    );
+
+    mockWithAppointmentLock.mockImplementation(() => {
+      throw new AppointmentBusyError(APPT);
+    });
+    const res = await respondHandler(makeRequest(), makeParams());
+    const body = await res.json();
+
+    expect(res.status).toBe(423);
+    expect(body.code).toBe("APPOINTMENT_BUSY");
+    // The busy attempt never reached the allocator, so nothing moved.
     expect(mockAllocate).toHaveBeenCalledTimes(1);
   });
 

@@ -23,10 +23,11 @@ import {
   REFUNDABLE_BALANCE_SELECT,
   refundableBalancePaise,
 } from "@/lib/payments/refundable-balance";
+import { computeRefundPct } from "@/lib/payments/operations/cancellation-policy";
 import {
-  computeRefundPct,
-  parsePolicySnapshot,
-} from "@/lib/payments/operations/cancellation-policy";
+  POLICY_TERMS_INCLUDE,
+  termsFromPolicyRow,
+} from "@/lib/payments/operations/cancellation-policy-store";
 import { refundBookingPayment } from "@/lib/payments/operations/booking-refund";
 
 export type TrialRefundOutcome = {
@@ -111,7 +112,7 @@ export async function refundCancelledTrial(args: {
     ? await prisma.appointment.findUnique({
         where: { id: appointmentId },
         select: {
-          cancellationPolicySnapshot: true,
+          cancellationPolicy: POLICY_TERMS_INCLUDE,
           slotsOfAppointment: {
             orderBy: { startsAt: "asc" },
             take: 1,
@@ -127,7 +128,7 @@ export async function refundCancelledTrial(args: {
     : -1;
 
   const refundPct = computeRefundPct(
-    parsePolicySnapshot(appointment?.cancellationPolicySnapshot),
+    termsFromPolicyRow(appointment?.cancellationPolicy),
     hoursUntilStart,
     args.isConsultantInitiated,
   );

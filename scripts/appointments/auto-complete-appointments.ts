@@ -15,7 +15,13 @@
  * - jobs/auto-complete-appointments.ts (GitHub Actions)
  * - app/api/cleanup/auto-complete-appointments/route.ts (API endpoint)
  *
- * Schedule: Hourly
+ * Schedule: Hourly, at :07.
+ *
+ * One consultation it deliberately does not complete: a paid session the
+ * consultant never joined belongs to `detect-consultant-no-shows` (:57), which
+ * cancels and refunds it. Both jobs classify attendance through
+ * `lib/booking/attendance.ts` so their candidate sets partition instead of
+ * racing (#1504).
  */
 
 import prisma from "../../lib/prisma";
@@ -37,6 +43,10 @@ import {
   transitionTrialSession,
 } from "@/lib/booking/transitions";
 import { transitionSlotsInChunks } from "@/lib/booking/slot-release";
+import {
+  classifyConsultantAttendance,
+  isPastNoShowHandoff,
+} from "@/lib/booking/attendance";
 import { IllegalTransitionError } from "@/lib/enterprise/transitions";
 
 // Only complete appointments that ended at least 1 hour ago
@@ -266,9 +276,17 @@ async function completeConsultations(): Promise<{
       },
       appointment: {
         include: {
+          // #1504 — every slot, not just the latest, because the no-show
+          // handoff below is decided from the attendance rows across all of
+          // this booking's sessions. Still ordered newest-first, so `[0]` is
+          // the last slot the logging and the deadline both want.
           slotsOfAppointment: {
             orderBy: { endsAt: "desc" },
-            take: 1,
+            include: {
+              meetingSession: {
+                select: { attendances: { select: { userId: true } } },
+              },
+            },
           },
         },
       },
@@ -282,12 +300,40 @@ async function completeConsultations(): Promise<{
   for (const consultation of consultationsToComplete) {
     try {
       const lastSlot = consultation.appointment?.slotsOfAppointment[0];
+      const consultantUserId =
+        consultation.consultationPlan?.consultantProfile?.userId;
+      const consulteeUserId = consultation.requestedBy?.userId;
       console.log(`\nCompleting consultation ${consultation.id}`);
       console.log(`   Title: ${consultation.consultationPlan.title}`);
       console.log(`   Previous status: ${consultation.status}`);
       console.log(
         `   Last slot ended: ${lastSlot?.endsAt?.toISOString() || "Unknown"}`,
       );
+
+      // #1504 — the consultant no-show refund is only ever issued by
+      // detect-consultant-no-shows, which reads the same two statuses this
+      // sweep does. This one's buffer is an hour and that one's grace window is
+      // two, so completing an unattended consultation here removed it from the
+      // only job that could refund it, and the promised refund could never
+      // fire. A booking in the no-show shape is left alone until the handoff
+      // deadline, after which it completes regardless so a candidate the
+      // detector declined (Stream contradicted our rows, or nobody joined at
+      // all) cannot be stranded live forever.
+      if (consultantUserId && consulteeUserId) {
+        const verdict = classifyConsultantAttendance(
+          consultation.appointment?.slotsOfAppointment ?? [],
+          { consultantUserId, consulteeUserId },
+        );
+        if (
+          verdict === "consultant-absent" &&
+          !isPastNoShowHandoff(lastSlot?.endsAt)
+        ) {
+          console.log(
+            `   ⏭️ Deferred — no consultant join yet; detect-consultant-no-shows owns it`,
+          );
+          continue;
+        }
+      }
 
       // #836 — guard rides the WHERE: a cancel landing between the sweep's
       // read and this write must not be overwritten by COMPLETED.
@@ -307,9 +353,6 @@ async function completeConsultations(): Promise<{
       completed++;
 
       // Fire-and-forget: notify both parties (non-blocking)
-      const consultantUserId =
-        consultation.consultationPlan?.consultantProfile?.userId;
-      const consulteeUserId = consultation.requestedBy?.userId;
       const userIds = [consultantUserId, consulteeUserId].filter(
         (id): id is string => !!id,
       );

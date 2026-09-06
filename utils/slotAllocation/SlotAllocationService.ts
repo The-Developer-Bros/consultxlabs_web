@@ -17,6 +17,7 @@ import prisma, {
 import {
   Appointment,
   AppointmentsType,
+  type DayOfWeek,
   Prisma,
   AppointmentStatus,
   ScheduleType,
@@ -75,10 +76,13 @@ import {
 } from "@/lib/booking/transitions";
 import { IllegalTransitionError } from "@/lib/enterprise/transitions";
 import {
-  DAY_OF_WEEK_TO_INDEX,
   isMinuteWithinWeeklySlot,
   TWENTY_FOUR_HOURS_IN_MS,
 } from "./slotTimeUtils";
+import {
+  utcStartDayIndex,
+  weeklyRowDurationMinutes,
+} from "@/utils/schedule/weekly-projection";
 import {
   AllocationValidationError,
   AllocationNotFoundError,
@@ -94,7 +98,6 @@ import {
   assertCollaboratorsAvailableForWindows,
   CollaboratorUnavailableError,
 } from "@/lib/collaborators/availability";
-import { resolveCancellationPolicySnapshot } from "@/lib/payments/operations/cancellation-policy";
 import {
   notifyAppointmentBooked,
   notifyAppointmentPartiallyScheduled,
@@ -222,6 +225,7 @@ export class SlotAllocationService {
           request.expectedTentativeSlotCount,
           request.allowPartial,
           request.topUp,
+          request.excludeRescheduleRequestId,
         );
 
       case "manual":
@@ -241,6 +245,7 @@ export class SlotAllocationService {
           request.initialAllocation,
           request.wideLock,
           request.expectedTentativeSlotCount,
+          request.excludeRescheduleRequestId,
         );
 
       case "requested":
@@ -757,7 +762,11 @@ export class SlotAllocationService {
     eventId: string,
     idempotencyKey?: string,
   ): Promise<AllocationResult | null> {
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`initial-allocation:${eventType}:${eventId}`}, 42))`;
+    // #1518 — `$executeRaw`, not `$queryRaw`: `pg_advisory_xact_lock` returns
+    // `void`, and the Prisma 7 driver adapter throws "Failed to deserialize
+    // column of type 'void'" on the result row. `$executeRaw` only reads the
+    // row count, so nothing is deserialised.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`initial-allocation:${eventType}:${eventId}`}, 42))`;
     const lockedReplay = await this.findIdempotentAllocation(
       eventType,
       eventId,
@@ -1046,10 +1055,15 @@ export class SlotAllocationService {
    * resolvedById is left null: the allocator is reached from routes, crons and
    * the auto-confirm path, and inventing an actor here would be worse than
    * recording none.
+   *
+   * @param excludeRescheduleRequestId #1340 — the proposal this allocation is
+   * confirming, which must survive the supersede sweep below so its caller can
+   * close it as AUTO_ACCEPTED/ACCEPTED.
    */
   private static async resolveConsumedPreferenceRequests(
     tx: Tx,
     releasedSlotIds: string[],
+    excludeRescheduleRequestId?: string,
   ): Promise<void> {
     if (releasedSlotIds.length === 0) return;
 
@@ -1088,10 +1102,20 @@ export class SlotAllocationService {
     // originally proposed times, and silently deleted the just-placed
     // confirmed slots. The manual placement IS the answer: close these as
     // DECLINED so the reschedule machine releases the reservation.
+    //
+    // #1340 — "superseded" means every OTHER open proposal. A confirmation
+    // (auto-confirm or an explicit accept) places the proposal's OWN times, so
+    // without this exclusion the sweep declined the very row its caller was
+    // about to close as AUTO_ACCEPTED/ACCEPTED: the CAS matched zero rows, the
+    // booking moved, and the paperwork said the consultee's request had been
+    // refused.
     const superseded = await tx.rescheduleRequest.findMany({
       where: {
         releasedSlotIds: { hasSome: releasedSlotIds },
         status: { in: [...RESCHEDULE_OPEN_STATUSES] },
+        ...(excludeRescheduleRequestId
+          ? { id: { not: excludeRescheduleRequestId } }
+          : {}),
       },
       select: { id: true },
     });
@@ -1126,6 +1150,12 @@ export class SlotAllocationService {
      * `AllocationRequest.topUp` for why this is not the default.
      */
     topUp = false,
+    /**
+     * #1340 — see `AllocationRequest.excludeRescheduleRequestId`: the proposal
+     * this run is confirming must not be declined as superseded by its own
+     * times.
+     */
+    excludeRescheduleRequestId?: string,
   ): Promise<AllocationResult> {
     // #837 — return the prior batch on a double-submit before doing any work.
     const replay = await this.findIdempotentAllocation(
@@ -1627,7 +1657,11 @@ export class SlotAllocationService {
 
           // #1065 — these times ARE the answer to the preference, so close it
           // here rather than leaving it open for the expiry sweep to mislabel.
-          await this.resolveConsumedPreferenceRequests(tx, releasedSlotIds);
+          await this.resolveConsumedPreferenceRequests(
+            tx,
+            releasedSlotIds,
+            excludeRescheduleRequestId,
+          );
 
           return {
             success: true,
@@ -1687,6 +1721,11 @@ export class SlotAllocationService {
     initialAllocation?: boolean,
     wideLock?: boolean,
     expectedTentativeSlotCount?: number,
+    /**
+     * #1340 — see `AllocationRequest.excludeRescheduleRequestId`. Both
+     * reschedule confirmation paths reach the allocator in manual mode.
+     */
+    excludeRescheduleRequestId?: string,
   ): Promise<AllocationResult> {
     // #837 — return the prior batch on a double-submit before doing any work.
     const replay = await this.findIdempotentAllocation(
@@ -2077,7 +2116,11 @@ export class SlotAllocationService {
           );
 
           // #1065 — see autoAllocate: placing the replacement answers the ask.
-          await this.resolveConsumedPreferenceRequests(tx, releasedSlotIds);
+          await this.resolveConsumedPreferenceRequests(
+            tx,
+            releasedSlotIds,
+            excludeRescheduleRequestId,
+          );
 
           return {
             success: true,
@@ -2706,10 +2749,8 @@ export class SlotAllocationService {
             slot.utcOffsetMinutes,
           );
           if (week > 0) start.setUTCDate(start.getUTCDate() + week * 7);
-          const durationMin =
-            slot.startDay === slot.endDay
-              ? slot.endTimeUtc - slot.startTimeUtc
-              : 1440 - slot.startTimeUtc + slot.endTimeUtc;
+          // #1342 — the same duration rule the validator applies, in one place.
+          const durationMin = weeklyRowDurationMinutes(slot);
           rowStarts.push({
             start,
             endMs: start.getTime() + durationMin * 60_000,
@@ -3086,10 +3127,8 @@ export class SlotAllocationService {
                 slot.utcOffsetMinutes,
               );
               if (!start) return null;
-              const durationMin =
-                slot.startDay === slot.endDay
-                  ? slot.endTimeUtc - slot.startTimeUtc
-                  : 1440 - slot.startTimeUtc + slot.endTimeUtc;
+              // #1342 — shared duration rule (see bestBlockForSingleSession).
+              const durationMin = weeklyRowDurationMinutes(slot);
               return {
                 start,
                 endMs: start.getTime() + durationMin * 60_000,
@@ -3309,16 +3348,15 @@ export class SlotAllocationService {
     utcOffsetMinutes: number = 0,
   ): Date {
     const now = new Date();
-    const localDay = DAY_OF_WEEK_TO_INDEX[startDay];
-    if (localDay === undefined) {
+    // #1342 — one shared derivation for the row's UTC weekday.
+    const targetDay = utcStartDayIndex({
+      startDay: startDay as DayOfWeek,
+      startTimeUtc,
+      utcOffsetMinutes,
+    });
+    if (targetDay === -1) {
       throw new Error(`Invalid day of week: ${startDay}`);
     }
-
-    // Compute the actual UTC day-of-week, matching isMinuteWithinWeeklySlot() logic.
-    // Formula: utcDay = (localDay - floor((startTimeUtc + offset) / 1440)) mod 7
-    const localStartMinutes = startTimeUtc + utcOffsetMinutes;
-    const dayAdjust = Math.floor(localStartMinutes / 1440);
-    const targetDay = (((localDay - dayAdjust) % 7) + 7) % 7;
 
     const targetHours = Math.floor(startTimeUtc / 60);
     const targetMinutes = startTimeUtc % 60;
@@ -3360,13 +3398,13 @@ export class SlotAllocationService {
     targetDay: Date,
     utcOffsetMinutes: number = 0,
   ): Date | null {
-    const localDay = DAY_OF_WEEK_TO_INDEX[startDay];
-    if (localDay === undefined) return null;
-
-    // Compute actual UTC day-of-week (same formula as isMinuteWithinWeeklySlot)
-    const localStartMinutes = startTimeUtc + utcOffsetMinutes;
-    const dayAdjust = Math.floor(localStartMinutes / 1440);
-    const slotDayOfWeek = (((localDay - dayAdjust) % 7) + 7) % 7;
+    // #1342 — one shared derivation for the row's UTC weekday.
+    const slotDayOfWeek = utcStartDayIndex({
+      startDay: startDay as DayOfWeek,
+      startTimeUtc,
+      utcOffsetMinutes,
+    });
+    if (slotDayOfWeek === -1) return null;
 
     const targetDayOfWeek = targetDay.getUTCDay();
 
@@ -3490,6 +3528,24 @@ export class SlotAllocationService {
       );
     }
 
+    // #1499 — sessions allocated later inherit the terms the booking was SOLD
+    // under, read off the row checkout created (the oldest appointment of this
+    // event). Resolving fresh here would hand a buyer whatever ladder the org
+    // published since, which is precisely what versioning exists to prevent. A
+    // reused appointment already carries its own FK, so it is skipped.
+    let inheritedPolicyId: string | null = null;
+    if (!reuseAppointmentId) {
+      const relationField = this.getEventRelationField(eventType);
+      const originating = await tx.appointment.findFirst({
+        where: {
+          [`${relationField}Id`]: eventId,
+        } as Prisma.AppointmentWhereInput,
+        orderBy: { createdAt: "asc" },
+        select: { cancellationPolicyId: true },
+      });
+      inheritedPolicyId = originating?.cancellationPolicyId ?? null;
+    }
+
     // Create appointment for each call. A concurrent booking that overlaps an
     // existing confirmed slot trips the #440 exclusion constraint (or the unique
     // guard); convert it to a typed 409 here at the source so classifyError can
@@ -3522,8 +3578,8 @@ export class SlotAllocationService {
 
           // #898 — REUSE the preserved 1:1 appointment: attach the new slots to
           // it rather than creating a second row on the @unique event FK. Its
-          // event link and booking-time cancellationPolicySnapshot are already
-          // set, so leave them untouched.
+          // event link and booking-time cancellationPolicyId are already set, so
+          // leave them untouched.
           if (reuseAppointmentId) {
             return tx.appointment.update({
               where: { id: reuseAppointmentId },
@@ -3547,10 +3603,8 @@ export class SlotAllocationService {
               },
               ...idempotencyData,
               ...(organizationId ? { organizationId } : {}),
-              // B1 — freeze the refund terms at booking (see cancellation-policy.ts).
-              cancellationPolicySnapshot: JSON.parse(
-                JSON.stringify(resolveCancellationPolicySnapshot()),
-              ),
+              // B1/#1499 — inherit the terms the booking was sold under.
+              cancellationPolicyId: inheritedPolicyId,
               slotsOfAppointment: {
                 create: slotsToCreate,
               },

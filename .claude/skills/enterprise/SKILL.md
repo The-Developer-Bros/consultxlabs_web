@@ -1,0 +1,17 @@
+---
+name: enterprise
+description: Work on this repo's organisation subsystem where it touches money — the B2C/B2B funding seam (PERSONAL/WALLET/INVOICE/LICENSE rails, what each collects at checkout), overage handling (BLOCK/CHARGE_ORG/CHARGE_MEMBER and the config-time refusals), wallet debit/credit and the NULL-cache seed, invoice accrual/rollup/dunning, purchase-order draw-down, domain verification and consent gates, organisation payout batching (createOrgPayoutBatch), the ORG_PAYOUT ledger posting and its reversal mirror, organisation TDS records, and RazorpayX payout idempotency on the org rail. Use when the user says "organisation payout", "wallet", "overage", "licensed seat", "invoice rollup", "purchase order", "org billing", "sponsor org", "host org", or is touching lib/enterprise/reachable-paths.ts, lib/payments/payouts/org-payout-service.ts, or the BillingAccount/OrganizationPayout/PaymentLeg models.
+---
+
+# Enterprise
+
+This is the index for the parts of the organisation subsystem that touch money. It sits beside `finance` rather than folding into it because an organisation's funding rail, overage policy, and payout pipeline are product concepts specific to the B2B side, layered on top of the same checkout, ledger, and TDS machinery `finance` documents.
+
+| Reference                           | Purpose                                                                                                                                                                                                                                                                           | Read it when                                                                         |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `references/money-seam.md`          | The four funding rails and what each collects per booking, overage BLOCK/CHARGE_ORG/CHARGE_MEMBER and the config-time refusals, wallet debit/credit and the NULL-cache seed, invoice accrual → rollup → dunning, purchase-order draw-down, domain verification and consent gates. | Working on how an organisation funds or pays for its members' bookings.              |
+| `references/org-payouts-and-tds.md` | Organisation earnings release, `createOrgPayoutBatch`, the `ORG_PAYOUT` posting and its reversal mirror, organisation `TDSRecord`, and the RazorpayX idempotency-header bound.                                                                                                    | Working on organisation payout batching, the payout status machine, or org-rail TDS. |
+
+## Non-negotiables
+
+An organisation's booking runs through the same checkout, price derivation, GST calculation, single writer, and ledger as a personal booking; only the funding leg differs. The WALLET rail collects the whole nominal price at commit time, which is why it cannot carry a separate overage leg and cannot support `CHARGE_MEMBER` at all — that combination is refused at programme-configuration time, not silently mishandled at checkout. An organisation payout batch claims its earnings atomically before it computes anything, so two concurrent batch attempts can never claim the same row twice. Full detail and sources live in the two references above.

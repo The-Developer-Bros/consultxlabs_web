@@ -93,7 +93,7 @@ function seat(
     paymentIntent,
     refunds: [],
     disputes: [],
-    appointment: { cancellationPolicySnapshot: null },
+    appointment: { cancellationPolicy: null },
     ...extra,
   };
 }

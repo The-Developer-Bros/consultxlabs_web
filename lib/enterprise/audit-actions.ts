@@ -149,6 +149,10 @@ export const AUDIT_ACTIONS = {
     // carry the context so an OWNER scanning the audit log can tell which
     // provider's cert is about to lapse.
     SSO_CERT_EXPIRING: "SSO_CERT_EXPIRING",
+    // #1499 — emitted by PUT /api/organizations/[orgId]/cancellation-policy. A
+    // published version is immutable, so the audit row plus the version number is
+    // the whole change history: `details` carries the ladder that was published.
+    CANCELLATION_POLICY_PUBLISHED: "CANCELLATION_POLICY_PUBLISHED",
   },
   CONSENT: {
     CONSENT_GRANTED: "CONSENT_GRANTED",

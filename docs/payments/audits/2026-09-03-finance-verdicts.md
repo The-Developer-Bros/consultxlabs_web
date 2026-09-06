@@ -180,7 +180,7 @@ This runbook applies once per merged PR in the train, run by the orchestrator, a
 - Rotating in Razorpay LIVE keys (#1377).
 - Confirming the Netlify team plan supports the five-minute ticker schedule — verified 2026-09-03 via `netlify api listAccountsForUser` that the Practitionist-Deploys team is on the Pro plan, so this is a note rather than a blocker.
 - Leaving `STRIPE_ENABLED` unset in the production environment until Stripe is deliberately reactivated.
-- Running the **pr-comment-triage** skill and the Sonar MCP quality-gate check on every PR in the train, which is a post-merge reminder rather than a deliverable of this PR.
+- Running the **PR-comment-triage** step (`.claude/skills/workflow/references/pr-comment-triage.md`) and the Sonar MCP quality-gate check on every PR in the train, which is a post-merge reminder rather than a deliverable of this PR.
 
 ## Related
 
