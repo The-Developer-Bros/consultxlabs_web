@@ -695,4 +695,4 @@ These give 10-100x improvement before needing infrastructure changes.
 
 - [Real-Time Caching Strategy](./realtime-caching-strategy.md) - Caching architecture details
 - [Migration Guide](./migration-guide.md) - Zero-downtime migration patterns
-- [Dashboard Prefetching](../../performance/dashboard-prefetching.md) - Client-side optimization
+- [Dashboard Prefetching](../../performance/02-dashboard-prefetching.md) - Client-side optimization

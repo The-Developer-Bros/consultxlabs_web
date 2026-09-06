@@ -174,10 +174,15 @@ Storage management and document review system.
 
 ### Performance
 
-Implemented performance optimizations.
+Implemented performance optimizations. The numbering runs from the broad
+strategy documents to the individual slow-query investigations.
 
-- [dashboard-prefetching.md](./performance/dashboard-prefetching.md) - Dashboard prefetching
-- [optimization-checklist.md](./performance/optimization-checklist.md) - Optimization checklist
+- [00-optimization-checklist.md](./performance/00-optimization-checklist.md) - The React Query migration and the broader dashboard optimization history
+- [01-navigation-performance.md](./performance/01-navigation-performance.md) - Canonical record of the navigation and bundle round (PR #887)
+- [02-dashboard-prefetching.md](./performance/02-dashboard-prefetching.md) - Hover-based route prefetching strategy
+- [03-dashboard-appointments-perf.md](./performance/03-dashboard-appointments-perf.md) - Investigation: slow `/api/appointments` query
+- [04-availability-allocation-perf.md](./performance/04-availability-allocation-perf.md) - Investigation: slow wide-window availability-with-allocation query
+- [05-allocation-500-investigation.md](./performance/05-allocation-500-investigation.md) - Investigation: auto-allocate HTTP 500 and transaction-start timeout
 
 ---
 

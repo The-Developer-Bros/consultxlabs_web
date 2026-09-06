@@ -577,5 +577,5 @@ for (const query of queries) {
 ## Related Documentation
 
 - [Real-Time Caching Strategy](./realtime-caching-strategy.md) - Current caching architecture
-- [Dashboard Prefetching](../../performance/dashboard-prefetching.md) - Client-side optimization
+- [Dashboard Prefetching](../../performance/02-dashboard-prefetching.md) - Client-side optimization
 - [Scaling Assessment](../../tasks/scale.txt) - When to consider scaling

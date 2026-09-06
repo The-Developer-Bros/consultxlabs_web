@@ -19,8 +19,8 @@ None of these changes alter business logic, money handling, or authorization. Th
 
 | In scope | Out of scope |
 |---|---|
-| Route-level loading boundaries and skeletons | The React Query migration itself — see [`optimization-checklist.md`](./optimization-checklist.md) |
-| Client-router cache tuning and pending affordances | Hover-prefetching strategy — see [`dashboard-prefetching.md`](./dashboard-prefetching.md) |
+| Route-level loading boundaries and skeletons | The React Query migration itself — see [`00-optimization-checklist.md`](./00-optimization-checklist.md) |
+| Client-router cache tuning and pending affordances | Hover-prefetching strategy — see [`02-dashboard-prefetching.md`](./02-dashboard-prefetching.md) |
 | Bundle composition: package-import optimization, lazy loading, dead-dependency removal | Real-time dashboard caching strategy |
 | Bounded dashboard-home queries and additive indexes | Schema design and migration mechanics — see [`../prisma/01-migrations-guide.md`](../prisma/01-migrations-guide.md) |
 | Prisma slow-query observability | Stream SDK internals — see [`../stream/01-architecture.md`](../stream/01-architecture.md) |
@@ -137,8 +137,8 @@ The third is adopting `framer-motion`'s `LazyMotion` to defer the animation runt
 
 - [PR #887](https://github.com/) — the navigation-performance round documented here.
 - Issues: [#734](https://github.com/) (TTFB bounding and indexes), [#636](https://github.com/) and [#639](https://github.com/) (client bundle), [#450](https://github.com/), [#248](https://github.com/), [#309](https://github.com/), [#696](https://github.com/) (indexes), [#383](https://github.com/) (slow-query observability).
-- [`optimization-checklist.md`](./optimization-checklist.md) — the React Query migration and the broader dashboard optimization history.
-- [`dashboard-prefetching.md`](./dashboard-prefetching.md) — hover-based route prefetching, which complements the loading boundaries described here.
+- [`00-optimization-checklist.md`](./00-optimization-checklist.md) — the React Query migration and the broader dashboard optimization history.
+- [`02-dashboard-prefetching.md`](./02-dashboard-prefetching.md) — hover-based route prefetching, which complements the loading boundaries described here.
 - [`../stream/01-architecture.md`](../stream/01-architecture.md) — Stream provider architecture, relevant to the SDK lazy-load split in [Section 4.2](#42-stream-sdk-lazy-loading).
 - [`../deployment/netlify.md`](../deployment/netlify.md) — deployment environment that serves the optimized bundle.
 - [`../prisma/01-migrations-guide.md`](../prisma/01-migrations-guide.md) — migration conventions and the rules around `CREATE INDEX CONCURRENTLY`.
