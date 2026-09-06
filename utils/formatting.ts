@@ -94,21 +94,60 @@ export function formatCurrencyAmount(
   amountInSmallestUnit: number,
   currency: string,
 ): string {
+  const { format, divisor } = currencyFormatter(currency);
+  return format.format(amountInSmallestUnit / divisor);
+}
+
+/** The one place the subunit and locale rules for a currency are resolved. */
+function currencyFormatter(currency: string): {
+  format: Intl.NumberFormat;
+  divisor: number;
+} {
   const upper = currency.toUpperCase();
   const locale = CURRENCY_LOCALE_MAP[upper] || "en-IN";
-  const divisor = getCurrencyDivisor(upper);
   const fractionDigits = ZERO_DECIMAL_CURRENCIES.has(upper)
     ? 0
     : THREE_DECIMAL_CURRENCIES.has(upper)
       ? 3
       : 2;
 
-  return new Intl.NumberFormat(locale, {
-    style: "currency",
-    currency: upper,
-    minimumFractionDigits: fractionDigits,
-    maximumFractionDigits: fractionDigits,
-  }).format(amountInSmallestUnit / divisor);
+  return {
+    format: new Intl.NumberFormat(locale, {
+      style: "currency",
+      currency: upper,
+      minimumFractionDigits: fractionDigits,
+      maximumFractionDigits: fractionDigits,
+    }),
+    divisor: getCurrencyDivisor(upper),
+  };
+}
+
+/**
+ * The same figure as `formatCurrencyAmount` with the symbol or code removed:
+ * `55,679.48` rather than `₹55,679.48`.
+ *
+ * For surfaces that already print the currency themselves and would otherwise
+ * say it twice — four Novu templates render `{{currency}} {{amount}}` and
+ * cannot be edited today (#536). Built by dropping the currency part from the
+ * currency formatter's own output rather than by configuring a second
+ * formatter, so the grouping, locale and subunit rules cannot drift from the
+ * symbol-bearing version.
+ *
+ * @example
+ * formatCurrencyAmountBare(5567948, "INR") // "55,679.48"
+ * formatCurrencyAmountBare(1500, "KWD")    // "1.500"
+ */
+export function formatCurrencyAmountBare(
+  amountInSmallestUnit: number,
+  currency: string,
+): string {
+  const { format, divisor } = currencyFormatter(currency);
+  return format
+    .formatToParts(amountInSmallestUnit / divisor)
+    .filter((part) => part.type !== "currency")
+    .map((part) => part.value)
+    .join("")
+    .trim();
 }
 
 // #1396 — a deprecated major-unit formatter lived here, taking rupees rather
