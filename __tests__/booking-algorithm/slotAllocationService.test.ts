@@ -151,7 +151,7 @@ function makeMockTx() {
       count: jest.fn().mockResolvedValue(0),
     },
     // pg_advisory_xact_lock inside guardInitialAllocationInTx.
-    $executeRaw: jest.fn().mockResolvedValue(0),
+    $executeRaw: jest.fn().mockResolvedValue(1),
   };
 }
 

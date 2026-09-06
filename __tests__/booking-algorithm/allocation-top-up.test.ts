@@ -167,7 +167,7 @@ function makeNoDeleteTx() {
       findMany: jest.fn().mockResolvedValue([]),
       count: jest.fn().mockResolvedValue(0),
     },
-    $executeRaw: jest.fn().mockResolvedValue(0),
+    $executeRaw: jest.fn().mockResolvedValue(1),
   };
 }
 

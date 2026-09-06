@@ -163,7 +163,6 @@ const mockTx = {
     deleteMany: jest.fn(),
     count: jest.fn().mockResolvedValue(0),
   },
-  $queryRaw: jest.fn().mockResolvedValue([]),
   $executeRaw: jest.fn().mockResolvedValue(1),
 };
 

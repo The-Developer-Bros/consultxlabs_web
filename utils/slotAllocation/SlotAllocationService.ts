@@ -762,7 +762,10 @@ export class SlotAllocationService {
     eventId: string,
     idempotencyKey?: string,
   ): Promise<AllocationResult | null> {
-    // $executeRaw, not $queryRaw: the function returns void, which the Prisma 7 adapter cannot deserialize (Sentry FAMILIARISE_WEB-2W).
+    // #1518 — `$executeRaw`, not `$queryRaw`: `pg_advisory_xact_lock` returns
+    // `void`, and the Prisma 7 driver adapter throws "Failed to deserialize
+    // column of type 'void'" on the result row. `$executeRaw` only reads the
+    // row count, so nothing is deserialised.
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`initial-allocation:${eventType}:${eventId}`}, 42))`;
     const lockedReplay = await this.findIdempotentAllocation(
       eventType,

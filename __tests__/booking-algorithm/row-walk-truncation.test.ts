@@ -127,7 +127,7 @@ const mockTx = {
     deleteMany: jest.fn(),
     count: jest.fn().mockResolvedValue(0),
   },
-  $executeRaw: jest.fn().mockResolvedValue(0),
+  $executeRaw: jest.fn().mockResolvedValue(1),
 };
 
 let warn: jest.SpyInstance;
