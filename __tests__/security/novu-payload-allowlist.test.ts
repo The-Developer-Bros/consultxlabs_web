@@ -231,6 +231,42 @@ describe("#536 — every payload leaves with customer-ready values", () => {
     });
   });
 
+  it("prints a credit-covered zero as 0.00 rather than a blank", async () => {
+    // Zero is a live amount: a booking paid entirely with referral credit
+    // still raises payment-success. Negative amounts have no source — the
+    // `payment_amounts_nonnegative` CHECK refuses them at the row.
+    const { notifyPaymentSuccess } = await import("../../lib/novu/service");
+
+    await notifyPaymentSuccess("u_kolkata", {
+      ...appointmentBase,
+      appointmentType: "CONSULTATION",
+      amount: 0,
+      currency: "INR",
+    });
+
+    expect(payloadOf(0)).toMatchObject({
+      amount: "0.00",
+      amountFormatted: "₹0.00",
+      amountPaise: 0,
+    });
+  });
+
+  it("drops a time the formatter rejects instead of forwarding it raw", async () => {
+    // The templates gate on `{{#if payload.dateTime}}`; a non-empty garbage
+    // string would pass that test, so the raw value must not survive the spread.
+    const { notifyAppointmentReminder } =
+      await import("../../lib/novu/service");
+
+    await notifyAppointmentReminder(["u_kolkata"], {
+      ...appointmentBase,
+      appointmentType: "CONSULTATION",
+      dateTime: "not-a-date",
+    });
+
+    expect(payloadOf(0)).not.toHaveProperty("dateTime");
+    expect(payloadOf(0)).not.toHaveProperty("dateTimeIso");
+  });
+
   it("names who cancelled instead of printing the role enum", async () => {
     const { notifyAppointmentCancelled } =
       await import("../../lib/novu/service");

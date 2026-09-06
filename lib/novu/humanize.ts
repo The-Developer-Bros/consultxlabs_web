@@ -271,15 +271,16 @@ export async function resolveRecipientTimezones(
   for (const id of unique) zones.set(id, DEFAULT_NOTIFICATION_TIMEZONE);
   if (unique.length === 0) return zones;
 
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const users = await Promise.race([
       prisma.user.findMany({
         where: { id: { in: unique } },
         select: { id: true, timezone: true },
       }),
-      new Promise<null>((resolve) =>
-        setTimeout(() => resolve(null), TIMEZONE_LOOKUP_TIMEOUT_MS),
-      ),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), TIMEZONE_LOOKUP_TIMEOUT_MS);
+      }),
     ]);
     if (!users) return zones;
     for (const user of users) {
@@ -288,6 +289,10 @@ export async function resolveRecipientTimezones(
   } catch {
     // Zones stay at the platform default — a notification is never worth an
     // exception, and the caller has already been told nothing about the read.
+  } finally {
+    // The losing timer would otherwise keep the event loop busy for up to two
+    // seconds after a fast read.
+    if (timer) clearTimeout(timer);
   }
 
   return zones;

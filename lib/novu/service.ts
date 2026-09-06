@@ -320,14 +320,17 @@ function appointmentWire(
   input: AppointmentPayloadInput,
   timezone: string,
 ): AppointmentPayload {
-  const dateTime = formatNotificationDateTime(input.dateTime, timezone);
+  // The raw instant is lifted out BEFORE the spread: the templates gate on
+  // `{{#if payload.dateTime}}`, which any non-empty string satisfies, so a
+  // value the formatter rejects must not ride through under the display key.
+  // Omitted rather than blanked for the same reason.
+  const { dateTime: rawDateTime, ...rest } = input;
+  const dateTime = formatNotificationDateTime(rawDateTime, timezone);
   return {
-    ...input,
+    ...rest,
     appointmentType: appointmentTypeLabel(input.appointmentType),
     appointmentTypeCode: input.appointmentType,
-    // Omitted rather than blanked when there is no time: the templates gate on
-    // `{{#if payload.dateTime}}`, and an empty string satisfies that test.
-    ...(dateTime ? { dateTime, dateTimeIso: input.dateTime } : {}),
+    ...(dateTime ? { dateTime, dateTimeIso: rawDateTime } : {}),
   };
 }
 
@@ -380,16 +383,19 @@ function rescheduledWire(
   input: AppointmentRescheduledInput,
   timezone: string,
 ): AppointmentRescheduledPayload {
-  const oldDateTime = formatNotificationDateTime(input.oldDateTime, timezone);
+  // Both raw instants leave the input before it reaches `appointmentWire`, so
+  // neither can survive that spread unformatted.
+  const { oldDateTime: rawOld, newDateTime: rawNew, ...base } = input;
+  const oldDateTime = formatNotificationDateTime(rawOld, timezone);
   const hasDestination =
     input.outcome === "MOVED" || input.outcome === "PROPOSED";
-  const newDateTimeIso = hasDestination ? input.newDateTime : undefined;
+  const newDateTimeIso = hasDestination ? rawNew : undefined;
   const newDateTime = formatNotificationDateTime(newDateTimeIso, timezone);
 
   return {
-    ...appointmentWire(input, timezone),
+    ...appointmentWire(base, timezone),
     outcome: input.outcome,
-    ...(oldDateTime ? { oldDateTime, oldDateTimeIso: input.oldDateTime } : {}),
+    ...(oldDateTime ? { oldDateTime, oldDateTimeIso: rawOld } : {}),
     newDateTime: newDateTime ?? RESCHEDULE_AWAITING_TIME[input.outcome],
     ...(newDateTime ? { newDateTimeIso } : {}),
   };
@@ -399,12 +405,13 @@ function trialWire(
   input: TrialSessionInput,
   timezone: string,
 ): TrialSessionPayload {
-  const dateTime = formatNotificationDateTime(input.dateTime, timezone);
+  const { dateTime: rawDateTime, ...rest } = input;
+  const dateTime = formatNotificationDateTime(rawDateTime, timezone);
   return {
-    ...input,
+    ...rest,
     status: input.status.toLowerCase().replace(/_/g, " "),
     statusCode: input.status,
-    ...(dateTime ? { dateTime, dateTimeIso: input.dateTime } : {}),
+    ...(dateTime ? { dateTime, dateTimeIso: rawDateTime } : {}),
   };
 }
 
@@ -412,16 +419,14 @@ function bookingRequestWire(
   input: BookingRequestInput,
   timezone: string,
 ): BookingRequestPayload {
-  const requestedDateTime = formatNotificationDateTime(
-    input.requestedDateTime,
-    timezone,
-  );
+  const { requestedDateTime: rawRequested, ...rest } = input;
+  const requestedDateTime = formatNotificationDateTime(rawRequested, timezone);
   return {
-    ...input,
+    ...rest,
     appointmentType: appointmentTypeLabel(input.appointmentType),
     appointmentTypeCode: input.appointmentType,
     ...(requestedDateTime
-      ? { requestedDateTime, requestedDateTimeIso: input.requestedDateTime }
+      ? { requestedDateTime, requestedDateTimeIso: rawRequested }
       : {}),
   };
 }

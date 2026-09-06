@@ -990,11 +990,14 @@ ACTION REQUIRED: Customer was charged but appointment was NOT created!
     const resolvedPlanTitle =
       metadata.appointmentType === AppointmentsType.TRIAL
         ? "Trial session"
-        : (appointmentForNotif?.consultation?.consultationPlan?.title ??
-          appointmentForNotif?.subscription?.subscriptionPlan?.title ??
-          appointmentForNotif?.webinar?.webinarPlan?.title ??
-          appointmentForNotif?.class?.classPlan?.title ??
-          planTitleOrSessionLabel(null, metadata.appointmentType));
+        : planTitleOrSessionLabel(
+            appointmentForNotif?.consultation?.consultationPlan?.title ??
+              appointmentForNotif?.subscription?.subscriptionPlan?.title ??
+              appointmentForNotif?.webinar?.webinarPlan?.title ??
+              appointmentForNotif?.class?.classPlan?.title ??
+              null,
+            metadata.appointmentType,
+          );
 
     const orgId = appointmentForNotif?.organizationId ?? null;
     const scope = notificationScope(
