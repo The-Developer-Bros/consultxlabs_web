@@ -33,7 +33,9 @@ const webinarInclude = {
           // #1061 — without this the planner cannot tell that the host has
           // already ended the call, so its Join gate could only ever expire on
           // the clock. Two columns per row.
-          meetingSession: { select: { id: true, endedAt: true, endedReason: true } },
+          meetingSession: {
+            select: { id: true, endedAt: true, endedReason: true },
+          },
         },
       },
     },
@@ -47,6 +49,10 @@ const webinarInclude = {
  * the bound drops rows the join path could never pick while keeping every run
  * it can pick whole. Truncating a run mid-way would re-split the room #1061
  * just closed, which is why the window is a day and not the join window.
+ *
+ * The card's displayed date does not read these rows any more: it reads
+ * `firstSessionAt`, a separate unwindowed lookup, because a class whose
+ * sessions all fall outside this window arrives here with zero slots (#1346).
  */
 const PLANNER_CLASS_SLOT_WINDOW_MS = 24 * 60 * 60 * 1000;
 
@@ -91,7 +97,9 @@ const classInclude = (now: Date) =>
             endsAt: true,
             isTentative: true,
             completionStatus: true,
-            meetingSession: { select: { id: true, endedAt: true, endedReason: true } },
+            meetingSession: {
+              select: { id: true, endedAt: true, endedReason: true },
+            },
           },
         },
       },
@@ -121,6 +129,10 @@ type ClassEvent = PlannerClass & {
   type: "class";
   collaboratorRole: string;
   isCollaborated: boolean;
+  // #1346 — classInclude's slots are windowed to ±24h of now for the Join
+  // affordance, so a class whose sessions fall outside that day arrives with
+  // zero slots here; the card's date comes from this field instead.
+  firstSessionAt: string | null;
 };
 
 interface PlannerData {
@@ -422,14 +434,53 @@ export async function GET(
         type: "class" as const,
         collaboratorRole: "HOST",
         isCollaborated: false,
+        firstSessionAt: null,
       })),
       ...uniqueCollabClasses.map((c) => ({
         ...transformNestedPlanTopics(c, "classPlan"),
         type: "class" as const,
         collaboratorRole: classRoleMap[c.classPlanId] || "COLLABORATOR",
         isCollaborated: true,
+        firstSessionAt: null,
       })),
     ];
+
+    // #1346 — classInclude's slot window drops rows outside ±24h of now, so
+    // the earliest session must be read separately, unwindowed, in one
+    // batched query rather than per-card.
+    const classAppointmentIds = classes.flatMap((c) =>
+      c.appointments.map((a) => a.id),
+    );
+    if (classAppointmentIds.length > 0) {
+      const earliestSlots = await prisma.slotOfAppointment.groupBy({
+        by: ["appointmentId"],
+        where: {
+          appointmentId: { in: classAppointmentIds },
+          deletedAt: null,
+          completionStatus: { notIn: ["CANCELLED", "RESCHEDULED"] },
+        },
+        _min: { startsAt: true },
+      });
+      const appointmentToClassId: Record<string, string> = {};
+      for (const c of classes) {
+        for (const a of c.appointments) {
+          appointmentToClassId[a.id] = c.id;
+        }
+      }
+      const earliestByClassId: Record<string, Date> = {};
+      for (const row of earliestSlots) {
+        const classId = appointmentToClassId[row.appointmentId];
+        const startsAt = row._min.startsAt;
+        if (!classId || !startsAt) continue;
+        const existing = earliestByClassId[classId];
+        if (!existing || startsAt < existing) {
+          earliestByClassId[classId] = startsAt;
+        }
+      }
+      for (const c of classes) {
+        c.firstSessionAt = earliestByClassId[c.id]?.toISOString() ?? null;
+      }
+    }
 
     // Participant counts for all events (owned + collaborated).
     // FIX #556: the consultant's own userId is excluded — reuse the

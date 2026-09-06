@@ -712,6 +712,9 @@ export async function POST(
     // Failure here is an ordinary outcome, not an error — the proposal simply
     // stays PENDING_REVIEW for the consultant to answer.
     let autoConfirmed = false;
+    // #FAMILIARISE_WEB-2W — the refusal reason used to be discarded, which
+    // made a green-slot auto-confirm failure undiagnosable from the response.
+    let autoConfirmReason: string | null = null;
     if (result.rescheduleRequestId) {
       // Only the two 1:1 kinds carry proposals; a group event never opens one.
       const proposal = result.logContext.consultationId
@@ -737,10 +740,18 @@ export async function POST(
             proposalTarget.id,
           );
           autoConfirmed = outcome.confirmed;
+          autoConfirmReason = outcome.confirmed ? null : outcome.reason;
         } catch (err) {
           // A lost CAS race on the final AUTO_ACCEPTED write (proposal answered
           // or expired concurrently) is an ordinary outcome, not an error —
           // reschedule-auto-confirm.ts already reports anything else itself.
+          // The reason names what the CAS told us — the row was not in the
+          // expected state — not why; a race is the common cause, not the only
+          // one, so the label does not claim it.
+          autoConfirmReason =
+            err instanceof IllegalTransitionError
+              ? "TRANSITION_REFUSED"
+              : "ERROR";
           if (!(err instanceof IllegalTransitionError)) {
             Sentry.captureException(
               err instanceof Error ? err : new Error(String(err)),
@@ -750,6 +761,15 @@ export async function POST(
             );
           }
         }
+        console.info(
+          JSON.stringify({
+            event: "reschedule_auto_confirm",
+            appointmentId,
+            rescheduleRequestId: result.rescheduleRequestId,
+            confirmed: autoConfirmed,
+            reason: autoConfirmReason,
+          }),
+        );
       }
     }
 
@@ -941,6 +961,9 @@ export async function POST(
     return NextResponse.json({
       ...result,
       autoConfirmed,
+      // #FAMILIARISE_WEB-2W — the refusal reason travels with the outcome so
+      // a green-slot auto-confirm failure is diagnosable from the response.
+      autoConfirmReason,
       // The two outcomes read very differently to a user — "you're moved" versus
       // "we've asked" — so the client must be able to tell them apart rather
       // than inferring it from the proposal's presence.
