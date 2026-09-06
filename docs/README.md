@@ -265,17 +265,20 @@ Competitor analysis and research.
 
 ## Roadmap — Planned & Future Work
 
-All documentation for features, integrations, and improvements that are **not yet implemented**.
+Planned work is tracked in GitHub issues, not in this directory. `docs/roadmap/`
+was retired in #1535 because it had become a second backlog running alongside
+the issue tracker: the same work was recorded in both places and retired in only
+one, so the directory ended up asserting that Sentry, Upstash Redis, rate
+limiting and the BetterAuth migration were all unimplemented long after they
+shipped.
 
-- [roadmap/README.md](./roadmap/README.md) - **Full roadmap index**
+The rule now is that anything actionable is an issue. This directory holds
+architecture, decisions, runbooks and reference — what the system **is**, rather
+than what it might become.
 
-### Highlights
-
-- [Auth Migration (BetterAuth)](./roadmap/auth/betterauth-migration.md) - NextAuth → BetterAuth migration
+- [Open issues](https://github.com/Practitionist/familiarise_web/issues) — the backlog, banded by the `launch: pre-mvp`, `launch: post-mvp` and `launch: scale` labels
+- [#1535](https://github.com/Practitionist/familiarise_web/issues/1535) — the retirement record, with a verdict for each of the 45 deleted files
+- [#1532](https://github.com/Practitionist/familiarise_web/issues/1532) — ten unbuilt product features
+- [#1533](https://github.com/Practitionist/familiarise_web/issues/1533) — SMS and WhatsApp notification channels
+- [#1534](https://github.com/Practitionist/familiarise_web/issues/1534) — mega-menu, blog and community surfaces
 - [Enterprise Subsystem](enterprise/00-foundations/01-overview.md) - SSO, org management, billing, payouts (canonical implementation docs)
-- [Infrastructure Hardening](./roadmap/infrastructure/README.md) - Security, monitoring, scaling (14 audit documents)
-- [Service Integration Architecture](./roadmap/content-strategy/README.md) - Directus, ConvertKit, Enterprise interlinking (planned)
-- [Content Strategy](./roadmap/content-strategy/README.md) - CMS, blog, gated community
-- [Navigation Mega-Menu](./roadmap/navigation/README.md) - Mega-menu design
-- [15 Planned Features](./roadmap/features/) - AI summaries, smart matching, referrals, and more
-- [Performance Improvements](./roadmap/performance/) - Caching, scaling, zero-downtime migrations
