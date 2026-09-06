@@ -1,8 +1,8 @@
 # Familiarise — Prisma Schema Visualisation
 
-**120 models · 97 enums · 4,845 lines of schema** (as of 2026-06-05)
+**The schema currently holds 146 models and 123 enums across 7,015 lines** (counted 2026-09-07). The 24 diagrams below were drawn from the 2026-06-05 snapshot of 120 models and 97 enums, so the structures they show are accurate but the newest models are not yet drawn; regenerate a diagram from `prisma/schema.prisma` before relying on it for a recently added domain.
 
-24 focused diagrams, each covering one domain. Use the table of contents to jump to any section. All diagrams are based on the live `prisma/schema.prisma`.
+Each diagram covers one domain. Use the table of contents to jump to any section.
 
 ---
 
@@ -1310,17 +1310,17 @@ erDiagram
 Added by the Round-3 close-out PR to close enterprise procurement +
 India-statutory gaps:
 
-| Field | Type | Purpose |
-|---|---|---|
-| `billingContactName` | `String?` | Named human at the org for invoice/PO correspondence. |
-| `billingContactEmail` | `String? @db.VarChar(255)` | Used by Novu `ORG_INVOICE_*` workflows when present; falls back to OWNER membership email. |
-| `billingContactPhone` | `String? @db.VarChar(32)` | Optional. |
-| `supportContactName` | `String?` | Surfaced on order-confirmation emails for the org's members. |
-| `supportContactEmail` | `String? @db.VarChar(255)` | Routed via Novu when set. |
-| `escalationContactEmail` | `String? @db.VarChar(255)` | Used by SLA-breach alerts only. |
-| `invoiceNumberPrefix` | `String?` | Per-org override for the human-readable invoice prefix. Null → slug-derived. Used by `lib/payments/billing/invoice-numbering.ts`. |
-| `msmeStatus` | `MsmeStatus @default(NONE)` | Mirrors `ConsultantProfile.msmeStatus`. Drives the 15/45-day deadline at org-payout creation. |
-| `msmeWrittenAgreementOnFile` | `Boolean @default(false)` | Mirrors `ConsultantProfile.writtenAgreementWithFamiliarise`. |
+| Field                        | Type                        | Purpose                                                                                                                           |
+| ---------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `billingContactName`         | `String?`                   | Named human at the org for invoice/PO correspondence.                                                                             |
+| `billingContactEmail`        | `String? @db.VarChar(255)`  | Used by Novu `ORG_INVOICE_*` workflows when present; falls back to OWNER membership email.                                        |
+| `billingContactPhone`        | `String? @db.VarChar(32)`   | Optional.                                                                                                                         |
+| `supportContactName`         | `String?`                   | Surfaced on order-confirmation emails for the org's members.                                                                      |
+| `supportContactEmail`        | `String? @db.VarChar(255)`  | Routed via Novu when set.                                                                                                         |
+| `escalationContactEmail`     | `String? @db.VarChar(255)`  | Used by SLA-breach alerts only.                                                                                                   |
+| `invoiceNumberPrefix`        | `String?`                   | Per-org override for the human-readable invoice prefix. Null → slug-derived. Used by `lib/payments/billing/invoice-numbering.ts`. |
+| `msmeStatus`                 | `MsmeStatus @default(NONE)` | Mirrors `ConsultantProfile.msmeStatus`. Drives the 15/45-day deadline at org-payout creation.                                     |
+| `msmeWrittenAgreementOnFile` | `Boolean @default(false)`   | Mirrors `ConsultantProfile.writtenAgreementWithFamiliarise`.                                                                      |
 
 ---
 
@@ -1336,11 +1336,11 @@ Commercial structure: `BillingAccount` → `Contract` → `Program` → `Program
 > (`AssignmentStatus`) + `consumedPaise` (CREDIT_POOL money-meter) +
 > `rolledToAssignmentId` @unique self-relation (cycle-engine rollover);
 > `LicensedSeatConfig`/`CreditPoolConfig.{overageSurchargeBps,
-> maxOveragePerCyclePaise}` (surcharge + circuit-breaker); `OverageEvent`
+maxOveragePerCyclePaise}` (surcharge + circuit-breaker); `OverageEvent`
 > (append-only over-cap charge ledger, `basePaise`+`surchargePaise`=`marginalPaise`);
 > and `BillingAccount.{minBalancePaise, autoTopUpEnabled, autoTopUpAmountPaise,
-> autoTopUpMandateId}` (wallet floor + auto-top-up). Top-up lifecycle is
-> `WalletTopUp` (PENDING→CONFIRMED/FAILED) — the wallet *balance* itself is a
+autoTopUpMandateId}` (wallet floor + auto-top-up). Top-up lifecycle is
+> `WalletTopUp` (PENDING→CONFIRMED/FAILED) — the wallet _balance_ itself is a
 > credit-normal liability in the double-entry ledger, not a standalone table.
 
 ```mermaid
@@ -1678,14 +1678,14 @@ erDiagram
     LedgerTransaction ||--o{ LedgerEntry : "balanced legs (ΣDr==ΣCr)"
 ```
 
-| Table | Audience | Purpose |
-|---|---|---|
-| `UsageLedgerEntry` | Finance | Engagements consumed per program assignment (non-cash) |
-| `LedgerAccount` | Finance | One account per (owner, `LedgerAccountKind`, currency) — CASH, WALLET, PLATFORM_FEE, ORG_PAYABLE, TDS_PAYABLE, GST_PAYABLE, etc. |
-| `LedgerTransaction` | Finance | One balanced cash event; `idempotencyKey` @unique makes posting retry-safe |
-| `LedgerEntry` | Finance | Immutable DEBIT/CREDIT legs (reversals are counter-transactions, never row edits) |
-| `LedgerAccountBalance` | Finance | Derived running balance (Σ Dr − Σ Cr); reconcile validates against the journal |
-| `LedgerReconciliationReport` | Admin/Ops | Nightly audit output — READ ONLY, never mutates the ledger |
+| Table                        | Audience  | Purpose                                                                                                                          |
+| ---------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `UsageLedgerEntry`           | Finance   | Engagements consumed per program assignment (non-cash)                                                                           |
+| `LedgerAccount`              | Finance   | One account per (owner, `LedgerAccountKind`, currency) — CASH, WALLET, PLATFORM_FEE, ORG_PAYABLE, TDS_PAYABLE, GST_PAYABLE, etc. |
+| `LedgerTransaction`          | Finance   | One balanced cash event; `idempotencyKey` @unique makes posting retry-safe                                                       |
+| `LedgerEntry`                | Finance   | Immutable DEBIT/CREDIT legs (reversals are counter-transactions, never row edits)                                                |
+| `LedgerAccountBalance`       | Finance   | Derived running balance (Σ Dr − Σ Cr); reconcile validates against the journal                                                   |
+| `LedgerReconciliationReport` | Admin/Ops | Nightly audit output — READ ONLY, never mutates the ledger                                                                       |
 
 ---
 
@@ -1882,93 +1882,93 @@ erDiagram
 
 Every enum in the schema and its values.
 
-| Enum | Values |
-|---|---|
-| `UserRole` | CONSULTANT, CONSULTEE, ADMIN, STAFF, ORG_WORKSPACE |
-| `MemberRole` | OWNER, MAINTAINER, MANAGER, EXPERT, LEARNER, SUPPORT |
-| `MemberStatus` | PENDING, ACTIVE, SUSPENDED, REMOVED |
-| `OrgStatus` | PENDING_VERIFICATION, ACTIVE, SUSPENDED, DEACTIVATED |
-| `OrgSizeBucket` | SMALL_1_50, MEDIUM_51_200, LARGE_201_1000, ENTERPRISE_1000_PLUS |
-| `OrgAuditCategory` | MEMBER, CONTRACT, PROGRAM, WALLET, INVOICE, PAYOUT, SETTINGS, CONSENT, CATALOG, SYSTEM |
-| `DataRegion` | IN, US, EU |
-| `Currency` | INR, USD, EUR, GBP |
-| `GstRegStatus` | REGULAR, COMPOSITION, UNREGISTERED |
-| `FundingSource` | PERSONAL, LICENSE, WALLET, INVOICE |
-| `WalletReason` | TOPUP, BOOKING, REFUND, ADJUSTMENT |
-| `WalletTopUpStatus` | PENDING, CONFIRMED, FAILED |
-| `LedgerAccountKind` | CASH, WALLET, PLATFORM_FEE, PLATFORM_PROMO, DISCOUNT, CONSULTANT_PAYABLE, ORG_PAYABLE, ORG_RECEIVABLE, TDS_PAYABLE, GST_PAYABLE |
-| `LedgerDirection` | DEBIT, CREDIT |
-| `LedgerTransactionKind` | BOOKING, TOPUP, TOPUP_REFUND, INVOICE_ISSUED, INVOICE_PAID, PAYOUT, ORG_PAYOUT, REFUND, OVERAGE_MEMBER, GRANT |
-| `ContractStatus` | DRAFT, ACTIVE, EXPIRED, TERMINATED |
-| `ContractSupersessionReason` | AMENDMENT, RENEWAL, TERMINATION_REPLACEMENT |
-| `BillingCycle` | MONTHLY, QUARTERLY, ANNUAL |
-| `SubscriptionModel` | PER_SEAT, FLAT_FEE |
-| `ProgramType` | LICENSED_SEAT, CREDIT_POOL |
-| `ProgramStatus` | ACTIVE, PAUSED, EXPIRED, CANCELLED |
-| `AssignmentStatus` | ACTIVE, ROLLED, PAUSED, CLOSED, CANCELLED |
-| `OverageBehavior` | BLOCK, CHARGE_MEMBER, CHARGE_ORG |
-| `OverageChargeStatus` | PENDING, ACCRUED, CHARGED, BLOCKED, REVERSED, FAILED |
-| `OrgPlanVisibility` | PUBLIC, ORG_ONLY, ORG_AND_PUBLIC |
-| `CoveredPlanType` | CONSULTATION, CLASS, WEBINAR, SUBSCRIPTION |
-| `OrgInvoiceStatus` | DRAFT, ISSUED, PAID, OVERDUE, VOID, CANCELLED, REFUNDED |
-| `IrpStatus` | PENDING, GENERATED, CANCELLED, FAILED |
-| `PoStatus` | ACTIVE, CLOSED, CANCELLED |
-| `CreditNoteStatus` | DRAFT, ISSUED, CANCELLED |
-| `GstTcsBatchStatus` | OPEN, FILED |
-| `OrgDataExportStatus` | PENDING, PROCESSING, READY, FAILED, EXPIRED |
-| `PayoutRecipient` | SELF, ORGANIZATION |
-| `ResidencyStatus` | RESIDENT, NON_RESIDENT |
-| `MsmeStatus` | NONE, MICRO, SMALL, MEDIUM |
-| `PayoutArrangement` | DIRECT, AOR, EOR |
-| `AppointmentStatus` | PENDING, APPROVED, APPROVED_PENDING_PAYMENT, SCHEDULED, COMPLETED, REJECTED, CANCELLED, EXPIRED |
-| `AppointmentsType` | CONSULTATION, SUBSCRIPTION, WEBINAR, CLASS, TRIAL |
-| `SlotCompletionStatus` | SCHEDULED, COMPLETED, UNVERIFIED, CANCELLED, RESCHEDULED |
-| `BookingSource` | DIRECT_CHECKOUT, REQUEST_SUBMITTED |
-| `TrialSessionStatus` | PENDING, SCHEDULED, COMPLETED, CONVERTED, CANCELLED, REJECTED |
-| `WaitlistStatus` | PENDING, SUBSCRIBED, UNSUBSCRIBED, BOUNCED (newsletter list) |
-| `WaitlistSource` | LANDING_PAGE, FOOTER, BLOG, USE_CASE_PAGE, EVENT_SOLD_OUT, IMPORT |
-| `WebinarStatus` | SCHEDULED, IN_PROGRESS, COMPLETED, CANCELLED |
-| `ClassStatus` | SCHEDULED, IN_PROGRESS, COMPLETED, CANCELLED |
-| `DayOfWeek` | MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY, SUNDAY |
-| `ScheduleType` | WEEKLY, CUSTOM |
-| `Platform` | ZOOM, GOOGLE_MEET, MICROSOFT_TEAMS, STREAM, CUSTOM |
-| `RecordingStoragePolicy` | STREAM_ONLY, SUPABASE_PERMANENT |
-| `RecordingStorageType` | STREAM_S3, SUPABASE |
-| `RecordingStatus` | RECORDING, PROCESSING, READY, TRANSFERRING, AVAILABLE, FAILED, EXPIRED |
-| `PaymentGateway` | STRIPE, RAZORPAY, DODO_PAYMENTS, CARD |
-| `PaymentStatus` | PENDING, SUCCEEDED, FAILED, EXPIRED |
-| `PaymentLegSource` | CARD, WALLET, REFERRAL_CREDIT, INVOICE_ACCRUAL, OVERAGE_INVOICE_ACCRUAL, LICENSE |
-| `RefundStatus` | PENDING, SUCCEEDED, FAILED, CANCELLED |
-| `DisputeStatus` | WARNING_NEEDS_RESPONSE, WARNING_UNDER_REVIEW, WARNING_CLOSED, NEEDS_RESPONSE, UNDER_REVIEW, CHARGE_REFUNDED, WON, LOST |
-| `EarningStatus` | PENDING, HELD, READY, PAID, REFUNDED, PENDING_TRUST |
-| `EarningRole` | OWNER, COLLABORATOR |
-| `PayoutStatus` | PENDING, APPROVED, PROCESSING, COMPLETED, FAILED, CANCELLED |
-| `PayoutMethod` | BANK_TRANSFER, UPI, STRIPE_TRANSFER |
-| `PayoutAccountType` | BANK_ACCOUNT, UPI, STRIPE_CONNECT |
-| `CollaboratorStatus` | PENDING, ACCEPTED, DECLINED, REMOVED |
-| `WebinarCollaboratorRole` | CO_HOST, MODERATOR, GUEST_SPEAKER, TECHNICAL_SUPPORT |
-| `ClassCollaboratorRole` | CO_INSTRUCTOR, TEACHING_ASSISTANT, GUEST_LECTURER, CONTENT_CREATOR |
-| `ConsultantVerificationStatus` | PENDING_VERIFICATION, UNDER_REVIEW, VERIFIED, REJECTED |
-| `ProfileVerificationStatus` | PENDING, APPROVED, REJECTED, NEEDS_INFO, SUPERSEDED |
-| `DocumentReviewStatus` | PENDING, IN_REVIEW, APPROVED, REJECTED, NEEDS_REVISION |
-| `DocumentUploadRole` | CONSULTEE, CONSULTANT |
-| `ReferralStatus` | SIGNED_UP, QUALIFIED, REWARDED, EXPIRED, FRAUDULENT |
-| `CreditSource` | REFERRAL_BONUS, REFEREE_BONUS, PROMOTION, COMPENSATION, MANUAL |
-| `DiscountType` | PERCENTAGE, FIXED_AMOUNT |
-| `AchievementType` | AWARD, PUBLICATION, PROJECT, TALK, OPEN_SOURCE, OTHER |
-| `CareerStage` | SCHOOL_STUDENT, STUDENT, EARLY_CAREER, MID_CAREER, SENIOR, EXECUTIVE |
-| `BudgetPreference` | BUDGET, MODERATE, PREMIUM, FLEXIBLE |
-| `SessionType` | ONE_ON_ONE, GROUP, ASYNC_REVIEW |
-| `ActivityType` | CONSULTATION_BOOKED, CONSULTATION_COMPLETED, CONSULTATION_CANCELLED, SUBSCRIPTION_REQUESTED, SUBSCRIPTION_APPROVED, SUBSCRIPTION_CANCELLED, WEBINAR_REGISTERED, CLASS_ENROLLED, TRIAL_REQUESTED, TRIAL_SCHEDULED, TRIAL_COMPLETED, TRIAL_CONVERTED, REVIEW_SUBMITTED, MESSAGE_RECEIVED |
-| `FeedbackStatus` | PENDING, ACKNOWLEDGED, IN_PROGRESS, RESOLVED, CLOSED |
-| `SupportTicketStatus` | OPEN, IN_PROGRESS, ON_HOLD, RESOLVED, CLOSED |
-| `SupportPriority` | LOW, MEDIUM, HIGH, URGENT |
-| `ModerationReportType` | REVIEW, PROFILE, MESSAGE, DOCUMENT, OTHER |
-| `ModerationReportStatus` | PENDING, UNDER_REVIEW, DISMISSED, ACTION_TAKEN, ESCALATED |
-| `ModerationActionType` | WARNING_ISSUED, CONTENT_REMOVED, USER_SUSPENDED, USER_BANNED, PROFILE_UNVERIFIED, NO_ACTION, USER_REINSTATED |
-| `HrisProvider` | WORKDAY, BAMBOOHR, SAP, ORACLE, CERIDIAN, DARWINBOX, CSV |
-| `HrisSyncStatus` | PENDING, RUNNING, COMPLETED, FAILED |
-| `SystemJobStatus` | RUNNING, COMPLETED, FAILED, CANCELLED |
-| `MaintenancePhase` | OFF, DEGRADED, OFFLINE |
-| `OrgPayoutAccountStatus` | PENDING_VERIFICATION, VERIFIED, FAILED_VERIFICATION, SUSPENDED |
-| `ParentEntityType` | LISTED_US, PRIVATE_US, EU, OTHER |
+| Enum                           | Values                                                                                                                                                                                                                                                                                 |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `UserRole`                     | CONSULTANT, CONSULTEE, ADMIN, STAFF, ORG_WORKSPACE                                                                                                                                                                                                                                     |
+| `MemberRole`                   | OWNER, MAINTAINER, MANAGER, EXPERT, LEARNER, SUPPORT                                                                                                                                                                                                                                   |
+| `MemberStatus`                 | PENDING, ACTIVE, SUSPENDED, REMOVED                                                                                                                                                                                                                                                    |
+| `OrgStatus`                    | PENDING_VERIFICATION, ACTIVE, SUSPENDED, DEACTIVATED                                                                                                                                                                                                                                   |
+| `OrgSizeBucket`                | SMALL_1_50, MEDIUM_51_200, LARGE_201_1000, ENTERPRISE_1000_PLUS                                                                                                                                                                                                                        |
+| `OrgAuditCategory`             | MEMBER, CONTRACT, PROGRAM, WALLET, INVOICE, PAYOUT, SETTINGS, CONSENT, CATALOG, SYSTEM                                                                                                                                                                                                 |
+| `DataRegion`                   | IN, US, EU                                                                                                                                                                                                                                                                             |
+| `Currency`                     | INR, USD, EUR, GBP                                                                                                                                                                                                                                                                     |
+| `GstRegStatus`                 | REGULAR, COMPOSITION, UNREGISTERED                                                                                                                                                                                                                                                     |
+| `FundingSource`                | PERSONAL, LICENSE, WALLET, INVOICE                                                                                                                                                                                                                                                     |
+| `WalletReason`                 | TOPUP, BOOKING, REFUND, ADJUSTMENT                                                                                                                                                                                                                                                     |
+| `WalletTopUpStatus`            | PENDING, CONFIRMED, FAILED                                                                                                                                                                                                                                                             |
+| `LedgerAccountKind`            | CASH, WALLET, PLATFORM_FEE, PLATFORM_PROMO, DISCOUNT, CONSULTANT_PAYABLE, ORG_PAYABLE, ORG_RECEIVABLE, TDS_PAYABLE, GST_PAYABLE                                                                                                                                                        |
+| `LedgerDirection`              | DEBIT, CREDIT                                                                                                                                                                                                                                                                          |
+| `LedgerTransactionKind`        | BOOKING, TOPUP, TOPUP_REFUND, INVOICE_ISSUED, INVOICE_PAID, PAYOUT, ORG_PAYOUT, REFUND, OVERAGE_MEMBER, GRANT                                                                                                                                                                          |
+| `ContractStatus`               | DRAFT, ACTIVE, EXPIRED, TERMINATED                                                                                                                                                                                                                                                     |
+| `ContractSupersessionReason`   | AMENDMENT, RENEWAL, TERMINATION_REPLACEMENT                                                                                                                                                                                                                                            |
+| `BillingCycle`                 | MONTHLY, QUARTERLY, ANNUAL                                                                                                                                                                                                                                                             |
+| `SubscriptionModel`            | PER_SEAT, FLAT_FEE                                                                                                                                                                                                                                                                     |
+| `ProgramType`                  | LICENSED_SEAT, CREDIT_POOL                                                                                                                                                                                                                                                             |
+| `ProgramStatus`                | ACTIVE, PAUSED, EXPIRED, CANCELLED                                                                                                                                                                                                                                                     |
+| `AssignmentStatus`             | ACTIVE, ROLLED, PAUSED, CLOSED, CANCELLED                                                                                                                                                                                                                                              |
+| `OverageBehavior`              | BLOCK, CHARGE_MEMBER, CHARGE_ORG                                                                                                                                                                                                                                                       |
+| `OverageChargeStatus`          | PENDING, ACCRUED, CHARGED, BLOCKED, REVERSED, FAILED                                                                                                                                                                                                                                   |
+| `OrgPlanVisibility`            | PUBLIC, ORG_ONLY, ORG_AND_PUBLIC                                                                                                                                                                                                                                                       |
+| `CoveredPlanType`              | CONSULTATION, CLASS, WEBINAR, SUBSCRIPTION                                                                                                                                                                                                                                             |
+| `OrgInvoiceStatus`             | DRAFT, ISSUED, PAID, OVERDUE, VOID, CANCELLED, REFUNDED                                                                                                                                                                                                                                |
+| `IrpStatus`                    | PENDING, GENERATED, CANCELLED, FAILED                                                                                                                                                                                                                                                  |
+| `PoStatus`                     | ACTIVE, CLOSED, CANCELLED                                                                                                                                                                                                                                                              |
+| `CreditNoteStatus`             | DRAFT, ISSUED, CANCELLED                                                                                                                                                                                                                                                               |
+| `GstTcsBatchStatus`            | OPEN, FILED                                                                                                                                                                                                                                                                            |
+| `OrgDataExportStatus`          | PENDING, PROCESSING, READY, FAILED, EXPIRED                                                                                                                                                                                                                                            |
+| `PayoutRecipient`              | SELF, ORGANIZATION                                                                                                                                                                                                                                                                     |
+| `ResidencyStatus`              | RESIDENT, NON_RESIDENT                                                                                                                                                                                                                                                                 |
+| `MsmeStatus`                   | NONE, MICRO, SMALL, MEDIUM                                                                                                                                                                                                                                                             |
+| `PayoutArrangement`            | DIRECT, AOR, EOR                                                                                                                                                                                                                                                                       |
+| `AppointmentStatus`            | PENDING, APPROVED, APPROVED_PENDING_PAYMENT, SCHEDULED, COMPLETED, REJECTED, CANCELLED, EXPIRED                                                                                                                                                                                        |
+| `AppointmentsType`             | CONSULTATION, SUBSCRIPTION, WEBINAR, CLASS, TRIAL                                                                                                                                                                                                                                      |
+| `SlotCompletionStatus`         | SCHEDULED, COMPLETED, UNVERIFIED, CANCELLED, RESCHEDULED                                                                                                                                                                                                                               |
+| `BookingSource`                | DIRECT_CHECKOUT, REQUEST_SUBMITTED                                                                                                                                                                                                                                                     |
+| `TrialSessionStatus`           | PENDING, SCHEDULED, COMPLETED, CONVERTED, CANCELLED, REJECTED                                                                                                                                                                                                                          |
+| `WaitlistStatus`               | PENDING, SUBSCRIBED, UNSUBSCRIBED, BOUNCED (newsletter list)                                                                                                                                                                                                                           |
+| `WaitlistSource`               | LANDING_PAGE, FOOTER, BLOG, USE_CASE_PAGE, EVENT_SOLD_OUT, IMPORT                                                                                                                                                                                                                      |
+| `WebinarStatus`                | SCHEDULED, IN_PROGRESS, COMPLETED, CANCELLED                                                                                                                                                                                                                                           |
+| `ClassStatus`                  | SCHEDULED, IN_PROGRESS, COMPLETED, CANCELLED                                                                                                                                                                                                                                           |
+| `DayOfWeek`                    | MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY, SUNDAY                                                                                                                                                                                                                         |
+| `ScheduleType`                 | WEEKLY, CUSTOM                                                                                                                                                                                                                                                                         |
+| `Platform`                     | ZOOM, GOOGLE_MEET, MICROSOFT_TEAMS, STREAM, CUSTOM                                                                                                                                                                                                                                     |
+| `RecordingStoragePolicy`       | STREAM_ONLY, SUPABASE_PERMANENT                                                                                                                                                                                                                                                        |
+| `RecordingStorageType`         | STREAM_S3, SUPABASE                                                                                                                                                                                                                                                                    |
+| `RecordingStatus`              | RECORDING, PROCESSING, READY, TRANSFERRING, AVAILABLE, FAILED, EXPIRED                                                                                                                                                                                                                 |
+| `PaymentGateway`               | STRIPE, RAZORPAY, DODO_PAYMENTS, CARD                                                                                                                                                                                                                                                  |
+| `PaymentStatus`                | PENDING, SUCCEEDED, FAILED, EXPIRED                                                                                                                                                                                                                                                    |
+| `PaymentLegSource`             | CARD, WALLET, REFERRAL_CREDIT, INVOICE_ACCRUAL, OVERAGE_INVOICE_ACCRUAL, LICENSE                                                                                                                                                                                                       |
+| `RefundStatus`                 | PENDING, SUCCEEDED, FAILED, CANCELLED                                                                                                                                                                                                                                                  |
+| `DisputeStatus`                | WARNING_NEEDS_RESPONSE, WARNING_UNDER_REVIEW, WARNING_CLOSED, NEEDS_RESPONSE, UNDER_REVIEW, CHARGE_REFUNDED, WON, LOST                                                                                                                                                                 |
+| `EarningStatus`                | PENDING, HELD, READY, PAID, REFUNDED, PENDING_TRUST                                                                                                                                                                                                                                    |
+| `EarningRole`                  | OWNER, COLLABORATOR                                                                                                                                                                                                                                                                    |
+| `PayoutStatus`                 | PENDING, APPROVED, PROCESSING, COMPLETED, FAILED, CANCELLED                                                                                                                                                                                                                            |
+| `PayoutMethod`                 | BANK_TRANSFER, UPI, STRIPE_TRANSFER                                                                                                                                                                                                                                                    |
+| `PayoutAccountType`            | BANK_ACCOUNT, UPI, STRIPE_CONNECT                                                                                                                                                                                                                                                      |
+| `CollaboratorStatus`           | PENDING, ACCEPTED, DECLINED, REMOVED                                                                                                                                                                                                                                                   |
+| `WebinarCollaboratorRole`      | CO_HOST, MODERATOR, GUEST_SPEAKER, TECHNICAL_SUPPORT                                                                                                                                                                                                                                   |
+| `ClassCollaboratorRole`        | CO_INSTRUCTOR, TEACHING_ASSISTANT, GUEST_LECTURER, CONTENT_CREATOR                                                                                                                                                                                                                     |
+| `ConsultantVerificationStatus` | PENDING_VERIFICATION, UNDER_REVIEW, VERIFIED, REJECTED                                                                                                                                                                                                                                 |
+| `ProfileVerificationStatus`    | PENDING, APPROVED, REJECTED, NEEDS_INFO, SUPERSEDED                                                                                                                                                                                                                                    |
+| `DocumentReviewStatus`         | PENDING, IN_REVIEW, APPROVED, REJECTED, NEEDS_REVISION                                                                                                                                                                                                                                 |
+| `DocumentUploadRole`           | CONSULTEE, CONSULTANT                                                                                                                                                                                                                                                                  |
+| `ReferralStatus`               | SIGNED_UP, QUALIFIED, REWARDED, EXPIRED, FRAUDULENT                                                                                                                                                                                                                                    |
+| `CreditSource`                 | REFERRAL_BONUS, REFEREE_BONUS, PROMOTION, COMPENSATION, MANUAL                                                                                                                                                                                                                         |
+| `DiscountType`                 | PERCENTAGE, FIXED_AMOUNT                                                                                                                                                                                                                                                               |
+| `AchievementType`              | AWARD, PUBLICATION, PROJECT, TALK, OPEN_SOURCE, OTHER                                                                                                                                                                                                                                  |
+| `CareerStage`                  | SCHOOL_STUDENT, STUDENT, EARLY_CAREER, MID_CAREER, SENIOR, EXECUTIVE                                                                                                                                                                                                                   |
+| `BudgetPreference`             | BUDGET, MODERATE, PREMIUM, FLEXIBLE                                                                                                                                                                                                                                                    |
+| `SessionType`                  | ONE_ON_ONE, GROUP, ASYNC_REVIEW                                                                                                                                                                                                                                                        |
+| `ActivityType`                 | CONSULTATION_BOOKED, CONSULTATION_COMPLETED, CONSULTATION_CANCELLED, SUBSCRIPTION_REQUESTED, SUBSCRIPTION_APPROVED, SUBSCRIPTION_CANCELLED, WEBINAR_REGISTERED, CLASS_ENROLLED, TRIAL_REQUESTED, TRIAL_SCHEDULED, TRIAL_COMPLETED, TRIAL_CONVERTED, REVIEW_SUBMITTED, MESSAGE_RECEIVED |
+| `FeedbackStatus`               | PENDING, ACKNOWLEDGED, IN_PROGRESS, RESOLVED, CLOSED                                                                                                                                                                                                                                   |
+| `SupportTicketStatus`          | OPEN, IN_PROGRESS, ON_HOLD, RESOLVED, CLOSED                                                                                                                                                                                                                                           |
+| `SupportPriority`              | LOW, MEDIUM, HIGH, URGENT                                                                                                                                                                                                                                                              |
+| `ModerationReportType`         | REVIEW, PROFILE, MESSAGE, DOCUMENT, OTHER                                                                                                                                                                                                                                              |
+| `ModerationReportStatus`       | PENDING, UNDER_REVIEW, DISMISSED, ACTION_TAKEN, ESCALATED                                                                                                                                                                                                                              |
+| `ModerationActionType`         | WARNING_ISSUED, CONTENT_REMOVED, USER_SUSPENDED, USER_BANNED, PROFILE_UNVERIFIED, NO_ACTION, USER_REINSTATED                                                                                                                                                                           |
+| `HrisProvider`                 | WORKDAY, BAMBOOHR, SAP, ORACLE, CERIDIAN, DARWINBOX, CSV                                                                                                                                                                                                                               |
+| `HrisSyncStatus`               | PENDING, RUNNING, COMPLETED, FAILED                                                                                                                                                                                                                                                    |
+| `SystemJobStatus`              | RUNNING, COMPLETED, FAILED, CANCELLED                                                                                                                                                                                                                                                  |
+| `MaintenancePhase`             | OFF, DEGRADED, OFFLINE                                                                                                                                                                                                                                                                 |
+| `OrgPayoutAccountStatus`       | PENDING_VERIFICATION, VERIFIED, FAILED_VERIFICATION, SUSPENDED                                                                                                                                                                                                                         |
+| `ParentEntityType`             | LISTED_US, PRIVATE_US, EU, OTHER                                                                                                                                                                                                                                                       |
