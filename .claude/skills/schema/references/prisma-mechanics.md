@@ -10,11 +10,11 @@ Prisma 6 differs.
 Choosing between these is the single highest-consequence decision in Prisma
 schema work, because two of them will drop tables without much ceremony.
 
-| Command                 | What it does                                                                            | Safe against a database with real data?                                          |
-| ----------------------- | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `prisma migrate dev`    | Diffs the schema, writes a migration file, applies it, regenerates the client.          | **No.** It resets the database whenever it detects drift or an edited migration. |
-| `prisma migrate deploy` | Applies pending migration files in order. Never generates, never resets, never prompts. | **Yes.** This is the only command that belongs in a deploy pipeline.             |
-| `prisma db push`        | Reconciles the database to the schema file directly, writing no migration file.         | **No.** It drops anything the schema does not mention, and keeps no history.     |
+| Command                 | What it does                                                                                                                  | Safe against a database with real data?                                                                                        |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `prisma migrate dev`    | Diffs the schema, writes a migration file, and applies it. In Prisma 7 it does **not** run `prisma generate` or seed for you. | **No.** On drift or an edited migration it prompts, and resets the database if you confirm.                                    |
+| `prisma migrate deploy` | Applies pending migration files in order. Never generates, never resets, never prompts.                                       | **Yes.** This is the only command that belongs in a deploy pipeline.                                                           |
+| `prisma db push`        | Reconciles the database to the schema file directly, writing no migration file.                                               | **No.** It drops anything the schema does not mention. It prompts first, but a non-interactive run needs `--accept-data-loss`. |
 
 Two further commands matter for recovery rather than for routine work.
 `prisma migrate status` reports which migrations are applied, pending or failed
@@ -22,6 +22,21 @@ and is the first thing to run against any database you are unsure about, and
 `prisma migrate resolve` edits the migration history without executing SQL.
 `prisma migrate reset` drops and recreates the database; it is a development
 command and there is no production use for it.
+
+Three safeguards are worth stating precisely, because they are the difference
+between "this command is dangerous" and knowing when it actually bites. `migrate
+dev` prompts before a reset rather than resetting silently, so the real risk is
+an operator confirming out of habit or a script running it non-interactively.
+`db push` likewise prompts before any statement that loses data, and
+`--accept-data-loss` is what suppresses that prompt — which means the flag,
+rather than the command, is the thing to grep for in automation. And
+`--force-reset` is a separate, explicit request to drop and recreate the
+database; neither command implies it.
+
+In Prisma 7 neither `migrate dev` nor `db push` runs `prisma generate` any more,
+and `migrate dev` no longer seeds automatically. The `--skip-generate` and
+`--skip-seed` flags were removed along with the behaviour they suppressed, so
+generation and seeding are now explicit steps.
 
 ## What `migrate deploy` guarantees, and what it does not
 
@@ -52,6 +67,10 @@ hand.
 
 ```ts
 // prisma.config.ts
+// Prisma 7 does not load .env for you here, so import it before reading process.env.
+import "dotenv/config";
+import { defineConfig } from "prisma/config";
+
 export default defineConfig({
   schema: "prisma/schema.prisma",
   migrations: { path: "prisma/migrations" },
@@ -104,19 +123,26 @@ detection and rollback-script generation, and it is worth knowing directly.
 
 ```sh
 # Baseline: what SQL creates the whole schema from nothing?
-npx prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script
+npx prisma migrate diff --from-empty --to-schema prisma/schema.prisma --script
 
 # Drift: what has the live database got that the migration history does not?
-npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datasource prisma/schema.prisma --script
+npx prisma migrate diff --from-migrations prisma/migrations --to-config-datasource --script
 
 # Rollback: what SQL takes the database back to the migration history?
-npx prisma migrate diff --from-schema-datamodel prisma/schema.prisma --to-schema-datasource prisma/schema.prisma --script
+npx prisma migrate diff --from-schema prisma/schema.prisma --to-config-datasource --script
 ```
 
-The `--from-schema-datasource` and `--to-schema-datasource` flags take a schema
-file but read the _database_ it points at, while `--from-schema-datamodel` and
-`--to-schema-datamodel` read the models in the file. Mixing the two up produces
-a confidently wrong script, so read the flag names carefully every time.
+Read the flag names carefully every time, because mixing them up produces a
+confidently wrong script. `--from-schema` and `--to-schema` take a path and read
+the _models_ in that file, while `--from-config-datasource` and
+`--to-config-datasource` take no path and read the live _database_ that
+`prisma.config.ts` points at. `--from-migrations` and `--to-migrations` take the
+migrations directory and mean "the state the history says we should be in".
+
+These are Prisma 7 names. Prisma 6 spelled the same two ideas
+`--from-schema-datamodel` and `--from-schema-datasource`, both taking a schema
+path; those, along with `--from-url` and `--to-url`, were removed in Prisma 7,
+so a command copied from an older article or answer will fail outright.
 
 ## Adopting a database that already exists
 
@@ -136,7 +162,7 @@ mkdir -p prisma/migrations/0_init
 # 3. Generate the SQL that would create the current schema from nothing.
 npx prisma migrate diff \
   --from-empty \
-  --to-schema-datamodel prisma/schema.prisma \
+  --to-schema prisma/schema.prisma \
   --script > prisma/migrations/0_init/migration.sql
 
 # 4. Record it as applied, WITHOUT running it, on every existing database.
@@ -204,10 +230,12 @@ works, are widespread but rest on an implementation detail rather than a
 documented guarantee. The dependable approach is to keep the index out of the
 migration system: apply it with `prisma db execute` or `psql` as an explicit
 operational step, and record it in a checked-in SQL file so that a rebuilt
-database gets it too.
+database gets it too. In Prisma 7 `db execute` reads its connection from
+`prisma.config.ts`; the `--schema` and `--url` flags it accepted in Prisma 6
+were removed.
 
 ```sh
-npx prisma db execute --file prisma/sql/indexes/appointment-consultant-start.sql --schema prisma/schema.prisma
+npx prisma db execute --file prisma/sql/indexes/appointment-consultant-start.sql
 ```
 
 A concurrent build that fails leaves an invalid index behind that slows writes
@@ -254,7 +282,7 @@ the database.
 
 ```sh
 # Detect it.
-npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datasource prisma/schema.prisma --script
+npx prisma migrate diff --from-migrations prisma/migrations --to-config-datasource --script
 ```
 
 There are only three honest resolutions. Adopt the drift by introspecting it

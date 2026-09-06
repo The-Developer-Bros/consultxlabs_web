@@ -110,16 +110,25 @@ it also serialises the human case of two people deploying at once.
 
 ## Pooled and direct connections
 
-Every managed Postgres platform puts a connection pooler in front of the
-database — PgBouncer, Supavisor, RDS Proxy, pgpool — and every one of them
-breaks DDL in transaction pooling mode, because a session-level operation gets a
-different backend connection than the one it started on. This is a property of
-transaction pooling, not of any particular vendor.
+A connection pooler in **transaction** pooling mode breaks DDL, because a
+session-level operation can be handed a different backend connection than the
+one it started on. This is a property of transaction pooling itself rather than
+of any particular vendor, and it applies equally to PgBouncer, Supavisor, RDS
+Proxy and pgpool.
 
-The consequence is the two-URL arrangement that every serverless Prisma project
-ends up with. The application uses the pooled URL, because it opens many
-short-lived connections. The CLI uses a direct or session-mode URL for every
-migration, introspection and diff.
+Pooling is common but not universal, so the second URL is conditional rather
+than mandatory. AWS RDS and Cloud SQL expose direct instance endpoints and treat
+pooling as opt-in — RDS Proxy is a separate resource, and Cloud SQL's managed
+pooler listens on its own port — so a deployment that connects straight to the
+instance needs no second URL at all. Supabase and Neon route through a pooler by
+default, so there it is required.
+
+Add a separate CLI connection string when either of two things is true: the
+application connects through a transaction-mode pooler, or the provider exposes
+a distinct session-mode endpoint. When it applies, the arrangement is the
+familiar two-URL one — the application uses the pooled URL because it opens many
+short-lived connections, and the CLI uses the direct or session-mode URL for
+every migration, introspection and diff.
 
 ```sh
 # Application runtime: pooled, transaction mode.
@@ -128,6 +137,12 @@ DATABASE_URL="postgresql://user:pass@host:6543/db?pgbouncer=true"
 # Prisma CLI: direct or session mode. Never the transaction pooler.
 DIRECT_URL="postgresql://user:pass@host:5432/db"
 ```
+
+Note that "direct" here means "not transaction-pooled", which is not the same as
+"not pooled". A session-mode pooler endpoint is perfectly adequate for DDL and is
+what several providers hand you when you ask for a direct URL — this repository's
+own `DIRECT_URL` is one, as `references/this-repo.md` records. What matters is
+session mode, not the absence of a proxy.
 
 In Prisma 7 the CLI reads `datasource.url` from `prisma.config.ts`, so that is
 where the direct string belongs; in Prisma 6 it was `directUrl` in the schema's
@@ -174,8 +189,8 @@ mean.
 ```sh
 # Generate the reverse script BEFORE applying the forward one.
 npx prisma migrate diff \
-  --from-schema-datamodel prisma/schema.prisma \
-  --to-schema-datasource prisma/schema.prisma \
+  --from-schema prisma/schema.prisma \
+  --to-config-datasource \
   --script > prisma/migrations/<name>/rollback.sql
 ```
 
@@ -200,14 +215,15 @@ npx prisma migrate status
 
 # 2. No unexpected difference remains between the schema file and the database.
 npx prisma migrate diff \
-  --from-schema-datamodel prisma/schema.prisma \
-  --to-schema-datasource prisma/schema.prisma \
+  --from-schema prisma/schema.prisma \
+  --to-config-datasource \
   --script
 # Expect empty output.
 
 # 3. Objects the schema file does not model are still present.
-#    Triggers, functions, policies and partial indexes survive neither a restore
-#    nor a db push on their own. Assert them explicitly.
+#    A full pg_dump/pg_restore preserves triggers, functions, policies and
+#    partial indexes. A data-only restore, a partial restore, or a db push
+#    does not. Assert them explicitly after any of those three.
 ```
 
 Then exercise the application: one read path and one write path over the changed

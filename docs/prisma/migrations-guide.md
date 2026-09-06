@@ -243,10 +243,11 @@ export default defineConfig({
 
   // Database connection URLs
   datasource: {
+    // `url` IS the CLI's connection, so it must be the direct/session-mode one.
+    // There is no separate `directUrl` key in prisma.config.ts.
     url:
       process.env.DIRECT_URL ||
       "postgresql://placeholder:placeholder@localhost:5432/placeholder",
-    directUrl: process.env.DIRECT_URL,
     shadowDatabaseUrl: process.env.SHADOW_DATABASE_URL,
   },
 });
@@ -398,20 +399,25 @@ enum OrderStatus {
 npx prisma migrate dev [options]
 ```
 
-| Flag              | Description                                     |
-| ----------------- | ----------------------------------------------- |
-| `--name <name>`   | Name for the migration (used in directory name) |
-| `--create-only`   | Generate migration file without applying it     |
-| `--skip-seed`     | Skip running the seed script after migration    |
-| `--skip-generate` | Skip regenerating Prisma Client after migration |
+| Flag            | Description                                     |
+| --------------- | ----------------------------------------------- |
+| `--name <name>` | Name for the migration (used in directory name) |
+| `--create-only` | Generate migration file without applying it     |
+
+> **Prisma 7:** `--skip-seed` and `--skip-generate` were **removed**, because the
+> behaviour they suppressed was removed with them. `migrate dev` no longer
+> regenerates Prisma Client and no longer seeds after a reset; run
+> `prisma generate` and the seed command explicitly. The same removal applies to
+> `--skip-generate` on `db push`.
 
 **What it does:**
 
 1. Creates a shadow database to compute the diff
 2. Generates a `migration.sql` file in `prisma/migrations/`
 3. Applies the migration to your development database
-4. Regenerates the Prisma Client (unless `--skip-generate`)
-5. Runs the seed script if the database was reset (unless `--skip-seed`)
+
+In Prisma 6 it then regenerated Prisma Client and, after a reset, ran the seed
+script. Prisma 7 does neither: both are explicit steps now.
 
 **When to use:** Every time you change `schema.prisma` during development.
 
@@ -440,7 +446,7 @@ npx prisma migrate dev --create-only --name add_product_description
 npx prisma migrate dev
 ```
 
-> **Prisma 7 note:** `prisma migrate dev` no longer automatically runs the seed script after reset. You must run `npx prisma db seed` manually or use the `--skip-seed` flag to suppress the "no seed configured" warning.
+> **Prisma 7 note:** `prisma migrate dev` no longer runs the seed script after a reset, and no longer regenerates Prisma Client. Run `npx prisma db seed` and `npx prisma generate` explicitly. The `--skip-seed` and `--skip-generate` flags that used to suppress those steps were removed along with them.
 
 ### 2.2 `prisma migrate deploy`
 
@@ -489,11 +495,12 @@ echo $?  # 0 = success, non-zero = failure
 npx prisma migrate reset [options]
 ```
 
-| Flag              | Description                     |
-| ----------------- | ------------------------------- |
-| `--skip-seed`     | Skip running the seed script    |
-| `--skip-generate` | Skip regenerating Prisma Client |
-| `--force`         | Skip the confirmation prompt    |
+| Flag      | Description                  |
+| --------- | ---------------------------- |
+| `--force` | Skip the confirmation prompt |
+
+`--skip-seed` and `--skip-generate` were removed in Prisma 7; reset no longer
+seeds or regenerates on its own.
 
 **When to use:**
 
@@ -582,17 +589,18 @@ npx prisma migrate diff --from-<source> --to-<target> [--script]
 
 **Source/target options:**
 
-| Flag                      | Description                                    |
-| ------------------------- | ---------------------------------------------- |
-| `--from-empty`            | Empty database (no tables)                     |
-| `--from-schema-datamodel` | The Prisma schema file                         |
-| `--from-migrations`       | The migration history directory                |
-| `--from-url`              | A live database URL                            |
-| `--to-empty`              | Empty database (no tables)                     |
-| `--to-schema-datamodel`   | The Prisma schema file                         |
-| `--to-migrations`         | The migration history directory                |
-| `--to-url`                | A live database URL                            |
-| `--script`                | Output SQL (instead of human-readable summary) |
+| Flag                                                  | Description                                                    |
+| ----------------------------------------------------- | -------------------------------------------------------------- |
+| `--from-empty` / `--to-empty`                         | Empty database (no tables)                                     |
+| `--from-schema` / `--to-schema`                       | The models in a Prisma schema file, given a path               |
+| `--from-migrations` / `--to-migrations`               | The migration history directory                                |
+| `--from-config-datasource` / `--to-config-datasource` | The live database `prisma.config.ts` points at. Takes no path. |
+| `--script`                                            | Output SQL (instead of human-readable summary)                 |
+
+> **Prisma 7:** `--from-url`, `--to-url`, `--from-schema-datasource` and
+> `--to-schema-datasource` were **removed**, and `--from-schema-datamodel` /
+> `--to-schema-datamodel` are now spelled `--from-schema` / `--to-schema`. A
+> `migrate diff` command copied from a Prisma 6 article will fail outright.
 
 **Common use cases:**
 
@@ -600,7 +608,7 @@ npx prisma migrate diff --from-<source> --to-<target> [--script]
 # 1. Preview what SQL a migration would generate
 npx prisma migrate diff \
   --from-migrations ./prisma/migrations \
-  --to-schema-datamodel ./prisma/schema.prisma \
+  --to-schema prisma/schema.prisma \
   --script
 
 # 2. Detect drift between your database and migration history
@@ -617,7 +625,7 @@ npx prisma migrate diff \
 
 # 4. Generate a rollback script (reverse the last migration)
 npx prisma migrate diff \
-  --from-schema-datamodel ./prisma/schema.prisma \
+  --from-schema prisma/schema.prisma \
   --to-migrations ./prisma/migrations \
   --script > rollback.sql
 
@@ -642,7 +650,9 @@ npx prisma db push [options]
 | -------------------- | --------------------------------------------------- |
 | `--force-reset`      | Force a database reset if schema changes require it |
 | `--accept-data-loss` | Accept data loss from destructive changes           |
-| `--skip-generate`    | Skip regenerating Prisma Client                     |
+
+The `--skip-generate` flag was removed in Prisma 7, because `db push` no longer
+regenerates Prisma Client at all.
 
 **What it does:**
 
@@ -718,8 +728,11 @@ npx prisma generate
 
 **When it runs automatically:**
 
-- After `prisma migrate dev` (unless `--skip-generate`)
-- After `prisma db push` (unless `--skip-generate`)
+In Prisma 6, after `prisma migrate dev` and `prisma db push`. In Prisma 7,
+**never** — both commands stopped generating, and `--skip-generate` was removed
+with the behaviour. Every schema change now needs an explicit `prisma generate`,
+which is the single most common cause of a "property does not exist on type"
+error after upgrading.
 
 **When to run manually:**
 
@@ -803,18 +816,19 @@ flowchart TD
 
 ### 4.1 Safe Operations (No Data Loss)
 
-| Operation                                | Migration Required? | What Happens to Existing Data                  |
-| ---------------------------------------- | ------------------- | ---------------------------------------------- |
-| Add a new model                          | Yes                 | Creates a new table. No data affected.         |
-| Add an optional field (`String?`)        | Yes                 | Existing rows get `NULL`.                      |
-| Add a field with `@default(value)`       | Yes                 | Existing rows get the default value.           |
-| Add a new index (`@@index`)              | Yes                 | Index is built from existing data. No loss.    |
-| Add a new enum value                     | Yes                 | Enum type is extended. No rows affected.       |
-| Add a `@@unique` constraint              | Yes\*               | Fails if duplicate values exist. See note.     |
-| Add an optional relation field           | Yes                 | New FK column added, existing rows get `NULL`. |
-| Reorder fields in schema                 | No                  | Field order in schema doesn't affect DB.       |
-| Change `@updatedAt` / `@default(now())`  | No                  | These are Prisma client behaviors, not DB.     |
-| Add `@@map` or `@map` (without renaming) | No\*                | Maps Prisma name to existing DB name.          |
+| Operation                                | Migration Required? | What Happens to Existing Data                                              |
+| ---------------------------------------- | ------------------- | -------------------------------------------------------------------------- |
+| Add a new model                          | Yes                 | Creates a new table. No data affected.                                     |
+| Add an optional field (`String?`)        | Yes                 | Existing rows get `NULL`.                                                  |
+| Add a field with `@default(value)`       | Yes                 | Existing rows get the default value.                                       |
+| Add a new index (`@@index`)              | Yes                 | Index is built from existing data. No loss.                                |
+| Add a new enum value                     | Yes                 | Enum type is extended. No rows affected.                                   |
+| Add a `@@unique` constraint              | Yes\*               | Fails if duplicate values exist. See note.                                 |
+| Add an optional relation field           | Yes                 | New FK column added, existing rows get `NULL`.                             |
+| Reorder fields in schema                 | No                  | Field order in schema doesn't affect DB.                                   |
+| Change `@updatedAt`                      | No                  | Prisma Client sets this at write time.                                     |
+| Change `@default(now())`                 | **Yes**             | Compiles to a column `DEFAULT now()` in PostgreSQL, so changing it is DDL. |
+| Add `@@map` or `@map` (without renaming) | No\*                | Maps Prisma name to existing DB name.                                      |
 
 \* Adding `@@unique` is safe only if no duplicate values exist in the column. If duplicates exist, the migration will fail.
 
@@ -1235,10 +1249,14 @@ This generates an `ALTER TABLE` that changes the FK constraint. No existing data
 
 **Always set `onDelete` explicitly.** Prisma's defaults can surprise you:
 
-| Relation Type  | Prisma Default                   | Recommended                         |
-| -------------- | -------------------------------- | ----------------------------------- |
-| Required (1:N) | `Cascade` (child FK is NOT NULL) | Set explicitly based on your domain |
-| Optional (1:N) | `SetNull`                        | Set explicitly based on your domain |
+| Relation Type  | Prisma Default | Recommended                         |
+| -------------- | -------------- | ----------------------------------- |
+| Required (1:N) | `Restrict`     | Set explicitly based on your domain |
+| Optional (1:N) | `SetNull`      | Set explicitly based on your domain |
+
+Note that these are the `onDelete` defaults. `onUpdate` defaults to `Cascade`
+for both required and optional relations, which is a separate setting and a
+different default — do not assume the two match.
 
 Common `onDelete` strategies:
 
@@ -1295,7 +1313,6 @@ These changes only affect the Prisma Client, not the database:
 | Changing relation names (`@relation("name")`)    | Relation names are Prisma-level, not in DB   |
 | Adding `@@map`/`@map` to match existing DB names | Maps Prisma names to existing columns/tables |
 | Changing `@updatedAt`                            | Handled by Prisma Client at write time       |
-| Changing `@default(now())`                       | Handled by Prisma Client or DB default       |
 | Reordering fields in schema                      | Schema field order doesn't affect DB         |
 | Adding comments (`///` doc comments)             | Comments are Prisma metadata only            |
 | Changing Prisma Client generator settings        | Only affects generated code, not DB          |
@@ -1829,7 +1846,7 @@ Before applying a migration, generate a rollback script:
 # BEFORE applying the migration, save the current state
 # Generate rollback SQL: from new schema back to current migrations
 npx prisma migrate diff \
-  --from-schema-datamodel ./prisma/schema.prisma \
+  --from-schema prisma/schema.prisma \
   --to-migrations ./prisma/migrations \
   --script > rollback.sql
 
@@ -1963,7 +1980,7 @@ npx prisma migrate dev --create-only --name add_inventory_tracking
 
 # 2. Generate rollback script BEFORE applying
 npx prisma migrate diff \
-  --from-schema-datamodel ./prisma/schema.prisma \
+  --from-schema prisma/schema.prisma \
   --to-migrations ./prisma/migrations \
   --script > prisma/migrations/20260320_add_inventory_tracking/rollback.sql
 
@@ -2082,8 +2099,8 @@ Most production PostgreSQL setups use a connection pooler (PgBouncer, Supavisor,
 ```typescript
 export default defineConfig({
   datasource: {
-    url: env("DIRECT_URL"), // Used by CLI commands (migrations)
-    directUrl: env("DIRECT_URL"), // Explicit direct URL
+    url: env("DIRECT_URL"), // Used by CLI commands (migrations). This IS the
+    // direct connection; prisma.config.ts has no separate `directUrl` key.
   },
 });
 ```
@@ -2251,7 +2268,7 @@ mkdir -p prisma/migrations/0_squashed
 
 npx prisma migrate diff \
   --from-empty \
-  --to-schema-datamodel ./prisma/schema.prisma \
+  --to-schema prisma/schema.prisma \
   --script > prisma/migrations/0_squashed/migration.sql
 
 # 4. In each environment that already has all migrations applied:
@@ -2475,7 +2492,7 @@ mkdir -p prisma/migrations/0_init_supabase
 
 npx prisma migrate diff \
   --from-empty \
-  --to-schema-datamodel prisma/schema.prisma \
+  --to-schema prisma/schema.prisma \
   --script > prisma/migrations/0_init_supabase/migration.sql
 
 # 4. Mark as already applied
@@ -2574,7 +2591,7 @@ migrations: {
 npx prisma db seed
 ```
 
-The `--skip-seed` and `--skip-generate` flags were removed from some commands since seeding no longer auto-runs.
+The `--skip-seed` and `--skip-generate` flags were removed from `migrate dev`, `migrate reset` and `db push`, because neither seeding nor client generation runs automatically any more.
 
 ### 13.5 Migration Commands Are Unchanged
 
@@ -2648,7 +2665,7 @@ npx prisma migrate resolve --applied "0_baseline"
 # Check what's wrong
 npx prisma migrate diff \
   --from-migrations ./prisma/migrations \
-  --to-schema-datamodel ./prisma/schema.prisma \
+  --to-schema prisma/schema.prisma \
   --script
 ```
 

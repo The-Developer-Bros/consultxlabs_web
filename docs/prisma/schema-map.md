@@ -1333,14 +1333,14 @@ Commercial structure: `BillingAccount` → `Contract` → `Program` → `Program
 > terminate-replace; `Contract.autoRenew` + `autoRenewedAt` (renewal cron claim
 > gate); `Program.configLockedAt` (money-config lock, stamped at first
 > assignment) + `archivedAt` (soft-delete); `ProgramAssignment.status`
-> (`AssignmentStatus`) + `consumedPaise` (CREDIT_POOL money-meter) +
+> (`AssignmentStatus`) + `consumedPaise` (CREDIT*POOL money-meter) +
 > `rolledToAssignmentId` @unique self-relation (cycle-engine rollover);
 > `LicensedSeatConfig`/`CreditPoolConfig.{overageSurchargeBps,
 maxOveragePerCyclePaise}` (surcharge + circuit-breaker); `OverageEvent`
 > (append-only over-cap charge ledger, `basePaise`+`surchargePaise`=`marginalPaise`);
 > and `BillingAccount.{minBalancePaise, autoTopUpEnabled, autoTopUpAmountPaise,
 autoTopUpMandateId}` (wallet floor + auto-top-up). Top-up lifecycle is
-> `WalletTopUp` (PENDING→CONFIRMED/FAILED) — the wallet _balance_ itself is a
+> `WalletTopUp` (PENDING→CONFIRMED/FAILED) — the wallet \_balance* itself is a
 > credit-normal liability in the double-entry ledger, not a standalone table.
 
 ```mermaid

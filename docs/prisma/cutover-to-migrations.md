@@ -61,7 +61,7 @@ mkdir -p prisma/migrations/0_init
 
 npx prisma migrate diff \
   --from-empty \
-  --to-schema-datamodel prisma/schema.prisma \
+  --to-schema prisma/schema.prisma \
   --script > prisma/migrations/0_init/migration.sql
 ```
 
@@ -210,8 +210,8 @@ npx prisma migrate status
 
 # 2. No difference remains between the schema file and the database.
 npx prisma migrate diff \
-  --from-schema-datamodel prisma/schema.prisma \
-  --to-schema-datasource prisma/schema.prisma \
+  --from-schema prisma/schema.prisma \
+  --to-config-datasource \
   --script
 # Expect empty output.
 

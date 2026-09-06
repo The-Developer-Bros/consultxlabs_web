@@ -22,13 +22,17 @@ highest class it touches.
 ## PostgreSQL lock classes, in the order that matters
 
 The lock a statement takes is the difference between a schema change and an
-incident, so it is worth knowing the three that come up in practice.
+incident, so it is worth knowing the four that come up in practice. Note that
+the concurrent variant of a statement takes a weaker lock than the plain one,
+which is the whole reason the concurrent variants exist.
 
-| Lock                     | Blocks                                | Taken by                                                                                            |
-| ------------------------ | ------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `ACCESS EXCLUSIVE`       | Everything, including plain `SELECT`. | Most `ALTER TABLE` forms, `DROP`, `TRUNCATE`, `CREATE INDEX` without `CONCURRENTLY`, `VACUUM FULL`. |
-| `SHARE UPDATE EXCLUSIVE` | Other DDL, but not reads or writes.   | `CREATE INDEX CONCURRENTLY`, `VALIDATE CONSTRAINT`, `ALTER TABLE ... SET STATISTICS`.               |
-| `ROW EXCLUSIVE`          | Only DDL.                             | Ordinary `INSERT`, `UPDATE`, `DELETE` — the application's normal traffic.                           |
+| Lock                     | Blocks                                | Taken by                                                                                                           |
+| ------------------------ | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `ACCESS EXCLUSIVE`       | Everything, including plain `SELECT`. | Most `ALTER TABLE` forms, `DROP TABLE`, `DROP INDEX` without `CONCURRENTLY`, `TRUNCATE`, `REINDEX`, `VACUUM FULL`. |
+| `SHARE`                  | Writes, but not reads.                | `CREATE INDEX` without `CONCURRENTLY`.                                                                             |
+| `SHARE ROW EXCLUSIVE`    | Writes and other DDL, but not reads.  | `ALTER TABLE ... ADD FOREIGN KEY`, on both tables. Also `CREATE TRIGGER`.                                          |
+| `SHARE UPDATE EXCLUSIVE` | Other DDL, but not reads or writes.   | `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, `VALIDATE CONSTRAINT`, `ALTER TABLE ... SET STATISTICS`.   |
+| `ROW EXCLUSIVE`          | Only DDL that conflicts with it.      | Ordinary `INSERT`, `UPDATE`, `DELETE` — the application's normal traffic.                                          |
 
 Two properties of PostgreSQL locking cause nearly all migration outages. The
 first is that lock acquisition is a FIFO queue, so a pending `ACCESS EXCLUSIVE`
@@ -54,17 +58,17 @@ designed. Retry it a few seconds later rather than raising the timeout.
 Additive changes are the ones worth batching together and shipping often,
 because almost all of them are free.
 
-| Change                                   | Class       | Lock and cost                                                                      | Notes                                                                                                                     |
-| ---------------------------------------- | ----------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| Add a table                              | Free        | None on existing tables.                                                           | Nothing references it yet, so it can ship arbitrarily early.                                                              |
-| Add a nullable column                    | Free        | `ACCESS EXCLUSIVE`, held for microseconds — a catalog write only.                  | The default and correct way to introduce any new field.                                                                   |
-| Add a column with a constant default     | Free        | `ACCESS EXCLUSIVE`, microseconds, on PostgreSQL 11 and later.                      | The default is stored in `pg_attribute.attmissingval` and materialised on read, so no rows are rewritten.                 |
-| Add a column with a **volatile** default | Destructive | `ACCESS EXCLUSIVE` for a full table rewrite.                                       | `now()` is fine because it is stable within a statement; `clock_timestamp()`, `random()` and `gen_random_uuid()` are not. |
-| Add an index                             | Ordered     | `ACCESS EXCLUSIVE` for the whole build unless created concurrently.                | Always use `CREATE INDEX CONCURRENTLY` on a populated table; see the concurrency note below.                              |
-| Add a `CHECK` constraint                 | Ordered     | `ACCESS EXCLUSIVE` and a full scan, unless added `NOT VALID` first.                | Add `NOT VALID`, then `VALIDATE CONSTRAINT` separately under a weaker lock.                                               |
-| Add a foreign key                        | Ordered     | `ACCESS EXCLUSIVE` on **both** tables plus a scan, unless added `NOT VALID` first. | Same two-step treatment as a `CHECK`, and remember the child column needs an index or every parent delete scans it.       |
-| Add a unique constraint                  | Ordered     | `ACCESS EXCLUSIVE` for the implicit index build.                                   | Build the unique index concurrently first, then attach it as a constraint — see the recipe below.                         |
-| Add an enum value (PostgreSQL)           | Free        | No table lock.                                                                     | `ALTER TYPE ... ADD VALUE` could not run inside a transaction block before PostgreSQL 12; see `prisma-mechanics.md`.      |
+| Change                                   | Class       | Lock and cost                                                                                    | Notes                                                                                                                     |
+| ---------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| Add a table                              | Free        | None on existing tables.                                                                         | Nothing references it yet, so it can ship arbitrarily early.                                                              |
+| Add a nullable column                    | Free        | `ACCESS EXCLUSIVE`, held for microseconds — a catalog write only.                                | The default and correct way to introduce any new field.                                                                   |
+| Add a column with a constant default     | Free        | `ACCESS EXCLUSIVE`, microseconds, on PostgreSQL 11 and later.                                    | The default is stored in `pg_attribute.attmissingval` and materialised on read, so no rows are rewritten.                 |
+| Add a column with a **volatile** default | Destructive | `ACCESS EXCLUSIVE` for a full table rewrite.                                                     | `now()` is fine because it is stable within a statement; `clock_timestamp()`, `random()` and `gen_random_uuid()` are not. |
+| Add an index                             | Ordered     | `SHARE` for the whole build, which blocks writes but not reads, unless created concurrently.     | Always use `CREATE INDEX CONCURRENTLY` on a populated table; see the concurrency note below.                              |
+| Add a `CHECK` constraint                 | Ordered     | `ACCESS EXCLUSIVE` and a full scan, unless added `NOT VALID` first.                              | Add `NOT VALID`, then `VALIDATE CONSTRAINT` separately under a weaker lock.                                               |
+| Add a foreign key                        | Ordered     | `SHARE ROW EXCLUSIVE` on **both** tables plus a validating scan, unless added `NOT VALID` first. | Same two-step treatment as a `CHECK`, and remember the child column needs an index or every parent delete scans it.       |
+| Add a unique constraint                  | Ordered     | `ACCESS EXCLUSIVE` for the implicit index build.                                                 | Build the unique index concurrently first, then attach it as a constraint — see the recipe below.                         |
+| Add an enum value (PostgreSQL)           | Free        | No table lock.                                                                                   | `ALTER TYPE ... ADD VALUE` could not run inside a transaction block before PostgreSQL 12; see `prisma-mechanics.md`.      |
 
 ### Adding an index without locking the table
 
@@ -180,13 +184,26 @@ old instance fails at the constraint. That ordering is the subject of
 Removal is the step everyone wants to bundle with the change that made it
 redundant, and bundling them is precisely what breaks the deploy.
 
-| Change                            | Class       | Lock and cost                                        | Notes                                                                                                                 |
-| --------------------------------- | ----------- | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| Drop a column                     | Destructive | `ACCESS EXCLUSIVE`, microseconds — but irreversible. | Cheap for the database and fatal for any deployed code still selecting it. `SELECT *` in an ORM selects every column. |
-| Drop a table                      | Destructive | `ACCESS EXCLUSIVE`, irreversible.                    | Ship only after nothing has read it for a full retention window.                                                      |
-| Drop an index                     | Ordered     | `ACCESS EXCLUSIVE`; use `DROP INDEX CONCURRENTLY`.   | Reversible, but rebuilding a large index takes time you may not have during an incident.                              |
-| Drop a constraint                 | Free        | `ACCESS EXCLUSIVE`, microseconds.                    | Reversible, though re-adding it requires a validation pass.                                                           |
-| Remove an enum value (PostgreSQL) | Destructive | Requires recreating the type.                        | PostgreSQL has no `ALTER TYPE ... DROP VALUE`; see `prisma-mechanics.md`.                                             |
+| Change                            | Class       | Lock and cost                                                                                                                                     | Notes                                                                                                                 |
+| --------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Drop a column                     | Destructive | `ACCESS EXCLUSIVE`, microseconds — but irreversible.                                                                                              | Cheap for the database and fatal for any deployed code still selecting it. `SELECT *` in an ORM selects every column. |
+| Drop a table                      | Destructive | `ACCESS EXCLUSIVE`, irreversible.                                                                                                                 | Ship only after nothing has read it for a full retention window.                                                      |
+| Drop an index                     | Ordered     | `ACCESS EXCLUSIVE` for a plain `DROP INDEX`; `DROP INDEX CONCURRENTLY` takes only `SHARE UPDATE EXCLUSIVE` and cannot run in a transaction block. | Reversible, but rebuilding a large index takes time you may not have during an incident.                              |
+| Drop a constraint                 | Destructive | `ACCESS EXCLUSIVE`, microseconds.                                                                                                                 | Structurally reversible, semantically not: see the note below.                                                        |
+| Remove an enum value (PostgreSQL) | Destructive | Requires recreating the type.                                                                                                                     | PostgreSQL has no `ALTER TYPE ... DROP VALUE`; see `prisma-mechanics.md`.                                             |
+
+Dropping a constraint deserves its own note, because the lock cost makes it look
+free and it is not. The statement is instant and the constraint can be re-added
+afterwards, so the _structure_ is reversible — but from the moment it is dropped
+PostgreSQL stops enforcing the invariant, and every write accepted in the
+interval can be one the constraint existed to reject. Re-adding it then fails on
+the rows that were admitted while it was gone, and the repair is a data-cleanup
+exercise rather than a migration. Classify the change by the invariant being
+removed rather than by the lock: dropping a `CHECK` that keeps a payment's legs
+summing to its amount is not in the same category as dropping a constraint that
+a later migration immediately replaces with a stricter one. The former needs the
+same review as any destructive change, and in this repository those constraints
+live in `prisma/sql/` precisely so that removing one is a visible edit.
 
 The safe removal sequence is always the same. Stop reading the column in
 application code and deploy that. Stop writing it and deploy that. Wait long

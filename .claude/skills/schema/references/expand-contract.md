@@ -54,8 +54,12 @@ below is the shortest safe path, and it is what the Prisma maintainers
 themselves describe.
 
 **Deploy 1 — expand.** Add the new column as nullable. Do not touch the old one.
-The migration is additive, so it can be applied before, during, or after the
-code deploy without risk.
+
+The migration is additive, so no _already deployed_ code can break — but it must
+still run **before** the code that writes the new column, because an instance
+that starts writing `phoneNumber` while the column does not yet exist fails on
+every write. Additive means the database leads; it does not mean the order is
+free.
 
 ```sql
 ALTER TABLE "User" ADD COLUMN "phoneNumber" TEXT;
@@ -76,14 +80,21 @@ SELECT count(*) FROM "User" WHERE "phone" IS NOT NULL AND "phoneNumber" IS NULL;
 ```
 
 **Deploy 2 — cut over.** Move reads to the new column while continuing to write
-both. Keep the old column in the Prisma schema, marked `@ignore` so the client
-stops exposing it while the database keeps it. If the new column is meant to be
-required, this is where the `NOT NULL` recipe from `change-catalog.md` runs —
-after the backfill has proven there are no nulls, and after every writer
-populates it.
+both. Leave the old field in the Prisma schema as an ordinary field: `@ignore`
+removes it from the generated client entirely, so a field marked `@ignore`
+cannot be dual-written, and applying it here would silently stop `phone` being
+maintained — which is precisely the data the revert path depends on. `@ignore`
+belongs in deploy 3, after writes to the old column have stopped, as the step
+that proves nothing in the codebase still references it.
 
-**Deploy 3 — contract.** Stop writing the old column, remove it from the Prisma
-schema, and drop it. Take a backup first: this is the irreversible step.
+If the new column is meant to be required, this is where the `NOT NULL` recipe
+from `change-catalog.md` runs — after the backfill has proven there are no
+nulls, and after every writer populates it.
+
+**Deploy 3 — contract.** Stop writing the old column. Mark it `@ignore` and
+regenerate, which turns any remaining reference into a compile error rather than
+a runtime surprise; once that is clean, remove it from the schema and drop it.
+Take a backup first: this is the irreversible step.
 
 ```sql
 ALTER TABLE "User" DROP COLUMN "phone";
@@ -219,26 +230,31 @@ async function main() {
   let moved = 0;
 
   for (;;) {
-    // Selecting by "not yet backfilled" rather than by offset is what makes
-    // this restartable: an interrupted run resumes exactly where it stopped.
-    const batch = await prisma.user.findMany({
-      where: { phone: { not: null }, phoneNumber: null },
-      select: { id: true, phone: true },
-      take: BATCH_SIZE,
-    });
+    // One statement, so the value written is the value the row holds at write
+    // time. Reading with findMany and writing row.phone back would race the
+    // dual-writer: a concurrent update between the read and the write would be
+    // overwritten with the stale value the backfill had already read.
+    //
+    // "phoneNumber" IS NULL is the compare-and-set predicate — a row the
+    // dual-writer has already populated is left alone. Selecting the batch by
+    // that same predicate rather than by offset is what makes this restartable.
+    // SKIP LOCKED steps over rows another transaction is holding instead of
+    // blocking behind them.
+    const moved_in_batch = await prisma.$executeRaw`
+      UPDATE "User" AS u
+      SET "phoneNumber" = u."phone"
+      WHERE u."id" IN (
+        SELECT "id" FROM "User"
+        WHERE "phone" IS NOT NULL AND "phoneNumber" IS NULL
+        LIMIT ${BATCH_SIZE}
+        FOR UPDATE SKIP LOCKED
+      )
+      AND u."phoneNumber" IS NULL
+    `;
 
-    if (batch.length === 0) break;
+    if (moved_in_batch === 0) break;
 
-    await prisma.$transaction(
-      batch.map((row) =>
-        prisma.user.update({
-          where: { id: row.id },
-          data: { phoneNumber: row.phone },
-        }),
-      ),
-    );
-
-    moved += batch.length;
+    moved += moved_in_batch;
     console.log(`backfilled ${moved}`);
     await new Promise((resolve) => setTimeout(resolve, PAUSE_MS));
   }
@@ -255,15 +271,22 @@ void main().finally(() => prisma.$disconnect());
 
 The pattern Prisma's own data-migration guide shows — loading every row with
 `findMany()` and updating each inside a single `$transaction` — is correct for a
-development database and dangerous for a production one, because it holds one
+development database and wrong for a production one twice over. It holds one
 transaction open for the entire run and rolls the whole thing back on any
-failure. Batch it.
+failure, and it reads each value before writing it, so a dual-writer that
+updates a row in between has its value silently overwritten by the stale one.
 
-Where the transformation is expressible in SQL and the table is large, a batched
-`UPDATE ... WHERE id IN (SELECT ... LIMIT n)` in a loop moves far more rows per
-second than a row-by-row client-side update. That is the one place in this
-codebase where raw SQL beats the ORM decisively, and the reason is throughput
-rather than expressiveness.
+Raw SQL is the right tool here, despite the general preference for the ORM in
+this codebase, and for two reasons rather than one. Setting a column from
+another column in the same statement is not expressible through the Prisma
+Client at all, and that single statement is what makes the write race-free. The
+throughput of a set-based `UPDATE` over a row-by-row client loop is the
+secondary benefit.
+
+Where the transformation genuinely needs application logic — parsing, calling
+out to a service, anything SQL cannot express — read and write in the same short
+transaction with a `WHERE` predicate that still asserts the target is unset, so
+that a concurrent writer causes the row to be skipped rather than clobbered.
 
 Always finish with the verification query. A backfill that reports success
 without a count of remaining rows has not been verified, and the cut-over is the

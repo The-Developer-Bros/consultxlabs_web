@@ -56,9 +56,12 @@ cannot be one step: at the moment the column is renamed, the still-running old
 code selects a column that no longer exists.
 
 **Additive changes are cheap; destructive changes are expensive; there is no
-third category.** Adding a nullable column, adding a table, and adding an index
-concurrently are all safe to ship whenever you like, because no deployed code
-depends on them. Dropping a column, renaming anything, tightening a type, and
+third category.** Adding a nullable column, adding a table, and building a
+non-unique index concurrently are all safe to ship whenever you like, because no
+deployed code depends on them. A concurrent **unique** index is the exception
+that proves the rule: it fails outright if duplicates already exist, and it
+rejects conflicting writes while it is still being built, so it belongs with the
+ordered changes and follows the recipe in `references/change-catalog.md`. Dropping a column, renaming anything, tightening a type, and
 adding a `NOT NULL` constraint to a populated table are all destructive, because
 each of them can break code that is still running or reject rows that already
 exist. Classify the change before writing the DDL, not after.
