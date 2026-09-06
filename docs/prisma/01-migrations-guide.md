@@ -495,12 +495,16 @@ echo $?  # 0 = success, non-zero = failure
 npx prisma migrate reset [options]
 ```
 
-| Flag      | Description                  |
-| --------- | ---------------------------- |
-| `--force` | Skip the confirmation prompt |
+| Flag              | Description                                      |
+| ----------------- | ------------------------------------------------ |
+| `--force`         | Skip the confirmation prompt                     |
+| `--skip-generate` | Skip triggering generators, including the client |
+| `--skip-seed`     | Skip triggering the seed script                  |
 
-`--skip-seed` and `--skip-generate` were removed in Prisma 7; reset no longer
-seeds or regenerates on its own.
+> **Prisma 7:** `migrate reset` is the exception — it **keeps** both flags, and
+> still seeds and regenerates unless you pass them. It was `migrate dev` and
+> `db push` that lost `--skip-generate`, and `migrate dev` that lost
+> `--skip-seed`, because those commands stopped generating and seeding at all.
 
 **When to use:**
 
@@ -658,7 +662,11 @@ regenerates Prisma Client at all.
 
 1. Compares your `schema.prisma` against the actual database
 2. Applies the necessary SQL directly (no migration file created)
-3. Regenerates Prisma Client
+
+It does **not** regenerate Prisma Client. Prisma 6 did; Prisma 7 removed that
+step along with the `--skip-generate` flag that used to suppress it, so a schema
+change followed only by `db push` leaves a stale client and the resulting type
+or runtime error appears far from its cause. Run `prisma generate` explicitly.
 
 **When to use:**
 
@@ -772,17 +780,17 @@ git add prisma/schema.prisma  # Re-stage if format changed anything
 
 ### Comparison Table
 
-| Feature                   | `migrate dev`     | `db push`                | `migrate deploy`      |
-| ------------------------- | ----------------- | ------------------------ | --------------------- |
-| Creates migration files   | Yes               | **No**                   | No (applies existing) |
-| Uses shadow database      | Yes               | No                       | No                    |
-| Safe for production       | **No**            | **No**                   | Yes                   |
-| Handles existing data     | Via migration SQL | May prompt for data loss | Via migration SQL     |
-| Prompts user              | Yes               | Yes                      | **No**                |
-| Team-friendly             | Yes               | **No**                   | Yes                   |
-| Can reset database        | Yes (with prompt) | Yes (with flag)          | **No**                |
-| Records migration history | Yes               | **No**                   | Yes                   |
-| Regenerates Prisma Client | Yes               | Yes                      | **No**                |
+| Feature                   | `migrate dev`          | `db push`                | `migrate deploy`      |
+| ------------------------- | ---------------------- | ------------------------ | --------------------- |
+| Creates migration files   | Yes                    | **No**                   | No (applies existing) |
+| Uses shadow database      | Yes                    | No                       | No                    |
+| Safe for production       | **No**                 | **No**                   | Yes                   |
+| Handles existing data     | Via migration SQL      | May prompt for data loss | Via migration SQL     |
+| Prompts user              | Yes                    | Yes                      | **No**                |
+| Team-friendly             | Yes                    | **No**                   | Yes                   |
+| Can reset database        | Yes (with prompt)      | Yes (with flag)          | **No**                |
+| Records migration history | Yes                    | **No**                   | Yes                   |
+| Regenerates Prisma Client | **No** (Prisma 6: yes) | **No** (Prisma 6: yes)   | **No**                |
 
 ### Decision Flowchart
 

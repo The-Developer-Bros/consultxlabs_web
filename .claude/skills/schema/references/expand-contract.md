@@ -75,9 +75,23 @@ under "Backfilling" below. Run it to completion, then verify that no row remains
 with the old column populated and the new one null.
 
 ```sql
+-- Neither of these may return a row before the cut-over.
 SELECT count(*) FROM "User" WHERE "phone" IS NOT NULL AND "phoneNumber" IS NULL;
--- Must be 0 before proceeding.
+SELECT count(*) FROM "User" WHERE "phone" IS DISTINCT FROM "phoneNumber";
 ```
+
+The second query is the one people forget, and skipping it is how a cut-over
+reads stale data despite a clean backfill. **The dual write has to be atomic.**
+If a writer updates `phone`, and fails before updating `phoneNumber`, the row is
+left with a `phoneNumber` that is non-null and wrong. The backfill will not
+repair it, because the backfill only touches rows where `phoneNumber IS NULL`,
+and the first count above passes because the column is populated. Only an
+equality check finds it.
+
+So write both columns in one transaction — or, better, remove the possibility
+entirely with a database-side invariant, such as a trigger that mirrors the
+value, so that no application writer can put the two out of step regardless of
+what it does or forgets.
 
 **Deploy 2 — cut over.** Move reads to the new column while continuing to write
 both. Leave the old field in the Prisma schema as an ordinary field: `@ignore`
@@ -225,9 +239,11 @@ import prisma from "../../lib/prisma";
 
 const BATCH_SIZE = 1_000;
 const PAUSE_MS = 200;
+const MAX_IDLE_ROUNDS = 6;
 
 async function main() {
   let moved = 0;
+  let idleRounds = 0;
 
   for (;;) {
     // One statement, so the value written is the value the row holds at write
@@ -252,7 +268,26 @@ async function main() {
       AND u."phoneNumber" IS NULL
     `;
 
-    if (moved_in_batch === 0) break;
+    // A zero-row batch does NOT mean the backfill is finished. SKIP LOCKED
+    // returns nothing when every eligible row is momentarily locked by another
+    // transaction, so exiting here would stop early and report failure. Only a
+    // fresh eligibility count, after a backoff, can distinguish "done" from
+    // "contended".
+    if (moved_in_batch === 0) {
+      const eligible = await prisma.user.count({
+        where: { phone: { not: null }, phoneNumber: null },
+      });
+      if (eligible === 0) break;
+      idleRounds += 1;
+      if (idleRounds > MAX_IDLE_ROUNDS) {
+        throw new Error(
+          `${eligible} rows still eligible but permanently locked`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, PAUSE_MS * 2 ** idleRounds));
+      continue;
+    }
+    idleRounds = 0;
 
     moved += moved_in_batch;
     console.log(`backfilled ${moved}`);
