@@ -62,10 +62,7 @@ const mockPrisma = prisma as unknown as {
   slotOfAppointment: { count: jest.Mock };
 };
 
-const FUTURE_SLOTS = [
-  "2026-08-03T09:00:00.000Z",
-  "2026-08-03T09:30:00.000Z",
-];
+const FUTURE_SLOTS = ["2026-08-03T09:00:00.000Z", "2026-08-03T09:30:00.000Z"];
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -167,7 +164,7 @@ describe("manual allocation: transaction race window", () => {
     mockRevalidateConflictsFn.mockResolvedValue({ isValid: true, errors: [] });
 
     const mockTx = {
-      $queryRaw: jest.fn().mockResolvedValue([]),
+      $executeRaw: jest.fn().mockResolvedValue(0),
       slotOfAppointment: { count: jest.fn().mockResolvedValue(2) },
     };
     mockPrisma.$transaction.mockImplementation(
@@ -185,7 +182,7 @@ describe("manual allocation: transaction race window", () => {
     expect(result.success).toBe(false);
     expect(result.httpStatus).toBe(409);
     // The advisory lock is taken before the in-txn count
-    expect(mockTx.$queryRaw).toHaveBeenCalled();
+    expect(mockTx.$executeRaw).toHaveBeenCalled();
     expect(mockTx.slotOfAppointment.count).toHaveBeenCalled();
   });
 });
@@ -211,7 +208,7 @@ describe("requested allocation with initialAllocation", () => {
   it("re-checks the guard INSIDE the transaction and 409s", async () => {
     const mockTx = {
       // Advisory xact lock taken before the guard count (ADR B10 atomicity)
-      $queryRaw: jest.fn().mockResolvedValue([]),
+      $executeRaw: jest.fn().mockResolvedValue(0),
       slotOfAppointment: { count: jest.fn().mockResolvedValue(2) },
     };
     mockPrisma.$transaction.mockImplementation(

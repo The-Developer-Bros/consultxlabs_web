@@ -30,7 +30,9 @@ const withBundleAnalyzer =
  *   - `connect-src` opens WSS for Stream + HTTPS for the four payment
  *     gateways + Sentry + Resend + Upstash. Anything new must be
  *     added here AND in the matching client.
- *   - `frame-src` allows Razorpay's + Stripe's checkout iframes.
+ *   - `frame-src` allows Razorpay's + Stripe's checkout iframes; Razorpay
+ *     serves the live checkout iframe from `api.razorpay.com`, not just
+ *     `checkout.razorpay.com` (report-only violation on a real checkout).
  *   - `media-src` is the load-bearing entry for Stream call audio /
  *     video / recording playback.
  *
@@ -64,7 +66,7 @@ const CSP_DIRECTIVES = [
   "img-src 'self' data: https: blob:",
   "media-src 'self' blob: https://*.getstream.io https://*.stream-io-cdn.com https://*.stream-io-api.com",
   "style-src 'self' 'unsafe-inline'",
-  "frame-src 'self' https://checkout.razorpay.com https://js.stripe.com https://hooks.stripe.com",
+  "frame-src 'self' https://checkout.razorpay.com https://api.razorpay.com https://js.stripe.com https://hooks.stripe.com",
   "font-src 'self' data:",
   "report-uri /api/csp-report",
 ].join("; ");

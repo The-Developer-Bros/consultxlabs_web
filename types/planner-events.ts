@@ -69,6 +69,9 @@ export type ClassEvent = Omit<TClass, "classPlan"> & {
     price: number;
     faqs?: PlanFaqInput[];
   };
+  // #1346 — the planner route's slot include is windowed to ±24h of now, so
+  // the card's date reads this separately-fetched, unwindowed field instead.
+  firstSessionAt?: string | null;
 };
 
 // Consultant profile summary type for plan events

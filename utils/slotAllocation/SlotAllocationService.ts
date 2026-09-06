@@ -762,7 +762,8 @@ export class SlotAllocationService {
     eventId: string,
     idempotencyKey?: string,
   ): Promise<AllocationResult | null> {
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`initial-allocation:${eventType}:${eventId}`}, 42))`;
+    // $executeRaw, not $queryRaw: the function returns void, which the Prisma 7 adapter cannot deserialize (Sentry FAMILIARISE_WEB-2W).
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`initial-allocation:${eventType}:${eventId}`}, 42))`;
     const lockedReplay = await this.findIdempotentAllocation(
       eventType,
       eventId,

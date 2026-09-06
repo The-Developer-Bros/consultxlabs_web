@@ -54,10 +54,7 @@ const mockPrisma = prisma as unknown as {
   slotOfAppointment: { count: jest.Mock };
 };
 
-const FUTURE_SLOTS = [
-  "2026-08-03T09:00:00.000Z",
-  "2026-08-03T09:30:00.000Z",
-];
+const FUTURE_SLOTS = ["2026-08-03T09:00:00.000Z", "2026-08-03T09:30:00.000Z"];
 
 const richSubscription = {
   subscriptionPlan: {
@@ -249,19 +246,21 @@ describe("#1012 expectedTentativeSlotCount", () => {
       warnings: [],
     });
 
-    mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => {
-      const tx = {
-        $queryRaw: jest.fn().mockResolvedValue(undefined),
-        appointment: {
-          findMany: jest.fn().mockResolvedValue(confirmedAfterRace),
-          findFirst: jest.fn().mockResolvedValue(null),
-        },
-        slotOfAppointment: {
-          count: jest.fn().mockResolvedValue(0),
-        },
-      };
-      return fn(tx);
-    });
+    mockPrisma.$transaction.mockImplementation(
+      async (fn: (tx: unknown) => Promise<unknown>) => {
+        const tx = {
+          $executeRaw: jest.fn().mockResolvedValue(0),
+          appointment: {
+            findMany: jest.fn().mockResolvedValue(confirmedAfterRace),
+            findFirst: jest.fn().mockResolvedValue(null),
+          },
+          slotOfAppointment: {
+            count: jest.fn().mockResolvedValue(0),
+          },
+        };
+        return fn(tx);
+      },
+    );
 
     const result = await SlotAllocationService.allocate({
       eventType: "subscription",
