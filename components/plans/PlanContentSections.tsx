@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, CheckCircle2, Target, Package } from "lucide-react";
+import { ChevronDown, Check, Target, Package } from "lucide-react";
 import { groupCurriculumBySection } from "@/lib/labels/plan-labels";
 import { cn } from "@/utils/tailwind";
 
@@ -47,7 +47,10 @@ export function BulletList({
       <ul className="grid sm:grid-cols-2 gap-2.5">
         {items.map((item) => (
           <li key={item} className="flex items-start gap-2.5">
-            <CheckCircle2 className="w-4 h-4 text-emerald-500 flex-shrink-0 mt-0.5" />
+            <Check
+              className="mt-0.5 h-4 w-4 shrink-0 text-foreground"
+              strokeWidth={2}
+            />
             <span className="text-sm text-muted-foreground">{item}</span>
           </li>
         ))}
@@ -155,7 +158,10 @@ export function CurriculumOutline({
                             key={outcome}
                             className="flex items-start gap-2 text-[11px] text-muted-foreground"
                           >
-                            <CheckCircle2 className="w-3 h-3 text-emerald-500 flex-shrink-0 mt-0.5" />
+                            <Check
+                              className="mt-0.5 h-3 w-3 shrink-0 text-foreground"
+                              strokeWidth={2}
+                            />
                             {outcome}
                           </li>
                         ))}

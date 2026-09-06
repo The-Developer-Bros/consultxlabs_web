@@ -1,36 +1,39 @@
 import { Skeleton } from "@/components/ui/skeleton";
 
-/** Explore plan detail: image hero + 2/1 content + sticky sidebar. */
+/** Explore plan detail: dark title band + facts grid + content column + sidebar. */
 export function PlanDetailSkeleton() {
   return (
-    <main className="min-h-screen bg-muted">
-      <div className="relative h-[350px] w-full overflow-hidden bg-zinc-900 md:h-[400px]">
-        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent" />
-        <div className="absolute bottom-0 left-0 right-0 space-y-3 p-6 md:p-10">
-          <Skeleton className="h-6 w-24 rounded-full bg-zinc-700" />
-          <Skeleton className="h-10 w-full max-w-xl bg-zinc-700" />
-          <Skeleton className="h-4 w-64 bg-zinc-700" />
+    <main className="min-h-screen bg-background">
+      <section className="bg-zinc-950">
+        <div className="mx-auto flex min-h-[380px] max-w-[1600px] flex-col px-4 md:min-h-[440px] md:px-8 lg:px-12">
+          <div className="pt-6 md:pt-8">
+            <Skeleton className="h-4 w-28 bg-zinc-800" />
+          </div>
+          <div className="mt-auto space-y-4 pb-10 pt-10 md:pb-14 md:pt-16">
+            <div className="flex gap-2">
+              <Skeleton className="h-6 w-16 rounded-full bg-zinc-800" />
+              <Skeleton className="h-6 w-20 rounded-full bg-zinc-800" />
+            </div>
+            <Skeleton className="h-10 w-full max-w-2xl bg-zinc-800" />
+            <Skeleton className="h-5 w-full max-w-lg bg-zinc-800" />
+            <Skeleton className="h-8 w-44 bg-zinc-800" />
+          </div>
         </div>
-      </div>
-      <div className="mx-auto grid max-w-[92%] gap-8 py-8 lg:grid-cols-3 lg:py-12">
-        <div className="space-y-6 lg:col-span-2">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      </section>
+
+      <div className="mx-auto grid max-w-[1600px] gap-8 px-4 py-10 md:px-8 md:py-14 lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-12 lg:px-12">
+        <div className="space-y-6">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
             {[1, 2, 3, 4].map((i) => (
-              <Skeleton key={i} className="h-20 rounded-xl" />
+              <Skeleton key={i} className="h-20 rounded-2xl" />
             ))}
           </div>
-          <Skeleton className="h-8 w-48" />
-          <div className="space-y-3">
-            <Skeleton className="h-4 w-full" />
-            <Skeleton className="h-4 w-full" />
-            <Skeleton className="h-4 w-5/6" />
-            <Skeleton className="h-4 w-4/6" />
-          </div>
-          <Skeleton className="h-48 rounded-xl" />
+          <Skeleton className="h-48 rounded-2xl" />
+          <Skeleton className="h-64 rounded-2xl" />
         </div>
         <div className="space-y-4 lg:sticky lg:top-24 lg:self-start">
-          <Skeleton className="h-40 rounded-xl" />
-          <Skeleton className="h-64 rounded-xl" />
+          <Skeleton className="h-56 rounded-2xl" />
+          <Skeleton className="h-48 rounded-2xl" />
         </div>
       </div>
     </main>

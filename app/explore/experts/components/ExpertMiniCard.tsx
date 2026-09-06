@@ -2,10 +2,8 @@
 
 import { memo } from "react";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-import { Badge } from "@/components/ui/badge";
 import Link from "next/link";
-import { User, Star, ArrowRight, Flame, Clock, BadgeCheck, Globe } from "lucide-react";
-import { CompanyLogo } from "@/components/ui/company-logo";
+import { User, Star, Flame, Clock, BadgeCheck } from "lucide-react";
 import type { IConsultantCardData } from "@/types/consultant";
 
 interface ExpertMiniCardProps {
@@ -14,121 +12,83 @@ interface ExpertMiniCardProps {
 }
 
 function ExpertMiniCardImpl({ expert, badge }: ExpertMiniCardProps) {
+  const isTrending = badge === "trending";
+
   return (
     <Link
       href={`/explore/experts/${expert.id}`}
-      className="group flex-shrink-0 w-[260px] block"
+      className="group flex w-[240px] shrink-0 flex-col gap-3 rounded-2xl border border-border bg-card p-4 shadow-elevation-1 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:border-foreground/20 hover:shadow-elevation-2"
     >
-      <div className="bg-card rounded-2xl p-5 border border-border hover:border-border hover:shadow-lg transition-all duration-300 h-full flex flex-col">
-        {/* Badge */}
-        {badge && (
-          <div className="mb-3">
-            {/* Neutral taxonomy, not a status — monochrome, and unlike the
-                previous *-100/*-700 pairs these survive dark mode. */}
-            <span
-              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide ${
-                badge === "trending"
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-muted text-muted-foreground border border-border"
-              }`}
-            >
-              {badge === "trending" ? (
-                <Flame className="w-3 h-3" />
-              ) : (
-                <Clock className="w-3 h-3" />
-              )}
-              {badge === "trending" ? "Trending" : "New"}
-            </span>
-          </div>
-        )}
+      {badge && (
+        <span
+          className={`inline-flex w-fit items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium ${
+            isTrending
+              ? "border-transparent bg-foreground text-background"
+              : "border-border bg-background text-muted-foreground"
+          }`}
+        >
+          {isTrending ? (
+            <Flame className="h-3 w-3" />
+          ) : (
+            <Clock className="h-3 w-3" />
+          )}
+          {isTrending ? "Trending" : "New"}
+        </span>
+      )}
 
-        {/* Avatar + Name */}
-        <div className="flex items-center gap-3 mb-3">
-          <Avatar className="h-12 w-12 ring-2 ring-muted group-hover:ring-border transition-all">
-            <AvatarImage
-              src={expert.user.image || "/placeholder-user.jpg"}
-              alt={expert.user.name || "Expert"}
-              className="object-cover"
-            />
-            <AvatarFallback className="bg-primary text-primary-foreground">
-              <User className="h-6 w-6" />
-            </AvatarFallback>
-          </Avatar>
-          <div className="min-w-0">
+      <div className="flex items-center gap-3">
+        <Avatar className="h-11 w-11 shrink-0 ring-1 ring-border">
+          <AvatarImage
+            src={expert.user.image || "/placeholder-user.jpg"}
+            alt={expert.user.name || "Expert"}
+            className="object-cover"
+          />
+          <AvatarFallback className="bg-muted text-muted-foreground">
+            <User className="h-5 w-5" />
+          </AvatarFallback>
+        </Avatar>
+        <div className="min-w-0">
+          <div className="flex items-center gap-1">
+            <h3 className="line-clamp-1 text-sm font-semibold text-foreground">
+              {expert.user.name}
+            </h3>
+            {expert.isVerified && (
+              <span title="Verified by Familiarise" className="shrink-0">
+                <BadgeCheck className="h-3.5 w-3.5 text-foreground" />
+              </span>
+            )}
+          </div>
+          {expert.rating !== null && (
             <div className="flex items-center gap-1">
-              <h3 className="text-sm font-semibold text-foreground line-clamp-1 group-hover:text-muted-foreground transition-colors">
-                {expert.user.name}
-              </h3>
-              {expert.isVerified && (
-                <span title="Verified by Familiarise">
-                  <BadgeCheck className="w-3.5 h-3.5 text-foreground flex-shrink-0" />
-                </span>
-              )}
-            </div>
-            {expert.rating !== null && (
-              <div className="flex items-center gap-1">
-                <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
-                <span className="text-xs font-medium text-muted-foreground">
-                  {expert.rating.toFixed(1)}
-                </span>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Bottom section — pinned to bottom for consistent card height */}
-        <div className="mt-auto">
-          {/* Company Logos */}
-          {expert.user.workExperiences &&
-            expert.user.workExperiences.length > 0 && (
-              <div className="flex items-center gap-1.5 mb-2">
-                {expert.user.workExperiences.slice(0, 2).map((exp, i) => (
-                  <CompanyLogo
-                    key={`${expert.id}-company-${i}`}
-                    companyName={exp.company}
-                    companyDomain={exp.companyDomain ?? undefined}
-                    size={24}
-                    className="border-border"
-                  />
-                ))}
-              </div>
-            )}
-
-          {/* Languages */}
-          {expert.languages && expert.languages.length > 0 && (
-            <div className="flex items-center gap-1 mb-2">
-              <Globe className="w-3 h-3 text-muted-foreground/70 flex-shrink-0" />
-              <p className="text-[10px] text-muted-foreground line-clamp-1">
-                {expert.languages.slice(0, 2).join(", ")}
-              </p>
+              <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" />
+              <span className="text-xs font-medium tabular-nums text-muted-foreground">
+                {expert.rating.toFixed(1)}
+              </span>
             </div>
           )}
-
-          {/* Domain badge */}
-          <Badge className="text-[10px] px-2 py-0.5 bg-muted text-muted-foreground hover:bg-muted border-0 w-fit mb-2">
-            {expert.domain?.name || "General"}
-          </Badge>
-
-          {/* Tags */}
-          {expert.tags && expert.tags.length > 0 && (
-            <div className="flex flex-wrap gap-1 mb-3">
-              {expert.tags.slice(0, 2).map((tag) => (
-                <span
-                  key={tag.id}
-                  className="text-[10px] px-2 py-0.5 bg-muted text-muted-foreground rounded-full"
-                >
-                  {tag.name}
-                </span>
-              ))}
-            </div>
-          )}
-
-          {/* View Profile */}
-          <div className="flex items-center gap-1 text-xs font-medium text-muted-foreground group-hover:text-foreground transition-colors">
-            <span>View Profile</span>
-            <ArrowRight className="w-3 h-3 group-hover:translate-x-1 transition-transform" />
-          </div>
         </div>
+      </div>
+
+      <div className="mt-auto">
+        <div className="flex flex-wrap gap-1.5">
+          {expert.domain?.name && (
+            <span className="inline-flex max-w-full items-center rounded-full border border-transparent bg-foreground px-2.5 py-1 text-xs font-medium text-background">
+              <span className="truncate">{expert.domain.name}</span>
+            </span>
+          )}
+          {expert.tags?.slice(0, 2).map((tag) => (
+            <span
+              key={tag.id}
+              className="inline-flex max-w-full items-center rounded-full border border-border bg-background px-2.5 py-1 text-xs font-medium text-muted-foreground"
+            >
+              <span className="truncate">{tag.name}</span>
+            </span>
+          ))}
+        </div>
+
+        <span className="mt-3 block text-xs font-medium text-muted-foreground transition-colors group-hover:text-foreground">
+          View profile →
+        </span>
       </div>
     </Link>
   );

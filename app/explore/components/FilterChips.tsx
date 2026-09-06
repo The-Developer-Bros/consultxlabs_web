@@ -26,13 +26,14 @@ export default function FilterChips({
       {filters.map((filter) => (
         <span
           key={filter.key}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-muted text-muted-foreground text-xs font-medium rounded-full border border-border"
+          className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-xs font-medium text-muted-foreground"
         >
           <span className="text-muted-foreground/70">{filter.label}:</span>
-          {filter.value}
+          <span className="text-foreground">{filter.value}</span>
           <button
+            type="button"
             onClick={() => onRemove(filter.key)}
-            className="hover:bg-muted rounded-full p-0.5 transition-colors"
+            className="rounded-full p-0.5 transition-colors hover:text-foreground"
             aria-label={`Remove ${filter.label} filter`}
           >
             <X className="h-3 w-3" />
@@ -40,10 +41,11 @@ export default function FilterChips({
         </span>
       ))}
       <button
+        type="button"
         onClick={onClearAll}
-        className="text-xs font-medium text-muted-foreground hover:text-foreground px-2 py-1.5 transition-colors"
+        className="px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
       >
-        Clear All
+        Clear all
       </button>
     </div>
   );

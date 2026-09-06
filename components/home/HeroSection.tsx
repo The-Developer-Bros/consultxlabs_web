@@ -2,7 +2,7 @@
 
 import { useCallback } from "react";
 import { motion, useInView } from "framer-motion";
-import { ArrowRight, Sparkles } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import Link from "next/link";
 import { useRef, useState, useEffect } from "react";
 
@@ -46,7 +46,7 @@ function AnimatedNumber({
   return (
     <motion.span
       ref={ref}
-      className="text-4xl md:text-5xl font-bold text-white tabular-nums"
+      className="text-3xl font-semibold tabular-nums text-white md:text-4xl"
     >
       {value % 1 !== 0
         ? displayValue.toFixed(1)
@@ -56,84 +56,77 @@ function AnimatedNumber({
   );
 }
 
+const EASE: [number, number, number, number] = [0.16, 1, 0.3, 1];
+
+/** Above the fold, so this enters on mount rather than on scroll. */
+function enter(delay: number) {
+  return {
+    initial: { opacity: 0, y: 16 },
+    animate: { opacity: 1, y: 0 },
+    transition: { duration: 0.5, ease: EASE, delay },
+  };
+}
+
 export function HeroSection({
   stats,
 }: {
   stats: IPublicStat<ExpertStatKey>[];
 }) {
   return (
-    <section className="relative min-h-[95vh] flex items-center bg-black overflow-hidden">
-      {/* Animated gradient orbs */}
-      <div className="absolute inset-0 overflow-hidden">
-        <div className="absolute top-1/4 left-1/4 w-[600px] h-[600px] rounded-full bg-gradient-to-br from-zinc-800/50 to-transparent blur-[50px] animate-blob" />
-        <div className="absolute top-1/3 right-1/4 w-[500px] h-[500px] rounded-full bg-gradient-to-bl from-zinc-700/30 to-transparent blur-[50px] animate-blob animation-delay-2000" />
-        <div className="absolute bottom-1/4 left-1/2 w-[700px] h-[700px] rounded-full bg-gradient-to-t from-zinc-800/40 to-transparent blur-[50px] animate-blob animation-delay-4000" />
-      </div>
+    <section className="relative flex min-h-[88svh] items-center overflow-hidden border-b border-white/10 bg-zinc-950">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 h-[480px] bg-[radial-gradient(60%_50%_at_50%_0%,rgba(255,255,255,0.08),transparent)]"
+      />
 
-      {/* Grid pattern overlay */}
-      <div className="absolute inset-0 grid-pattern opacity-30" />
-
-      {/* Spotlight effect */}
-      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[600px] bg-gradient-to-b from-zinc-800/20 via-transparent to-transparent blur-[40px]" />
-
-      <div className="container mx-auto px-4 md:px-6 relative z-10 py-20 md:py-32">
-        <div className="max-w-4xl mx-auto text-center">
-          {/* Badge */}
+      <div className="container relative z-10 mx-auto px-4 py-24 md:px-6 md:py-32">
+        <div className="mx-auto max-w-4xl text-center">
           <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5 }}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/5 backdrop-blur-sm border border-white/10 text-zinc-400 text-sm mb-8"
+            {...enter(0)}
+            className="inline-flex items-center gap-2.5"
           >
-            <Sparkles className="w-4 h-4 text-zinc-300" />
+            <span
+              aria-hidden
+              className="h-1.5 w-1.5 shrink-0 rounded-full bg-white/60"
+            />
             {/* #1490 — was "Trusted by 10,000+ professionals worldwide", a
                 number nothing produced. What replaces it is enforced by the
                 directory reads themselves: only VERIFIED profiles are public. */}
-            <span>Every expert is verified before they are listed</span>
+            <span className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-400">
+              Every expert is verified before they are listed
+            </span>
           </motion.div>
 
-          {/* Main headline */}
           <motion.h1
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay: 0.1 }}
-            className="text-fluid-5xl font-bold text-white mb-6 leading-tight tracking-tight"
+            {...enter(0.08)}
+            className="mt-8 text-fluid-5xl font-semibold leading-[1.02] tracking-[-0.03em] text-white"
           >
-            Learn from the{" "}
-            <span className="relative inline-block">
-              <span className="silver-text">best minds</span>
-            </span>
+            Learn from the best minds
             <br />
             <span className="text-zinc-400">in your industry</span>
           </motion.h1>
 
-          {/* Subheadline */}
           <motion.p
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay: 0.2 }}
-            className="text-lg md:text-xl text-zinc-500 mb-10 max-w-2xl mx-auto leading-relaxed"
+            {...enter(0.16)}
+            className="mx-auto mt-6 max-w-2xl text-base leading-relaxed text-zinc-400 md:text-lg"
           >
             Connect with world-class experts for personalized 1-on-1 sessions,
             interactive classes, and live webinars. Your career transformation
             starts here.
           </motion.p>
 
-          {/* CTAs */}
           <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay: 0.3 }}
-            className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-16"
+            {...enter(0.24)}
+            className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row"
           >
             <Button
               size="lg"
-              className="bg-white text-black hover:bg-zinc-200 px-8 h-14 text-base rounded-xl shadow-lg shadow-white/10 group font-medium"
+              className="group h-12 w-full rounded-xl bg-white px-6 text-base text-zinc-950 hover:bg-zinc-200 sm:w-auto"
               asChild
             >
               <Link href="/explore/experts">
-                Find Your Expert
-                <ArrowRight className="ml-2 w-5 h-5 group-hover:translate-x-1 transition-transform" />
+                Find your expert
+                <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
               </Link>
             </Button>
             {/* The supply-side CTA lives here now that the navbar carries no
@@ -142,12 +135,12 @@ export function HeroSection({
             <Button
               size="lg"
               variant="outline"
-              className="border-zinc-700 bg-transparent text-white hover:bg-zinc-900 hover:text-white px-8 h-14 text-base rounded-xl group"
+              className="group h-12 w-full rounded-xl border-white/15 bg-transparent px-6 text-base text-white hover:bg-white/10 hover:text-white sm:w-auto"
               asChild
             >
               <Link href="/become-an-expert">
-                Become an Expert
-                <ArrowRight className="ml-2 w-5 h-5 group-hover:translate-x-1 transition-transform" />
+                Become an expert
+                <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
               </Link>
             </Button>
           </motion.div>
@@ -159,24 +152,24 @@ export function HeroSection({
               grid would leave a stray divider under the CTAs. */}
           {stats.length > 0 && (
             <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.6, delay: 0.4 }}
-              className="grid grid-cols-2 md:grid-cols-3 gap-8 md:gap-12 pt-8 border-t border-zinc-800"
+              {...enter(0.32)}
+              className="mt-16 flex justify-center divide-x divide-white/10 border-t border-white/10 pt-10"
             >
               {stats.map((stat) => (
-                <div key={stat.key} className="text-center">
+                <div
+                  key={stat.key}
+                  className="flex flex-col items-center px-6 text-center md:px-12"
+                >
                   <AnimatedNumber value={stat.value} />
-                  <div className="text-zinc-600 text-sm mt-1">{stat.label}</div>
+                  <span className="mt-2 text-xs uppercase tracking-[0.18em] text-zinc-500">
+                    {stat.label}
+                  </span>
                 </div>
               ))}
             </motion.div>
           )}
         </div>
       </div>
-
-      {/* Bottom gradient fade */}
-      <div className="absolute bottom-0 left-0 right-0 h-32 bg-gradient-to-t from-zinc-950 to-transparent" />
     </section>
   );
 }

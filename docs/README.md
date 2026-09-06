@@ -164,6 +164,17 @@ intake, org triage, and private CSAT feedback.
 
 ---
 
+### Marketing
+
+The public-facing marketing surfaces: the mailing list and the landing/explore
+page design language.
+
+- [01-waitlist-newsletter.md](./marketing/01-waitlist-newsletter.md) - The double opt-in mailing list, its tokens and routes, and what was retired from the old event-capacity design
+- [02-public-surfaces-design-language.md](./marketing/02-public-surfaces-design-language.md) - The quiet-monochrome rule set and component map for the landing page, both explore listings, the expert profile, and the plan detail pages
+- [engineering-log-2026-09-06.md](./marketing/engineering-log-2026-09-06.md) - The public-surface refresh: fabricated content found and removed, duplicated layouts consolidated, and the CSS prune
+
+---
+
 ### Storage
 
 Storage management and document review system.

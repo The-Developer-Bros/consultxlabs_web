@@ -2,10 +2,11 @@
 
 import { useCallback, useRef } from "react";
 import { motion } from "framer-motion";
-import { Search, Zap, Building2, Users } from "lucide-react";
+import { Zap, Building2, Users } from "lucide-react";
 import type { IConsultantCardData } from "@/types/consultant";
 import { useCurrency } from "@/hooks/useCurrency";
 import SectionHeader from "@/app/explore/components/SectionHeader";
+import SegmentedControl from "@/app/explore/components/SegmentedControl";
 import FilterChips from "@/app/explore/components/FilterChips";
 import FacetRail from "@/app/explore/components/FacetRail";
 import {
@@ -20,12 +21,9 @@ import { SearchBar, type SortOption } from "./components/SearchBar";
 import StaticTopRows from "./components/StaticTopRows";
 import ExpertResults from "./components/ExpertResults";
 
-const AFFILIATION_TABS: {
-  value: AffiliationType;
-  label: string;
-  icon: React.ElementType;
-}[] = [
-  { value: null, label: "All Experts", icon: Users },
+/** "all" is the segmented-control sentinel for the null affiliation filter. */
+const AFFILIATION_TABS = [
+  { value: "all", label: "All experts", icon: Users },
   { value: "independent", label: "Independent", icon: Zap },
   { value: "agency", label: "Agency / Org", icon: Building2 },
 ];
@@ -92,9 +90,18 @@ export default function ExpertsInteractiveContent({
     [updateFilters],
   );
 
+  const handleAffiliationChange = useCallback(
+    (value: string) => {
+      updateFilters({
+        affiliationType: value === "all" ? null : (value as AffiliationType),
+      });
+    },
+    [updateFilters],
+  );
+
   return (
     <section className="py-10 md:py-16">
-      <div className="max-w-[1600px] mx-auto px-4 md:px-8 lg:px-12">
+      <div className="mx-auto max-w-[1600px] px-4 md:px-8 lg:px-12">
         <StaticTopRows
           metadata={metadata}
           trendingExperts={trendingExperts}
@@ -103,74 +110,41 @@ export default function ExpertsInteractiveContent({
           onDomainSelect={handleDomainSelect}
         />
 
-        {/* Browse All Experts */}
-        {/* The nav's "Top rated" deep-links here with ?sort=rating, so the
-            anchor needs the same fixed-navbar offset as #domains. */}
-        <div
+        {/* Browse all experts. The nav's "Top rated" deep-links here with
+            ?sort=rating, so the anchor needs the same fixed-navbar offset as
+            #domains. */}
+        <motion.div
           ref={browseSectionRef}
           id="all-experts"
           className="scroll-mt-[calc(var(--header-height,5rem)+1rem)]"
+          initial={{ opacity: 0, y: 16 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true, margin: "-80px" }}
+          transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
         >
           <SectionHeader
-            title="Browse Familiarise Experts"
-            icon={<Search className="w-5 h-5 text-white" />}
+            title="All experts"
+            description="Filter by domain, price, experience and language."
           />
 
-          {/* Affiliation type toggle: All | Independent | Agency/Org */}
-          <motion.div
-            className="mb-6"
-            initial={{ opacity: 0, y: 20 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true }}
-            transition={{ duration: 0.5, delay: 0.05 }}
-          >
-            <div className="inline-flex items-center gap-1 p-1 bg-muted rounded-xl border border-border">
-              {AFFILIATION_TABS.map(({ value, label, icon: Icon }) => {
-                const isActive = filters.affiliationType === value;
-                return (
-                  <button
-                    key={String(value)}
-                    onClick={() => updateFilters({ affiliationType: value })}
-                    className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                      isActive
-                        ? "bg-card text-foreground shadow-sm border border-border"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    <Icon className="w-4 h-4" />
-                    {label}
-                  </button>
-                );
-              })}
+          <div className="mb-6 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <SegmentedControl
+              value={filters.affiliationType ?? "all"}
+              onChange={handleAffiliationChange}
+              options={AFFILIATION_TABS}
+              ariaLabel="Filter experts by affiliation"
+            />
+            <div className="lg:max-w-xl lg:flex-1">
+              <SearchBar
+                onSearch={(term) => updateFilters({ search: term })}
+                onSort={(option) => updateFilters({ sort: option })}
+                sortBy={filters.sort}
+                initialSearch={filters.search}
+              />
             </div>
-          </motion.div>
+          </div>
 
-          {/* Search banner */}
-          <motion.div
-            className="mb-6"
-            initial={{ opacity: 0, y: 20 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true }}
-            transition={{ duration: 0.5, delay: 0.2 }}
-          >
-            <div className="relative mb-6 py-10 px-6 rounded-2xl bg-gradient-to-br from-zinc-900 via-zinc-800 to-zinc-700 overflow-hidden">
-              <div className="absolute inset-0 opacity-10">
-                <div className="absolute top-0 right-0 w-72 h-72 bg-white rounded-full blur-3xl -translate-y-1/2 translate-x-1/4" />
-                <div className="absolute bottom-0 left-0 w-56 h-56 bg-white rounded-full blur-3xl translate-y-1/2 -translate-x-1/4" />
-              </div>
-              <div className="relative text-center">
-                <h2 className="text-2xl md:text-3xl font-bold text-white mb-2">
-                  Find Your Perfect Expert
-                </h2>
-                <p className="text-zinc-400 text-sm md:text-base max-w-lg mx-auto">
-                  Search by name, skill, or specialty to connect with top
-                  consultants
-                </p>
-              </div>
-            </div>
-          </motion.div>
-
-          {/* Filters move into a sticky rail (mobile: Sheet drawer) so the
+          {/* Filters live in a sticky rail (mobile: Sheet drawer) so the
               results keep the full column instead of starting below a
               three-row filter grid. */}
           <div className="grid grid-cols-1 gap-8 lg:grid-cols-[280px_1fr]">
@@ -183,15 +157,6 @@ export default function ExpertsInteractiveContent({
             </FacetRail>
 
             <div className="min-w-0">
-              <div className="mb-6">
-                <SearchBar
-                  onSearch={(term) => updateFilters({ search: term })}
-                  onSort={(option) => updateFilters({ sort: option })}
-                  sortBy={filters.sort}
-                  initialSearch={filters.search}
-                />
-              </div>
-
               {chips.length > 0 && (
                 <div className="mb-6">
                   <FilterChips
@@ -203,8 +168,8 @@ export default function ExpertsInteractiveContent({
               )}
 
               {/* Kept as a full-width vertical stack, not a grid: ConsultantCard
-                  is a two-column card (profile + plan tabs) that collapses
-                  badly inside a narrow grid cell. */}
+                  is a two-column card (profile + plans) that collapses badly
+                  inside a narrow grid cell. */}
               <ExpertResults
                 consultants={consultants}
                 metadata={metadata}
@@ -216,7 +181,7 @@ export default function ExpertsInteractiveContent({
               />
             </div>
           </div>
-        </div>
+        </motion.div>
       </div>
     </section>
   );

@@ -5,47 +5,63 @@ import Link from "next/link";
 
 interface SectionHeaderProps {
   title: string;
+  description?: string;
+  /** Optional result count, rendered as a chip beside the title. */
+  count?: number;
   seeAllHref?: string;
   onSeeAllClick?: () => void;
-  icon?: React.ReactNode;
+  seeAllLabel?: string;
 }
+
+const SEE_ALL_CLASSNAME =
+  "group inline-flex shrink-0 items-center gap-1.5 text-sm font-medium text-foreground underline-offset-4 hover:underline";
 
 export default function SectionHeader({
   title,
+  description,
+  count,
   seeAllHref,
   onSeeAllClick,
-  icon,
+  seeAllLabel = "See all",
 }: SectionHeaderProps) {
-  const showSeeAll = seeAllHref || onSeeAllClick;
+  const seeAllContent = (
+    <>
+      {seeAllLabel}
+      <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+    </>
+  );
 
   return (
-    <div className="flex items-center justify-between mb-6">
-      <div className="flex items-center gap-2.5">
-        {icon && (
-          <div className="w-9 h-9 rounded-lg bg-primary flex items-center justify-center">
-            {icon}
-          </div>
+    <div className="mb-6 flex items-end justify-between gap-4">
+      <div className="min-w-0">
+        <h2 className="text-xl font-semibold tracking-tight text-foreground md:text-2xl">
+          {title}
+          {count !== undefined && (
+            <span className="ml-2 inline-flex items-center rounded-full border border-border bg-background px-2.5 py-1 align-middle text-xs font-medium tabular-nums text-muted-foreground">
+              {count}
+            </span>
+          )}
+        </h2>
+        {description && (
+          <p className="mt-1 text-sm text-muted-foreground">{description}</p>
         )}
-        <h2 className="text-xl md:text-2xl font-bold text-foreground tracking-tight">{title}</h2>
       </div>
-      {showSeeAll &&
-        (onSeeAllClick ? (
-          <button
-            onClick={onSeeAllClick}
-            className="group inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
-          >
-            See All
-            <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-          </button>
-        ) : (
-          <Link
-            href={seeAllHref!}
-            className="group inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
-          >
-            See All
-            <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+
+      {onSeeAllClick ? (
+        <button
+          type="button"
+          onClick={onSeeAllClick}
+          className={SEE_ALL_CLASSNAME}
+        >
+          {seeAllContent}
+        </button>
+      ) : (
+        seeAllHref && (
+          <Link href={seeAllHref} className={SEE_ALL_CLASSNAME}>
+            {seeAllContent}
           </Link>
-        ))}
+        )
+      )}
     </div>
   );
 }

@@ -2,13 +2,6 @@
 
 import { useState, useEffect } from "react";
 import { useSession } from "@/lib/auth-client";
-import {
-  Card,
-  CardContent,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { CheckCircle } from "lucide-react";
@@ -33,6 +26,30 @@ type ClientWebinarRegistrationProps = {
   instanceMaxParticipants?: number | null;
   consultantUserId?: string;
 };
+
+/** The sidebar card's shell and its constant top block: label, price, session line. */
+function RegistrationCard({
+  price,
+  sessionLine,
+  children,
+}: Readonly<{
+  price: string;
+  sessionLine: string;
+  children: React.ReactNode;
+}>) {
+  return (
+    <div className="rounded-2xl border border-border bg-card p-6">
+      <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+        Registration
+      </p>
+      <p className="mt-3 text-3xl font-semibold tabular-nums text-foreground">
+        {price}
+      </p>
+      <p className="mt-1 text-sm text-muted-foreground">{sessionLine}</p>
+      <div className="mt-5 space-y-4">{children}</div>
+    </div>
+  );
+}
 
 export function ClientWebinarRegistration({
   webinarPlanId,
@@ -104,54 +121,60 @@ export function ClientWebinarRegistration({
       "MMMM d, yyyy 'at' h:mm a zzz",
     );
     if (sessionStatus === "Completed") {
-      sessionInfoText = `Session ended: ${formattedDate}`;
+      sessionInfoText = `Session ended ${formattedDate}`;
     } else if (sessionStatus === "Happening Now") {
-      sessionInfoText = `Session started: ${formattedDate}`;
+      sessionInfoText = `Session started ${formattedDate}`;
     } else if (sessionStatus === "Upcoming") {
-      sessionInfoText = `Next session: ${formattedDate}`;
+      sessionInfoText = `Next session ${formattedDate}`;
     } else {
       // "To be announced" but has a nextSessionDate (edge case) or other unhandled status
-      sessionInfoText = `Scheduled: ${formattedDate}`;
+      sessionInfoText = `Scheduled ${formattedDate}`;
     }
   } else if (sessionStatus === "Completed") {
     sessionInfoText = "This webinar has ended.";
   } else if (sessionStatus === "Happening Now") {
-    sessionInfoText = "This webinar is currently in progress.";
+    sessionInfoText = "This webinar is in progress.";
   } else {
     // Fallback for !nextSessionDate and status is "Upcoming" or "To be announced"
     sessionInfoText = "Session time to be announced.";
   }
 
+  const priceLabel = formatPrice(price);
+
   // Logic for buttonText and buttonDisabled
-  let buttonText = `Pay ${formatPrice(price)} & Register Now`;
+  let buttonText = `Pay ${priceLabel} and register`;
   let buttonDisabled = false;
 
   if (sessionStatus === "Completed") {
-    buttonText = "Session Ended";
+    buttonText = "Session ended";
     buttonDisabled = true;
   } else if (sessionStatus === "Happening Now") {
-    buttonText = "Session in Progress";
+    buttonText = "Session in progress";
     buttonDisabled = true;
   } else if (sessionStatus === "To be announced" || !webinarId) {
     // Disable registration when no session is scheduled or no webinar instance exists
-    buttonText = "Registration Opening Soon";
+    buttonText = "Registration opening soon";
     buttonDisabled = true;
   }
+
+  const soldOutBadge = (
+    <Badge variant="secondary">Sold out · all {capacity.max} seats taken</Badge>
+  );
 
   if (!isLoggedIn) {
     // For non-logged in users, the button primarily serves to redirect to sign-in.
     // We can still reflect the session status in the button text and disable it if not upcoming.
-    let signInButtonText = "Sign in to Register";
+    let signInButtonText = "Sign in to register";
     let signInButtonDisabled = false;
 
     if (sessionStatus === "Completed") {
-      signInButtonText = "Session Ended";
+      signInButtonText = "Session ended";
       signInButtonDisabled = true;
     } else if (sessionStatus === "Happening Now") {
-      signInButtonText = "Session in Progress";
+      signInButtonText = "Session in progress";
       signInButtonDisabled = true;
     } else if (sessionStatus === "To be announced" || !webinarId) {
-      signInButtonText = "Registration Opening Soon";
+      signInButtonText = "Registration opening soon";
       signInButtonDisabled = true;
     } else if (isFull) {
       // Sending a signed-out visitor through sign-in only to meet a sold-out
@@ -161,61 +184,36 @@ export function ClientWebinarRegistration({
     }
 
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Webinar Registration</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-muted-foreground mb-4">
-            {sessionInfoText} {/* Show current session status info */}
+      <RegistrationCard price={priceLabel} sessionLine={sessionInfoText}>
+        {isFull && soldOutBadge}
+        {!signInButtonDisabled && (
+          <p className="text-sm text-muted-foreground">
+            Sign in to reserve your seat.
           </p>
-          {isFull && (
-            <Badge
-              variant="secondary"
-              className="mb-4 bg-amber-100 text-amber-800"
-            >
-              Sold out — all {capacity.max} seats taken
-            </Badge>
-          )}
-          {!signInButtonDisabled && (
-            <p className="text-muted-foreground mb-4">
-              Please sign in to register for this webinar.
-            </p>
-          )}
-          <Button
-            onClick={handleRegistration} // This redirects to sign-in
-            className="w-full bg-primary hover:bg-primary/90 text-primary-foreground"
-            disabled={signInButtonDisabled}
-          >
-            {signInButtonText}
-          </Button>
-        </CardContent>
-      </Card>
+        )}
+        <Button
+          onClick={handleRegistration} // This redirects to sign-in
+          className="h-11 w-full rounded-xl"
+          disabled={signInButtonDisabled}
+        >
+          {signInButtonText}
+        </Button>
+      </RegistrationCard>
     );
   }
 
   // Show "Already Registered" state for logged-in users who are already registered
   if (isAlreadyRegistered) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Webinar Registration</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center gap-2 mb-4">
-            <CheckCircle className="h-5 w-5 text-green-600" />
-            <Badge className="bg-green-100 text-green-800 border-green-300">
-              Already Registered
-            </Badge>
-          </div>
-          <p className="text-sm text-muted-foreground mb-4">
-            {sessionInfoText}
-          </p>
-          <p className="text-sm text-muted-foreground">
-            Check your email for webinar details and join link.
-          </p>
-        </CardContent>
-      </Card>
+      <RegistrationCard price={priceLabel} sessionLine={sessionInfoText}>
+        <Badge variant="success" className="gap-1.5">
+          <CheckCircle className="h-3.5 w-3.5" />
+          Registered
+        </Badge>
+        <p className="text-sm text-muted-foreground">
+          Check your email for the webinar details and join link.
+        </p>
+      </RegistrationCard>
     );
   }
 
@@ -223,51 +221,28 @@ export function ClientWebinarRegistration({
   // raising the capacity on this webinar.
   if (isFull && isLoggedIn && !isAlreadyRegistered) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Webinar Registration</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground mb-4">
-            {sessionInfoText}
-          </p>
-          <Badge
-            variant="secondary"
-            className="mb-4 bg-amber-100 text-amber-800"
-          >
-            Sold out — all {capacity.max} seats taken
-          </Badge>
-          <p className="text-sm text-muted-foreground">
-            Registration for this session is closed. Check back in case the host
-            opens more seats, or browse the other sessions on this plan.
-          </p>
-        </CardContent>
-        <CardFooter>
-          <Button className="w-full" disabled>
-            Sold out
-          </Button>
-        </CardFooter>
-      </Card>
+      <RegistrationCard price={priceLabel} sessionLine={sessionInfoText}>
+        {soldOutBadge}
+        <p className="text-sm text-muted-foreground">
+          Registration for this session is closed. Check back in case the host
+          opens more seats, or browse the other sessions on this plan.
+        </p>
+        <Button className="h-11 w-full rounded-xl" disabled>
+          Sold out
+        </Button>
+      </RegistrationCard>
     );
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Webinar Registration</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <p className="text-sm text-muted-foreground mb-4">{sessionInfoText}</p>
-      </CardContent>
-      <CardFooter>
-        <Button
-          onClick={handleRegistration}
-          className="w-full bg-primary hover:bg-primary/90 text-primary-foreground"
-          disabled={buttonDisabled}
-        >
-          {buttonText}
-        </Button>
-      </CardFooter>
-    </Card>
+    <RegistrationCard price={priceLabel} sessionLine={sessionInfoText}>
+      <Button
+        onClick={handleRegistration}
+        className="h-11 w-full rounded-xl"
+        disabled={buttonDisabled}
+      >
+        {buttonText}
+      </Button>
+    </RegistrationCard>
   );
 }

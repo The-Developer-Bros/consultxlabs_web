@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { DayOfWeek } from "@prisma/client";
 import { ChevronDown, ChevronUp } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { roundTime, timeToMinutes } from "../utils/time";
 import { mergeConsecutiveSlotsForDisplay } from "../utils/mergeSlots";
 import type { ProcessedSlot } from "../types";
@@ -63,116 +64,95 @@ export function WeeklyAvailability({ slotsByDay }: WeeklyAvailabilityProps) {
   };
 
   return (
-    <div className="bg-gradient-to-br from-white via-gray-50/50 to-white rounded-2xl shadow-xl border border-gray-200/50 p-6 backdrop-blur-sm">
-      {/* Glossy overlay effect */}
-      <div className="absolute inset-0 bg-gradient-to-r from-white/20 to-transparent rounded-2xl pointer-events-none" />
+    <div>
+      <div className="grid grid-cols-7 gap-2">
+        {DAY_NAMES.map((day) => {
+          const allSlots = mergedSlotsByDay[day];
+          const visibleSlots = isExpanded
+            ? allSlots
+            : allSlots.slice(0, VISIBLE_SLOT_COUNT);
 
-      <div className="relative">
-        <div className="grid grid-cols-7 gap-3">
-          {DAY_NAMES.map((day) => {
-            const allSlots = mergedSlotsByDay[day];
-            const visibleSlots = isExpanded
-              ? allSlots
-              : allSlots.slice(0, VISIBLE_SLOT_COUNT);
+          return (
+            <div key={day} className="space-y-2">
+              <p className="text-center text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                {day.slice(0, 3)}
+              </p>
 
-            return (
-              <div key={day} className="space-y-3">
-                {/* Day header with glossy effect */}
-                <div className="text-center">
-                  <h4 className="font-semibold text-sm text-gray-800 bg-gradient-to-b from-gray-100 to-gray-200/80 px-3 py-2 rounded-xl border border-gray-300/50 shadow-sm">
-                    {day.charAt(0) + day.slice(1).toLowerCase()}
-                  </h4>
-                </div>
+              {visibleSlots.length > 0 ? (
+                visibleSlots.map((slot) => {
+                  const bookingStatus = slot.bookingStatus || "available";
+                  const isFullyBooked = bookingStatus === "fully-booked";
+                  const isPartiallyBooked =
+                    bookingStatus === "partially-booked";
+                  const bookedDate =
+                    isFullyBooked || isPartiallyBooked
+                      ? getBookedSlotDate(slot)
+                      : "";
+                  const tone = isFullyBooked
+                    ? SLOT_STATUS_TOKENS.fullyBooked.className
+                    : isPartiallyBooked
+                      ? SLOT_STATUS_TOKENS.partiallyBooked.className
+                      : SLOT_STATUS_TOKENS.available.className;
 
-                <div className="space-y-2">
-                  {visibleSlots.length > 0 ? (
-                    visibleSlots.map((slot) => {
-                      const bookingStatus = slot.bookingStatus || "available";
-                      const isFullyBooked = bookingStatus === "fully-booked";
-                      const isPartiallyBooked =
-                        bookingStatus === "partially-booked";
-                      const bookedDate =
-                        isFullyBooked || isPartiallyBooked
-                          ? getBookedSlotDate(slot)
-                          : "";
-
-                      return (
-                        <div
-                          key={slot.id}
-                          className={`
-                            w-full min-h-[4.5rem] px-2 py-2 text-xs rounded-xl
-                            border shadow-lg backdrop-blur-sm relative overflow-hidden
-                            ${
-                              isFullyBooked
-                                ? SLOT_STATUS_TOKENS.fullyBooked.className
-                                : isPartiallyBooked
-                                  ? SLOT_STATUS_TOKENS.partiallyBooked.className
-                                  : SLOT_STATUS_TOKENS.available.className
-                            }
-                          `}
-                        >
-                          {/* Glossy overlay for buttons */}
-                          <div className="absolute inset-0 bg-gradient-to-r from-white/20 to-transparent rounded-xl pointer-events-none" />
-
-                          <div className="relative flex flex-col items-center justify-center h-full space-y-1">
-                            {/* Time range in one line */}
-                            <div className="font-medium leading-tight text-center text-[11px]">
-                              {roundTime(slot.localStartTime)} -{" "}
-                              {roundTime(slot.localEndTime)}
-                            </div>
-
-                            {/* Status and date for booked slots */}
-                            {isFullyBooked && (
-                              <div className="text-[10px] font-semibold opacity-90 text-center leading-tight">
-                                Booked
-                                <br />
-                                {bookedDate && `(${bookedDate})`}
-                              </div>
-                            )}
-                            {isPartiallyBooked && (
-                              <div className="text-[10px] font-semibold opacity-90 text-center leading-tight">
-                                Partially
-                                <br />
-                                Booked {bookedDate && `(${bookedDate})`}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })
-                  ) : (
-                    <div className="h-16 flex items-center justify-center text-xs text-muted-foreground/70 bg-gradient-to-br from-gray-50 to-gray-100 rounded-xl border border-border shadow-sm">
-                      No slots
+                  return (
+                    <div
+                      key={slot.id}
+                      className={`flex min-h-[4.5rem] w-full flex-col items-center justify-center gap-1 rounded-xl border px-2 py-2 text-center text-xs ${tone}`}
+                    >
+                      <span className="text-[11px] font-medium leading-tight">
+                        {roundTime(slot.localStartTime)} –{" "}
+                        {roundTime(slot.localEndTime)}
+                      </span>
+                      {isFullyBooked && (
+                        <span className="text-[10px] font-semibold leading-tight opacity-90">
+                          Booked
+                          <br />
+                          {bookedDate && `(${bookedDate})`}
+                        </span>
+                      )}
+                      {isPartiallyBooked && (
+                        <span className="text-[10px] font-semibold leading-tight opacity-90">
+                          Partially
+                          <br />
+                          Booked {bookedDate && `(${bookedDate})`}
+                        </span>
+                      )}
                     </div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Single expand/collapse button for the entire week */}
-        {totalHidden > 0 && (
-          <div className="flex justify-center mt-4">
-            <button
-              onClick={() => setIsExpanded((prev) => !prev)}
-              className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-emerald-700 hover:text-emerald-900 bg-emerald-50 hover:bg-emerald-100 rounded-xl border border-emerald-200 transition-colors cursor-pointer shadow-sm"
-            >
-              {isExpanded ? (
-                <>
-                  <ChevronUp className="w-3.5 h-3.5" />
-                  Show less
-                </>
+                  );
+                })
               ) : (
-                <>
-                  <ChevronDown className="w-3.5 h-3.5" />
-                  Show {totalHidden} more slots
-                </>
+                <div className="flex min-h-[4.5rem] items-center justify-center rounded-xl border border-dashed border-border text-xs text-muted-foreground/70">
+                  No slots
+                </div>
               )}
-            </button>
-          </div>
-        )}
+            </div>
+          );
+        })}
       </div>
+
+      {/* Single expand/collapse button for the entire week */}
+      {totalHidden > 0 && (
+        <div className="mt-4 flex justify-center">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => setIsExpanded((prev) => !prev)}
+          >
+            {isExpanded ? (
+              <>
+                <ChevronUp className="h-3.5 w-3.5" />
+                Show less
+              </>
+            ) : (
+              <>
+                <ChevronDown className="h-3.5 w-3.5" />
+                Show {totalHidden} more slots
+              </>
+            )}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

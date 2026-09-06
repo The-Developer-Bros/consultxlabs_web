@@ -2,13 +2,6 @@
 
 import { useState, useEffect } from "react";
 import { useSession } from "@/lib/auth-client";
-import {
-  Card,
-  CardContent,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { CheckCircle } from "lucide-react";
@@ -23,6 +16,30 @@ type ClientClassRegistrationProps = {
   maxParticipants?: number;
   consultantUserId?: string;
 };
+
+/** The sidebar card's shell and its constant top block: label, price, start date. */
+function RegistrationCard({
+  price,
+  startLine,
+  children,
+}: Readonly<{
+  price: string;
+  startLine: string;
+  children: React.ReactNode;
+}>) {
+  return (
+    <div className="rounded-2xl border border-border bg-card p-6">
+      <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+        Registration
+      </p>
+      <p className="mt-3 text-3xl font-semibold tabular-nums text-foreground">
+        {price}
+      </p>
+      <p className="mt-1 text-sm text-muted-foreground">{startLine}</p>
+      <div className="mt-5 space-y-4">{children}</div>
+    </div>
+  );
+}
 
 export function ClientClassRegistration({
   plan,
@@ -74,128 +91,75 @@ export function ClientClassRegistration({
     window.location.href = checkoutUrl;
   };
 
+  const priceLabel = formatPrice(price);
+  const startLine = startDate
+    ? `Starts ${formatInTimeZone(new Date(startDate), userTimeZone, "MMMM d, yyyy 'at' h:mm a zzz")}`
+    : "Start date to be announced";
+  const soldOutBadge = (
+    <Badge variant="secondary">Sold out · all {capacity.max} seats taken</Badge>
+  );
+
   if (!isLoggedIn) {
     // Determine button state for non-logged in users
-    const signInButtonText = isFull ? "Sold out" : "Sign in to Register";
+    const signInButtonText = isFull ? "Sold out" : "Sign in to register";
     const signInButtonDisabled = isFull;
 
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Class Registration</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-muted-foreground mb-4">
-            {startDate
-              ? `Class starts on ${formatInTimeZone(new Date(startDate), userTimeZone, "MMMM d, yyyy 'at' h:mm a zzz")}`
-              : "Start date to be announced"}
+      <RegistrationCard price={priceLabel} startLine={startLine}>
+        {isFull ? (
+          soldOutBadge
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            Sign in to reserve your seat.
           </p>
-          {isFull && (
-            <Badge
-              variant="secondary"
-              className="mb-4 bg-amber-100 text-amber-800"
-            >
-              Sold out — all {capacity.max} seats taken
-            </Badge>
-          )}
-          {!isFull && (
-            <p className="text-muted-foreground mb-4">
-              Please sign in to register for this class.
-            </p>
-          )}
-          <Button
-            onClick={handleRegistration}
-            className="w-full bg-primary hover:bg-primary/90 text-primary-foreground"
-            disabled={signInButtonDisabled}
-          >
-            {signInButtonText}
-          </Button>
-        </CardContent>
-      </Card>
+        )}
+        <Button
+          onClick={handleRegistration}
+          className="h-11 w-full rounded-xl"
+          disabled={signInButtonDisabled}
+        >
+          {signInButtonText}
+        </Button>
+      </RegistrationCard>
     );
   }
 
   // Show "Already Enrolled" state for logged-in users who are already enrolled
   if (isAlreadyEnrolled) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Class Registration</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center gap-2 mb-4">
-            <CheckCircle className="h-5 w-5 text-green-600" />
-            <Badge className="bg-green-100 text-green-800 border-green-300">
-              Already Enrolled
-            </Badge>
-          </div>
-          <p className="text-sm text-muted-foreground mb-4">
-            {startDate
-              ? `Class starts on ${formatInTimeZone(new Date(startDate), userTimeZone, "MMMM d, yyyy 'at' h:mm a zzz")}`
-              : "Start date to be announced"}
-          </p>
-          <p className="text-sm text-muted-foreground">
-            You are enrolled in this class. Check your dashboard for session
-            details.
-          </p>
-        </CardContent>
-      </Card>
+      <RegistrationCard price={priceLabel} startLine={startLine}>
+        <Badge variant="success" className="gap-1.5">
+          <CheckCircle className="h-3.5 w-3.5" />
+          Enrolled
+        </Badge>
+        <p className="text-sm text-muted-foreground">
+          You are enrolled in this class. Session details are on your dashboard.
+        </p>
+      </RegistrationCard>
     );
   }
 
   // Sold out — enrollment is closed until the host opens more seats.
   if (isFull && isLoggedIn && !isAlreadyEnrolled) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Class Registration</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground mb-4">
-            {startDate
-              ? `Class starts on ${formatInTimeZone(new Date(startDate), userTimeZone, "MMMM d, yyyy 'at' h:mm a zzz")}`
-              : "Start date to be announced"}
-          </p>
-          <Badge
-            variant="secondary"
-            className="mb-4 bg-amber-100 text-amber-800"
-          >
-            Sold out — all {capacity.max} seats taken
-          </Badge>
-          <p className="text-sm text-muted-foreground">
-            Enrollment for this class is closed. Check back in case the
-            instructor opens more seats.
-          </p>
-        </CardContent>
-        <CardFooter>
-          <Button className="w-full" disabled>
-            Sold out
-          </Button>
-        </CardFooter>
-      </Card>
+      <RegistrationCard price={priceLabel} startLine={startLine}>
+        {soldOutBadge}
+        <p className="text-sm text-muted-foreground">
+          Enrollment for this class is closed. Check back in case the instructor
+          opens more seats.
+        </p>
+        <Button className="h-11 w-full rounded-xl" disabled>
+          Sold out
+        </Button>
+      </RegistrationCard>
     );
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Class Registration</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <p className="text-sm text-muted-foreground mb-4">
-          {startDate
-            ? `Class starts on ${formatInTimeZone(new Date(startDate), userTimeZone, "MMMM d, yyyy 'at' h:mm a zzz")}`
-            : "Start date to be announced"}
-        </p>
-      </CardContent>
-      <CardFooter>
-        <Button
-          onClick={handleRegistration}
-          className="w-full bg-primary hover:bg-primary/90 text-primary-foreground"
-        >
-          Pay {formatPrice(price)} & Register Now
-        </Button>
-      </CardFooter>
-    </Card>
+    <RegistrationCard price={priceLabel} startLine={startLine}>
+      <Button onClick={handleRegistration} className="h-11 w-full rounded-xl">
+        Pay {priceLabel} and register
+      </Button>
+    </RegistrationCard>
   );
 }

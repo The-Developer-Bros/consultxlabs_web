@@ -1,11 +1,11 @@
 "use client";
 
-import { memo } from "react";
-import { Briefcase, Clock, Flame } from "lucide-react";
+import { memo, useMemo } from "react";
+import { Briefcase } from "lucide-react";
 import type { IConsultantCardData } from "@/types/consultant";
 import SectionHeader from "@/app/explore/components/SectionHeader";
+import TaxonomyGrid from "@/app/explore/components/TaxonomyGrid";
 import ExpertRow from "./ExpertRow";
-import DomainGrid from "./DomainGrid";
 import type { SortOption } from "./SearchBar";
 import type { IExpertsMetaData } from "../utils";
 
@@ -19,7 +19,7 @@ interface StaticTopRowsProps {
 
 /**
  * The "above the fold" rows that depend only on RSC-fetched static data:
- * Trending Experts, Newly Joined, and Browse by Domain.
+ * trending experts, newly joined, and browse by domain.
  *
  * Receives only static props (data + stable callbacks) so the parent
  * memoizes this and filter state changes never re-render any of it.
@@ -31,13 +31,23 @@ function StaticTopRowsImpl({
   onSeeAllSort,
   onDomainSelect,
 }: StaticTopRowsProps) {
+  const domains = useMemo(
+    () =>
+      (metadata?.consultantMetadata?.consultantsByDomain ?? []).map(
+        (domain) => ({
+          id: domain.id,
+          name: domain.name,
+          count: domain.consultantCount,
+        }),
+      ),
+    [metadata],
+  );
+
   return (
     <>
-      {/* Trending Experts Row */}
       <div className="mb-14">
         <SectionHeader
-          title="Trending Experts"
-          icon={<Flame className="w-5 h-5 text-white" />}
+          title="Trending experts"
           onSeeAllClick={() => onSeeAllSort("trending")}
         />
         <ExpertRow
@@ -47,32 +57,29 @@ function StaticTopRowsImpl({
         />
       </div>
 
-      {/* Newly Joined Row */}
       <div className="mb-14">
         <SectionHeader
-          title="Newly Joined"
-          icon={<Clock className="w-5 h-5 text-white" />}
+          title="Newly joined"
           onSeeAllClick={() => onSeeAllSort("newest")}
         />
         <ExpertRow experts={newestExperts} badge="new" isLoading={false} />
       </div>
 
-      {/* Browse by Domain. The nav's "Browse by domain" item deep-links to
-          #domains; scroll-mt clears the fixed navbar so the heading isn't
-          hidden under it on landing. */}
+      {/* The nav's "Browse by domain" item deep-links to #domains; scroll-mt
+          clears the fixed navbar so the heading isn't hidden under it on
+          landing. */}
       {metadata?.consultantMetadata?.consultantsByDomain && (
         <div
           id="domains"
           className="mb-14 scroll-mt-[calc(var(--header-height,5rem)+1rem)]"
         >
-          <SectionHeader
-            title="Browse by Domain"
-            icon={<Briefcase className="w-5 h-5 text-white" />}
-          />
-          <DomainGrid
-            domains={metadata.consultantMetadata.consultantsByDomain}
+          <SectionHeader title="Browse by domain" />
+          <TaxonomyGrid
+            items={domains}
+            noun="expert"
+            icon={Briefcase}
             isLoading={false}
-            onDomainSelect={onDomainSelect}
+            onSelect={onDomainSelect}
           />
         </div>
       )}

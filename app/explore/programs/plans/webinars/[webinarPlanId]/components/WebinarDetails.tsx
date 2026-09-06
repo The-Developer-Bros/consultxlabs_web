@@ -1,28 +1,38 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import Image from "next/image";
-import Link from "next/link";
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { PlanDetailBody } from "../../../components/PlanDetailBody";
-import { planLevelLabel } from "@/lib/labels/plan-labels";
-import { Badge } from "@/components/ui/badge";
 import {
-  ArrowLeft,
   Calendar,
   Clock,
-  Users,
-  Video,
   Globe,
   GraduationCap,
+  Users,
+  Video,
 } from "lucide-react";
 import { formatInTimeZone } from "date-fns-tz";
+
+import { PlanDetailBody } from "../../../components/PlanDetailBody";
+import { PlanExpertCard } from "../../../components/PlanExpertCard";
+import {
+  PlanHero,
+  type PlanHeroStatusTone,
+} from "../../../components/PlanHero";
+import { FeatureItem } from "../../../components/FeatureItem";
+import { planLevelLabel } from "@/lib/labels/plan-labels";
 import { ClientWebinarRegistration } from "./ClientWebinarRegistration";
 import { generateProgramImageUrl } from "@/lib/explore/programs";
 import { useCurrency } from "@/hooks/useCurrency";
-import { FeatureItem } from "@/app/explore/programs/plans/components/FeatureItem";
 import type { TWebinarPlanData, TSessionStatus } from "../types";
+
+const EASE = [0.16, 1, 0.3, 1] as const;
+
+const STATUS_TONE: Record<TSessionStatus, PlanHeroStatusTone> = {
+  "Happening Now": "live",
+  Upcoming: "upcoming",
+  Completed: "done",
+  "To be announced": "neutral",
+};
 
 interface WebinarDetailsProps {
   readonly plan: TWebinarPlanData;
@@ -78,112 +88,77 @@ export function WebinarDetails({
     );
   }
 
-  const getStatusBadgeClass = (status: TSessionStatus) => {
-    switch (status) {
-      case "Happening Now":
-        return "bg-emerald-500 text-white";
-      case "Completed":
-        return "bg-muted text-muted-foreground";
-      case "Upcoming":
-        return "bg-primary text-primary-foreground";
-      default:
-        return "bg-muted text-muted-foreground";
-    }
-  };
+  const consultant = plan.consultantProfile;
+  const hours = plan.durationInHours;
+  const hoursLabel = `${hours} hour${hours !== 1 ? "s" : ""}`;
 
   return (
-    <main className="min-h-screen bg-muted">
-      {/* Hero Banner */}
-      <div className="relative h-[350px] md:h-[400px] w-full overflow-hidden">
-        <Image
-          src={generateProgramImageUrl(plan.id, 1200, 400, plan.imageUrl)}
-          alt="Webinar cover"
-          fill
-          className="object-cover"
-          priority
-        />
-        <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/60 to-transparent" />
+    <main className="min-h-screen bg-background">
+      <PlanHero
+        backHref="/explore/programs"
+        backLabel="Back to programs"
+        kind="Webinar"
+        status={{ label: sessionStatus, tone: STATUS_TONE[sessionStatus] }}
+        title={plan.title}
+        subtitle={plan.subtitle}
+        price={formatPrice(plan.price)}
+        priceNote={`for a ${hours}-hour session`}
+        imageUrl={generateProgramImageUrl(plan.id, 1600, 600, plan.imageUrl)}
+        host={
+          consultant?.user?.name
+            ? {
+                name: consultant.user.name,
+                image: consultant.user.image ?? null,
+                href: `/explore/experts/${consultant.id}`,
+              }
+            : null
+        }
+      />
 
-        {/* Back Navigation */}
-        <div className="absolute top-0 left-0 right-0 z-10">
-          <div className="max-w-[1600px] mx-auto px-4 md:px-8 lg:px-12 py-6">
-            <Link
-              href="/explore/programs"
-              className="inline-flex items-center gap-2 text-sm text-white/80 hover:text-white transition-colors"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              Back to Programs
-            </Link>
-          </div>
-        </div>
-
-        {/* Title Overlay */}
-        <div className="absolute bottom-0 left-0 right-0 z-10">
-          <div className="max-w-[1600px] mx-auto px-4 md:px-8 lg:px-12 pb-8">
-            <div className="flex items-center gap-3 mb-4">
-              <Badge className="bg-background text-foreground">Webinar</Badge>
-              <Badge className={getStatusBadgeClass(sessionStatus)}>
-                {sessionStatus}
-              </Badge>
-            </div>
-            <h1 className="text-fluid-4xl tracking-tight font-bold text-white mb-2">
-              {plan.title}
-            </h1>
-            <div className="flex items-center gap-4 text-white/80">
-              <span className="text-2xl md:text-3xl font-bold text-white">
-                {formatPrice(plan.price)}
-              </span>
-              <span className="text-white/60">•</span>
-              <span>{plan.durationInHours} hours</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Content */}
-      <div className="w-full max-w-[92%] xl:max-w-[88%] 2xl:max-w-[1600px] mx-auto py-8 md:py-12">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 lg:gap-12">
-          {/* Main Content */}
+      <div className="mx-auto max-w-[1600px] px-4 py-10 md:px-8 md:py-14 lg:px-12">
+        <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-12">
           <motion.div
-            className="lg:col-span-2 space-y-8"
-            initial={{ opacity: 0, y: 20 }}
+            className="space-y-6"
+            initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5 }}
+            transition={{ duration: 0.5, ease: EASE }}
           >
-            {/* Features Grid */}
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
               <FeatureItem
-                icon={<Calendar className="h-5 w-5" />}
+                icon={<Calendar />}
                 label={
                   sessionStatus === "Happening Now" ||
                   sessionStatus === "Completed"
                     ? "Status"
-                    : "Next Session"
+                    : "Next session"
                 }
                 value={formattedNextSessionDisplay}
               />
               <FeatureItem
-                icon={<Clock className="h-5 w-5" />}
+                icon={<Clock />}
                 label="Duration"
-                value={`${plan.durationInHours} hours`}
+                value={hoursLabel}
               />
               <FeatureItem
-                icon={<Users className="h-5 w-5" />}
-                label="Participants"
-                value={`${plan.maxParticipants} max`}
+                icon={<Users />}
+                label="Seats"
+                value={`Up to ${plan.maxParticipants}`}
+              />
+              {/* Sessions run on the platform's own video room, so the
+                  "Platform" cell that used to fall back to "Zoom" said
+                  something that was never true. */}
+              <FeatureItem
+                icon={<Video />}
+                label="Format"
+                value="Live online"
               />
               <FeatureItem
-                icon={<Video className="h-5 w-5" />}
-                label="Platform"
-                value={plan.materialProvided ?? "Zoom"}
-              />
-              <FeatureItem
-                icon={<Globe className="h-5 w-5" />}
+                icon={<Globe />}
                 label="Language"
                 value={plan.language ?? "English"}
               />
               <FeatureItem
-                icon={<GraduationCap className="h-5 w-5" />}
+                icon={<GraduationCap />}
                 label="Level"
                 value={planLevelLabel(plan.level)}
               />
@@ -203,117 +178,33 @@ export function WebinarDetails({
             />
           </motion.div>
 
-          {/* Sidebar */}
-          <motion.div
-            className="lg:col-span-1"
-            initial={{ opacity: 0, y: 20 }}
+          <motion.aside
+            className="space-y-4 lg:sticky lg:top-[calc(var(--header-height,5rem)+1rem)] lg:self-start"
+            initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.1 }}
+            transition={{ duration: 0.5, delay: 0.1, ease: EASE }}
           >
-            <div className="sticky top-24 space-y-6">
-              {/* Instructor Card */}
-              <Card className="border-border shadow-sm">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-lg">Your Host</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex items-center gap-4 mb-4">
-                    <div className="relative h-16 w-16 rounded-full overflow-hidden ring-2 ring-border">
-                      <Image
-                        src={
-                          plan.consultantProfile?.user?.image ??
-                          "/placeholder-user.jpg"
-                        }
-                        alt={plan.consultantProfile?.user?.name ?? "Instructor"}
-                        fill
-                        className="object-cover"
-                      />
-                    </div>
-                    <div className="min-w-0">
-                      <h3 className="font-semibold text-foreground">
-                        {plan.consultantProfile?.user?.name}
-                      </h3>
-                      <p className="text-sm text-muted-foreground">
-                        Expert Host
-                      </p>
-                    </div>
-                  </div>
-                  <p className="text-sm text-muted-foreground">
-                    An experienced professional dedicated to sharing knowledge
-                    and expertise.
-                  </p>
-                  <Link
-                    href={`/explore/experts/${plan.consultantProfile?.id}`}
-                    className="inline-flex items-center gap-1 text-sm font-medium text-foreground hover:text-muted-foreground mt-3"
-                  >
-                    View Full Profile
-                    <ArrowLeft className="w-4 h-4 rotate-180" />
-                  </Link>
-                </CardContent>
-              </Card>
-
-              {/* Collaborators */}
-              {plan.collaborators && plan.collaborators.length > 0 && (
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-lg flex items-center gap-2">
-                      <Users className="w-4 h-4" />
-                      Co-Hosts
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    {plan.collaborators.map((collab) => (
-                      <Link
-                        key={collab.id}
-                        href={`/explore/experts/${collab.consultantProfile.id}`}
-                        className="flex items-center gap-3 hover:bg-muted rounded-lg p-2 -mx-2 transition-colors"
-                      >
-                        <div className="relative h-10 w-10 rounded-full overflow-hidden ring-2 ring-border flex-shrink-0">
-                          <Image
-                            src={
-                              collab.consultantProfile.user.image ??
-                              "/placeholder-user.jpg"
-                            }
-                            alt={
-                              collab.consultantProfile.user.name ?? "Co-host"
-                            }
-                            fill
-                            className="object-cover"
-                          />
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-foreground">
-                            {collab.consultantProfile.user.name}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            {collab.role.replace(/_/g, " ")}
-                          </p>
-                        </div>
-                      </Link>
-                    ))}
-                  </CardContent>
-                </Card>
-              )}
-
-              {/* Registration Card */}
-              <ClientWebinarRegistration
-                webinarPlanId={plan.id}
-                webinarId={webinarId}
-                price={plan.price}
-                currency={plan.priceCurrency}
-                nextSessionDate={
-                  nextSession ? new Date(nextSession) : undefined
-                }
-                sessionStatus={sessionStatus}
-                appointment={plan.webinars?.[0]?.appointment}
-                maxParticipants={plan.maxParticipants ?? 100}
-                instanceMaxParticipants={
-                  plan.webinars?.[0]?.maxParticipants ?? null
-                }
-                consultantUserId={plan.consultantProfile?.user?.id}
-              />
-            </div>
-          </motion.div>
+            <ClientWebinarRegistration
+              webinarPlanId={plan.id}
+              webinarId={webinarId}
+              price={plan.price}
+              currency={plan.priceCurrency}
+              nextSessionDate={nextSession ? new Date(nextSession) : undefined}
+              sessionStatus={sessionStatus}
+              appointment={plan.webinars?.[0]?.appointment}
+              maxParticipants={plan.maxParticipants ?? 100}
+              instanceMaxParticipants={
+                plan.webinars?.[0]?.maxParticipants ?? null
+              }
+              consultantUserId={plan.consultantProfile?.user?.id}
+            />
+            <PlanExpertCard
+              heading="Your host"
+              expert={consultant}
+              collaboratorsHeading="Co-hosts"
+              collaborators={plan.collaborators}
+            />
+          </motion.aside>
         </div>
       </div>
     </main>

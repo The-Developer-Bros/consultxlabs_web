@@ -5,10 +5,7 @@ import { Search } from "lucide-react";
 import { memo, type RefObject } from "react";
 import type { IConsultantCardData } from "@/types/consultant";
 import { ConsultantCard } from "./ConsultantCard";
-import {
-  groupConsultantsByDomain,
-  type IExpertsMetaData,
-} from "../utils";
+import { groupConsultantsByDomain, type IExpertsMetaData } from "../utils";
 
 interface ExpertResultsProps {
   consultants: IConsultantCardData[];
@@ -21,23 +18,30 @@ interface ExpertResultsProps {
   sentinelRef: RefObject<HTMLDivElement>;
 }
 
+const REVEAL = {
+  initial: { opacity: 0, y: 16 },
+  whileInView: { opacity: 1, y: 0 },
+  viewport: { once: true, margin: "-80px" },
+} as const;
+
+const EASE = [0.16, 1, 0.3, 1] as const;
+
 function EmptyState() {
   return (
     <motion.div
-      className="text-center py-16"
-      initial={{ opacity: 0, scale: 0.95 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={{ duration: 0.3 }}
+      className="py-16 text-center"
+      initial={{ opacity: 0, y: 16 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.5, ease: EASE }}
     >
-      <div className="w-20 h-20 mx-auto mb-6 rounded-full bg-muted flex items-center justify-center">
-        <Search className="w-10 h-10 text-muted-foreground/70" />
+      <div className="mx-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-muted text-foreground">
+        <Search className="h-5 w-5" strokeWidth={1.75} />
       </div>
-      <h3 className="text-xl font-semibold text-foreground mb-2">
+      <h3 className="mt-4 text-lg font-semibold tracking-tight text-foreground">
         No experts found
       </h3>
-      <p className="text-muted-foreground max-w-md mx-auto">
-        Try adjusting your filters or search terms to discover more amazing
-        mentors
+      <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
+        Try a different search term, or widen the filters in the rail.
       </p>
     </motion.div>
   );
@@ -61,22 +65,19 @@ function ExpertResultsImpl({
   const grouped = groupConsultantsByDomain(consultants);
   const showEmpty = consultants.length === 0 && !isLoading && !isRefetching;
 
-  // Initial load: show card-grid anatomy instead of a spinner overlay.
+  // Initial load: show card anatomy instead of a spinner overlay.
   if ((isLoading || isRefetching) && consultants.length === 0) {
     return (
-      <div className="mt-8 min-h-[400px] space-y-6">
+      <div className="min-h-[400px] space-y-6">
         {Array.from({ length: 5 }).map((_, i) => (
-          <div
-            key={i}
-            className="h-36 animate-pulse rounded-xl bg-muted"
-          />
+          <div key={i} className="h-48 animate-pulse rounded-2xl bg-muted" />
         ))}
       </div>
     );
   }
 
   return (
-    <div className="mt-8 min-h-[400px] relative">
+    <div className="relative min-h-[400px]">
       {/* Soft refetch veil — keep stale results visible (no spinner CLS). */}
       {isRefetching && consultants.length > 0 && (
         <div
@@ -95,19 +96,15 @@ function ExpertResultsImpl({
               <motion.div
                 key={domain.id}
                 className="mb-12"
-                initial={{ opacity: 0, y: 20 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true }}
-                transition={{ duration: 0.5 }}
+                {...REVEAL}
+                transition={{ duration: 0.5, ease: EASE }}
               >
-                <div className="flex items-center gap-3 mb-6">
-                  <div className="w-1 h-8 bg-gradient-to-b from-foreground to-muted-foreground/70 rounded-full" />
-                  <h3 className="text-2xl font-bold text-foreground">
+                <div className="mb-5 flex items-baseline gap-3">
+                  <h3 className="text-xl font-semibold tracking-tight text-foreground">
                     {domain.name}
                   </h3>
-                  <span className="px-3 py-1 bg-muted rounded-full text-sm text-muted-foreground">
-                    {domainConsultants.length} expert
-                    {domainConsultants.length !== 1 ? "s" : ""}
+                  <span className="inline-flex items-center rounded-full border border-border bg-background px-2.5 py-1 text-xs font-medium tabular-nums text-muted-foreground">
+                    {domainConsultants.length}
                   </span>
                 </div>
                 <div className="space-y-6">
@@ -128,12 +125,11 @@ function ExpertResultsImpl({
           {consultants.map((consultant, index) => (
             <motion.div
               key={consultant.id}
-              initial={{ opacity: 0, y: 20 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true }}
+              {...REVEAL}
               transition={{
-                duration: 0.4,
-                delay: Math.min(index * 0.05, 0.6),
+                duration: 0.5,
+                ease: EASE,
+                delay: Math.min(index * 0.05, 0.3),
               }}
             >
               <ConsultantCard consultant={consultant} metadata={metadata} />
@@ -148,12 +144,9 @@ function ExpertResultsImpl({
       <div ref={sentinelRef} aria-hidden="true" />
 
       {isLoadingMore && (
-        <div className="space-y-4 py-6">
+        <div className="space-y-6 py-6">
           {[1, 2].map((i) => (
-            <div
-              key={i}
-              className="h-28 animate-pulse rounded-xl bg-muted"
-            />
+            <div key={i} className="h-48 animate-pulse rounded-2xl bg-muted" />
           ))}
         </div>
       )}

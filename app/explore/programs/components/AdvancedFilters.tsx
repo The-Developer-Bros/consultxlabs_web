@@ -9,8 +9,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, LayoutGrid, List, SlidersHorizontal } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Search, LayoutGrid, List, X } from "lucide-react";
+import SegmentedControl from "@/app/explore/components/SegmentedControl";
 import { TopicWithCount, ProgramFilters } from "@/lib/explore/programs";
 import { planLevelLabel } from "@/lib/labels/plan-labels";
 import { PlanLevel } from "@prisma/client";
@@ -36,6 +36,11 @@ const PRICE_RANGES = [
   { label: "500 - 2000", value: "500-2000" },
   { label: "2000 - 5000", value: "2000-5000" },
   { label: "5000+", value: "5000-" },
+];
+
+const VIEW_MODE_OPTIONS = [
+  { value: "grid", label: "Grid", icon: LayoutGrid },
+  { value: "list", label: "List", icon: List },
 ];
 
 const SORT_OPTIONS = [
@@ -119,23 +124,11 @@ function AdvancedFiltersImpl({
     .filter(Boolean);
 
   return (
-    <div className="bg-muted rounded-2xl p-6 border border-border">
-      <div className="flex items-center gap-2 mb-6">
-        <div className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center">
-          <SlidersHorizontal className="w-5 h-5 text-primary-foreground" />
-        </div>
-        <div>
-          <h3 className="font-semibold text-foreground">Filter Programs</h3>
-          <p className="text-sm text-muted-foreground">
-            Find the perfect program for you
-          </p>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
-        {/* Topics Multi-select */}
+    <div className="rounded-2xl border border-border bg-card p-4 md:p-5">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        {/* Topics multi-select */}
         <div className="relative" ref={topicRef}>
-          <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1.5 block">
+          <Label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
             Topics
           </Label>
           <div>
@@ -144,7 +137,7 @@ function AdvancedFiltersImpl({
               placeholder={
                 selectedTopicNames.length > 0
                   ? `${selectedTopicNames.length} selected`
-                  : "Search topics..."
+                  : "Search topics…"
               }
               value={topicSearch}
               onChange={(e) => {
@@ -152,18 +145,19 @@ function AdvancedFiltersImpl({
                 setTopicDropdownOpen(true);
               }}
               onFocus={() => setTopicDropdownOpen(true)}
-              className="w-full h-11 px-3 bg-card border border-border text-foreground text-sm rounded-xl focus:ring-2 focus:ring-ring focus:border-transparent transition-all"
+              className="h-10 w-full rounded-xl border border-border bg-card px-3 text-sm text-foreground transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
             />
             {topicDropdownOpen && filteredTopics.length > 0 && (
-              <div className="absolute z-30 w-full mt-1 bg-card border border-border rounded-xl shadow-xl max-h-48 overflow-auto">
+              <div className="absolute z-30 mt-1 max-h-48 w-full overflow-auto rounded-xl border border-border bg-popover shadow-elevation-2">
                 {filteredTopics.map((topic) => (
                   <button
                     key={topic.id}
-                    className="w-full px-3 py-2.5 text-left text-sm text-muted-foreground hover:bg-muted first:rounded-t-xl last:rounded-b-xl transition-colors flex justify-between items-center"
+                    type="button"
+                    className="flex w-full items-center justify-between px-3 py-2 text-left text-sm text-foreground transition-colors first:rounded-t-xl last:rounded-b-xl hover:bg-muted"
                     onClick={() => handleTopicToggle(topic.id)}
                   >
-                    <span>{topic.name}</span>
-                    <span className="text-xs text-muted-foreground/70">
+                    <span className="truncate">{topic.name}</span>
+                    <span className="ml-2 shrink-0 text-xs tabular-nums text-muted-foreground">
                       {topic.programCount}
                     </span>
                   </button>
@@ -173,14 +167,14 @@ function AdvancedFiltersImpl({
           </div>
         </div>
 
-        {/* Price Range */}
+        {/* Price range */}
         <div>
-          <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1.5 block">
+          <Label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
             Price
           </Label>
           <Select value={currentPriceRange} onValueChange={handlePriceChange}>
-            <SelectTrigger className="h-11 bg-card border-border rounded-xl focus:ring-ring">
-              <SelectValue placeholder="All Prices" />
+            <SelectTrigger className="h-10 rounded-xl border-border bg-card">
+              <SelectValue placeholder="All prices" />
             </SelectTrigger>
             <SelectContent>
               {PRICE_RANGES.map((range) => (
@@ -194,7 +188,7 @@ function AdvancedFiltersImpl({
 
         {/* Language */}
         <div>
-          <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1.5 block">
+          <Label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
             Language
           </Label>
           <Select
@@ -203,11 +197,11 @@ function AdvancedFiltersImpl({
               onFiltersChange({ language: v === "all" ? undefined : v })
             }
           >
-            <SelectTrigger className="h-11 bg-card border-border rounded-xl focus:ring-ring">
-              <SelectValue placeholder="All Languages" />
+            <SelectTrigger className="h-10 rounded-xl border-border bg-card">
+              <SelectValue placeholder="All languages" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Languages</SelectItem>
+              <SelectItem value="all">All languages</SelectItem>
               <SelectItem value="English">English</SelectItem>
               <SelectItem value="Hindi">Hindi</SelectItem>
               <SelectItem value="Spanish">Spanish</SelectItem>
@@ -218,15 +212,15 @@ function AdvancedFiltersImpl({
 
         {/* Level */}
         <div>
-          <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1.5 block">
+          <Label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
             Level
           </Label>
           <Select value={selectedLevel} onValueChange={onLevelChange}>
-            <SelectTrigger className="h-11 bg-card border-border rounded-xl focus:ring-ring">
-              <SelectValue placeholder="All Levels" />
+            <SelectTrigger className="h-10 rounded-xl border-border bg-card">
+              <SelectValue placeholder="All levels" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Levels</SelectItem>
+              <SelectItem value="all">All levels</SelectItem>
               {uniqueLevels.map((level) => (
                 <SelectItem key={level} value={level}>
                   {planLevelLabel(level)}
@@ -238,8 +232,8 @@ function AdvancedFiltersImpl({
 
         {/* Sort */}
         <div>
-          <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1.5 block">
-            Sort By
+          <Label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
+            Sort by
           </Label>
           <Select
             value={filters.sort || "none"}
@@ -247,7 +241,7 @@ function AdvancedFiltersImpl({
               onFiltersChange({ sort: v === "none" ? undefined : v })
             }
           >
-            <SelectTrigger className="h-11 bg-card border-border rounded-xl focus:ring-ring">
+            <SelectTrigger className="h-10 rounded-xl border-border bg-card">
               <SelectValue placeholder="Select sorting" />
             </SelectTrigger>
             <SelectContent>
@@ -261,67 +255,56 @@ function AdvancedFiltersImpl({
           </Select>
         </div>
 
-        {/* Search + View Mode */}
+        {/* Search */}
         <div>
-          <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1.5 block">
+          <Label className="mb-2 block text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
             Search
           </Label>
-          <div className="flex gap-2">
-            <div className="relative flex-1 min-w-0">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground/70" />
-              <Input
-                type="text"
-                placeholder="Search..."
-                value={localSearch}
-                onChange={(e) => onLocalSearchChange(e.target.value)}
-                className="h-11 pl-10 bg-card border-border rounded-xl focus:ring-ring"
-              />
-            </div>
-            <div className="flex gap-1">
-              <Button
-                variant={viewMode === "grid" ? "default" : "outline"}
-                size="icon"
-                className={`h-11 w-11 rounded-xl ${viewMode === "grid" ? "bg-primary hover:bg-primary/90" : "border-border"}`}
-                onClick={() => onViewModeChange("grid")}
-              >
-                <LayoutGrid className="h-4 w-4" />
-              </Button>
-              <Button
-                variant={viewMode === "list" ? "default" : "outline"}
-                size="icon"
-                className={`h-11 w-11 rounded-xl ${viewMode === "list" ? "bg-primary hover:bg-primary/90" : "border-border"}`}
-                onClick={() => onViewModeChange("list")}
-              >
-                <List className="h-4 w-4" />
-              </Button>
-            </div>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              type="text"
+              placeholder="Search programs…"
+              value={localSearch}
+              onChange={(e) => onLocalSearchChange(e.target.value)}
+              className="h-10 rounded-xl border-border bg-card pl-9 text-sm"
+            />
           </div>
         </div>
       </div>
 
-      {/* Selected topic chips inline */}
-      {selectedTopicNames.length > 0 && (
-        <div className="flex flex-wrap gap-2 mt-4">
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+        {/* Selected topic chips */}
+        <div className="flex flex-wrap gap-2">
           {(filters.topicIds || []).map((id) => {
             const topic = topics.find((t) => t.id === id);
             if (!topic) return null;
             return (
               <span
                 key={id}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-primary text-primary-foreground text-xs font-medium rounded-full"
+                className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-xs font-medium text-muted-foreground"
               >
-                {topic.name}
+                <span className="text-foreground">{topic.name}</span>
                 <button
-                  className="hover:bg-primary-foreground/20 rounded-full p-0.5 transition-colors"
+                  type="button"
+                  className="rounded-full p-0.5 transition-colors hover:text-foreground"
+                  aria-label={`Remove ${topic.name} topic`}
                   onClick={() => handleTopicToggle(id)}
                 >
-                  <span className="sr-only">Remove</span>×
+                  <X className="h-3 w-3" />
                 </button>
               </span>
             );
           })}
         </div>
-      )}
+
+        <SegmentedControl
+          value={viewMode}
+          onChange={(value) => onViewModeChange(value as "grid" | "list")}
+          options={VIEW_MODE_OPTIONS}
+          ariaLabel="Results layout"
+        />
+      </div>
     </div>
   );
 }

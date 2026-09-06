@@ -1,20 +1,18 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { ChevronRight, LucideIcon } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import Link from "next/link";
 
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { CATEGORIES } from "./data";
+import { SectionIntro, reveal, staggerDelay } from "./SectionIntro";
 
 function CategoryCard({
   category,
   consultantCount,
   index,
 }: {
-  category: { icon: LucideIcon; name: string; color: string };
+  category: (typeof CATEGORIES)[number];
   /** Verified consultants in the domain of this name, or 0 when there is no
    *  such domain yet. Zero renders no line rather than "0 experts" (#1490). */
   consultantCount: number;
@@ -23,35 +21,27 @@ function CategoryCard({
   const Icon = category.icon;
 
   return (
-    <motion.div
-      initial={{ opacity: 0, scale: 0.9 }}
-      whileInView={{ opacity: 1, scale: 1 }}
-      transition={{ duration: 0.4, delay: index * 0.05 }}
-      viewport={{ once: true }}
-    >
-      <Link href={`/explore/experts?category=${category.name.toLowerCase()}`}>
-        <Card className="group cursor-pointer border border-border bg-card hover:border-foreground/40 transition-all duration-300 hover:-translate-y-1 hover:shadow-elevation-2">
-          <CardContent className="p-6 flex items-center gap-4">
-            <div
-              className={`w-12 h-12 rounded-xl ${category.color} flex items-center justify-center group-hover:scale-110 transition-transform`}
-            >
-              <Icon className="w-6 h-6 text-white" />
-            </div>
-            <div className="min-w-0">
-              <h4 className="font-semibold text-foreground truncate">
-                {category.name}
-              </h4>
-              {consultantCount > 0 && (
-                <p className="text-sm text-muted-foreground truncate">
-                  {consultantCount === 1
-                    ? "1 expert"
-                    : `${consultantCount} experts`}
-                </p>
-              )}
-            </div>
-            <ChevronRight className="w-5 h-5 text-muted-foreground ml-auto group-hover:translate-x-1 transition-transform shrink-0" />
-          </CardContent>
-        </Card>
+    <motion.div {...reveal(staggerDelay(index))}>
+      <Link
+        href={`/explore/experts?category=${category.name.toLowerCase()}`}
+        className="group flex items-center gap-3 rounded-2xl border border-border bg-card p-4 shadow-elevation-1 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:border-foreground/20 hover:shadow-elevation-2"
+      >
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-border bg-background text-foreground">
+          <Icon className="h-5 w-5" strokeWidth={1.75} />
+        </div>
+        <div className="min-w-0">
+          <h3 className="truncate text-sm font-semibold text-foreground">
+            {category.name}
+          </h3>
+          {consultantCount > 0 && (
+            <p className="truncate text-xs text-muted-foreground">
+              {consultantCount === 1
+                ? "1 expert"
+                : `${consultantCount} experts`}
+            </p>
+          )}
+        </div>
+        <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
       </Link>
     </motion.div>
   );
@@ -64,32 +54,16 @@ export function CategoriesSection({
   consultantsByDomain: Record<string, number>;
 }) {
   return (
-    <section className="py-20 md:py-32 bg-gradient-to-b from-white to-zinc-50 relative overflow-hidden">
-      <div className="absolute inset-0 grid-pattern-dark opacity-30" />
+    <section className="bg-muted/40 py-20 md:py-28">
+      <div className="container mx-auto px-4 md:px-6">
+        <SectionIntro
+          eyebrow="Categories"
+          title="Browse by expertise"
+          lede="Find the people who already work in your field, and start with the one whose day looks like the problem you have."
+          action={{ label: "View all experts →", href: "/explore/experts" }}
+        />
 
-      <div className="container mx-auto px-4 md:px-6 relative z-10">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5 }}
-          viewport={{ once: true }}
-          className="text-center mb-12"
-        >
-          <Badge
-            variant="secondary"
-            className="mb-4 bg-secondary text-secondary-foreground hover:bg-secondary border-0"
-          >
-            Categories
-          </Badge>
-          <h2 className="text-fluid-4xl font-bold text-foreground mb-4 tracking-tight">
-            Browse by <span className="text-muted-foreground">expertise</span>
-          </h2>
-          <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-            Find experts in your field and start learning from the best
-          </p>
-        </motion.div>
-
-        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {CATEGORIES.map((category, index) => (
             <CategoryCard
               key={category.name}
@@ -101,25 +75,6 @@ export function CategoriesSection({
             />
           ))}
         </div>
-
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.3 }}
-          viewport={{ once: true }}
-          className="text-center mt-10"
-        >
-          <Link href="/explore/experts">
-            <Button
-              variant="outline"
-              size="lg"
-              className="border-border hover:bg-muted"
-            >
-              View All Categories
-              <ChevronRight className="ml-2 w-4 h-4" />
-            </Button>
-          </Link>
-        </motion.div>
       </div>
     </section>
   );

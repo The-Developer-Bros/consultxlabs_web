@@ -2,10 +2,9 @@
 
 import { memo } from "react";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-import { Badge } from "@/components/ui/badge";
 import Link from "next/link";
 import { motion } from "framer-motion";
-import { User, Star, StarHalf, ArrowRight, Award, BadgeCheck, Globe } from "lucide-react";
+import { User, Star, BadgeCheck } from "lucide-react";
 import { CompanyLogo } from "@/components/ui/company-logo";
 import type { IConsultantCardData } from "@/types/consultant";
 
@@ -14,188 +13,147 @@ interface FeaturedExpertsProps {
   isLoading: boolean;
 }
 
-function FeaturedExpertsImpl({ experts, isLoading }: FeaturedExpertsProps) {
-  const renderRating = (rating: number) => {
-    const fullStars = Math.floor(rating);
-    const hasHalfStar = rating % 1 >= 0.5;
+const REVEAL = {
+  initial: { opacity: 0, y: 16 },
+  whileInView: { opacity: 1, y: 0 },
+  viewport: { once: true, margin: "-80px" },
+} as const;
 
-    return (
-      <div className="flex items-center gap-1">
-        {[...Array(fullStars)].map((_, i) => (
-          <Star key={i} className="w-4 h-4 fill-amber-400 text-amber-400" />
-        ))}
-        {hasHalfStar && (
-          <StarHalf className="w-4 h-4 fill-amber-400 text-amber-400" />
-        )}
-        <span className="text-sm font-medium text-muted-foreground ml-1">
-          {rating.toFixed(1)}
-        </span>
-      </div>
-    );
-  };
+function FeaturedExpertsImpl({ experts, isLoading }: FeaturedExpertsProps) {
+  // Nothing to feature is a real state before launch — a heading over an empty
+  // grid is worse than no band at all.
+  if (!isLoading && experts.length === 0) return null;
 
   return (
-    <section className="py-20 bg-gradient-to-b from-zinc-100 to-white relative overflow-hidden">
-      {/* Background Pattern */}
-      <div className="absolute inset-0 dot-pattern opacity-30" />
-
-      <div className="max-w-[1600px] mx-auto px-4 md:px-8 lg:px-12 relative z-10">
-        {/* Section Header */}
+    <section className="border-b border-border bg-muted/40 py-16 md:py-20">
+      <div className="mx-auto max-w-[1600px] px-4 md:px-8 lg:px-12">
         <motion.div
-          className="text-center mb-16"
-          initial={{ opacity: 0, y: 20 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true }}
-          transition={{ duration: 0.5 }}
+          className="mb-10 md:mb-14"
+          {...REVEAL}
+          transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
         >
-          <div className="inline-flex items-center gap-2 px-4 py-2 bg-primary rounded-full mb-6">
-            <Award className="w-4 h-4 text-primary-foreground" />
-            <span className="text-sm font-medium text-primary-foreground">
-              Familiarise Pick
-            </span>
-          </div>
-          <h2 className="text-fluid-3xl md:text-fluid-4xl font-bold tracking-tight text-foreground mb-4">
-            Top Familiarise <span className="silver-text">Experts</span>
+          <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+            Familiarise picks
+          </p>
+          <h2 className="mt-3 text-fluid-3xl font-semibold tracking-[-0.02em] text-foreground md:text-fluid-4xl">
+            Top rated experts
           </h2>
-          <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-            Discover the best of the best. Our top consultants are ready to help
-            you achieve your goals.
+          <p className="mt-4 max-w-2xl text-base leading-relaxed text-muted-foreground md:text-lg">
+            The highest-rated verified experts on the platform right now.
           </p>
         </motion.div>
 
-        {/* Experts Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           {isLoading
-            ? Array(5)
-                .fill(0)
-                .map((_, index) => (
-                  <div
-                    key={index}
-                    className="bg-card rounded-2xl p-6 shadow-sm border border-border animate-pulse"
-                  >
-                    <div className="w-20 h-20 rounded-full bg-muted mx-auto mb-4" />
-                    <div className="h-5 bg-muted rounded w-3/4 mx-auto mb-3" />
-                    <div className="h-4 bg-muted rounded w-1/2 mx-auto mb-4" />
-                    <div className="flex gap-2 justify-center">
-                      <div className="h-6 bg-muted rounded-full w-16" />
-                      <div className="h-6 bg-muted rounded-full w-16" />
+            ? Array.from({ length: 5 }).map((_, index) => (
+                <div
+                  key={index}
+                  className="animate-pulse rounded-2xl border border-border bg-card p-5"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="h-14 w-14 shrink-0 rounded-full bg-muted" />
+                    <div className="min-w-0 flex-1 space-y-2">
+                      <div className="h-4 w-3/4 rounded bg-muted" />
+                      <div className="h-3 w-1/2 rounded bg-muted" />
                     </div>
                   </div>
-                ))
+                  <div className="mt-4 h-3 w-24 rounded bg-muted" />
+                  <div className="mt-6 h-4 w-full rounded bg-muted" />
+                </div>
+              ))
             : experts.map((expert, index) => (
                 <motion.div
                   key={expert.id}
                   className="h-full"
-                  initial={{ opacity: 0, y: 20 }}
-                  whileInView={{ opacity: 1, y: 0 }}
-                  viewport={{ once: true }}
+                  {...REVEAL}
                   transition={{
-                    duration: 0.4,
-                    delay: Math.min(index * 0.1, 0.6),
+                    duration: 0.5,
+                    ease: [0.16, 1, 0.3, 1],
+                    delay: Math.min(index * 0.05, 0.3),
                   }}
                 >
                   <Link
                     href={`/explore/experts/${expert.id}`}
-                    className="group block h-full"
+                    className="group flex h-full flex-col gap-4 rounded-2xl border border-border bg-card p-5 shadow-elevation-1 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:border-foreground/20 hover:shadow-elevation-2"
                   >
-                    <div className="bg-card rounded-2xl p-6 shadow-sm border border-border hover:border-border hover:shadow-lg transition-all duration-300 h-full flex flex-col">
-                      {/* Avatar */}
-                      <div className="relative mb-4">
-                        <Avatar className="mx-auto h-20 w-20 ring-4 ring-muted group-hover:ring-border transition-all">
-                          <AvatarImage
-                            src={expert.user.image || "/placeholder-user.jpg"}
-                            alt={expert.user.name || "Expert"}
-                            className="object-cover"
-                          />
-                          <AvatarFallback className="bg-primary text-primary-foreground">
-                            <User className="h-10 w-10" />
-                          </AvatarFallback>
-                        </Avatar>
-                        {/* Top Expert Badge */}
-                        {index === 0 && (
-                          <div className="absolute -top-2 -right-2 w-8 h-8 bg-gradient-to-br from-amber-400 to-amber-600 rounded-full flex items-center justify-center shadow-lg">
-                            <Award className="w-4 h-4 text-white" />
-                          </div>
+                    <div className="flex items-center gap-3">
+                      <Avatar className="h-14 w-14 shrink-0 ring-1 ring-border">
+                        <AvatarImage
+                          src={expert.user.image || "/placeholder-user.jpg"}
+                          alt={expert.user.name || "Expert"}
+                          className="object-cover"
+                        />
+                        <AvatarFallback className="bg-muted text-muted-foreground">
+                          <User className="h-6 w-6" />
+                        </AvatarFallback>
+                      </Avatar>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <h3 className="line-clamp-1 font-semibold text-foreground">
+                            {expert.user.name}
+                          </h3>
+                          {expert.isVerified && (
+                            <span
+                              title="Verified by Familiarise"
+                              className="shrink-0"
+                            >
+                              <BadgeCheck className="h-4 w-4 text-foreground" />
+                            </span>
+                          )}
+                        </div>
+                        {(expert.headline || expert.domain?.name) && (
+                          <p className="line-clamp-1 text-sm text-muted-foreground">
+                            {expert.headline || expert.domain?.name}
+                          </p>
                         )}
                       </div>
+                    </div>
 
-                      {/* Name */}
-                      <div className="flex items-center justify-center gap-1 mb-2">
-                        <h3 className="text-lg font-semibold text-foreground text-center line-clamp-1 group-hover:text-muted-foreground transition-colors">
-                          {expert.user.name}
-                        </h3>
-                        {expert.isVerified && (
-                          <span title="Verified by Familiarise">
-                            <BadgeCheck className="w-4 h-4 text-foreground flex-shrink-0" />
+                    {(expert.rating !== null || expert.experience) && (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        {expert.rating !== null && (
+                          <span className="inline-flex items-center gap-1">
+                            <Star className="h-4 w-4 fill-amber-400 text-amber-400" />
+                            <span className="font-medium tabular-nums text-foreground">
+                              {expert.rating.toFixed(1)}
+                            </span>
+                          </span>
+                        )}
+                        {expert.rating !== null && expert.experience ? (
+                          <span aria-hidden>·</span>
+                        ) : null}
+                        {expert.experience ? (
+                          <span className="tabular-nums">
+                            {expert.experience} yrs
+                          </span>
+                        ) : null}
+                      </div>
+                    )}
+
+                    <div className="mt-auto flex items-center justify-between gap-3">
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        {expert.user.workExperiences
+                          ?.slice(0, 2)
+                          .map((exp, i) => (
+                            <CompanyLogo
+                              key={`${expert.id}-company-${i}`}
+                              companyName={exp.company}
+                              companyDomain={exp.companyDomain ?? undefined}
+                              size={22}
+                              className="border-border"
+                            />
+                          ))}
+                        {expert.tags?.[0] && (
+                          <span className="inline-flex min-w-0 items-center rounded-full border border-border bg-background px-2.5 py-1 text-xs font-medium text-muted-foreground">
+                            <span className="truncate">
+                              {expert.tags[0].name}
+                            </span>
                           </span>
                         )}
                       </div>
-
-                      {/* Rating */}
-                      <div className="flex justify-center mb-3">
-                        {expert.rating !== null && renderRating(expert.rating)}
-                      </div>
-
-                      {/* Headline */}
-                      <div className="text-center">
-                        <p className="text-sm text-muted-foreground font-medium line-clamp-1 mb-1">
-                          {expert.headline || expert.domain?.name}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          {expert.experience} experience
-                        </p>
-                      </div>
-
-                      {/* Bottom section — pinned to bottom for consistent card height */}
-                      <div className="mt-auto pt-3">
-                        {/* Company Logos */}
-                        {expert.user.workExperiences &&
-                          expert.user.workExperiences.length > 0 && (
-                            <div className="flex items-center justify-center gap-1.5 mb-3">
-                              {expert.user.workExperiences
-                                .slice(0, 2)
-                                .map((exp, i) => (
-                                  <CompanyLogo
-                                    key={`${expert.id}-company-${i}`}
-                                    companyName={exp.company}
-                                    companyDomain={exp.companyDomain ?? undefined}
-                                    size={22}
-                                    className="border-border"
-                                  />
-                                ))}
-                            </div>
-                          )}
-
-                        {/* Languages */}
-                        {expert.languages && expert.languages.length > 0 && (
-                          <div className="flex items-center justify-center gap-1 mb-3">
-                            <Globe className="w-3 h-3 text-muted-foreground/70 flex-shrink-0" />
-                            <p className="text-xs text-muted-foreground line-clamp-1">
-                              {expert.languages.slice(0, 3).join(", ")}
-                            </p>
-                          </div>
-                        )}
-
-                        {/* Tags */}
-                        {expert.tags && expert.tags.length > 0 && (
-                          <div className="flex flex-wrap gap-1.5 justify-center mb-3">
-                            {expert.tags.slice(0, 2).map((tag) => (
-                              <Badge
-                                key={tag.id}
-                                className="text-xs px-2 py-0.5 bg-muted text-muted-foreground hover:bg-muted/80 border-0"
-                              >
-                                {tag.name}
-                              </Badge>
-                            ))}
-                          </div>
-                        )}
-
-                        {/* View Profile */}
-                        <div className="flex items-center justify-center gap-1 text-sm font-medium text-muted-foreground group-hover:text-foreground transition-colors">
-                          <span>View Profile</span>
-                          <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-                        </div>
-                      </div>
+                      <span className="shrink-0 text-sm font-medium text-muted-foreground transition-colors group-hover:text-foreground">
+                        View profile →
+                      </span>
                     </div>
                   </Link>
                 </motion.div>

@@ -1,8 +1,6 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { TConsultantReview } from "@/types/review";
-import Image from "next/image";
-
-import { StarIcon } from "lucide-react";
+import { Star } from "lucide-react";
 import React from "react";
 
 const Review: React.FC<Readonly<TConsultantReview>> = ({
@@ -15,48 +13,52 @@ const Review: React.FC<Readonly<TConsultantReview>> = ({
   const reviewerImage = consulteeProfile?.user?.image || null;
 
   return (
-    <div className="flex items-start space-x-4 p-4 bg-card rounded-lg shadow-sm">
-      <Avatar className="w-10 h-10">
+    <li className="flex gap-4 py-5 first:pt-0 last:pb-0">
+      <Avatar className="h-9 w-9 ring-1 ring-border">
         {reviewerImage && (
           <AvatarImage src={reviewerImage} alt={reviewerName} />
         )}
-        <AvatarFallback>{reviewerName.charAt(0).toUpperCase()}</AvatarFallback>
+        <AvatarFallback className="bg-muted text-sm font-medium text-foreground">
+          {reviewerName.charAt(0).toUpperCase()}
+        </AvatarFallback>
       </Avatar>
-      <div className="flex-1">
-        <div className="flex items-center justify-between mb-2">
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-start justify-between gap-2">
           <div>
-            <h4 className="text-md font-semibold text-foreground">
+            <p className="text-sm font-semibold text-foreground">
               {reviewerName}
-            </h4>
+            </p>
             <p className="text-xs text-muted-foreground">
-              {new Date(createdAt).toLocaleDateString("en-IN")}
+              {new Date(createdAt).toLocaleDateString("en-IN", {
+                day: "numeric",
+                month: "short",
+                year: "numeric",
+              })}
             </p>
           </div>
-          <div className="flex items-center">
+          <div
+            className="flex items-center gap-0.5"
+            aria-label={`${rating} out of 5 stars`}
+          >
             {[...Array(5)].map((_, i) => (
-              <StarIcon
+              <Star
                 key={`star-${rating}-${i}`}
-                className={`w-4 h-4 ${i < rating ? "text-yellow-400" : "text-muted"}`}
+                className={`h-3.5 w-3.5 ${
+                  i < rating
+                    ? "fill-amber-400 text-amber-400"
+                    : "fill-border text-border"
+                }`}
               />
             ))}
           </div>
         </div>
-        <p className="text-sm text-muted-foreground leading-relaxed">
-          {reviewDescription}
-        </p>
-        <div className="flex items-center gap-1.5 mt-3 pt-3 border-t border-border">
-          <Image
-            src="/avif/static/assets/logos/images/logos/Familiarise-logos_transparent.avif"
-            alt="Familiarise"
-            width={14}
-            height={14}
-          />
-          <span className="text-[10px] text-muted-foreground/70">
-            Reviewed on Familiarise
-          </span>
-        </div>
+        {reviewDescription && (
+          <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+            {reviewDescription}
+          </p>
+        )}
       </div>
-    </div>
+    </li>
   );
 };
 

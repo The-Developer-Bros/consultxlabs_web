@@ -3,20 +3,13 @@
 import { PlanLevel } from "@prisma/client";
 import { useCallback, useMemo } from "react";
 import { motion } from "framer-motion";
-import {
-  GraduationCap,
-  Video,
-  Users,
-  Sparkles,
-  type LucideIcon,
-} from "lucide-react";
 import { useSession } from "@/lib/auth-client";
 import { useCurrency } from "@/hooks/useCurrency";
 import { type Program, type TopicWithCount } from "@/lib/explore/programs";
-import {
-  buildProgramHeroStats,
-  type ProgramStatKey,
-} from "@/lib/data/public-stats";
+import { buildProgramHeroStats } from "@/lib/data/public-stats";
+import ExploreHero from "@/app/explore/components/ExploreHero";
+import SectionHeader from "@/app/explore/components/SectionHeader";
+import FilterChips from "@/app/explore/components/FilterChips";
 import {
   useCuratedPrograms,
   useInfiniteScroll,
@@ -26,9 +19,7 @@ import {
   useTopicsWithCount,
 } from "./hooks";
 import ProgramTabs from "./components/ProgramTabs";
-import SectionHeader from "./components/SectionHeader";
 import AdvancedFilters from "./components/AdvancedFilters";
-import FilterChips from "./components/FilterChips";
 import StaticTopRows from "./components/StaticTopRows";
 import ProgramResults from "./components/ProgramResults";
 
@@ -48,17 +39,6 @@ interface ProgramsInteractiveContentProps {
   /** Every level in the catalog, read server-side — not just loaded rows. */
   availableLevels?: PlanLevel[];
 }
-
-// #1490 — there is no FALLBACK_STATS any more. It rendered "500+ Classes
-// Available", "200+ Live Webinars" and "25K+ Students Enrolled" whenever the
-// stats read returned null, and the data path kept the "25K+" regardless, so
-// that one was fabricated even when the others were real. A figure now either
-// comes from the database or is not shown.
-const PROGRAM_STAT_ICONS: Record<ProgramStatKey, LucideIcon> = {
-  classes: GraduationCap,
-  webinars: Video,
-  learners: Users,
-};
 
 export default function ProgramsInteractiveContent({
   initialTrending,
@@ -90,6 +70,12 @@ export default function ProgramsInteractiveContent({
   // Stats: server-fetched or absent. `null` means the read failed, and a hero
   // with no numbers is the honest rendering of "we could not count them".
   // No client useEffect — the RSC paid that cost.
+  //
+  // #1490 — there is no FALLBACK_STATS any more. It rendered "500+ Classes
+  // Available", "200+ Live Webinars" and "25K+ Students Enrolled" whenever the
+  // stats read returned null, and the data path kept the "25K+" regardless, so
+  // that one was fabricated even when the others were real. A figure now either
+  // comes from the database or is not shown.
   const stats = useMemo(
     () => (initialStats ? buildProgramHeroStats(initialStats) : []),
     [initialStats],
@@ -182,74 +168,18 @@ export default function ProgramsInteractiveContent({
 
   return (
     <main className="min-h-screen bg-background">
-      {/* Hero Section */}
-      <section className="relative pt-32 pb-20 bg-zinc-950 overflow-hidden">
-        <div className="absolute inset-0">
-          <div className="absolute top-1/4 left-1/4 w-[600px] h-[600px] bg-zinc-800/30 rounded-full blur-[120px] animate-blob" />
-          <div className="absolute bottom-1/4 right-1/4 w-[500px] h-[500px] bg-zinc-700/20 rounded-full blur-[100px] animate-blob animation-delay-2000" />
-        </div>
-        <div className="absolute inset-0 grid-pattern opacity-20" />
+      <ExploreHero
+        eyebrow="Programs"
+        title="Classes and webinars"
+        titleAccent="led by practitioners"
+        description="Multi-week cohorts and single live sessions. Learn with a group, ask your questions, and leave with something you can use."
+        stats={stats}
+        emptyStatsText="Check back for new classes and webinars."
+      />
 
-        <div className="max-w-[1600px] mx-auto px-4 md:px-8 lg:px-12 relative z-10">
-          <motion.div
-            className="max-w-4xl mx-auto text-center"
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6 }}
-          >
-            <div className="inline-flex items-center gap-2 px-4 py-2 bg-zinc-800/50 backdrop-blur-sm border border-zinc-700/50 rounded-full mb-8">
-              <Sparkles className="w-4 h-4 text-white" />
-              <span className="text-sm font-medium text-zinc-300">
-                Learn from the Best
-              </span>
-            </div>
-
-            <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold text-white mb-6">
-              Classes & <span className="silver-text">Webinars</span>
-            </h1>
-
-            <p className="text-lg md:text-xl text-zinc-400 mb-12 max-w-2xl mx-auto">
-              Expand your knowledge with expert-led classes and live webinars.
-              Learn at your own pace or join interactive sessions.
-            </p>
-
-            {stats.length > 0 ? (
-              <div className="flex flex-wrap justify-center gap-8 md:gap-16">
-                {stats.map((stat, index) => {
-                  const Icon = PROGRAM_STAT_ICONS[stat.key];
-                  return (
-                    <motion.div
-                      key={stat.key}
-                      className="text-center"
-                      initial={{ opacity: 0, y: 20 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ duration: 0.5, delay: 0.2 + index * 0.1 }}
-                    >
-                      <div className="w-12 h-12 mx-auto mb-3 rounded-xl bg-zinc-800/50 border border-zinc-700/50 flex items-center justify-center">
-                        <Icon className="w-6 h-6 text-white" />
-                      </div>
-                      <div className="text-2xl md:text-3xl font-bold text-white">
-                        {stat.display}
-                      </div>
-                      <div className="text-sm text-zinc-500">{stat.label}</div>
-                    </motion.div>
-                  );
-                })}
-              </div>
-            ) : (
-              <p className="text-sm text-zinc-500">
-                Check back for new classes and webinars.
-              </p>
-            )}
-          </motion.div>
-        </div>
-      </section>
-
-      {/* Content Section */}
       <section className="py-10 md:py-16">
-        <div className="max-w-[1600px] mx-auto px-4 md:px-8 lg:px-12">
-          {/* Tabs */}
-          <div className="mb-10">
+        <div className="mx-auto max-w-[1600px] px-4 md:px-8 lg:px-12">
+          <div className="mb-10 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <ProgramTabs
               activeTab={programType}
               onTabChange={handleTabChange}
@@ -267,35 +197,36 @@ export default function ProgramsInteractiveContent({
             onTopicSelect={handleTopicSelect}
           />
 
-          {/* All Programs Section */}
-          <div id="all-programs">
-            <SectionHeader title="All Programs" />
+          {/* The nav deep-links to #all-programs, so the anchor carries the
+              fixed-navbar offset. */}
+          <motion.div
+            id="all-programs"
+            className="scroll-mt-[calc(var(--header-height,5rem)+1rem)]"
+            initial={{ opacity: 0, y: 16 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true, margin: "-80px" }}
+            transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+          >
+            <SectionHeader
+              title="All programs"
+              description="Search, then narrow by level, price, language and topic."
+            />
 
-            {/* Advanced Filters */}
-            <motion.div
-              className="mb-8"
-              initial={{ opacity: 0, y: 20 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true }}
-              transition={{ duration: 0.5 }}
-            >
-              <AdvancedFilters
-                filters={filters}
-                onFiltersChange={updateFilters}
-                localSearch={localSearchValue}
-                onLocalSearchChange={onLocalSearchChange}
-                selectedLevel={selectedLevel}
-                onLevelChange={setSelectedLevel}
-                uniqueLevels={uniqueLevels}
-                viewMode={viewMode}
-                onViewModeChange={setViewMode}
-                topics={topicsWithCount}
-              />
-            </motion.div>
+            <AdvancedFilters
+              filters={filters}
+              onFiltersChange={updateFilters}
+              localSearch={localSearchValue}
+              onLocalSearchChange={onLocalSearchChange}
+              selectedLevel={selectedLevel}
+              onLevelChange={setSelectedLevel}
+              uniqueLevels={uniqueLevels}
+              viewMode={viewMode}
+              onViewModeChange={setViewMode}
+              topics={topicsWithCount}
+            />
 
-            {/* Active Filter Chips */}
             {chips.length > 0 && (
-              <div className="mb-6">
+              <div className="mt-6">
                 <FilterChips
                   filters={chips}
                   onRemove={removeChip}
@@ -304,14 +235,16 @@ export default function ProgramsInteractiveContent({
               </div>
             )}
 
-            <ProgramResults
-              programs={filteredAndSortedPrograms}
-              isLoading={isLoading}
-              viewMode={viewMode}
-              sentinelRef={sentinelRef}
-              viewerOrgs={viewerOrgs}
-            />
-          </div>
+            <div className="mt-8">
+              <ProgramResults
+                programs={filteredAndSortedPrograms}
+                isLoading={isLoading}
+                viewMode={viewMode}
+                sentinelRef={sentinelRef}
+                viewerOrgs={viewerOrgs}
+              />
+            </div>
+          </motion.div>
         </div>
       </section>
     </main>

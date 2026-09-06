@@ -79,7 +79,8 @@ export default function FacetGroup<T extends string>({
                 key={option.value}
                 className={cn(
                   "flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-muted",
-                  isEmpty && "cursor-not-allowed opacity-50 hover:bg-transparent",
+                  isEmpty &&
+                    "cursor-not-allowed opacity-50 hover:bg-transparent",
                 )}
               >
                 <input

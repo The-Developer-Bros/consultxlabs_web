@@ -10,7 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, SlidersHorizontal } from "lucide-react";
+import { Search } from "lucide-react";
 
 export type SortOption =
   | "nameAsc"
@@ -65,15 +65,12 @@ function SearchBarImpl({
   }, 300);
 
   return (
-    <div className="flex flex-col sm:flex-row gap-4">
-      {/* Search Input */}
-      <div className="flex-1 relative rounded-xl focus-within:ring-2 focus-within:ring-ring transition-shadow">
-        <div className="absolute left-4 top-1/2 -translate-y-1/2">
-          <Search className="w-6 h-6 text-muted-foreground/70" />
-        </div>
+    <div className="flex gap-2">
+      <div className="relative flex-1">
+        <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <Input
-          className="w-full h-14 pl-14 pr-4 bg-muted border border-border rounded-xl focus:ring-0 focus-visible:ring-0 placeholder:text-muted-foreground/70 text-base"
-          placeholder="Search experts by name, skill, or specialty..."
+          className="h-11 rounded-xl border-border bg-card pl-10 pr-3 text-sm"
+          placeholder="Search experts by name, skill, or specialty…"
           type="search"
           value={localValue}
           onChange={(e) => {
@@ -83,31 +80,25 @@ function SearchBarImpl({
         />
       </div>
 
-      {/* Sort Dropdown */}
-      <div className="flex items-center gap-2">
-        <div className="flex items-center gap-2 px-4 h-14 bg-muted border border-border rounded-xl">
-          <SlidersHorizontal className="w-4 h-4 text-muted-foreground" />
-          <span className="text-sm font-medium text-muted-foreground hidden sm:inline">
-            Sort by
-          </span>
-        </div>
-        <Select
-          value={sortBy}
-          onValueChange={(value) => onSort(value as SortOption)}
+      <Select
+        value={sortBy}
+        onValueChange={(value) => onSort(value as SortOption)}
+      >
+        <SelectTrigger
+          className="h-11 w-[168px] rounded-xl border-border bg-card"
+          aria-label="Sort experts"
         >
-          <SelectTrigger className="w-full sm:w-[180px] flex-1 sm:flex-initial min-w-0 h-14 bg-muted border border-border rounded-xl focus:ring-ring">
-            <SelectValue placeholder="Sort by" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="nameAsc">Name (A-Z)</SelectItem>
-            <SelectItem value="nameDesc">Name (Z-A)</SelectItem>
-            <SelectItem value="reviewCount">Most Reviews</SelectItem>
-            <SelectItem value="rating">Highest Rating</SelectItem>
-            <SelectItem value="trending">Trending</SelectItem>
-            <SelectItem value="newest">Newest</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
+          <SelectValue placeholder="Sort by" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="nameAsc">Name (A-Z)</SelectItem>
+          <SelectItem value="nameDesc">Name (Z-A)</SelectItem>
+          <SelectItem value="reviewCount">Most Reviews</SelectItem>
+          <SelectItem value="rating">Highest Rating</SelectItem>
+          <SelectItem value="trending">Trending</SelectItem>
+          <SelectItem value="newest">Newest</SelectItem>
+        </SelectContent>
+      </Select>
     </div>
   );
 }

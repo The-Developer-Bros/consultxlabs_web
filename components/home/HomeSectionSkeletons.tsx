@@ -1,26 +1,39 @@
+/** Intro placeholder shared by the section skeletons: eyebrow, h2, lede. */
+function IntroSkeleton({ dark = false }: { dark?: boolean }) {
+  const bar = dark ? "bg-white/[0.06]" : "bg-muted";
+  return (
+    <div className="mb-10 md:mb-14">
+      <div className={`h-3 w-24 animate-pulse rounded ${bar}`} />
+      <div
+        className={`mt-3 h-9 w-80 max-w-full animate-pulse rounded ${bar}`}
+      />
+      <div
+        className={`mt-4 h-5 w-96 max-w-full animate-pulse rounded ${bar}`}
+      />
+    </div>
+  );
+}
+
 export function BenefitsSkeleton() {
   return (
-    <section className="py-20 md:py-32 bg-gradient-to-b from-zinc-100 to-white">
+    <section className="bg-muted/40 py-20 md:py-28">
       <div className="container mx-auto px-4 md:px-6">
-        <div className="grid lg:grid-cols-2 gap-16 items-center">
-          <div className="space-y-6">
-            <div className="h-6 w-24 bg-muted/50 rounded animate-pulse" />
-            <div className="h-10 w-3/4 bg-muted/50 rounded animate-pulse" />
-            <div className="space-y-3">
+        <div className="grid items-center gap-12 lg:grid-cols-2 lg:gap-20">
+          <div>
+            <IntroSkeleton />
+            <div className="divide-y divide-border border-y border-border">
               {[...Array(4)].map((_, i) => (
-                <div
-                  key={i}
-                  className="h-5 bg-muted/50 rounded animate-pulse"
-                  style={{ width: `${70 + i * 5}%` }}
-                />
+                <div key={i} className="grid grid-cols-[2.5rem_1fr] py-5">
+                  <div className="h-4 w-6 animate-pulse rounded bg-muted" />
+                  <div>
+                    <div className="h-5 w-48 animate-pulse rounded bg-muted" />
+                    <div className="mt-2 h-4 w-full animate-pulse rounded bg-muted" />
+                  </div>
+                </div>
               ))}
             </div>
-            <div className="flex gap-4 pt-2">
-              <div className="h-12 w-36 bg-muted/50 rounded-xl animate-pulse" />
-              <div className="h-12 w-36 bg-muted/50 rounded-xl animate-pulse" />
-            </div>
           </div>
-          <div className="h-[400px] bg-muted/50 rounded-2xl animate-pulse" />
+          <div className="h-[400px] animate-pulse rounded-2xl border border-border bg-muted" />
         </div>
       </div>
     </section>
@@ -29,21 +42,17 @@ export function BenefitsSkeleton() {
 
 export function FeaturedExpertsSkeleton() {
   return (
-    <section className="py-20 md:py-28 bg-background">
+    <section className="overflow-hidden bg-background py-20 md:py-28">
       <div className="container mx-auto px-4 md:px-6">
-        <div className="text-center mb-12 space-y-3">
-          <div className="h-6 w-28 bg-muted/50 rounded animate-pulse mx-auto" />
-          <div className="h-10 w-72 bg-muted/50 rounded animate-pulse mx-auto" />
-          <div className="h-5 w-96 bg-muted/50 rounded animate-pulse mx-auto" />
-        </div>
-        <div className="flex gap-6 overflow-hidden">
-          {[...Array(4)].map((_, i) => (
-            <div
-              key={i}
-              className="flex-shrink-0 w-[300px] h-[220px] bg-muted/50 rounded-xl animate-pulse"
-            />
-          ))}
-        </div>
+        <IntroSkeleton />
+      </div>
+      <div className="flex overflow-hidden px-4 md:px-6">
+        {[...Array(4)].map((_, i) => (
+          <div
+            key={i}
+            className="mx-2 h-[196px] w-[300px] flex-shrink-0 animate-pulse rounded-2xl border border-border bg-muted"
+          />
+        ))}
       </div>
     </section>
   );
@@ -51,31 +60,20 @@ export function FeaturedExpertsSkeleton() {
 
 export function TestimonialsSkeleton() {
   return (
-    <>
-      <section className="py-20 md:py-28 bg-gradient-to-b from-zinc-900 to-zinc-950">
-        <div className="container mx-auto px-4 md:px-6">
-          <div className="text-center mb-12 space-y-3">
-            <div className="h-6 w-28 bg-zinc-800 rounded animate-pulse mx-auto" />
-            <div className="h-10 w-72 bg-zinc-800 rounded animate-pulse mx-auto" />
-          </div>
-          <div className="flex gap-6 overflow-hidden">
-            {[...Array(3)].map((_, i) => (
-              <div
-                key={i}
-                className="flex-shrink-0 w-[350px] h-[180px] bg-zinc-800 rounded-xl animate-pulse"
-              />
-            ))}
-          </div>
+    <section className="overflow-hidden bg-zinc-950 py-20 md:py-28">
+      <div className="container mx-auto px-4 md:px-6">
+        <IntroSkeleton dark />
+      </div>
+      {[0, 1].map((row) => (
+        <div key={row} className="mb-4 flex overflow-hidden px-4 md:px-6">
+          {[...Array(4)].map((_, i) => (
+            <div
+              key={i}
+              className="mx-2 h-[212px] w-[360px] flex-shrink-0 animate-pulse rounded-2xl border border-white/10 bg-white/[0.04]"
+            />
+          ))}
         </div>
-      </section>
-      <section className="py-20 bg-zinc-950">
-        <div className="container mx-auto px-4 md:px-6">
-          <div className="grid md:grid-cols-2 gap-8">
-            <div className="h-[320px] bg-zinc-800 rounded-xl animate-pulse" />
-            <div className="h-[320px] bg-zinc-800 rounded-xl animate-pulse" />
-          </div>
-        </div>
-      </section>
-    </>
+      ))}
+    </section>
   );
 }

@@ -1,37 +1,38 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { PlanDetailBody } from "../../../components/PlanDetailBody";
-import { planLevelLabel } from "@/lib/labels/plan-labels";
-import { Badge } from "@/components/ui/badge";
-import Image from "next/image";
-import Link from "next/link";
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import {
-  Calendar,
-  Clock,
-  Users,
-  GraduationCap,
-  ArrowLeft,
-} from "lucide-react";
+import { Calendar, Clock, GraduationCap, Users } from "lucide-react";
 import { formatInTimeZone } from "date-fns-tz";
+
+import { Badge } from "@/components/ui/badge";
+import { PlanDetailBody } from "../../../components/PlanDetailBody";
+import { PlanExpertCard } from "../../../components/PlanExpertCard";
+import { PlanHero } from "../../../components/PlanHero";
+import { FeatureItem } from "../../../components/FeatureItem";
+import { planLevelLabel } from "@/lib/labels/plan-labels";
 import {
   buildSessionsFromAppointments,
   groupSessionsByWeek,
+  type SessionStatus,
 } from "@/app/explore/programs/plans/schedule-utils";
 import { ClientClassRegistration } from "./ClientClassRegistration";
 import { useCurrency } from "@/hooks/useCurrency";
-import { generateProgramImageUrl } from "@/lib/explore/programs";
-import { FeatureItem } from "@/app/explore/programs/plans/components/FeatureItem";
+import { cn } from "@/utils/tailwind";
 import type { TClassPlanDetailsData } from "../types";
 
-const getBadgeVariant = (
-  currentStatus: string,
-): "outline" | "destructive" | "default" => {
-  if (currentStatus === "Completed") return "outline";
-  if (currentStatus === "Happening Now") return "destructive";
-  return "default";
+const EASE = [0.16, 1, 0.3, 1] as const;
+
+// A session's state is a real status, so it is the one place on this page
+// that uses a semantic colour: a live session reads as success, a finished
+// one fades back.
+const STATUS_VARIANT: Record<
+  SessionStatus,
+  "success" | "secondary" | "outline"
+> = {
+  "Happening Now": "success",
+  Upcoming: "secondary",
+  Completed: "outline",
 };
 
 interface ClassDetailsProps {
@@ -45,79 +46,59 @@ export function ClassDetails({ plan }: ClassDetailsProps) {
     setUserTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone);
   }, []);
 
+  const consultant = plan.consultantProfile;
+  const months = plan.durationInMonths;
+  const monthsLabel = `${months} month${months !== 1 ? "s" : ""}`;
+  const batches = plan.classes ?? [];
+
   return (
-    <main className="min-h-screen bg-muted">
-      {/* Hero Banner */}
-      <div className="relative h-[350px] md:h-[400px] w-full overflow-hidden">
-        <Image
-          src={generateProgramImageUrl(plan.id, 1200, 400, plan.imageUrl)}
-          alt="Class cover"
-          fill
-          className="object-cover"
-          priority
-        />
-        <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/60 to-transparent" />
+    <main className="min-h-screen bg-background">
+      <PlanHero
+        backHref="/explore/programs"
+        backLabel="Back to programs"
+        kind="Class"
+        title={plan.title}
+        subtitle={plan.subtitle}
+        price={formatPrice(plan.price)}
+        priceNote={`for ${monthsLabel}`}
+        imageUrl={plan.imageUrl}
+        host={
+          consultant?.user?.name
+            ? {
+                name: consultant.user.name,
+                image: consultant.user.image ?? null,
+                href: `/explore/experts/${consultant.id}`,
+              }
+            : null
+        }
+      />
 
-        {/* Back Navigation */}
-        <div className="absolute top-0 left-0 right-0 z-10">
-          <div className="max-w-[1600px] mx-auto px-4 md:px-8 lg:px-12 py-6">
-            <Link
-              href="/explore/programs"
-              className="inline-flex items-center gap-2 text-sm text-white/80 hover:text-white transition-colors"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              Back to Programs
-            </Link>
-          </div>
-        </div>
-
-        {/* Title Overlay */}
-        <div className="absolute bottom-0 left-0 right-0 z-10">
-          <div className="max-w-[1600px] mx-auto px-4 md:px-8 lg:px-12 pb-8">
-            <Badge className="bg-background text-foreground mb-4">Class</Badge>
-            <h1 className="text-fluid-4xl tracking-tight font-bold text-white mb-2">
-              {plan.title}
-            </h1>
-            <div className="flex items-center gap-4 text-white/80">
-              <span className="text-2xl md:text-3xl font-bold text-white">
-                {formatPrice(plan.price)}
-              </span>
-              <span className="text-white/60">•</span>
-              <span>{plan.durationInMonths} months</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Content */}
-      <div className="w-full max-w-[92%] xl:max-w-[88%] 2xl:max-w-[1600px] mx-auto py-8 md:py-12">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 lg:gap-12">
-          {/* Main Content */}
+      <div className="mx-auto max-w-[1600px] px-4 py-10 md:px-8 md:py-14 lg:px-12">
+        <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-12">
           <motion.div
-            className="lg:col-span-2 space-y-8"
-            initial={{ opacity: 0, y: 20 }}
+            className="space-y-6"
+            initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5 }}
+            transition={{ duration: 0.5, ease: EASE }}
           >
-            {/* Features Grid */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
               <FeatureItem
-                icon={<Calendar className="h-5 w-5" />}
+                icon={<Calendar />}
                 label="Duration"
-                value={`${plan.durationInMonths} months`}
+                value={monthsLabel}
               />
               <FeatureItem
-                icon={<Clock className="h-5 w-5" />}
-                label="Weekly"
-                value={`${plan.sessionsPerWeek} sessions`}
+                icon={<Clock />}
+                label="Per week"
+                value={`${plan.sessionsPerWeek} session${plan.sessionsPerWeek !== 1 ? "s" : ""}`}
               />
               <FeatureItem
-                icon={<Users className="h-5 w-5" />}
-                label="Participants"
-                value={`${plan.maxParticipants} max`}
+                icon={<Users />}
+                label="Seats"
+                value={`Up to ${plan.maxParticipants}`}
               />
               <FeatureItem
-                icon={<GraduationCap className="h-5 w-5" />}
+                icon={<GraduationCap />}
                 label="Level"
                 value={planLevelLabel(plan.level)}
               />
@@ -140,208 +121,119 @@ export function ClassDetails({ plan }: ClassDetailsProps) {
               topics={plan.topics}
             />
 
-            {/* Schedule */}
-            <Card className="border-border shadow-sm">
-              <CardContent className="p-6 md:p-8">
-                <h2 className="text-xl font-semibold text-foreground mb-6">
-                  Class Schedule
-                </h2>
-                {plan.classes && plan.classes.length > 0 ? (
-                  <div className="space-y-6">
-                    {plan.classes.map((classInstance, classIndex) => {
-                      const sessions = buildSessionsFromAppointments(
-                        classInstance.appointments ?? [],
-                      );
-                      const weeks = groupSessionsByWeek(sessions);
+            <section className="rounded-2xl border border-border bg-card p-6 md:p-8">
+              <h2 className="mb-5 text-lg font-semibold tracking-tight text-foreground">
+                Schedule
+              </h2>
+              {batches.length > 0 ? (
+                <div className="divide-y divide-border">
+                  {batches.map((classInstance, classIndex) => {
+                    const sessions = buildSessionsFromAppointments(
+                      classInstance.appointments ?? [],
+                    );
+                    const weeks = groupSessionsByWeek(sessions);
 
-                      return (
-                        <div
-                          key={classInstance.id}
-                          className="p-4 border border-border rounded-xl"
-                        >
-                          {plan.classes.length > 1 && (
-                            <h3 className="font-medium text-foreground mb-4">
-                              Batch {classIndex + 1}
-                            </h3>
-                          )}
-                          {sessions.length > 0 ? (
-                            <div className="space-y-4">
-                              {Array.from(weeks.entries()).map(
-                                ([weekNum, weekSessions]) => (
-                                  <div key={weekNum}>
-                                    <h4 className="text-xs font-medium text-muted-foreground/70 uppercase tracking-wider mb-2 px-1">
-                                      Week {weekNum}
-                                    </h4>
-                                    <div className="space-y-2">
-                                      {weekSessions.map((session) => (
-                                        <div
-                                          key={session.appointmentId}
-                                          className={`flex items-center justify-between p-3 rounded-lg ${
-                                            session.status === "Completed"
-                                              ? "bg-muted opacity-60"
-                                              : "bg-muted"
-                                          }`}
-                                        >
-                                          <div className="flex items-center gap-3">
-                                            <div className="w-7 h-7 rounded-full bg-border text-muted-foreground flex items-center justify-center text-xs font-semibold flex-shrink-0">
-                                              {session.sessionNumber}
-                                            </div>
-                                            <div className="text-sm">
-                                              <span className="font-medium text-foreground">
-                                                {formatInTimeZone(
-                                                  session.sessionStart,
-                                                  userTimeZone,
-                                                  "EEEE, MMMM d",
-                                                )}
-                                              </span>
-                                              <span className="text-muted-foreground ml-2">
-                                                {formatInTimeZone(
-                                                  session.sessionStart,
-                                                  userTimeZone,
-                                                  "h:mm a",
-                                                )}
-                                                {" – "}
-                                                {formatInTimeZone(
-                                                  session.sessionEnd,
-                                                  userTimeZone,
-                                                  "h:mm a zzz",
-                                                )}
-                                              </span>
-                                            </div>
-                                          </div>
-                                          <Badge
-                                            variant={getBadgeVariant(
-                                              session.status,
-                                            )}
-                                          >
-                                            {session.status}
-                                          </Badge>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                ),
-                              )}
-                            </div>
-                          ) : (
-                            <p className="text-sm text-muted-foreground">
-                              Schedule to be announced
-                            </p>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <p className="text-muted-foreground">
-                    Class schedule to be announced.
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-          </motion.div>
-
-          {/* Sidebar */}
-          <motion.div
-            className="lg:col-span-1"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.1 }}
-          >
-            <div className="sticky top-24 space-y-6">
-              {/* Instructor Card */}
-              <Card className="border-border shadow-sm">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-lg">Your Instructor</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex items-center gap-4 mb-4">
-                    <div className="relative h-16 w-16 rounded-full overflow-hidden ring-2 ring-border">
-                      <Image
-                        src={
-                          plan.consultantProfile?.user?.image ??
-                          "/placeholder-user.jpg"
-                        }
-                        alt={plan.consultantProfile?.user?.name ?? "Instructor"}
-                        fill
-                        className="object-cover"
-                      />
-                    </div>
-                    <div className="min-w-0">
-                      <h3 className="font-semibold text-foreground">
-                        {plan.consultantProfile?.user?.name}
-                      </h3>
-                      <p className="text-sm text-muted-foreground">
-                        Expert Instructor
-                      </p>
-                    </div>
-                  </div>
-                  <p className="text-sm text-muted-foreground">
-                    An experienced professional dedicated to sharing knowledge
-                    and expertise.
-                  </p>
-                  <Link
-                    href={`/explore/experts/${plan.consultantProfile?.id}`}
-                    className="inline-flex items-center gap-1 text-sm font-medium text-foreground hover:text-muted-foreground mt-3"
-                  >
-                    View Full Profile
-                    <ArrowLeft className="w-4 h-4 rotate-180" />
-                  </Link>
-                </CardContent>
-              </Card>
-
-              {/* Collaborators */}
-              {plan.collaborators && plan.collaborators.length > 0 && (
-                <Card className="border-border shadow-sm">
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-lg flex items-center gap-2">
-                      <Users className="w-4 h-4" />
-                      Co-Instructors
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    {plan.collaborators.map((collab) => (
-                      <Link
-                        key={collab.id}
-                        href={`/explore/experts/${collab.consultantProfile.id}`}
-                        className="flex items-center gap-3 hover:bg-muted rounded-lg p-2 -mx-2 transition-colors"
+                    return (
+                      <div
+                        key={classInstance.id}
+                        className="space-y-5 py-6 first:pt-0 last:pb-0"
                       >
-                        <div className="relative h-10 w-10 rounded-full overflow-hidden ring-2 ring-border flex-shrink-0">
-                          <Image
-                            src={
-                              collab.consultantProfile.user.image ??
-                              "/placeholder-user.jpg"
-                            }
-                            alt={
-                              collab.consultantProfile.user.name ??
-                              "Co-instructor"
-                            }
-                            fill
-                            className="object-cover"
-                          />
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-foreground">
-                            {collab.consultantProfile.user.name}
+                        {batches.length > 1 && (
+                          <h3 className="text-sm font-semibold text-foreground">
+                            Batch {classIndex + 1}
+                          </h3>
+                        )}
+                        {sessions.length > 0 ? (
+                          Array.from(weeks.entries()).map(
+                            ([weekNum, weekSessions]) => (
+                              <div key={weekNum}>
+                                <p className="mb-2 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                                  Week {weekNum}
+                                </p>
+                                <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border">
+                                  {weekSessions.map((session) => (
+                                    <li
+                                      key={session.appointmentId}
+                                      className={cn(
+                                        "flex items-center justify-between gap-4 px-4 py-3",
+                                        session.status === "Completed" &&
+                                          "opacity-60",
+                                      )}
+                                    >
+                                      <div className="flex min-w-0 items-center gap-3">
+                                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold tabular-nums text-foreground">
+                                          {session.sessionNumber}
+                                        </span>
+                                        <p className="min-w-0 text-sm">
+                                          <span className="font-medium text-foreground">
+                                            {formatInTimeZone(
+                                              session.sessionStart,
+                                              userTimeZone,
+                                              "EEEE, MMMM d",
+                                            )}
+                                          </span>
+                                          <span className="ml-2 text-muted-foreground">
+                                            {formatInTimeZone(
+                                              session.sessionStart,
+                                              userTimeZone,
+                                              "h:mm a",
+                                            )}
+                                            {" – "}
+                                            {formatInTimeZone(
+                                              session.sessionEnd,
+                                              userTimeZone,
+                                              "h:mm a zzz",
+                                            )}
+                                          </span>
+                                        </p>
+                                      </div>
+                                      <Badge
+                                        variant={STATUS_VARIANT[session.status]}
+                                        className="shrink-0"
+                                      >
+                                        {session.status}
+                                      </Badge>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            ),
+                          )
+                        ) : (
+                          <p className="text-sm text-muted-foreground">
+                            Schedule to be announced
                           </p>
-                          <p className="text-xs text-muted-foreground">
-                            {collab.role.replace(/_/g, " ")}
-                          </p>
-                        </div>
-                      </Link>
-                    ))}
-                  </CardContent>
-                </Card>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  Class schedule to be announced.
+                </p>
               )}
-
-              {/* Registration Card */}
-              <ClientClassRegistration
-                plan={plan}
-                maxParticipants={plan.maxParticipants ?? undefined}
-                consultantUserId={plan.consultantProfile?.user?.id}
-              />
-            </div>
+            </section>
           </motion.div>
+
+          <motion.aside
+            className="space-y-4 lg:sticky lg:top-[calc(var(--header-height,5rem)+1rem)] lg:self-start"
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.1, ease: EASE }}
+          >
+            <ClientClassRegistration
+              plan={plan}
+              maxParticipants={plan.maxParticipants ?? undefined}
+              consultantUserId={plan.consultantProfile?.user?.id}
+            />
+            <PlanExpertCard
+              heading="Your instructor"
+              expert={consultant}
+              collaboratorsHeading="Co-instructors"
+              collaborators={plan.collaborators}
+            />
+          </motion.aside>
         </div>
       </div>
     </main>

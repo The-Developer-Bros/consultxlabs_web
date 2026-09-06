@@ -269,62 +269,62 @@ export function ExpertProfileClient({
   }, [currentDate, selectedDate]);
 
   return (
-    <main className="bg-muted">
-      {/* Back Navigation */}
-      <div className="bg-card border-b border-border">
-        <div className="w-full px-4 md:px-8 lg:px-12 py-4">
+    <main className="bg-background">
+      {/* Back navigation */}
+      <div className="border-b border-border">
+        <div className="mx-auto max-w-[1600px] px-4 py-4 md:px-8 lg:px-12">
           <Link
             href="/explore/experts"
-            className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
+            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
           >
-            <ArrowLeft className="w-4 h-4" />
-            Back to Experts
+            <ArrowLeft className="h-4 w-4" />
+            Back to experts
           </Link>
         </div>
       </div>
 
-      {/* Main Content Area - Profile, About, Availability + Pricing */}
-      <div className="w-full px-4 md:px-8 lg:px-12 py-8 md:py-12">
-        <div className="flex flex-col xl:flex-row gap-8 xl:gap-12">
-          {/* Main Content */}
+      {/* Profile, about, experience and availability sit beside the booking
+          panel; programs and reviews follow underneath, so on a phone the
+          panel appears right after availability rather than after everything. */}
+      <div className="mx-auto max-w-[1600px] px-4 pt-8 md:px-8 md:pt-12 lg:px-12">
+        <div className="flex flex-col gap-8 xl:flex-row xl:gap-12">
           <motion.div
-            className="flex-1 min-w-0"
-            initial={{ opacity: 0, y: 20 }}
+            className="min-w-0 flex-1 space-y-6"
+            initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5 }}
+            transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
           >
-            <div className="space-y-8">
-              <ProfileHeader
-                userDetails={userDetails}
-                consultantDetails={consultantDetails}
-                reviewCount={consultantDetails.reviewCount}
-              />
+            <ProfileHeader
+              userDetails={userDetails}
+              consultantDetails={consultantDetails}
+              reviewCount={consultantDetails.reviewCount}
+            />
 
-              <AboutSection
-                userDetails={userDetails}
-                consultantDetails={consultantDetails}
-              />
+            <AboutSection
+              userDetails={userDetails}
+              consultantDetails={consultantDetails}
+            />
 
-              <ExperienceSection
-                workExperiences={userDetails.workExperiences || []}
-                education={userDetails.education || []}
-                certifications={userDetails.certifications || []}
-              />
+            <ExperienceSection
+              workExperiences={userDetails.workExperiences || []}
+              education={userDetails.education || []}
+              certifications={userDetails.certifications || []}
+            />
 
-              <ConsultantAvailability
-                consultantDetails={consultantDetails}
-                timezone={timezone || "UTC"}
-              />
-            </div>
+            <ConsultantAvailability
+              consultantDetails={consultantDetails}
+              timezone={timezone || "UTC"}
+            />
           </motion.div>
 
-          {/* Sidebar - Pricing */}
+          {/* Booking panel. scroll-mt keeps the ?action=book / ?action=trial
+              scroll target clear of the fixed navbar. */}
           <motion.div
             ref={pricingRef}
-            className="w-full xl:w-[450px] 2xl:w-[500px] flex-shrink-0"
-            initial={{ opacity: 0, y: 20 }}
+            className="w-full shrink-0 scroll-mt-[calc(var(--header-height,5rem)+1rem)] xl:w-[450px] 2xl:w-[500px]"
+            initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.1 }}
+            transition={{ duration: 0.5, delay: 0.1, ease: [0.16, 1, 0.3, 1] }}
           >
             <ExpertPricing
               userDetails={userDetails}
@@ -347,42 +347,27 @@ export function ExpertProfileClient({
         </div>
       </div>
 
-      {/* Classes & Webinars - Below main content only, not under pricing */}
-      <div className="w-full px-4 md:px-8 lg:px-12 pb-8">
-        <div className="flex flex-col xl:flex-row gap-8 xl:gap-12">
+      <div className="mx-auto max-w-[1600px] px-4 pb-12 pt-6 md:px-8 md:pb-16 lg:px-12">
+        <div className="flex flex-col gap-8 xl:flex-row xl:gap-12">
           <motion.div
-            className="flex-1 min-w-0"
-            initial={{ opacity: 0, y: 20 }}
+            className="min-w-0 flex-1 space-y-6"
+            initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.2 }}
+            transition={{ duration: 0.5, delay: 0.2, ease: [0.16, 1, 0.3, 1] }}
           >
             <ClassesAndWebinars
               classPlans={consultantDetails.classPlans}
               webinarPlans={consultantDetails.webinarPlans}
             />
-          </motion.div>
-          {/* Spacer to match pricing sidebar width */}
-          <div className="hidden xl:block w-[450px] 2xl:w-[500px] flex-shrink-0" />
-        </div>
-      </div>
 
-      {/* Reviews - Below main content only, not under pricing */}
-      <div className="w-full px-4 md:px-8 lg:px-12 pb-12">
-        <div className="flex flex-col xl:flex-row gap-8 xl:gap-12">
-          <motion.div
-            className="flex-1 min-w-0"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.3 }}
-          >
             <ReviewsSection
               reviews={reviews}
               publishedRating={consultantDetails.publishedRating}
               reviewCount={consultantDetails.reviewCount}
             />
           </motion.div>
-          {/* Spacer to match pricing sidebar width */}
-          <div className="hidden xl:block w-[450px] 2xl:w-[500px] flex-shrink-0" />
+          {/* Spacer matching the booking panel's width */}
+          <div className="hidden w-[450px] shrink-0 xl:block 2xl:w-[500px]" />
         </div>
       </div>
     </main>

@@ -1,5 +1,5 @@
-import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Check } from "lucide-react";
+
 import {
   CurriculumOutline,
   PlanFaqAccordion,
@@ -37,9 +37,17 @@ export interface PlanDetailBodyProps {
 
 function SectionCard({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <Card className="border-border shadow-sm">
-      <CardContent className="p-6 md:p-8">{children}</CardContent>
-    </Card>
+    <section className="rounded-2xl border border-border bg-card p-6 md:p-8">
+      {children}
+    </section>
+  );
+}
+
+function SectionTitle({ children }: Readonly<{ children: React.ReactNode }>) {
+  return (
+    <h2 className="mb-4 text-lg font-semibold tracking-tight text-foreground">
+      {children}
+    </h2>
   );
 }
 
@@ -67,10 +75,8 @@ export function PlanDetailBody({
     <>
       {description && (
         <SectionCard>
-          <h2 className="text-xl font-semibold text-foreground mb-4">
-            {aboutHeading}
-          </h2>
-          <p className="text-muted-foreground whitespace-pre-line leading-relaxed">
+          <SectionTitle>{aboutHeading}</SectionTitle>
+          <p className="whitespace-pre-line leading-relaxed text-muted-foreground">
             {description}
           </p>
         </SectionCard>
@@ -87,16 +93,17 @@ export function PlanDetailBody({
 
       {(learningOutcomes?.length ?? 0) > 0 && (
         <SectionCard>
-          <h2 className="text-xl font-semibold text-foreground mb-4">
-            What you&apos;ll learn
-          </h2>
-          <ul className="grid md:grid-cols-2 gap-3">
+          <SectionTitle>What you&apos;ll learn</SectionTitle>
+          <ul className="grid gap-3 md:grid-cols-2">
             {learningOutcomes!.map((outcome) => (
               <li
                 key={outcome}
-                className="flex items-start gap-3 text-muted-foreground"
+                className="flex items-start gap-3 text-sm text-muted-foreground"
               >
-                <span className="mt-2 w-1.5 h-1.5 rounded-full bg-emerald-500 flex-shrink-0" />
+                <Check
+                  className="mt-0.5 h-4 w-4 shrink-0 text-foreground"
+                  strokeWidth={2}
+                />
                 {outcome}
               </li>
             ))}
@@ -112,10 +119,8 @@ export function PlanDetailBody({
 
       {hasPrerequisites && (
         <SectionCard>
-          <h2 className="text-xl font-semibold text-foreground mb-4">
-            Prerequisites
-          </h2>
-          <p className="text-muted-foreground whitespace-pre-line">
+          <SectionTitle>Prerequisites</SectionTitle>
+          <p className="whitespace-pre-line text-muted-foreground">
             {prerequisites}
           </p>
         </SectionCard>
@@ -123,10 +128,8 @@ export function PlanDetailBody({
 
       {hasMaterials && (
         <SectionCard>
-          <h2 className="text-xl font-semibold text-foreground mb-4">
-            Materials provided
-          </h2>
-          <p className="text-muted-foreground whitespace-pre-line">
+          <SectionTitle>Materials provided</SectionTitle>
+          <p className="whitespace-pre-line text-muted-foreground">
             {materialProvided}
           </p>
         </SectionCard>
@@ -140,17 +143,15 @@ export function PlanDetailBody({
 
       {(topics?.length ?? 0) > 0 && (
         <SectionCard>
-          <h2 className="text-xl font-semibold text-foreground mb-4">
-            Topics covered
-          </h2>
+          <SectionTitle>Topics covered</SectionTitle>
           <div className="flex flex-wrap gap-2">
             {topics!.map((topic) => (
-              <Badge
+              <span
                 key={topic.id}
-                className="bg-muted text-muted-foreground hover:bg-muted/70 px-3 py-1"
+                className="inline-flex items-center rounded-full border border-border bg-background px-2.5 py-1 text-xs font-medium text-muted-foreground"
               >
                 {topic.name}
-              </Badge>
+              </span>
             ))}
           </div>
         </SectionCard>

@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import { User } from "@prisma/client";
 import type { ConsultantDetailData } from "../types";
 import { TSlotTiming } from "@/types/slots";
@@ -49,7 +48,7 @@ interface ExpertPricingProps {
 }
 
 export function ExpertPricing({
-  userDetails,
+  userDetails: _userDetails,
   consultantDetails,
   handleConsultationBooking,
   handleSubscriptionBooking,
@@ -206,27 +205,19 @@ export function ExpertPricing({
   const hasSubscriptions = subscriptionOptions.length > 0;
 
   return (
-    <div className="sticky top-24 space-y-4">
-      {/* Profile Image Card — refined, no flat border */}
-      <div className="rounded-3xl overflow-hidden shadow-2xl shadow-black/30 ring-1 ring-white/10">
-        <div className="aspect-[4/3] relative">
-          <Image
-            alt="Profile"
-            className="object-cover"
-            fill
-            src={userDetails.image || "/placeholder.svg"}
-            sizes="(max-width: 768px) 100vw, 400px"
-          />
-        </div>
-      </div>
-
-      {/* Pricing Card — glassmorphism dark */}
-      <div className="bg-zinc-950/90 backdrop-blur-xl rounded-3xl p-6 shadow-2xl shadow-black/40 border border-white/[0.07] ring-1 ring-white/[0.04]">
+    <div className="xl:sticky xl:top-[calc(var(--header-height,5rem)+1rem)] space-y-4">
+      {/* Booking panel — dark on purpose: the one anchored surface on an
+          otherwise light page. The 4:3 portrait that used to sit above it
+          repeated the header's photo and pushed the first price below the
+          fold. */}
+      <div className="rounded-2xl border border-white/10 bg-zinc-950 p-6 shadow-elevation-3">
         {/* Header */}
-        <div className="text-center mb-5">
-          <h3 className="text-xl font-bold text-white mb-1">Book a Session</h3>
-          <p className="text-xs text-zinc-500 tracking-wide uppercase font-medium">
-            Choose your preferred option
+        <div className="mb-5 text-center">
+          <h3 className="text-lg font-semibold tracking-tight text-white">
+            Book a session
+          </h3>
+          <p className="mt-1 text-xs font-medium uppercase tracking-[0.18em] text-zinc-500">
+            Choose a format
           </p>
         </div>
 

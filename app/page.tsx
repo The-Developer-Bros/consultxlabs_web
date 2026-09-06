@@ -4,18 +4,12 @@ import { HeroSection } from "@/components/home/HeroSection";
 import { TrustedBySection } from "@/components/home/TrustedBySection";
 import { FeaturesSection } from "@/components/home/FeaturesSection";
 import { CategoriesSection } from "@/components/home/CategoriesSection";
-import { BenefitsSection } from "@/components/home/BenefitsSection";
-import { SuccessStoriesSection } from "@/components/home/SuccessStoriesSection";
 import { FeaturedExpertsSection } from "@/components/home/FeaturedExpertsSection";
-import { PlatformFeaturesSection } from "@/components/home/PlatformFeaturesSection";
+import { BenefitsSection } from "@/components/home/BenefitsSection";
 import { TestimonialsSection } from "@/components/home/TestimonialsSection";
-import { UpcomingEventsSection } from "@/components/home/UpcomingEventsSection";
-import { TrustBadgesSection } from "@/components/home/TrustBadgesSection";
 import { HowItWorksSection } from "@/components/home/HowItWorksSection";
-import { BecomeExpertSection } from "@/components/home/BecomeExpertSection";
-import { EnterpriseSection } from "@/components/home/EnterpriseSection";
+import { AudienceSplitSection } from "@/components/home/AudienceSplitSection";
 import { FAQSection } from "@/components/home/FAQSection";
-import { SatisfiedTestimonial } from "@/app/explore/experts/components/SatisfiedTestimonial";
 import {
   getHomeExperts,
   getHomeReviews,
@@ -82,12 +76,7 @@ async function FeaturedExpertsLoader() {
 async function ReviewsLoader() {
   const reviews = await withBuildTimeRetry(getHomeReviews);
   if (reviews.length === 0) return null;
-  return (
-    <>
-      <TestimonialsSection reviews={reviews} isLoading={false} />
-      <UpcomingEventsSection reviews={reviews} />
-    </>
-  );
+  return <TestimonialsSection reviews={reviews} isLoading={false} />;
 }
 
 // #1490 — the hero and the category cards render real figures now, so the page
@@ -101,57 +90,42 @@ export default async function Home() {
   const stats = await withBuildTimeRetry(getHomeStats);
 
   return (
-    <main className="flex-1 w-full overflow-hidden">
-      {/* Hero - Black with animated orbs */}
+    <main className="w-full flex-1 overflow-hidden">
+      {/* Hero — dark */}
       <HeroSection stats={buildExpertHeroStats(stats)} />
 
-      {/* Trusted By / Logo Cloud - Dark */}
+      {/* Where the experts have worked — light hairline strip */}
       <TrustedBySection />
 
-      {/* Our Offerings - Dark charcoal with dot pattern */}
+      {/* The four formats, then the platform capabilities under them */}
       <FeaturesSection />
 
-      {/* Browse by Category - Light gradient */}
+      {/* Browse by category */}
       <CategoriesSection consultantsByDomain={stats.consultantsByDomain} />
 
-      {/* Why Familiarise / Benefits - Light silver gradient */}
-      <Suspense fallback={<BenefitsSkeleton />}>
-        <BenefitsLoader />
-      </Suspense>
-
-      {/* Success Stories - Dark gradient */}
-      <SuccessStoriesSection />
-
-      {/* Featured Experts Marquee - White with dot pattern */}
+      {/* Featured experts marquee */}
       <Suspense fallback={<FeaturedExpertsSkeleton />}>
         <FeaturedExpertsLoader />
       </Suspense>
 
-      {/* Platform Features - Light with diagonal stripes */}
-      <PlatformFeaturesSection />
+      {/* Why Familiarise */}
+      <Suspense fallback={<BenefitsSkeleton />}>
+        <BenefitsLoader />
+      </Suspense>
 
-      {/* Testimonials Marquee + Upcoming Events - Dark */}
+      {/* Real session reviews — dark */}
       <Suspense fallback={<TestimonialsSkeleton />}>
         <ReviewsLoader />
       </Suspense>
 
-      {/* Trust & Security Badges - Dark strip */}
-      <TrustBadgesSection />
-
-      {/* How It Works - Light with circles */}
+      {/* How it works */}
       <HowItWorksSection />
 
-      {/* For teams & organisations - Dark. Sits next to the expert CTA so the
-          two "which side are you on?" paths are adjacent at the page's end. */}
-      <EnterpriseSection />
+      {/* The two "which side are you on?" paths — organisations and experts —
+          in one row, so the page's end offers both without two more bands. */}
+      <AudienceSplitSection />
 
-      {/* Become an Expert CTA - Light mesh gradient */}
-      <BecomeExpertSection />
-
-      {/* Explore Testimonials - Dark */}
-      <SatisfiedTestimonial />
-
-      {/* FAQ - Clean white */}
+      {/* FAQ */}
       <FAQSection />
     </main>
   );

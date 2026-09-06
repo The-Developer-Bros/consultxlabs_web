@@ -2,19 +2,18 @@
 
 import Image from "next/image";
 import {
-  Star,
-  MapPin,
-  Briefcase,
-  Clock,
-  CheckCircle2,
-  Globe,
+  BadgeCheck,
   Github,
+  Globe,
   Linkedin,
+  MapPin,
+  Star,
   Twitter,
+  type LucideIcon,
 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { User } from "@prisma/client";
+
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { ConsultantDetailData } from "../types";
 
 interface ProfileHeaderProps {
@@ -23,187 +22,177 @@ interface ProfileHeaderProps {
   reviewCount: number;
 }
 
+const CHIP =
+  "inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-2.5 py-1 text-xs font-medium text-muted-foreground";
+
+function experienceLabel(years: number | null | undefined): string | null {
+  if (!years || years <= 0) return null;
+  const n = Number.isInteger(years) ? years : years.toFixed(1);
+  return `${n} yrs experience`;
+}
+
 export function ProfileHeader({
   userDetails,
   consultantDetails,
   reviewCount,
 }: ProfileHeaderProps) {
+  const name = userDetails.name ?? "Expert";
+  const location = [userDetails.city, userDetails.country]
+    .filter(Boolean)
+    .join(", ");
+  const experience = experienceLabel(consultantDetails.experience);
+  const languages = consultantDetails.languages ?? [];
+
+  const socials: { href: string; label: string; icon: LucideIcon }[] = [];
+  if (userDetails.linkedinUrl)
+    socials.push({
+      href: userDetails.linkedinUrl,
+      label: "LinkedIn",
+      icon: Linkedin,
+    });
+  if (consultantDetails.twitterUrl)
+    socials.push({
+      href: consultantDetails.twitterUrl,
+      label: "Twitter",
+      icon: Twitter,
+    });
+  if (consultantDetails.githubUrl)
+    socials.push({
+      href: consultantDetails.githubUrl,
+      label: "GitHub",
+      icon: Github,
+    });
+  if (consultantDetails.websiteUrl)
+    socials.push({
+      href: consultantDetails.websiteUrl,
+      label: "Website",
+      icon: Globe,
+    });
+
   return (
-    <div className="bg-card rounded-2xl border border-border p-6 md:p-8">
-      <div className="flex flex-col sm:flex-row gap-6">
-        {/* Profile Display Image - Square format */}
-        <div className="relative flex-shrink-0">
+    <header className="rounded-2xl border border-border bg-card p-6 md:p-8">
+      <div className="flex flex-col gap-6 sm:flex-row">
+        <div className="shrink-0">
           {userDetails.profileDisplayImage ? (
-            <div className="w-32 h-32 md:w-48 md:h-48 rounded-xl overflow-hidden ring-4 ring-muted relative">
+            <div className="relative h-32 w-32 overflow-hidden rounded-2xl ring-1 ring-border md:h-40 md:w-40">
               <Image
                 src={userDetails.profileDisplayImage}
-                alt={userDetails.name || "Expert"}
+                alt={name}
                 fill
+                priority
+                sizes="(max-width: 768px) 128px, 160px"
                 className="object-cover"
               />
-              {/* Verified Badge */}
-              {consultantDetails.isVerified && (
-                <div className="absolute bottom-2 right-2 w-8 h-8 bg-emerald-500 rounded-full flex items-center justify-center border-4 border-card">
-                  <CheckCircle2 className="w-4 h-4 text-white" />
-                </div>
-              )}
             </div>
           ) : (
-            <>
-              <Avatar className="w-24 h-24 md:w-32 md:h-32 ring-4 ring-muted">
-                <AvatarImage
-                  src={userDetails.image || "/placeholder-user.jpg"}
-                  alt={userDetails.name || "Expert"}
-                  className="object-cover"
-                />
-                <AvatarFallback className="text-2xl bg-primary text-primary-foreground">
-                  {userDetails.name?.charAt(0) || "E"}
-                </AvatarFallback>
-              </Avatar>
-              {/* Verified Badge */}
-              {consultantDetails.isVerified && (
-                <div className="absolute -bottom-1 -right-1 w-8 h-8 bg-emerald-500 rounded-full flex items-center justify-center border-4 border-card">
-                  <CheckCircle2 className="w-4 h-4 text-white" />
-                </div>
-              )}
-            </>
+            <Avatar className="h-28 w-28 ring-1 ring-border md:h-32 md:w-32">
+              <AvatarImage
+                src={userDetails.image || "/placeholder-user.jpg"}
+                alt={name}
+                className="object-cover"
+              />
+              <AvatarFallback className="bg-muted text-2xl font-semibold text-foreground">
+                {name.charAt(0)}
+              </AvatarFallback>
+            </Avatar>
           )}
         </div>
 
-        {/* Info */}
-        <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap items-start gap-3 mb-2">
-            <h1 className="text-fluid-3xl font-bold tracking-tight text-foreground">
-              {userDetails.name}
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+            {consultantDetails.domain.name}
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <h1 className="text-fluid-3xl font-semibold tracking-[-0.02em] text-foreground">
+              {name}
             </h1>
-            {consultantDetails.headline && (
-              <Badge className="bg-primary text-primary-foreground hover:bg-primary/90">
-                {consultantDetails.headline}
-              </Badge>
+            {consultantDetails.isVerified && (
+              <span
+                title="Verified by Familiarise"
+                className="inline-flex text-foreground"
+              >
+                <BadgeCheck
+                  className="h-6 w-6"
+                  aria-label="Verified by Familiarise"
+                />
+              </span>
             )}
           </div>
+          {consultantDetails.headline && (
+            <p className="mt-1.5 text-base text-muted-foreground md:text-lg">
+              {consultantDetails.headline}
+            </p>
+          )}
 
           {/* Rating. #705 — the PUBLISHED score, which is null until enough
               distinct sessions have been rated. Rendering the raw mean here
               while the reviews section showed the published one would have made
               the threshold decorative. */}
-          <div className="flex items-center gap-3 mb-4">
+          <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
             {consultantDetails.publishedRating !== null && (
               <>
-                <div className="flex items-center gap-1">
-                  {[...Array(5)].map((_, i) => (
-                    <Star
-                      key={i}
-                      className={`w-5 h-5 ${
-                        i < Math.floor(consultantDetails.publishedRating!)
-                          ? "fill-amber-400 text-amber-400"
-                          : "fill-muted text-muted"
-                      }`}
-                    />
-                  ))}
-                </div>
-                <span className="font-semibold text-foreground">
-                  {consultantDetails.publishedRating.toFixed(1)}
+                <span className="flex items-center gap-1">
+                  <Star className="h-4 w-4 fill-amber-400 text-amber-400" />
+                  <span className="font-semibold tabular-nums text-foreground">
+                    {consultantDetails.publishedRating.toFixed(1)}
+                  </span>
                 </span>
-                <span className="text-muted-foreground/70">•</span>
+                <span className="text-muted-foreground/60">·</span>
               </>
             )}
-            <span className="text-muted-foreground">{reviewCount} reviews</span>
+            <span className="text-muted-foreground">
+              {reviewCount} review{reviewCount !== 1 ? "s" : ""}
+            </span>
           </div>
 
-          {/* Meta */}
-          <div className="flex flex-wrap gap-4 text-sm">
-            <div className="flex items-center gap-2 text-muted-foreground">
-              <Briefcase className="w-4 h-4 text-muted-foreground/70" />
-              <span>{consultantDetails.domain.name}</span>
-            </div>
-            <div className="flex items-center gap-2 text-muted-foreground">
-              <Clock className="w-4 h-4 text-muted-foreground/70" />
-              <span>{consultantDetails.experience} experience</span>
-            </div>
-            {userDetails.timezone && (
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <MapPin className="w-4 h-4 text-muted-foreground/70" />
-                <span>{userDetails.timezone}</span>
-              </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {experience && <span className={CHIP}>{experience}</span>}
+            {location && (
+              <span className={CHIP}>
+                <MapPin className="h-3 w-3" />
+                {location}
+              </span>
             )}
-          </div>
-
-          {/* Tags */}
-          <div className="flex flex-wrap gap-2 mt-4">
+            {languages.length > 0 && (
+              <span className={CHIP}>
+                <Globe className="h-3 w-3" />
+                {languages.join(", ")}
+              </span>
+            )}
             {consultantDetails.subDomains?.map((subdomain) => (
-              <Badge
-                key={subdomain.id}
-                variant="outline"
-                className="border-border text-muted-foreground"
-              >
+              <span key={subdomain.id} className={CHIP}>
                 {subdomain.name}
-              </Badge>
+              </span>
             ))}
             {consultantDetails.tags?.slice(0, 4).map((tag) => (
-              <Badge
+              <span
                 key={tag.id}
-                className="bg-muted text-muted-foreground hover:bg-muted/80"
+                className={`${CHIP} border-transparent bg-muted text-foreground`}
               >
                 {tag.name}
-              </Badge>
+              </span>
             ))}
           </div>
 
-          {/* Social Links */}
-          {(userDetails.linkedinUrl ||
-            consultantDetails.twitterUrl ||
-            consultantDetails.githubUrl ||
-            consultantDetails.websiteUrl) && (
-            <div className="flex flex-wrap gap-3 mt-4">
-              {userDetails.linkedinUrl && (
+          {socials.length > 0 && (
+            <div className="mt-5 flex flex-wrap items-center gap-2">
+              {socials.map(({ href, label, icon: Icon }) => (
                 <a
-                  href={userDetails.linkedinUrl}
+                  key={label}
+                  href={href}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                  aria-label={label}
+                  title={label}
+                  className="flex h-9 w-9 items-center justify-center rounded-full border border-border text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
                 >
-                  <Linkedin className="w-4 h-4" />
-                  <span>LinkedIn</span>
+                  <Icon className="h-4 w-4" />
                 </a>
-              )}
-              {consultantDetails.twitterUrl && (
-                <a
-                  href={consultantDetails.twitterUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <Twitter className="w-4 h-4" />
-                  <span>Twitter</span>
-                </a>
-              )}
-              {consultantDetails.githubUrl && (
-                <a
-                  href={consultantDetails.githubUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <Github className="w-4 h-4" />
-                  <span>GitHub</span>
-                </a>
-              )}
-              {consultantDetails.websiteUrl && (
-                <a
-                  href={consultantDetails.websiteUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <Globe className="w-4 h-4" />
-                  <span>Website</span>
-                </a>
-              )}
+              ))}
             </div>
           )}
         </div>
       </div>
-    </div>
+    </header>
   );
 }

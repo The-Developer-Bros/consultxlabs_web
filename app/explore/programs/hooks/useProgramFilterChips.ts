@@ -1,11 +1,8 @@
 "use client";
 
 import { useCallback, useMemo } from "react";
-import type { ActiveFilter } from "../components/FilterChips";
-import type {
-  ProgramFilters,
-  TopicWithCount,
-} from "@/lib/explore/programs";
+import type { ActiveFilter } from "@/app/explore/components/FilterChips";
+import type { ProgramFilters, TopicWithCount } from "@/lib/explore/programs";
 
 /**
  * Structured chip key. Replaces the old `topic-${id}` string encoding so

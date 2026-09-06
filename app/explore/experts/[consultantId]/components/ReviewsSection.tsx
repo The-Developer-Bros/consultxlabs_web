@@ -1,6 +1,6 @@
 "use client";
 
-import { Star, MessageSquare } from "lucide-react";
+import { MessageSquare, Star } from "lucide-react";
 import { TConsultantReview } from "@/types/review";
 import Review from "./Review";
 
@@ -22,54 +22,52 @@ export function ReviewsSection({
   publishedRating,
   reviewCount,
 }: ReviewsSectionProps) {
-
   return (
-    <div className="bg-card rounded-2xl border border-border p-6 md:p-8">
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-muted flex items-center justify-center">
-            <MessageSquare className="w-5 h-5 text-muted-foreground" />
-          </div>
-          <div>
-            <h3 className="text-lg font-semibold text-foreground">
-              Reviews ({reviewCount})
-            </h3>
-            <div className="flex items-center gap-1 mt-0.5">
-              {publishedRating !== null ? (
-                <>
-                  <Star className="w-4 h-4 fill-amber-400 text-amber-400" />
-                  <span className="text-sm font-medium text-muted-foreground">
-                    {publishedRating.toFixed(1)} average rating
-                  </span>
-                </>
-              ) : (
-                reviewCount > 0 && (
-                  <span className="text-sm text-muted-foreground">
-                    Not enough rated sessions yet to show an average
-                  </span>
-                )
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="space-y-4">
-        {reviews && reviews.length > 0 ? (
-          reviews.map((review) => <Review key={review.id} {...review} />)
+    <section className="rounded-2xl border border-border bg-card p-6 md:p-8">
+      <div>
+        <h2 className="text-lg font-semibold tracking-tight text-foreground">
+          Reviews
+          <span className="ml-2 text-sm font-normal tabular-nums text-muted-foreground">
+            {reviewCount}
+          </span>
+        </h2>
+        {publishedRating !== null ? (
+          <p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground">
+            <Star className="h-4 w-4 fill-amber-400 text-amber-400" />
+            <span className="font-semibold tabular-nums text-foreground">
+              {publishedRating.toFixed(1)}
+            </span>
+            average from rated sessions
+          </p>
         ) : (
-          <div className="text-center py-12">
-            <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-muted flex items-center justify-center">
-              <MessageSquare className="w-8 h-8 text-muted-foreground/70" />
-            </div>
-            <p className="text-muted-foreground">No reviews yet</p>
-            <p className="text-sm text-muted-foreground/70 mt-1">
-              After a session with this expert, you can review it from the
-              session&apos;s page.
+          reviewCount > 0 && (
+            <p className="mt-1 text-sm text-muted-foreground">
+              Not enough rated sessions yet to show an average
             </p>
-          </div>
+          )
         )}
       </div>
-    </div>
+
+      {reviews && reviews.length > 0 ? (
+        <ul className="mt-6 divide-y divide-border">
+          {reviews.map((review) => (
+            <Review key={review.id} {...review} />
+          ))}
+        </ul>
+      ) : (
+        <div className="mt-6 flex flex-col items-center py-10 text-center">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted text-foreground">
+            <MessageSquare className="h-5 w-5" strokeWidth={1.75} />
+          </div>
+          <p className="mt-4 text-sm font-medium text-foreground">
+            No reviews yet
+          </p>
+          <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+            After a session with this expert, you can review it from the
+            session&apos;s page.
+          </p>
+        </div>
+      )}
+    </section>
   );
 }

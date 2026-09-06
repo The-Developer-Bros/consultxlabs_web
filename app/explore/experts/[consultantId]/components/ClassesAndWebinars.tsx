@@ -1,7 +1,7 @@
 "use client";
 
 import { ClassPlan, WebinarPlan } from "@prisma/client";
-import { GraduationCap, BookOpen, Video } from "lucide-react";
+import { BookOpen, Video } from "lucide-react";
 import React, { useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -84,11 +84,13 @@ export const ClassesAndWebinars: React.FC<ClassesAndWebinarsProps> = ({
     return null;
   }
 
-  const renderPrograms = (programs: (ClassPlanProgram | WebinarPlanProgram)[]) =>
+  const renderPrograms = (
+    programs: (ClassPlanProgram | WebinarPlanProgram)[],
+  ) =>
     programs.length > RAIL_THRESHOLD ? (
       <ProgramRow programs={programs} />
     ) : (
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5 sm:gap-6 lg:gap-8">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         {programs.map((program) => (
           <ProgramCard key={program.id} program={program} />
         ))}
@@ -112,114 +114,117 @@ export const ClassesAndWebinars: React.FC<ClassesAndWebinarsProps> = ({
     },
   ];
 
+  const summary = [
+    hasClasses &&
+      `${classPlans.length} class${classPlans.length !== 1 ? "es" : ""}`,
+    hasWebinars &&
+      `${webinarPlans.length} webinar${webinarPlans.length !== 1 ? "s" : ""}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
   return (
-    <div>
-      <div className="bg-card rounded-2xl border border-border overflow-hidden">
-        {/* Header with Tabs */}
-        <div className="border-b border-border px-6 md:px-8 py-5">
-          <div className="flex items-center justify-between flex-wrap gap-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-muted flex items-center justify-center">
-                <GraduationCap className="w-5 h-5 text-muted-foreground" />
-              </div>
-              <div>
-                <h2 className="text-lg font-semibold text-foreground">
-                  Programs by this Expert
-                </h2>
-                <p className="text-sm text-muted-foreground">
-                  {classPlans.length} class{classPlans.length !== 1 ? "es" : ""}{" "}
-                  • {webinarPlans.length} webinar
-                  {webinarPlans.length !== 1 ? "s" : ""}
-                </p>
-              </div>
-            </div>
+    <section className="rounded-2xl border border-border bg-card">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border px-6 py-5 md:px-8">
+        <div>
+          <h2 className="text-lg font-semibold tracking-tight text-foreground">
+            Programs by this expert
+          </h2>
+          <p className="mt-0.5 text-sm text-muted-foreground">{summary}</p>
+        </div>
 
-            {hasClasses && hasWebinars && (
-              <div className="flex bg-muted rounded-xl p-1">
-                {tabs.map(({ key, label, icon: Icon, count }) => (
-                  <button
-                    key={key}
-                    onClick={() => setActiveTab(key)}
-                    className={`relative px-4 py-2 text-sm font-medium rounded-lg transition-all ${
-                      activeTab === key
-                        ? "text-foreground"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    {activeTab === key && (
-                      <motion.div
-                        layoutId="activeTab"
-                        className="absolute inset-0 bg-card rounded-lg shadow-sm"
-                        transition={{
-                          type: "spring",
-                          bounce: 0.2,
-                          duration: 0.4,
-                        }}
-                      />
-                    )}
-                    <span className="relative flex items-center gap-2">
-                      <Icon className="w-4 h-4" />
-                      {label} ({count})
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
+        {hasClasses && hasWebinars && (
+          <div
+            role="tablist"
+            aria-label="Program type"
+            className="inline-flex rounded-xl border border-border bg-muted/60 p-1"
+          >
+            {tabs.map(({ key, label, icon: Icon, count }) => (
+              <button
+                key={key}
+                role="tab"
+                aria-selected={activeTab === key}
+                onClick={() => setActiveTab(key)}
+                className={`relative rounded-lg px-3.5 py-2 text-sm font-medium transition-colors ${
+                  activeTab === key
+                    ? "text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {activeTab === key && (
+                  <motion.div
+                    layoutId="activeTab"
+                    className="absolute inset-0 rounded-lg bg-card shadow-elevation-1"
+                    transition={{
+                      type: "spring",
+                      bounce: 0.2,
+                      duration: 0.4,
+                    }}
+                  />
+                )}
+                <span className="relative flex items-center gap-1.5">
+                  <Icon className="h-4 w-4" />
+                  {label}
+                  <span className="tabular-nums text-muted-foreground">
+                    {count}
+                  </span>
+                </span>
+              </button>
+            ))}
           </div>
-        </div>
-
-        {/* Content */}
-        <div className="p-6 md:p-8">
-          <AnimatePresence mode="wait">
-            {activeTab === "classes" && hasClasses && (
-              <motion.div
-                key="classes"
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 20 }}
-                transition={{ duration: 0.3 }}
-              >
-                {renderPrograms(classPrograms)}
-              </motion.div>
-            )}
-
-            {activeTab === "webinars" && hasWebinars && (
-              <motion.div
-                key="webinars"
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 20 }}
-                transition={{ duration: 0.3 }}
-              >
-                {renderPrograms(webinarPrograms)}
-              </motion.div>
-            )}
-
-            {/* Empty State */}
-            {((activeTab === "classes" && !hasClasses) ||
-              (activeTab === "webinars" && !hasWebinars)) && (
-              <motion.div
-                key="empty"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="text-center py-12"
-              >
-                <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-muted flex items-center justify-center">
-                  {activeTab === "classes" ? (
-                    <BookOpen className="w-8 h-8 text-muted-foreground/70" />
-                  ) : (
-                    <Video className="w-8 h-8 text-muted-foreground/70" />
-                  )}
-                </div>
-                <p className="text-muted-foreground">
-                  No {activeTab === "classes" ? "classes" : "webinars"}{" "}
-                  available yet
-                </p>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
+        )}
       </div>
-    </div>
+
+      <div className="p-6 md:p-8">
+        <AnimatePresence mode="wait">
+          {activeTab === "classes" && hasClasses && (
+            <motion.div
+              key="classes"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.25 }}
+            >
+              {renderPrograms(classPrograms)}
+            </motion.div>
+          )}
+
+          {activeTab === "webinars" && hasWebinars && (
+            <motion.div
+              key="webinars"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.25 }}
+            >
+              {renderPrograms(webinarPrograms)}
+            </motion.div>
+          )}
+
+          {/* Empty State */}
+          {((activeTab === "classes" && !hasClasses) ||
+            (activeTab === "webinars" && !hasWebinars)) && (
+            <motion.div
+              key="empty"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="flex flex-col items-center py-10 text-center"
+            >
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted text-foreground">
+                {activeTab === "classes" ? (
+                  <BookOpen className="h-5 w-5" strokeWidth={1.75} />
+                ) : (
+                  <Video className="h-5 w-5" strokeWidth={1.75} />
+                )}
+              </div>
+              <p className="mt-4 text-sm text-muted-foreground">
+                No {activeTab === "classes" ? "classes" : "webinars"} available
+                yet
+              </p>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    </section>
   );
 };

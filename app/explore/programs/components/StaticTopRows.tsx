@@ -1,12 +1,12 @@
 "use client";
 
-import { memo } from "react";
-import { Sparkles, Flame, Clock, Hash } from "lucide-react";
+import { memo, useMemo } from "react";
+import { Hash } from "lucide-react";
 import type { Program, TopicWithCount } from "@/lib/explore/programs";
-import SectionHeader from "./SectionHeader";
+import SectionHeader from "@/app/explore/components/SectionHeader";
+import TaxonomyGrid from "@/app/explore/components/TaxonomyGrid";
 import FeaturedCarousel from "./FeaturedCarousel";
 import ProgramRow from "./ProgramRow";
-import CategoryGrid from "./CategoryGrid";
 
 interface StaticTopRowsProps {
   featuredPrograms: Program[];
@@ -21,8 +21,8 @@ interface StaticTopRowsProps {
 
 /**
  * The "above the fold" rows that depend only on RSC-pre-warmed curated
- * data: Featured carousel, Trending row, Newly Added row, and Browse by
- * Category grid.
+ * data: the featured carousel, the trending row, the newly-added row and
+ * the browse-by-topic grid.
  *
  * Memoized so filter mutations on the all-programs section can never
  * re-render any of these.
@@ -37,25 +37,29 @@ function StaticTopRowsImpl({
   topicsLoading,
   onTopicSelect,
 }: StaticTopRowsProps) {
+  const topicItems = useMemo(
+    () =>
+      topics.map((topic) => ({
+        id: topic.id,
+        name: topic.name,
+        count: topic.programCount,
+      })),
+    [topics],
+  );
+
   return (
     <>
-      {/* Featured Carousel */}
       <div className="mb-14">
-        <SectionHeader
-          title="Familiarise Featured"
-          icon={<Sparkles className="w-5 h-5 text-white" />}
-        />
+        <SectionHeader title="Featured" />
         <FeaturedCarousel
           programs={featuredPrograms}
           isLoading={trendingLoading}
         />
       </div>
 
-      {/* Trending Now */}
       <div className="mb-14">
         <SectionHeader
-          title="Trending Now"
-          icon={<Flame className="w-5 h-5 text-white" />}
+          title="Trending now"
           seeAllHref="/explore/programs?sort=trending"
         />
         <ProgramRow
@@ -65,30 +69,22 @@ function StaticTopRowsImpl({
         />
       </div>
 
-      {/* Newly Added */}
       <div className="mb-14">
         <SectionHeader
-          title="Newly Added"
-          icon={<Clock className="w-5 h-5 text-white" />}
+          title="Newly added"
           seeAllHref="/explore/programs?sort=newest"
         />
-        <ProgramRow
-          programs={newPrograms}
-          badge="new"
-          isLoading={newLoading}
-        />
+        <ProgramRow programs={newPrograms} badge="new" isLoading={newLoading} />
       </div>
 
-      {/* Browse by Category */}
       <div className="mb-14">
-        <SectionHeader
-          title="Browse by Category"
-          icon={<Hash className="w-5 h-5 text-white" />}
-        />
-        <CategoryGrid
-          topics={topics}
+        <SectionHeader title="Browse by topic" />
+        <TaxonomyGrid
+          items={topicItems}
+          noun="program"
+          icon={Hash}
           isLoading={topicsLoading}
-          onTopicSelect={onTopicSelect}
+          onSelect={onTopicSelect}
         />
       </div>
     </>

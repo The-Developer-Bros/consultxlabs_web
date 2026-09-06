@@ -11,22 +11,24 @@ interface ExpertRowProps {
   isLoading?: boolean;
 }
 
+const SCROLL_BUTTON_CLASSNAME =
+  "absolute top-1/2 z-10 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-card opacity-0 shadow-elevation-2 transition-opacity hover:bg-muted group-hover/row:opacity-100";
+
 function SkeletonCard() {
   return (
-    <div className="flex-shrink-0 w-[260px] rounded-2xl border border-border p-5 animate-pulse">
-      <div className="flex items-center gap-3 mb-3">
-        <div className="w-12 h-12 rounded-full bg-muted" />
-        <div className="space-y-2 flex-1">
-          <div className="h-4 bg-muted rounded w-3/4" />
-          <div className="h-3 bg-muted rounded w-1/2" />
+    <div className="w-[240px] shrink-0 animate-pulse rounded-2xl border border-border p-4">
+      <div className="mb-3 h-6 w-20 rounded-full bg-muted" />
+      <div className="mb-3 flex items-center gap-3">
+        <div className="h-11 w-11 rounded-full bg-muted" />
+        <div className="flex-1 space-y-2">
+          <div className="h-4 w-3/4 rounded bg-muted" />
+          <div className="h-3 w-1/2 rounded bg-muted" />
         </div>
       </div>
-      <div className="h-5 bg-muted rounded-full w-16 mb-2" />
-      <div className="flex gap-1 mb-3">
-        <div className="h-4 bg-muted rounded-full w-14" />
-        <div className="h-4 bg-muted rounded-full w-14" />
+      <div className="flex gap-1.5">
+        <div className="h-6 w-16 rounded-full bg-muted" />
+        <div className="h-6 w-16 rounded-full bg-muted" />
       </div>
-      <div className="h-3 bg-muted rounded w-20" />
     </div>
   );
 }
@@ -56,27 +58,27 @@ function ExpertRowImpl({ experts, badge, isLoading }: ExpertRowProps) {
   if (experts.length === 0) return null;
 
   return (
-    <div className="relative group/row">
-      {/* Scroll buttons */}
+    <div className="group/row relative">
       <button
+        type="button"
         onClick={() => scroll("left")}
-        className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-4 z-10 w-10 h-10 rounded-full bg-card border border-border shadow-lg flex items-center justify-center opacity-0 group-hover/row:opacity-100 transition-opacity hover:bg-muted"
+        className={`left-0 -translate-x-4 ${SCROLL_BUTTON_CLASSNAME}`}
         aria-label="Scroll left"
       >
-        <ChevronLeft className="w-5 h-5 text-muted-foreground" />
+        <ChevronLeft className="h-4 w-4 text-muted-foreground" />
       </button>
       <button
+        type="button"
         onClick={() => scroll("right")}
-        className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-4 z-10 w-10 h-10 rounded-full bg-card border border-border shadow-lg flex items-center justify-center opacity-0 group-hover/row:opacity-100 transition-opacity hover:bg-muted"
+        className={`right-0 translate-x-4 ${SCROLL_BUTTON_CLASSNAME}`}
         aria-label="Scroll right"
       >
-        <ChevronRight className="w-5 h-5 text-muted-foreground" />
+        <ChevronRight className="h-4 w-4 text-muted-foreground" />
       </button>
 
-      {/* Scrollable row */}
       <div
         ref={scrollRef}
-        className="flex gap-4 overflow-x-auto scrollbar-hide pb-2"
+        className="scrollbar-hide flex gap-4 overflow-x-auto pb-2"
         style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
       >
         {experts.map((expert) => (

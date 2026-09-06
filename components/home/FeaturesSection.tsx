@@ -1,87 +1,87 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { LucideIcon } from "lucide-react";
+import Link from "next/link";
 
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent } from "@/components/ui/card";
-import { FEATURES } from "./data";
+import { FEATURES, PLATFORM_FEATURES } from "./data";
+import { SectionIntro, reveal, staggerDelay } from "./SectionIntro";
 
 function FeatureCard({
   feature,
   index,
 }: {
-  feature: {
-    icon: LucideIcon;
-    title: string;
-    description: string;
-    gradient: string;
-  };
+  feature: (typeof FEATURES)[number];
   index: number;
 }) {
   const Icon = feature.icon;
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 30 }}
-      whileInView={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5, delay: index * 0.1 }}
-      viewport={{ once: true }}
-    >
-      <Card className="feature-card-dark h-full border-0 bg-zinc-900/80 backdrop-blur-sm overflow-hidden group relative">
-        <div className="absolute inset-0 bg-gradient-to-br from-white/[0.02] to-transparent" />
-        <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 bg-gradient-to-br from-white/[0.05] to-transparent" />
-        <CardContent className="p-6 md:p-8 relative z-10">
-          <div
-            className={`w-14 h-14 rounded-2xl bg-gradient-to-br ${feature.gradient} flex items-center justify-center mb-6 group-hover:scale-110 transition-transform duration-300 shadow-lg`}
-          >
-            <Icon className="w-7 h-7 text-white" />
+    <motion.div {...reveal(staggerDelay(index))}>
+      <Link
+        href={feature.href}
+        className="group flex h-full flex-col rounded-2xl border border-border bg-card p-6 shadow-elevation-1 transition-all duration-300 ease-out hover:-translate-y-0.5 hover:border-foreground/20 hover:shadow-elevation-2"
+      >
+        <div className="flex items-start justify-between gap-4">
+          <span className="text-xs font-medium tabular-nums text-muted-foreground">
+            {String(index + 1).padStart(2, "0")}
+          </span>
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-muted text-foreground">
+            <Icon className="h-5 w-5" strokeWidth={1.75} />
           </div>
-          <h3 className="text-xl font-semibold mb-3 text-white">
-            {feature.title}
-          </h3>
-          <p className="text-zinc-400 leading-relaxed">{feature.description}</p>
-        </CardContent>
-      </Card>
+        </div>
+        <h3 className="mt-6 text-lg font-semibold tracking-tight text-foreground">
+          {feature.title}
+        </h3>
+        <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+          {feature.description}
+        </p>
+      </Link>
     </motion.div>
   );
 }
 
 export function FeaturesSection() {
   return (
-    <section className="py-20 md:py-32 bg-zinc-950 relative overflow-hidden">
-      <div className="absolute inset-0 dot-pattern opacity-40" />
+    <section className="bg-background py-20 md:py-28">
+      <div className="container mx-auto px-4 md:px-6">
+        <SectionIntro
+          eyebrow="Formats"
+          title="Four ways to learn"
+          lede="Pick the format that fits the problem: a single conversation, a mentorship over months, a cohort, or a live room."
+        />
 
-      {/* Accent gradient */}
-      <div className="absolute top-0 right-0 w-1/2 h-1/2 bg-gradient-to-bl from-zinc-800/30 to-transparent blur-[100px]" />
-
-      <div className="container mx-auto px-4 md:px-6 relative z-10">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5 }}
-          viewport={{ once: true }}
-          className="text-center mb-16"
-        >
-          <Badge
-            variant="secondary"
-            className="mb-4 bg-zinc-800 text-zinc-300 hover:bg-zinc-800 border-zinc-700"
-          >
-            Our Offerings
-          </Badge>
-          <h2 className="text-fluid-4xl font-bold text-white mb-4 tracking-tight">
-            Multiple ways to <span className="text-zinc-400">learn & grow</span>
-          </h2>
-          <p className="text-lg text-zinc-500 max-w-2xl mx-auto">
-            Choose the format that works best for your learning style and
-            schedule
-          </p>
-        </motion.div>
-
-        <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           {FEATURES.map((feature, index) => (
             <FeatureCard key={feature.title} feature={feature} index={index} />
           ))}
+        </div>
+
+        <div className="mt-12 border-t border-border pt-10">
+          <div className="grid gap-x-8 gap-y-6 sm:grid-cols-2 lg:grid-cols-3">
+            {PLATFORM_FEATURES.map((feature, index) => {
+              const Icon = feature.icon;
+              return (
+                <motion.div
+                  key={feature.title}
+                  {...reveal(staggerDelay(index))}
+                  className="flex gap-3"
+                >
+                  <Icon
+                    className="h-5 w-5 shrink-0 text-foreground"
+                    strokeWidth={1.75}
+                  />
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-semibold text-foreground">
+                      {feature.title}
+                    </h3>
+                    <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                      {feature.description}
+                    </p>
+                  </div>
+                </motion.div>
+              );
+            })}
+          </div>
         </div>
       </div>
     </section>

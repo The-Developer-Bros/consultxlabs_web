@@ -1,13 +1,6 @@
 "use client";
 
-import {
-  Briefcase,
-  GraduationCap,
-  Award,
-  Calendar,
-  MapPin,
-} from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import { Award, Calendar, MapPin } from "lucide-react";
 import { CompanyLogo } from "@/components/ui/company-logo";
 import { InstitutionLogo } from "@/components/ui/institution-logo";
 import { WorkExperience, Education, Certification } from "@prisma/client";
@@ -32,9 +25,9 @@ function formatDateRange(
   isCurrent?: boolean,
 ): string {
   const start = formatDate(startDate);
-  if (isCurrent) return `${start} - Present`;
+  if (isCurrent) return `${start} – Present`;
   const end = formatDate(endDate);
-  return end ? `${start} - ${end}` : start;
+  return end ? `${start} – ${end}` : start;
 }
 
 function formatYearRange(
@@ -42,25 +35,39 @@ function formatYearRange(
   endYear: number | null,
 ): string {
   if (!startYear && !endYear) return "";
-  if (!endYear) return `${startYear} - Present`;
+  if (!endYear) return `${startYear} – Present`;
   if (!startYear) return `${endYear}`;
-  return `${startYear} - ${endYear}`;
+  return `${startYear} – ${endYear}`;
 }
 
-function WorkExperienceCard({ experience }: { experience: WorkExperience }) {
+function BlockHeader({ title, count }: { title: string; count: number }) {
   return (
-    <div className="flex gap-4 pb-4 last:pb-0 border-b last:border-b-0 border-border">
+    <div className="mb-4 flex items-baseline gap-2">
+      <h2 className="text-lg font-semibold tracking-tight text-foreground">
+        {title}
+      </h2>
+      <span className="text-sm tabular-nums text-muted-foreground">
+        {count}
+      </span>
+    </div>
+  );
+}
+
+function WorkExperienceRow({ experience }: { experience: WorkExperience }) {
+  return (
+    <li className="flex gap-4 py-4 first:pt-0 last:pb-0">
       <CompanyLogo
         companyName={experience.company}
         companyDomain={experience.companyDomain ?? undefined}
-        size={48}
+        size={44}
+        className="border-border"
       />
-      <div className="flex-1 min-w-0">
-        <h4 className="font-semibold text-foreground">{experience.title}</h4>
-        <p className="text-muted-foreground">{experience.company}</p>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-sm text-muted-foreground">
+      <div className="min-w-0 flex-1">
+        <p className="font-semibold text-foreground">{experience.title}</p>
+        <p className="text-sm text-muted-foreground">{experience.company}</p>
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
           <span className="flex items-center gap-1">
-            <Calendar className="w-3.5 h-3.5" />
+            <Calendar className="h-3.5 w-3.5" />
             {formatDateRange(
               experience.startDate,
               experience.endDate,
@@ -69,69 +76,71 @@ function WorkExperienceCard({ experience }: { experience: WorkExperience }) {
           </span>
           {experience.location && (
             <span className="flex items-center gap-1">
-              <MapPin className="w-3.5 h-3.5" />
+              <MapPin className="h-3.5 w-3.5" />
               {experience.location}
             </span>
           )}
         </div>
         {experience.description && (
-          <p className="mt-2 text-sm text-muted-foreground line-clamp-3">
+          <p className="mt-2 line-clamp-3 text-sm leading-relaxed text-muted-foreground">
             {experience.description}
           </p>
         )}
       </div>
-    </div>
+    </li>
   );
 }
 
-function EducationCard({ education }: { education: Education }) {
+function EducationRow({ education }: { education: Education }) {
   return (
-    <div className="flex gap-4 pb-4 last:pb-0 border-b last:border-b-0 border-border">
+    <li className="flex gap-4 py-4 first:pt-0 last:pb-0">
       <InstitutionLogo
         institutionName={education.institution}
         institutionDomain={education.institutionDomain ?? undefined}
-        size={48}
+        size={44}
       />
-      <div className="flex-1 min-w-0">
-        <h4 className="font-semibold text-foreground">{education.degree}</h4>
-        <p className="text-muted-foreground">{education.institution}</p>
+      <div className="min-w-0 flex-1">
+        <p className="font-semibold text-foreground">{education.degree}</p>
+        <p className="text-sm text-muted-foreground">{education.institution}</p>
         {education.fieldOfStudy && (
-          <p className="text-sm text-muted-foreground">{education.fieldOfStudy}</p>
+          <p className="text-sm text-muted-foreground">
+            {education.fieldOfStudy}
+          </p>
         )}
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-sm text-muted-foreground">
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
           <span className="flex items-center gap-1">
-            <Calendar className="w-3.5 h-3.5" />
+            <Calendar className="h-3.5 w-3.5" />
             {formatYearRange(education.startYear, education.endYear)}
           </span>
           {education.grade && <span>Grade: {education.grade}</span>}
         </div>
         {education.activities && (
-          <p className="mt-2 text-sm text-muted-foreground line-clamp-2">
+          <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">
             {education.activities}
           </p>
         )}
       </div>
-    </div>
+    </li>
   );
 }
 
-function CertificationBadge({
+function CertificationChip({
   certification,
 }: {
   certification: Certification;
 }) {
   return (
-    <div className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-100">
-      <Award className="w-4 h-4 text-amber-600 flex-shrink-0" />
-      <div className="min-w-0">
-        <p className="text-sm font-medium text-foreground truncate">
+    <li className="inline-flex items-center gap-2.5 rounded-xl border border-border bg-muted/40 px-3 py-2">
+      <Award className="h-4 w-4 shrink-0 text-muted-foreground" />
+      <span className="min-w-0">
+        <span className="block truncate text-sm font-medium text-foreground">
           {certification.name}
-        </p>
-        <p className="text-xs text-muted-foreground truncate">
+        </span>
+        <span className="block truncate text-xs text-muted-foreground">
           {certification.issuingOrganization}
-        </p>
-      </div>
-    </div>
+        </span>
+      </span>
+    </li>
   );
 }
 
@@ -149,81 +158,59 @@ export function ExperienceSection({
     return null;
   }
 
+  const sortedWork = workExperiences.slice().sort((a, b) => {
+    // Sort by isCurrent first, then by startDate
+    if (a.isCurrent && !b.isCurrent) return -1;
+    if (!a.isCurrent && b.isCurrent) return 1;
+    return new Date(b.startDate).getTime() - new Date(a.startDate).getTime();
+  });
+  const sortedEducation = education
+    .slice()
+    .sort((a, b) => (b.endYear || 9999) - (a.endYear || 9999));
+  const sortedCertifications = certifications
+    .slice()
+    .sort(
+      (a, b) =>
+        new Date(b.issueDate).getTime() - new Date(a.issueDate).getTime(),
+    );
+
   return (
-    <div className="bg-card rounded-2xl border border-border p-6 md:p-8 space-y-8">
-      {/* Work Experience */}
-      {workExperiences.length > 0 && (
+    <section className="space-y-8 rounded-2xl border border-border bg-card p-6 md:p-8">
+      {sortedWork.length > 0 && (
         <div>
-          <div className="flex items-center gap-2 mb-4">
-            <Briefcase className="w-5 h-5 text-muted-foreground" />
-            <h3 className="text-lg font-semibold text-foreground">Experience</h3>
-            <Badge variant="secondary" className="ml-auto">
-              {workExperiences.length}
-            </Badge>
-          </div>
-          <div className="space-y-4">
-            {workExperiences
-              .sort((a, b) => {
-                // Sort by isCurrent first, then by startDate
-                if (a.isCurrent && !b.isCurrent) return -1;
-                if (!a.isCurrent && b.isCurrent) return 1;
-                return (
-                  new Date(b.startDate).getTime() -
-                  new Date(a.startDate).getTime()
-                );
-              })
-              .map((exp) => (
-                <WorkExperienceCard key={exp.id} experience={exp} />
-              ))}
-          </div>
+          <BlockHeader title="Experience" count={sortedWork.length} />
+          <ul className="divide-y divide-border">
+            {sortedWork.map((exp) => (
+              <WorkExperienceRow key={exp.id} experience={exp} />
+            ))}
+          </ul>
         </div>
       )}
 
-      {/* Education */}
-      {education.length > 0 && (
+      {sortedEducation.length > 0 && (
         <div>
-          <div className="flex items-center gap-2 mb-4">
-            <GraduationCap className="w-5 h-5 text-muted-foreground" />
-            <h3 className="text-lg font-semibold text-foreground">Education</h3>
-            <Badge variant="secondary" className="ml-auto">
-              {education.length}
-            </Badge>
-          </div>
-          <div className="space-y-4">
-            {education
-              .sort((a, b) => (b.endYear || 9999) - (a.endYear || 9999))
-              .map((edu) => (
-                <EducationCard key={edu.id} education={edu} />
-              ))}
-          </div>
+          <BlockHeader title="Education" count={sortedEducation.length} />
+          <ul className="divide-y divide-border">
+            {sortedEducation.map((edu) => (
+              <EducationRow key={edu.id} education={edu} />
+            ))}
+          </ul>
         </div>
       )}
 
-      {/* Certifications */}
-      {certifications.length > 0 && (
+      {sortedCertifications.length > 0 && (
         <div>
-          <div className="flex items-center gap-2 mb-4">
-            <Award className="w-5 h-5 text-muted-foreground" />
-            <h3 className="text-lg font-semibold text-foreground">
-              Certifications
-            </h3>
-            <Badge variant="secondary" className="ml-auto">
-              {certifications.length}
-            </Badge>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {certifications
-              .sort(
-                (a, b) =>
-                  new Date(b.issueDate).getTime() -
-                  new Date(a.issueDate).getTime(),
-              )
-              .map((cert) => (
-                <CertificationBadge key={cert.id} certification={cert} />
-              ))}
-          </div>
+          <BlockHeader
+            title="Certifications"
+            count={sortedCertifications.length}
+          />
+          <ul className="flex flex-wrap gap-2">
+            {sortedCertifications.map((cert) => (
+              <CertificationChip key={cert.id} certification={cert} />
+            ))}
+          </ul>
         </div>
       )}
-    </div>
+    </section>
   );
 }

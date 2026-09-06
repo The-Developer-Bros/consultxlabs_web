@@ -40,7 +40,9 @@ export default function FacetRail({
 
   const header = (
     <div className="flex items-center justify-between">
-      <span className="text-sm font-semibold text-foreground">Filters</span>
+      <span className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+        Filters
+      </span>
       {activeCount > 0 && onClearAll && (
         <button
           type="button"
@@ -69,7 +71,10 @@ export default function FacetRail({
               )}
             </Button>
           </SheetTrigger>
-          <SheetContent side="left" className="w-[88%] max-w-sm overflow-y-auto">
+          <SheetContent
+            side="left"
+            className="w-[88%] max-w-sm overflow-y-auto"
+          >
             <SheetHeader>
               <SheetTitle>Filters</SheetTitle>
             </SheetHeader>
@@ -96,7 +101,7 @@ export default function FacetRail({
         }}
         aria-label="Filters"
       >
-        <div className="max-h-[calc(100vh-var(--header-height,5rem)-3rem)] overflow-y-auto rounded-2xl border border-border bg-card p-4">
+        <div className="max-h-[calc(100vh-var(--header-height,5rem)-3rem)] overflow-y-auto rounded-2xl border border-border bg-card p-5">
           {header}
           <div className="mt-2">{children}</div>
         </div>
