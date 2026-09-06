@@ -31,6 +31,7 @@ import {
 import { notifyAppointmentRescheduled } from "@/lib/novu/service";
 import { notificationScope } from "@/lib/novu/workflows";
 import { notificationHref } from "@/lib/novu/resolve-href";
+import { planTitleOrSessionLabel } from "@/lib/novu/humanize";
 import { logActivity } from "@/lib/activity/log-activity";
 import { tryAutoConfirmProposal } from "@/lib/booking/reschedule-auto-confirm";
 import { hasActiveDisputeForAppointment } from "@/lib/payments/dispute-guard";
@@ -928,7 +929,8 @@ export async function POST(
             appointmentType,
             consultantName: plan?.consultantProfile?.user?.name ?? "Consultant",
             consulteeName: requestedBy?.user?.name ?? "Participant",
-            planTitle: plan?.title ?? "Unknown",
+            // #536 — "Unknown" read as the name of the booking being moved.
+            planTitle: planTitleOrSessionLabel(plan?.title, appointmentType),
             // Group events fan out to every attendee, so one href must serve
             // them all — org route when org-hosted, router bounce otherwise.
             dashboardUrl: notificationHref(

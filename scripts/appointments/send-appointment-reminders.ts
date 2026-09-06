@@ -18,6 +18,7 @@ import redis from "../../lib/redis";
 import { notifyAppointmentReminder } from "../../lib/novu/service";
 import { notificationScope } from "../../lib/novu/workflows";
 import { notificationHref } from "../../lib/novu/resolve-href";
+import { planTitleOrSessionLabel } from "../../lib/novu/humanize";
 import { withCronLock } from "@/lib/cron/with-cron-lock";
 
 // Reminder windows (in milliseconds)
@@ -141,7 +142,9 @@ async function sendRemindersForWindow(window: {
     try {
       // Determine event type and plan info
       let appointmentType = "consultation";
-      let planTitle = "Unknown";
+      // #536 — empty, not "Unknown": an appointment matching none of the four
+      // shapes below would have named the customer's session "Unknown".
+      let planTitle = "";
       let consultantName = "Consultant";
       let consulteeName = "Consultee";
       const userIds: string[] = [];
@@ -216,7 +219,8 @@ async function sendRemindersForWindow(window: {
           appointmentType,
           consultantName,
           consulteeName,
-          planTitle,
+          planTitle: planTitleOrSessionLabel(planTitle, appointmentType),
+          // Rendered per recipient timezone at the trigger boundary (#536).
           dateTime: slot.startsAt.toISOString(),
           dashboardUrl: notificationHref(apt.organizationId, "appointments"),
         },
