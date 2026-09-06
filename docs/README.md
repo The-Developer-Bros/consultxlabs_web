@@ -174,10 +174,15 @@ Storage management and document review system.
 
 ### Performance
 
-Implemented performance optimizations.
+Implemented performance optimizations. The numbering runs from the broad
+strategy documents to the individual slow-query investigations.
 
-- [dashboard-prefetching.md](./performance/dashboard-prefetching.md) - Dashboard prefetching
-- [optimization-checklist.md](./performance/optimization-checklist.md) - Optimization checklist
+- [00-optimization-checklist.md](./performance/00-optimization-checklist.md) - The React Query migration and the broader dashboard optimization history
+- [01-navigation-performance.md](./performance/01-navigation-performance.md) - Canonical record of the navigation and bundle round (PR #887)
+- [02-dashboard-prefetching.md](./performance/02-dashboard-prefetching.md) - Hover-based route prefetching strategy
+- [03-dashboard-appointments-perf.md](./performance/03-dashboard-appointments-perf.md) - Investigation: slow `/api/appointments` query
+- [04-availability-allocation-perf.md](./performance/04-availability-allocation-perf.md) - Investigation: slow wide-window availability-with-allocation query
+- [05-allocation-500-investigation.md](./performance/05-allocation-500-investigation.md) - Investigation: auto-allocate HTTP 500 and transaction-start timeout
 
 ---
 
@@ -208,8 +213,12 @@ Mobile API integration documentation.
 
 Prisma operations and migration documentation.
 
-- [migrations-guide.md](./prisma/migrations-guide.md) - Migrations guide
-- [prisma-7-migration.md](./prisma/prisma-7-migration.md) - Prisma 7 migration
+- [prisma/README.md](./prisma/README.md) - **Full index**, and which document applies to the current posture
+- [00-schema-map.md](./prisma/00-schema-map.md) - Domain diagrams of the Prisma schema
+- [01-migrations-guide.md](./prisma/01-migrations-guide.md) - General-purpose Prisma Migrate reference
+- [02-pre-mvp-reset-runbook.md](./prisma/02-pre-mvp-reset-runbook.md) - The one-time reset that finalises the launch schema
+- [03-cutover-to-migrations.md](./prisma/03-cutover-to-migrations.md) - Launch-day runbook: `db push` to versioned migrations
+- [04-prisma-7-migration.md](./prisma/04-prisma-7-migration.md) - Record of the Prisma 6 to 7 upgrade
 
 ---
 

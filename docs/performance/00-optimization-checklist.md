@@ -3,7 +3,7 @@
 > **Note:** This checklist documents the React Query migration completed in January 2025.
 > For current real-time dashboard and caching strategies, see [`realtime-caching-strategy.md`](./realtime-caching-strategy.md).
 >
-> **Update (2026-06-17):** The route-level caching, bundle-optimization, and loading-boundary items below were substantially addressed by the navigation-performance round in PR #887. That round is documented in full — including the per-route loading boundaries, client-router cache tuning, bundle trimming, bounded dashboard queries, additive indexes, and slow-query observability — in [`navigation-performance.md`](./navigation-performance.md), which is now the canonical record for navigation and bundle performance. The statuses in Phase 3 and Phase 4 have been updated accordingly; see that document for the details and the deferred follow-ups.
+> **Update (2026-06-17):** The route-level caching, bundle-optimization, and loading-boundary items below were substantially addressed by the navigation-performance round in PR #887. That round is documented in full — including the per-route loading boundaries, client-router cache tuning, bundle trimming, bounded dashboard queries, additive indexes, and slow-query observability — in [`01-navigation-performance.md`](./01-navigation-performance.md), which is now the canonical record for navigation and bundle performance. The statuses in Phase 3 and Phase 4 have been updated accordingly; see that document for the details and the deferred follow-ups.
 
 ## 🎯 Overview
 
@@ -109,7 +109,7 @@ This document tracks the complete dashboard performance optimization project to 
 
 ### 🔄 Pending Enhancements
 
-- [x] **Add skeleton loaders to all components** — Delivered as route-level `loading.tsx` boundaries in PR #887. The application now has roughly 99 boundaries (up from 12), each re-rendering a shared dashboard or generic skeleton so navigation paints an instant, layout-matched fallback. See [`navigation-performance.md`](./navigation-performance.md) for the full breakdown.
+- [x] **Add skeleton loaders to all components** — Delivered as route-level `loading.tsx` boundaries in PR #887. The application now has roughly 99 boundaries (up from 12), each re-rendering a shared dashboard or generic skeleton so navigation paints an instant, layout-matched fallback. See [`01-navigation-performance.md`](./01-navigation-performance.md) for the full breakdown.
 - [ ] **Apply error boundaries to all pages** (15 pages remaining)
 - [ ] **Implement optimistic updates for mutations**
 
@@ -117,18 +117,18 @@ This document tracks the complete dashboard performance optimization project to 
 
 ## 🚀 Phase 4: Advanced Performance Features (LARGELY ADDRESSED)
 
-Most of the items in this phase were delivered by the navigation-performance round in PR #887. The route-level caching and bundle-optimization sub-sections are now substantially complete; the remaining open items (behavior-driven prefetching and a service worker) are genuinely future work. The canonical record of what shipped, and why, is [`navigation-performance.md`](./navigation-performance.md).
+Most of the items in this phase were delivered by the navigation-performance round in PR #887. The route-level caching and bundle-optimization sub-sections are now substantially complete; the remaining open items (behavior-driven prefetching and a service worker) are genuinely future work. The canonical record of what shipped, and why, is [`01-navigation-performance.md`](./01-navigation-performance.md).
 
 ### Caching Strategy
 
-- [x] **Route-level caching** - Instant tab switching — Delivered via `experimental.staleTimes { dynamic: 30, static: 180 }` in `next.config.mjs`, which lets the Next.js client router hold a navigated page's RSC payload (~30s for dynamic segments) so re-navigation is instant with no network round trip. See [`navigation-performance.md`](./navigation-performance.md).
+- [x] **Route-level caching** - Instant tab switching — Delivered via `experimental.staleTimes { dynamic: 30, static: 180 }` in `next.config.mjs`, which lets the Next.js client router hold a navigated page's RSC payload (~30s for dynamic segments) so re-navigation is instant with no network round trip. See [`01-navigation-performance.md`](./01-navigation-performance.md).
 - [x] **Background synchronization** - Auto-refresh stale data — Covered by the React Query stale-time and refetch configuration applied across the dashboard pages.
-- [ ] **Smart prefetching** - Based on user behavior patterns — Hover-based prefetching ships today (see [`dashboard-prefetching.md`](./dashboard-prefetching.md)); behavior-pattern-driven prefetching remains future work.
+- [ ] **Smart prefetching** - Based on user behavior patterns — Hover-based prefetching ships today (see [`02-dashboard-prefetching.md`](./02-dashboard-prefetching.md)); behavior-pattern-driven prefetching remains future work.
 
 ### Bundle Optimization
 
-- [x] **Code splitting** - Lazy load heavy components — Delivered in PR #887. The Stream SDKs and their stylesheets now ship only in a lazily loaded chunk via an SDK-free `StreamProvider` shell, and `recharts` is lazy-loaded on the admin payouts page. See [`navigation-performance.md`](./navigation-performance.md).
-- [x] **Bundle analysis** - Identify and reduce large dependencies — Delivered in PR #887 via `experimental.optimizePackageImports` for barrel libraries, dead-dependency removal (npm, swr, axios, cmdk, react-day-picker, tweetnacl), and dependency consolidation. See [`navigation-performance.md`](./navigation-performance.md).
+- [x] **Code splitting** - Lazy load heavy components — Delivered in PR #887. The Stream SDKs and their stylesheets now ship only in a lazily loaded chunk via an SDK-free `StreamProvider` shell, and `recharts` is lazy-loaded on the admin payouts page. See [`01-navigation-performance.md`](./01-navigation-performance.md).
+- [x] **Bundle analysis** - Identify and reduce large dependencies — Delivered in PR #887 via `experimental.optimizePackageImports` for barrel libraries, dead-dependency removal (npm, swr, axios, cmdk, react-day-picker, tweetnacl), and dependency consolidation. See [`01-navigation-performance.md`](./01-navigation-performance.md).
 - [ ] **Service worker** - Offline caching capabilities — Not yet attempted.
 
 ---
@@ -163,7 +163,7 @@ Most of the items in this phase were delivered by the navigation-performance rou
 
 - [ ] **Before/after load time measurements**
 - [ ] **Network request analysis**
-- [x] **Bundle size comparison** — Tracked with `@next/bundle-analyzer` (pinned to `^15`) during the PR #887 bundle round; see [`navigation-performance.md`](./navigation-performance.md).
+- [x] **Bundle size comparison** — Tracked with `@next/bundle-analyzer` (pinned to `^15`) during the PR #887 bundle round; see [`01-navigation-performance.md`](./01-navigation-performance.md).
 - [ ] **Memory usage tracking**
 
 ### User Experience Testing

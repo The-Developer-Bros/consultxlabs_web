@@ -2850,7 +2850,7 @@ export class SlotAllocationService {
     // ended can never block a placement. Bounding the read to live intervals
     // keeps this query O(upcoming bookings) instead of O(entire consultant
     // history) — the pool-starvation shape documented in
-    // docs/performance/allocation-500-investigation.md.
+    // docs/performance/05-allocation-500-investigation.md.
     const occupancyClock = new Date();
 
     // Get all existing booked slots for this consultant
