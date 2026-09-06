@@ -267,6 +267,20 @@ describe("#536 — every payload leaves with customer-ready values", () => {
     expect(payloadOf(0)).not.toHaveProperty("dateTimeIso");
   });
 
+  it("says 'further notice' for an indefinite suspension, not a blank", async () => {
+    // The moderation caller sends "" when `banExpires` is null, and the
+    // sentence reads "until {{suspendedUntil}}".
+    const { notifyAccountSuspended } = await import("../../lib/novu/service");
+
+    await notifyAccountSuspended("u_kolkata", {
+      reason: "Repeated no-shows",
+      suspendedUntil: "",
+    });
+
+    expect(payloadOf(0)).toMatchObject({ suspendedUntil: "further notice" });
+    expect(payloadOf(0)).not.toHaveProperty("suspendedUntilIso");
+  });
+
   it("names who cancelled instead of printing the role enum", async () => {
     const { notifyAppointmentCancelled } =
       await import("../../lib/novu/service");

@@ -496,9 +496,12 @@ export type ModerationWarningPayload = {
 
 export type AccountSuspendedPayload = {
   reason?: string;
-  /** Friendly, in the recipient's timezone — the date they get their account back. */
+  /**
+   * Friendly, in the recipient's timezone — the date they get their account
+   * back, or "further notice" when the suspension has no end date.
+   */
   suspendedUntil: string;
-  /** ISO timestamp the suspension lapses (lazy expiry at sign-in). */
+  /** ISO timestamp the suspension lapses (lazy expiry at sign-in); absent when indefinite. */
   suspendedUntilIso?: string;
   appointmentsCancelled?: number;
 };

@@ -798,13 +798,18 @@ export async function notifyAccountSuspended(
   return triggerWorkflowZoned(
     NOVU_WORKFLOWS.ACCOUNT_SUSPENDED,
     targetUserId,
-    (timezone): AccountSuspendedPayload => ({
-      ...payload,
-      suspendedUntil:
-        formatNotificationDateTime(payload.suspendedUntil, timezone) ??
-        payload.suspendedUntil,
-      suspendedUntilIso: payload.suspendedUntil,
-    }),
+    (timezone): AccountSuspendedPayload => {
+      // An indefinite suspension has no `banExpires`, and the moderation
+      // caller sends "" for it — the sentence reads "until {{suspendedUntil}}",
+      // so the blank needs words, and the ISO twin is only sent for a real date.
+      const { suspendedUntil: raw, ...rest } = payload;
+      const suspendedUntil = formatNotificationDateTime(raw, timezone);
+      return {
+        ...rest,
+        suspendedUntil: suspendedUntil ?? "further notice",
+        ...(suspendedUntil ? { suspendedUntilIso: raw } : {}),
+      };
+    },
   );
 }
 
@@ -935,13 +940,15 @@ export async function notifyRecordingExpiring(
   return triggerWorkflowZoned(
     NOVU_WORKFLOWS.RECORDING_EXPIRING,
     consultantUserId,
-    (timezone): RecordingExpiringPayload => ({
-      ...payload,
-      expiresAt:
-        formatNotificationDateTime(payload.expiresAt, timezone) ??
-        payload.expiresAt,
-      expiresAtIso: payload.expiresAt,
-    }),
+    (timezone): RecordingExpiringPayload => {
+      const { expiresAt: raw, ...rest } = payload;
+      const expiresAt = formatNotificationDateTime(raw, timezone);
+      return {
+        ...rest,
+        expiresAt: expiresAt ?? "the date shown in your dashboard",
+        ...(expiresAt ? { expiresAtIso: raw } : {}),
+      };
+    },
   );
 }
 
@@ -1073,15 +1080,14 @@ export async function notifyCollaboratorRemoved(
  * guess which zone they are reading (#536).
  */
 function maintenanceWire(payload: MaintenanceInput): MaintenancePayload {
+  const { estimatedEnd: raw, ...rest } = payload;
   const estimatedEnd = formatNotificationDateTime(
-    payload.estimatedEnd,
+    raw,
     DEFAULT_NOTIFICATION_TIMEZONE,
   );
   return {
-    ...payload,
-    ...(estimatedEnd
-      ? { estimatedEnd, estimatedEndIso: payload.estimatedEnd }
-      : {}),
+    ...rest,
+    ...(estimatedEnd ? { estimatedEnd, estimatedEndIso: raw } : {}),
   };
 }
 
