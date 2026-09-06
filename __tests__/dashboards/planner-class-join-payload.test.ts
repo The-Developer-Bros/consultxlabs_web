@@ -70,6 +70,7 @@ interface StoredSlot {
   endsAt: Date;
   isTentative: boolean;
   completionStatus: string;
+  deletedAt: Date | null;
   meetingSession: {
     id: string;
     endedAt: Date | null;
@@ -95,6 +96,7 @@ function storedSlot(
     endsAt: new Date(startsAt.getTime() + 30 * 60_000),
     isTentative: false,
     completionStatus: "SCHEDULED",
+    deletedAt: null,
     meetingSession: null,
     user: [{ id: "user-attendee" }],
     ...extra,
@@ -179,9 +181,22 @@ beforeEach(() => {
 
   // #1346 — the unwindowed firstSessionAt lookup; unlike classInclude's
   // slot select, this reads every row regardless of the ±24h window.
+  // The mock applies the predicates the route actually sends, so a regression
+  // that drops the deletedAt or completionStatus filter fails here instead of
+  // being masked by a filter the mock invented.
   db.slotOfAppointment.groupBy.mockImplementation(
-    async (args: { where: { appointmentId: { in: string[] } } }) => {
+    async (args: {
+      where: {
+        appointmentId: { in: string[] };
+        deletedAt?: null;
+        completionStatus?: { notIn: string[] };
+      };
+    }) => {
       const ids = new Set(args.where.appointmentId.in);
+      const excludedStatuses = new Set(
+        args.where.completionStatus?.notIn ?? [],
+      );
+      const requiresNotDeleted = "deletedAt" in args.where;
       const results: Array<{
         appointmentId: string;
         _min: { startsAt: Date };
@@ -191,8 +206,8 @@ beforeEach(() => {
           if (!ids.has(appt.id)) continue;
           const live = appt.slotsOfAppointment.filter(
             (slot) =>
-              slot.completionStatus !== "CANCELLED" &&
-              slot.completionStatus !== "RESCHEDULED",
+              !excludedStatuses.has(slot.completionStatus) &&
+              (!requiresNotDeleted || slot.deletedAt === null),
           );
           const earliest = live.reduce<Date | null>(
             (min, slot) => (!min || slot.startsAt < min ? slot.startsAt : min),
