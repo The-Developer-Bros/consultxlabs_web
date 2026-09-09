@@ -27,6 +27,14 @@ interface AnonymisableReview {
    * party the flag exists to withhold them from.
    */
   appointmentId?: string | null;
+  /**
+   * The weighting bucket, formatted `webinar:<id>` / `class:<id>` /
+   * `appointment:<id>`. It therefore NAMES the event the reviewer attended: on a
+   * 1:1 it is the appointment id under another name, and on a class it narrows
+   * the author to that run's roster. Same class of leak as `appointmentId`, and
+   * it rode through the spread until #1268 review.
+   */
+  ratingUnitId?: string | null;
 }
 
 /**
@@ -39,11 +47,12 @@ interface AnonymisableReview {
  */
 export type SanitisedReview<T extends AnonymisableReview> = Omit<
   T,
-  "consulteeProfile" | "consulteeProfileId" | "appointmentId"
+  "consulteeProfile" | "consulteeProfileId" | "appointmentId" | "ratingUnitId"
 > & {
   consulteeProfile: T["consulteeProfile"] | null;
   consulteeProfileId: T["consulteeProfileId"] | null;
   appointmentId: T["appointmentId"] | null;
+  ratingUnitId: T["ratingUnitId"] | null;
 };
 
 export function stripAnonymousReviewer<T extends AnonymisableReview>(
@@ -64,6 +73,7 @@ export function stripAnonymousReviewer<T extends AnonymisableReview>(
     consulteeProfile: null,
     consulteeProfileId: null,
     appointmentId: null,
+    ratingUnitId: null,
   };
 }
 

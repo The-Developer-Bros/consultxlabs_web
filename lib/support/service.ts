@@ -283,6 +283,26 @@ export async function runSupportTurn(
   // staff saying the matter is finished, which is not ours to undo.
   let refusedStatus: SupportThreadStatus | null = null;
   const accepted = await prisma.$transaction(async (tx) => {
+    // The CAS runs FIRST, before a single row is written. It used to run last
+    // and the callback returned `moved.count > 0` — but returning `false` from
+    // a Prisma interactive transaction COMMITS it, so the messages inserted
+    // above survived the refused status write: the user was told their message
+    // had not been sent while the row was in fact stored on the closed thread,
+    // and staff watched turns arrive on a conversation they had finished.
+    // Claiming the thread first makes the refusal a no-op by construction.
+    const moved = await tx.appointmentSupportThread.updateMany({
+      where: { id: thread.id, status: { not: "CLOSED" } },
+      data: {
+        category,
+        currentNodeId: turn.nextNodeId,
+        status,
+        resolvedAt: turn.resolved ? new Date() : null,
+        // Keep the hub's "latest activity first" clock honest — updatedAt
+        // alone won't move on message inserts.
+        ...(wroteMessages ? { lastMessageAt: new Date() } : {}),
+      },
+    });
+    if (moved.count === 0) return false;
     // The user's side of the conversation FIRST, then the bot's. A chip press
     // is an answer just as much as typed text is — without it the stored
     // transcript is a run of bot questions with no record of what produced
@@ -306,26 +326,14 @@ export async function runSupportTurn(
         data: { threadId: thread.id, seq: ++seq, ...m },
       });
     }
-    const moved = await tx.appointmentSupportThread.updateMany({
-      where: { id: thread.id, status: { not: "CLOSED" } },
-      data: {
-        category,
-        currentNodeId: turn.nextNodeId,
-        status,
-        resolvedAt: turn.resolved ? new Date() : null,
-        // Keep the hub's "latest activity first" clock honest — updatedAt
-        // alone won't move on message inserts.
-        ...(wroteMessages ? { lastMessageAt: new Date() } : {}),
-      },
-    });
-    return moved.count > 0;
+    return true;
   });
 
   if (!accepted) {
-    // Nothing was written — the messages above share this transaction, so they
-    // rolled back with the refused status write. Report where the thread
-    // actually is, and that the turn was not stored, which is the contract the
-    // drawer's "your message wasn't sent" recovery reads.
+    // Nothing was written at all — the claim is the first statement in the
+    // transaction. Report where the thread actually is, and that the turn was
+    // not stored, which is the contract the drawer's "your message wasn't sent"
+    // recovery reads.
     const current = await prisma.appointmentSupportThread.findUniqueOrThrow({
       where: { id: thread.id },
       select: { status: true },
@@ -546,6 +554,27 @@ async function escalate(
 
   const ticketId = await prisma.$transaction(
     async (tx) => {
+      // Claim the thread FIRST, compare-and-set on CLOSED, before anything is
+      // written. This was the third write door and the only one left unguarded:
+      // the self-serve turn and `persistHumanTurn` both refuse a settled
+      // thread, while this one flipped `status` unconditionally, so any intent
+      // chip silently reopened a conversation staff had closed. It was also the
+      // worst place for the gap, because closing a thread clears
+      // `supportTicketId` — so the reopen minted a SECOND ticket, with its own
+      // reference and its own SLA clock, while the first sat resolved in the
+      // queue. `supportTicketId` is set by a second update below, once the
+      // ticket exists; both share this transaction.
+      const claimed = await tx.appointmentSupportThread.updateMany({
+        where: { id: threadId, status: { not: "CLOSED" } },
+        data: {
+          category,
+          currentNodeId: null,
+          status: "ESCALATED",
+          activeChannel: "HUMAN",
+          lastMessageAt: new Date(),
+        },
+      });
+      if (claimed.count === 0) return null;
       // Same rule as the self-serve turn: record the chip the user pressed, so
       // the escalated transcript staff read contains both halves.
       const userSaid = userMessage ?? turn.chosenLabel;
@@ -606,22 +635,48 @@ async function escalate(
         createdTicket = ticket;
       }
 
+      // The link, now that the ticket exists. Unconditional by design: the
+      // claim above already proved this thread is ours for the length of the
+      // transaction.
       await tx.appointmentSupportThread.update({
         where: { id: threadId },
-        data: {
-          category,
-          currentNodeId: null,
-          status: "ESCALATED",
-          activeChannel: "HUMAN",
-          supportTicketId: linkedTicketId,
-          lastMessageAt: new Date(),
-        },
+        data: { supportTicketId: linkedTicketId },
       });
       return linkedTicketId;
     },
     // Allocation budget: this transaction also queues on the reference counter.
     { maxWait: ALLOCATION_TX_MAX_WAIT_MS, timeout: ALLOCATION_TX_TIMEOUT_MS },
   );
+
+  if (ticketId === null) {
+    // The claim lost, so the whole transaction wrote nothing: no messages, no
+    // ticket, no link. Report where the thread actually is and that the turn
+    // was not stored — the same `accepted: false` contract the self-serve path
+    // uses, which is what the drawer's "your message wasn't sent" recovery
+    // reads. No deflection row either: a refused escalation is not one.
+    const current = await prisma.appointmentSupportThread.findUniqueOrThrow({
+      where: { id: threadId },
+      select: {
+        status: true,
+        activeChannel: true,
+        currentNodeId: true,
+        supportTicketId: true,
+      },
+    });
+    return {
+      threadId,
+      status: current.status,
+      activeChannel: current.activeChannel,
+      currentNodeId: current.currentNodeId,
+      messages: [],
+      actions: [],
+      escalated: false,
+      resolved: false,
+      accepted: false,
+      supportTicketId: current.supportTicketId,
+      reason: effectiveReason,
+    };
+  }
 
   await recordFlowOutcome({
     scope: "APPOINTMENT",

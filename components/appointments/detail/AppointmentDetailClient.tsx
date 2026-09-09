@@ -416,11 +416,39 @@ export function AppointmentDetailClient({
                 session, which then fed the org quality average.
                 The per-call rating now lives on each session row below; only
                 the public review is a card of its own, so the page no longer
-                asks the same-looking question twice. */}
-            {vm.bucket === "past" && role === "consultee" && (
+                asks the same-looking question twice.
+
+                Deliberately NOT gated on `vm.bucket === "past"`. That gate
+                required EVERY session of the booking to be finished, so on a
+                subscription holding up to twenty-four meetings — the most
+                common shape here — nobody could review until the whole
+                programme was over, months after the session that earned the
+                review. It was also a second, stricter copy of a rule the server
+                already owns: `resolveReviewableSession` needs one attended
+                session, and `SessionReviewCard` renders nothing when it says
+                no. One source of truth, and it is the API's. */}
+            {role === "consultee" && (
               <SessionReviewCard appointmentId={appointmentId} />
             )}
             <Section title="Sessions">
+              {/* A failed ratings read must not render as "unrated". Without
+                  this the stars below simply disappeared (or showed empty) on a
+                  call the viewer had already rated, which reads as "your rating
+                  never happened". */}
+              {sessionFeedback.isError ? (
+                <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-border px-3 py-2">
+                  <p className="text-sm text-muted-foreground">
+                    Couldn&apos;t load the ratings for these sessions.
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => sessionFeedback.retry()}
+                  >
+                    Retry
+                  </Button>
+                </div>
+              ) : null}
               {hasConfirmedSessions || hasTentativeSessions ? (
                 <SessionTimeline
                   // #705 — the private per-call rating sits on the session it
@@ -437,6 +465,11 @@ export function AppointmentDetailClient({
                     const canRate = sessionFeedback.rateable.has(
                       session.slotId,
                     );
+                    // While the read is failing, `rateable` is empty and
+                    // `rating` is null for every row — indistinguishable from
+                    // the truth. Show nothing per row and let the notice above
+                    // say why, rather than inviting a click we cannot honour.
+                    if (sessionFeedback.isError) return null;
                     if (role === "consultee" && !canRate && rating === null) {
                       return null;
                     }

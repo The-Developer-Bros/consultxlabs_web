@@ -25,6 +25,10 @@ const named = {
   // strip that only nulls the nested relation.
   consulteeProfileId: "consultee-profile-1",
   appointmentId: "appointment-1",
+  // The weighting bucket. On a class or webinar it names the EVENT, which
+  // narrows an anonymous author to that run's roster; on a 1:1 it is the
+  // appointment id again under another name.
+  ratingUnitId: "class:class-1",
   consulteeProfile: {
     id: "consultee-profile-1",
     userId: "user-1",
@@ -73,6 +77,16 @@ describe("anonymous reviewers", () => {
     const out = stripAnonymousReviewer(noRelation);
     expect(out.consulteeProfileId).toBeNull();
     expect(out.appointmentId).toBeNull();
+  });
+
+  it("drops the rating unit, which names the event the reviewer attended", () => {
+    // `class:<id>` / `webinar:<id>` narrows an anonymous reviewer to the roster
+    // of one run, and a consultant knows which runs they taught. It rode
+    // through the `...review` spread while its two siblings were nulled.
+    expect(stripAnonymousReviewer(anon).ratingUnitId).toBeNull();
+    expect(JSON.stringify(stripAnonymousReviewer(anon))).not.toContain(
+      "class-1",
+    );
   });
 
   it("leaves a named review completely untouched", () => {

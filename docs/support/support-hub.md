@@ -190,37 +190,51 @@ was still running — which is what decides the intents on offer.
    one `prisma.$transaction`, CAS-guarded with `status: { notIn: ["CLOSED"] }`
    **unconditionally** — a status-conditional `notIn: []` is a no-op filter in
    Prisma and would clobber a closed thread.
-2. **`resolvedAt` semantics**: RESOLVED stamps the clock, IN_PROGRESS clears
+2. **All three write doors CAS on CLOSED, and a refusal rolls the turn back.**
+   The self-serve turn, `persistHumanTurn` and `escalate()` each express the
+   guard in the `WHERE` rather than checking it in JavaScript. `escalate()` was
+   the door left open, and it was the worst one: closing a thread clears
+   `supportTicketId`, so a reopen also minted a **second** ticket with its own
+   reference and its own SLA clock while the first sat resolved in the queue.
+   The refusal is a thrown `ThreadSettledError`, not a returned flag —
+   returning `false` from a Prisma interactive transaction **commits** it, so
+   the messages written earlier in the same callback survived a refused status
+   write and the user was told their message was not sent while the row was in
+   fact stored.
+3. **`resolvedAt` semantics**: RESOLVED stamps the clock, IN_PROGRESS clears
    it, CLOSED keeps it (closing a resolved thread must not erase its
    resolution time).
-3. **`lastMessageAt` is the activity clock** on both `SupportTicket` and
+4. **`lastMessageAt` is the activity clock** on both `SupportTicket` and
    `AppointmentSupportThread` — every visible message write bumps it inside
    the same transaction (queue replies bump the ticket's clock too). The hub
    and both inboxes sort by it.
-4. **The ticket spam budget is charged at escalation only** — navigating a
+5. **The ticket spam budget is charged at escalation only** — navigating a
    flowchart must never spend the same budget as filing a ticket.
-5. **The recording 48h window is server-verified** (`runSupportTurn`): a
+6. **The recording 48h window is server-verified** (`runSupportTurn`): a
    client claiming "within 48h" after the slot's `endsAt` + 48h has really
    passed is re-anchored onto the flow's escalation terminal. Claiming
    "beyond" early is allowed — wanting a human is never wrong.
-6. **CSAT writes are participant-only, and attributed** — staff read access
+7. **CSAT writes are participant-only, and attributed** — staff read access
    must not become write access, and `AppointmentFeedback.raterRole` records
    which side of the session the author was on. The org aggregate filters on
    `CONSULTEE` rather than excluding `PROVIDER`, so a row of unknown
    provenance fails closed. The card itself renders for the consultee only.
-7. **CSAT aggregates suppress small cohorts** — `feedback-summary` returns
-   `null` averages below `MIN_COHORT = 3` responses (an n=1 "average" is one
-   member's exact rating; ADR 20).
-8. **Org triage is metadata-only, by design** — the select allowlist is
+8. **CSAT aggregates suppress small cohorts** — `feedback-summary` returns
+   `null` averages below `MIN_COHORT = 3` **distinct raters**, counted with a
+   `groupBy(["userId"])`. Rows stopped being a headcount when feedback moved to
+   one row per call: a single member rating three calls of one subscription
+   cleared a three-row threshold alone, and the "average" handed back was their
+   own private rating (ADR 20).
+9. **Org triage is metadata-only, by design** — the select allowlist is
    pinned by `__tests__/security/org-scope-payload-allowlist.test.ts`. Do not
    add content fields to `THREAD_METADATA_SELECT`.
-9. **`SupportMessage` is ordered by `seq`, never by `createdAt` alone** — the
-   user's turn and the bot's reply are written in one transaction and Postgres
-   `CURRENT_TIMESTAMP` is transaction start time, so both rows can carry a
-   byte-identical timestamp. Every read uses `MESSAGE_ORDER`
-   (`lib/support/message-seq.ts`), and every write allocates its numbers from
-   `AppointmentSupportThread.messageSeq` inside the same transaction.
-10. **The intent list has one definition** — `SupportThreadCategoryEnum` and
+10. **`SupportMessage` is ordered by `seq`, never by `createdAt` alone** — the
+    user's turn and the bot's reply are written in one transaction and Postgres
+    `CURRENT_TIMESTAMP` is transaction start time, so both rows can carry a
+    byte-identical timestamp. Every read uses `MESSAGE_ORDER`
+    (`lib/support/message-seq.ts`), and every write allocates its numbers from
+    `AppointmentSupportThread.messageSeq` inside the same transaction.
+11. **The intent list has one definition** — `SupportThreadCategoryEnum` and
     `SupportThreadStatusEnum` in `schemas/enums.ts`. Three routes previously
     transcribed the category list by hand and every copy had lost `DOCUMENTS`,
     so the `GET` offered a chip the `POST` rejected. Which intents are
@@ -299,17 +313,19 @@ already open.
 **The resolution clock pauses while the ball is in the user's court.**
 Without that, a customer who takes a week to answer reads as the team
 breaching and the number stops meaning anything. A staff reply calls
-`staffRepliedPatch`, which sets `awaitingUserSince` and, on the first
-occasion only, `acknowledgedAt` and `firstAgentReplyAt`. A user reply calls
-`userRepliedPatch`, which folds the wait that just ended into `pausedMs` and
-clears `awaitingUserSince`; it is a no-op when nothing was being awaited, so a
-user sending three messages in a row cannot bank three pauses. The effective
-deadline is therefore `resolutionDueAt + pausedMs`, computed by
-`effectiveResolutionDueAt`. The **acknowledgement** clock never pauses,
+`applyStaffReply`, which sets `awaitingUserSince` and, on the first occasion
+only, `acknowledgedAt` and `firstAgentReplyAt`. A user reply calls
+`userRepliedPatch`, which folds the wait that just ended into `pausedSeconds`
+and clears `awaitingUserSince`; it is a no-op when nothing was being awaited,
+so a user sending three messages in a row cannot bank three pauses. The
+effective deadline is therefore `resolutionDueAt + pausedSeconds`, computed by
+`effectiveResolutionDueAt`. Seconds rather than milliseconds because an `Int`
+of milliseconds overflows at 24.8 days, which a ticket parked on the user for a
+couple of months would reach. The **acknowledgement** clock never pauses,
 because nobody has replied yet and there is therefore nothing to be waiting
 for.
 
-An internal note is not a reply. `staffRepliedPatch` runs only when
+An internal note is not a reply. `applyStaffReply` runs only when
 `isInternal` is false, since the user has not heard anything and nothing is
 yet owed back to them.
 
@@ -370,17 +386,17 @@ The table below lists every schema change the subsystem carries, oldest
 first. All of them are additive and either nullable or defaulted, so each is
 compatible with the pre-MVP freeze and none needs a backfill.
 
-| Change                                                                                                                                                                                                                           | Why                                                                                                                                                                                                                                         |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SupportTicket.organizationId?` + `@@index([organizationId, status])`                                                                                                                                                            | ops queue filterable by customer org                                                                                                                                                                                                        |
-| `lastMessageAt?` on `SupportTicket` + `AppointmentSupportThread` (+ `@@index([status, lastMessageAt])` on the thread)                                                                                                            | "latest activity first" — `updatedAt` doesn't move on message inserts; the inbox sort needs the index                                                                                                                                       |
-| `SupportTicket.referenceNumber?` (`@unique`, `VarChar(20)`) + the `SupportTicketCounter` model                                                                                                                                   | the speakable handle and its year-scoped allocator (#705)                                                                                                                                                                                   |
-| `SupportTicket.assignedTo` relation (`SetNull`) replacing the bare `assignedToId` string                                                                                                                                         | a bare string could name a user who no longer exists, and the queue could not render a name without a second query; a staff departure must not delete tickets                                                                               |
-| `SupportTicket.ackDueAt`, `acknowledgedAt`, `resolutionDueAt`, `resolvedAt`, `closedAt`, `firstAgentReplyAt`, `awaitingUserSince`, `pausedMs` + `@@index([acknowledgedAt, ackDueAt])` + `@@index([resolvedAt, resolutionDueAt])` | the SLA clocks, stored at intake so a policy change cannot re-date an open ticket's breach; the indexes turn a breach sweep into an index scan                                                                                              |
-| `AppointmentSupportThread.messageSeq` + `SupportMessage.seq` + `@@index([threadId, seq])`                                                                                                                                        | a strict per-thread total order; `createdAt` alone cannot order rows written in one transaction                                                                                                                                             |
-| `SupportMessage.authorUserId?` (`SetNull`) + `@@index([authorUserId])`                                                                                                                                                           | which staff member wrote an `AGENT` message; Postgres does not index a foreign key for you and the `SetNull` scans by it                                                                                                                    |
-| the `SupportFlowOutcome` model + the `SupportFlowOutcomeKind` enum                                                                                                                                                               | the deflection counter, in both scopes, with no message bodies                                                                                                                                                                              |
-| `AppointmentFeedback.raterRole?` + the `AppointmentFeedbackRole` enum; `@@index([organizationId, createdAt])` becomes `@@index([organizationId, raterRole, createdAt])`                                                          | a consultant's rating of their own session used to be indistinguishable from an attendee's and fed the org quality average; the aggregate now filters `raterRole` before the date range, which leaves the old index without a usable prefix |
+| Change                                                                                                                                                                                                                                | Why                                                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SupportTicket.organizationId?` + `@@index([organizationId, status])`                                                                                                                                                                 | ops queue filterable by customer org                                                                                                                                                                                                        |
+| `lastMessageAt?` on `SupportTicket` + `AppointmentSupportThread` (+ `@@index([status, lastMessageAt])` on the thread)                                                                                                                 | "latest activity first" — `updatedAt` doesn't move on message inserts; the inbox sort needs the index                                                                                                                                       |
+| `SupportTicket.referenceNumber?` (`@unique`, `VarChar(20)`) + the `SupportTicketCounter` model                                                                                                                                        | the speakable handle and its year-scoped allocator (#705)                                                                                                                                                                                   |
+| `SupportTicket.assignedTo` relation (`SetNull`) replacing the bare `assignedToId` string                                                                                                                                              | a bare string could name a user who no longer exists, and the queue could not render a name without a second query; a staff departure must not delete tickets                                                                               |
+| `SupportTicket.ackDueAt`, `acknowledgedAt`, `resolutionDueAt`, `resolvedAt`, `closedAt`, `firstAgentReplyAt`, `awaitingUserSince`, `pausedSeconds` + `@@index([acknowledgedAt, ackDueAt])` + `@@index([resolvedAt, resolutionDueAt])` | the SLA clocks, stored at intake so a policy change cannot re-date an open ticket's breach; the indexes turn a breach sweep into an index scan                                                                                              |
+| `AppointmentSupportThread.messageSeq` + `SupportMessage.seq` + `@@index([threadId, seq])`                                                                                                                                             | a strict per-thread total order; `createdAt` alone cannot order rows written in one transaction                                                                                                                                             |
+| `SupportMessage.authorUserId?` (`SetNull`) + `@@index([authorUserId])`                                                                                                                                                                | which staff member wrote an `AGENT` message; Postgres does not index a foreign key for you and the `SetNull` scans by it                                                                                                                    |
+| the `SupportFlowOutcome` model + the `SupportFlowOutcomeKind` enum                                                                                                                                                                    | the deflection counter, in both scopes, with no message bodies                                                                                                                                                                              |
+| `AppointmentFeedback.raterRole?` + the `AppointmentFeedbackRole` enum; `@@index([organizationId, createdAt])` becomes `@@index([organizationId, raterRole, createdAt])`                                                               | a consultant's rating of their own session used to be indistinguishable from an attendee's and fed the org quality average; the aggregate now filters `raterRole` before the date range, which leaves the old index without a usable prefix |
 
 > `@@index([status, lastMessageAt])` requires `npm run db:push` (which chains
 > the sidecars) on each environment — a schema-only merge does not create it.

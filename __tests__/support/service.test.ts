@@ -182,8 +182,11 @@ describe("runSupportTurn", () => {
     expect(r?.activeChannel).toBe("HUMAN");
     expect(r?.supportTicketId).toBe("ticket1");
     expect(mockPrisma.supportTicket.create).toHaveBeenCalledTimes(1);
-    expect(mockPrisma.appointmentSupportThread.update).toHaveBeenCalledWith(
+    // updateMany, not update: the flip is compare-and-set so a thread staff
+    // have CLOSED cannot be reopened into a second ticket.
+    expect(mockPrisma.appointmentSupportThread.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
+        where: expect.objectContaining({ status: { not: "CLOSED" } }),
         data: expect.objectContaining({
           status: "ESCALATED",
           activeChannel: "HUMAN",
@@ -401,6 +404,44 @@ describe("runSupportTurn", () => {
     });
 
     expect(r?.accepted).not.toBe(false);
+    expect(mockPrisma.appointmentSupportThread.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: { not: "CLOSED" } }),
+      }),
+    );
+  });
+
+  it("refuses an ESCALATING turn on a CLOSED thread, and mints no second ticket", async () => {
+    // The third door. The self-serve path and `persistHumanTurn` both CAS'd;
+    // `escalate()` did not, so any intent chip reopened a thread staff had
+    // closed — and worse than on the other two paths, because closing clears
+    // `supportTicketId`, so the reopen ALSO minted a second ticket with its own
+    // reference and its own SLA clock while the first sat resolved in the queue.
+    mockPrisma.appointmentSupportThread.upsert.mockResolvedValue(
+      threadRow({ category: "CANCEL_REFUND", status: "CLOSED" }),
+    );
+    mockPrisma.appointmentSupportThread.updateMany.mockResolvedValue({
+      count: 0,
+    });
+    mockPrisma.appointmentSupportThread.findUniqueOrThrow.mockResolvedValue({
+      status: "CLOSED",
+      activeChannel: "SELF_SERVE",
+      currentNodeId: null,
+      supportTicketId: null,
+      messageSeq: 3,
+    });
+
+    const r = await runSupportTurn("appt1", "user1", {
+      userMessage: "I want to speak to a human",
+    });
+
+    expect(r?.accepted).toBe(false);
+    expect(r?.escalated).toBe(false);
+    expect(r?.status).toBe("CLOSED");
+    // The thread keeps whatever ticket it had — no new link, nothing echoed.
+    expect(r?.supportTicketId).toBeNull();
+    expect(r?.messages).toEqual([]);
+    // And the guard was actually expressed in the WHERE, not checked in JS.
     expect(mockPrisma.appointmentSupportThread.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ status: { not: "CLOSED" } }),

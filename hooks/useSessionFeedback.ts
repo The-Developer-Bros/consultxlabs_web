@@ -25,6 +25,19 @@ export interface SessionFeedbackState {
   ratings: Record<string, number>;
   /** Slots this viewer may rate at all — attended, or offline. */
   rateable: Set<string>;
+  /**
+   * True when ANY of the per-appointment reads failed.
+   *
+   * The hook throws per query so React Query records the failure and retries,
+   * but the aggregation below reads `r.data?` — so a failed appointment
+   * contributed no ratings and no rateable slots, which renders exactly like
+   * "you have rated nothing here and may rate nothing here". The consumer has
+   * to be able to tell those apart, or a transient 500 silently tells someone
+   * their rating never happened.
+   */
+  isError: boolean;
+  /** Re-run just the reads that failed. */
+  retry: () => void;
 }
 
 export function useSessionFeedback(
@@ -74,5 +87,12 @@ export function useSessionFeedback(
   return {
     ratings: Object.assign({}, ...results.map((r) => r.data?.ratings ?? {})),
     rateable: new Set(results.flatMap((r) => r.data?.rateable ?? [])),
+    isError: results.some((r) => r.isError),
+    // Not memoized on purpose: `results` is a fresh array every render, so a
+    // useCallback keyed on it would be recreated anyway, and the identity of
+    // this function is not a render input anywhere.
+    retry: () => {
+      for (const r of results) if (r.isError) void r.refetch();
+    },
   };
 }
