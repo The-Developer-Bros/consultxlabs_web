@@ -235,9 +235,6 @@ export async function PUT(
         bookingSource: z
           .enum(["DIRECT_CHECKOUT", "REQUEST_SUBMITTED"])
           .optional(),
-        feedbackFromConsultee: z.string().max(MAX_TEXT_LENGTH).nullish(),
-        feedbackFromConsultant: z.string().max(MAX_TEXT_LENGTH).nullish(),
-        rating: z.number().min(1).max(5).nullish(),
         planId: z.string().optional(),
       })
       .strict();
@@ -259,9 +256,6 @@ export async function PUT(
       data: {
         requestNotes: validatedBody.requestNotes,
         bookingSource: validatedBody.bookingSource,
-        feedbackFromConsultee: validatedBody.feedbackFromConsultee,
-        feedbackFromConsultant: validatedBody.feedbackFromConsultant,
-        rating: validatedBody.rating,
         consultationPlan: validatedBody.planId
           ? {
               connect: { id: validatedBody.planId },

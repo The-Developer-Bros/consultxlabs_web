@@ -239,9 +239,6 @@ export async function PUT(
         schedulingPeriodStartsAt: validatedData.schedulingPeriodStartsAt,
         schedulingPeriodEndsAt: validatedData.schedulingPeriodEndsAt,
         requestNotes: validatedData.requestNotes,
-        feedbackFromConsultee: validatedData.feedbackFromConsultee,
-        feedbackFromConsultant: validatedData.feedbackFromConsultant,
-        rating: validatedData.rating,
         subscriptionPlan: validatedData.planId
           ? {
               connect: { id: validatedData.planId },

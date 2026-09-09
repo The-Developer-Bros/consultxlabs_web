@@ -21,6 +21,14 @@ async function main(): Promise<void> {
 
   const statements = splitSqlStatements(raw);
 
+  if (!dryRun) {
+    // A DROP INDEX or ADD CONSTRAINT needs ACCESS EXCLUSIVE. Queued behind one
+    // open transaction it blocks every subsequent query on that table in FIFO
+    // order, so a lock we cannot take within seconds becomes an outage rather
+    // than a slow script. Fail fast and let the operator retry.
+    await prisma.$executeRawUnsafe("SET lock_timeout = '3s'");
+  }
+
   for (const stmt of statements) {
     if (dryRun) {
       console.log(stmt.replace(/^(--.*\n)+/, "").trim());

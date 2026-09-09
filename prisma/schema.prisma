@@ -3529,6 +3529,15 @@ model Consultation {
   requestNotes           String?
   pendingPaymentUrl      String? // Payment link while awaiting payment (cleared after payment)
   bookingSource          BookingSource     @default(REQUEST_SUBMITTED)
+  /// FROZEN as of #1300: never written and never read. Feedback about a session is
+  /// `AppointmentFeedback` (private, per call); an opinion of a consultant is
+  /// `ConsultantReview` (public, per relationship). These three were write-only —
+  /// no render path ever read them — and the PUT that fed them authorised "either
+  /// participant or staff" and then accepted BOTH sides' fields from either party,
+  /// so a consultant could author the consultee's opinion of themselves. The two
+  /// zod schemas even disagreed about the floor (`min(1)` here, `min(0)` on the
+  /// sibling). The columns stay because a column a running deploy still reads must
+  /// never be dropped under it; they are removed at the pre-MVP reset, no backfill.
   feedbackFromConsultee  String?
   feedbackFromConsultant String?
   rating                 Float?
@@ -3662,6 +3671,15 @@ model Subscription {
   requestNotes           String?
   pendingPaymentUrl      String? // Payment link while awaiting payment (cleared after payment)
   bookingSource          BookingSource     @default(REQUEST_SUBMITTED)
+  /// FROZEN as of #1300: never written and never read. Feedback about a session is
+  /// `AppointmentFeedback` (private, per call); an opinion of a consultant is
+  /// `ConsultantReview` (public, per relationship). These three were write-only —
+  /// no render path ever read them — and the PUT that fed them authorised "either
+  /// participant or staff" and then accepted BOTH sides' fields from either party,
+  /// so a consultant could author the consultee's opinion of themselves. The two
+  /// zod schemas even disagreed about the floor (`min(1)` here, `min(0)` on the
+  /// sibling). The columns stay because a column a running deploy still reads must
+  /// never be dropped under it; they are removed at the pre-MVP reset, no backfill.
   feedbackFromConsultee  String?
   feedbackFromConsultant String?
   rating                 Float?
