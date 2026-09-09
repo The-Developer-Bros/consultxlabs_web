@@ -13,6 +13,7 @@ import { z } from "zod";
 import prisma from "@/lib/prisma";
 import { appointmentRaterRole } from "@/lib/data/appointment-detail";
 import { heldSlot } from "@/lib/reviews";
+import { groupSlotsIntoRuns } from "@/lib/appointments/slots";
 import { AppointmentIdParams } from "@/schemas/support";
 import { parseRouteParams, supportError } from "@/lib/api/support-http";
 import {
@@ -171,15 +172,40 @@ export async function POST(
       });
     }
 
+    // Normalise to the run's ANCHOR — the rating belongs to the MEETING, and a
+    // meeting longer than 30 minutes is stored as several rows (#1061). The
+    // anchor is already "the only row the video room may ever be keyed to", so
+    // this is the identity the codebase uses for a session; MeetingSession
+    // hangs off exactly this row, which is why the video path happened to be
+    // safe. The offline path was not: an UNVERIFIED run has no MeetingSession,
+    // so every row in it satisfies `heldSlot` independently and one 90-minute
+    // in-person session could take three separate ratings. Resolving here
+    // makes one-rating-per-meeting a rule rather than a UI convention.
+    const runRows = await prisma.slotOfAppointment.findMany({
+      where: { appointmentId, deletedAt: null },
+      select: {
+        id: true,
+        appointmentId: true,
+        startsAt: true,
+        endsAt: true,
+        isTentative: true,
+        completionStatus: true,
+      },
+    });
+    const ratedSlotId =
+      groupSlotsIntoRuns(runRows).find((run) =>
+        run.slots.some((row) => row.id === slot.id),
+      )?.anchor.id ?? slot.id;
+
     const feedback = await prisma.appointmentFeedback.upsert({
       where: {
         slotOfAppointmentId_userId: {
-          slotOfAppointmentId: slot.id,
+          slotOfAppointmentId: ratedSlotId,
           userId: auth.userId,
         },
       },
       create: {
-        slotOfAppointmentId: slot.id,
+        slotOfAppointmentId: ratedSlotId,
         appointmentId,
         userId: auth.userId,
         organizationId: auth.organizationId,
