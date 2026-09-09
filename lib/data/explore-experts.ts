@@ -2,7 +2,7 @@ import { unstable_cache } from "next/cache";
 import prisma from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import type { IConsultantCardData } from "@/types/consultant";
-import { stripAnonymousReviewers } from "@/lib/data/review-privacy";
+import { sanitisePublicReviews } from "@/lib/data/review-public";
 import { deriveDirectoryRating } from "@/lib/data/public-stats";
 
 /**
@@ -377,7 +377,7 @@ const getCachedRecentReviews = unstable_cache(
         },
       },
     });
-    return stripAnonymousReviewers(rows);
+    return sanitisePublicReviews(rows);
   },
   ["recent-reviews"],
   { revalidate: 120, tags: ["reviews"] },

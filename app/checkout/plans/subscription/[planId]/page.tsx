@@ -9,7 +9,6 @@ import { Switch } from "@/components/ui/switch";
 import { useMaintenanceGuard } from "@/hooks/useMaintenanceGuard";
 import { useToast } from "@/hooks/use-toast";
 import { CheckoutPlanSkeleton } from "@/app/checkout/CheckoutSkeletons";
-import { fetchReviews } from "@/lib/user";
 import {
   CheckoutInput,
   SubscriptionSearchParams,
@@ -25,11 +24,7 @@ import {
   BillingStateSelect,
   useBillingState,
 } from "@/app/checkout/components/BillingStateSelect";
-import {
-  ConsultantProfile,
-  ConsultantReview,
-  SubscriptionPlan,
-} from "@prisma/client";
+import { ConsultantProfile, SubscriptionPlan } from "@prisma/client";
 import { CreditCard as CreditCardIcon } from "lucide-react";
 import { CompanyLogo } from "@/components/ui/company-logo";
 import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -91,7 +86,6 @@ export default function SubscriptionCheckoutPage({
   const [planData, setPlanData] = useState<SubscriptionResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [_reviews, setReviews] = useState<ConsultantReview[]>([]);
   const [isCheckoutProcessing, setIsCheckoutProcessing] = useState(false);
   // #828 — useState's lazy initializer runs once per mount.
   const [idempotencyKey] = useState(mintClientIdempotencyKey);
@@ -415,10 +409,6 @@ export default function SubscriptionCheckoutPage({
         }
 
         setPlanData(data);
-
-        // Fetch reviews for the consultant
-        const reviewsData = await fetchReviews(data.data.consultantProfile.id);
-        setReviews(reviewsData);
       } catch (error) {
         reportPaymentsError(error);
         console.error("Error fetching plan data:", error);

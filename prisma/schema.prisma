@@ -78,15 +78,18 @@ model User {
   waitlistSubscriptions Waitlist[]
 
   // Feedback and Support
-  feedbacks                 Feedback[]
-  supportTickets            SupportTicket[]
+  feedbacks                    Feedback[]
+  supportTickets               SupportTicket[]
   // #appt-support — per-appointment support conversations + private CSAT.
-  appointmentSupportThreads AppointmentSupportThread[]
-  appointmentFeedback       AppointmentFeedback[]
-  supportResponses          SupportResponse[]
-  supportTicketsAssigned    SupportTicket[]            @relation("SupportTicketAssignee")
-  supportMessagesAuthored   SupportMessage[]           @relation("SupportMessageAuthor")
-  supportFlowOutcomes       SupportFlowOutcome[]
+  appointmentSupportThreads    AppointmentSupportThread[]
+  appointmentFeedback          AppointmentFeedback[]
+  supportResponses             SupportResponse[]
+  supportTicketsAssigned       SupportTicket[]            @relation("SupportTicketAssignee")
+  supportMessagesAuthored      SupportMessage[]           @relation("SupportMessageAuthor")
+  supportFlowOutcomes          SupportFlowOutcome[]
+  // #1300 — review moderation and the edit trail.
+  reviewsExcludedFromAggregate ConsultantReview[]         @relation("ReviewAggregateExcluder")
+  reviewRevisionsEdited        ConsultantReviewRevision[] @relation("ReviewRevisionEditor")
 
   accounts         Account[] // BetterAuth Accounts
   sessions         Session[] // BetterAuth Sessions
@@ -542,6 +545,19 @@ model SupportFlowOutcome {
   organizationId String?
   organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
 
+  // #1300 — support CSAT, half one: "did the self-serve tree help?" Bound to the
+  // flow TERMINAL rather than to a ticket, which is Uber's pattern and the only
+  // place the question is answerable at all — a RESOLVED outcome writes no
+  // ticket, so there is nothing else to hang it on. The other half is
+  // `SupportCase.resolutionRating`: whether a PERSON fixed it. Two different
+  // suppliers, two different questions, two columns.
+  //
+  // NULL = not asked or not answered, and that has to stay distinct from a 1.
+  // Deflection already scores a user who gave up as a success; reading an
+  // unanswered prompt as a bad one would swap that error for its mirror image.
+  helpfulRating  Int?      @db.SmallInt
+  helpfulRatedAt DateTime? @db.Timestamptz
+
   createdAt DateTime @default(now()) @db.Timestamptz
 
   // The deflection rate itself, and the per-flow breakdown behind it.
@@ -594,6 +610,33 @@ model AppointmentFeedback {
 
   createdAt DateTime @default(now())
 
+  // #1300 — the two columns whose absence made this table unmoderatable and its
+  // edits invisible.
+  //
+  // NULL `updatedAt` = never touched since it was written, which is strictly
+  // more information than `@default(now())` would carry: that cannot tell
+  // "written and never edited" from "edited within the same second". It also
+  // matters for the org aggregate, which windows on `createdAt` — a rating
+  // created inside the window and rewritten from 5 to 1 six months later still
+  // reports in that window, and until now nothing could tell that it had moved.
+  updatedAt DateTime? @updatedAt @db.Timestamptz
+
+  // NULL = live. Moderation soft-delete, the same semantics and the same reason
+  // as ConsultantReview.deletedAt: the org aggregate and the author's own read
+  // filter on null while staff surfaces keep seeing the row. Without it the only
+  // way to remove an abusive private comment was a hard DELETE, which also
+  // destroyed the rating it carried — and `ModerationReport` cannot even point
+  // here, so the comment was unreportable as well as unremovable.
+  deletedAt DateTime? @db.Timestamptz
+
+  // #1300 — what the rater says drove a low score, and the adjudicated
+  // exclusion. Same taxonomy as ConsultantReview so one Stream outage does not
+  // read to an organisation as a bad consultant either. The rater CLAIMS a
+  // cause; only staff set the exclusion, because a self-served exclusion is a
+  // coaching vector.
+  ratingCause             RatingCause?
+  excludedFromAggregateAt DateTime?    @db.Timestamptz
+
   // One rating per person per CALL. Rows predating the column carry a NULL slot
   // and Postgres treats a NULL key as distinct, so they coexist rather than
   // colliding on the appointment they share.
@@ -608,6 +651,33 @@ model AppointmentFeedback {
 enum AppointmentFeedbackRole {
   CONSULTEE
   PROVIDER
+}
+
+/// #1300 — what a rater says drove a low score, on both the private rating and
+/// the public review.
+///
+/// Uber publishes this as "ratings protection": it drops ratings attributed to
+/// traffic, navigation and co-rider behaviour, because a driver cannot control
+/// them. The same argument applies with more force here, where our own video
+/// stack failing mid-session produces a one-star rating about us that lands
+/// permanently on a consultant. Urban Company is the counter-example — category
+/// minimums of 4.5-4.7 against a platform mean of 4.83 leave a usable range of a
+/// third of a star, and it is now a labour dispute.
+///
+/// CONSULTANT is the only value that is unambiguously about the person, and it
+/// is a positive claim rather than a default: NULL means "not asked or not
+/// answered" and must stay distinguishable from it.
+enum RatingCause {
+  CONSULTANT
+  /// Our stack failed — Stream video or chat, auth, the meeting route.
+  PLATFORM_TECHNICAL
+  /// Billing, refund or invoice friction, not the session.
+  PAYMENT
+  /// Reschedule churn, late confirmation, allocation.
+  SCHEDULING
+  /// Materials, handouts, pre-reads — the content, not the delivery.
+  CONTENT
+  OTHER
 }
 
 enum SupportThreadStatus {
@@ -2942,9 +3012,60 @@ model ConsultantProfile {
   // `{ reviews: { _count: "desc" } }`, which counts soft-deleted rows because
   // Prisma cannot filter a relation _count inside orderBy.
   reviewCount        Int       @default(0)
-  // Drift audit: finds profiles whose aggregates predate their newest review
-  // without recomputing every profile to find out.
+  // #1300 — with recency decay every score is stale the moment it is written, so
+  // this stopped being a drift audit and became the recompute cron's work queue
+  // (`ratingAggregatedAt < now() - 24h`). Recompute-on-mutation is no longer
+  // sufficient on its own: a consultant who gets no new reviews still drifts.
   ratingAggregatedAt DateTime? @db.Timestamptz
+
+  // #1300 — TWO published scores, side by side, replacing one blend.
+  //
+  // A twelve-session 1:1 engagement and a 200-seat webinar are different
+  // products bought by different people, and averaging them tells a buyer of
+  // either one nothing. Airbnb shows a listing rating and a host rating for the
+  // same reason. This is also the one thing no benchmarked platform has solved:
+  // per-attendee weighting systematically punishes webinar hosts and per-event
+  // weighting lets a three-person class outvote a two-hundred-person one, so
+  // refusing to average the two is the only honest answer.
+  //
+  // NULL = suppressed, exactly as `publishedRating` above means it. NULL is the
+  // conservative default, which is why these are CORRECT on day one with no
+  // backfill — only conservative.
+  publishedRatingOneToOne Float?
+  publishedRatingGroup    Float?
+
+  // The denominators the suppression gate tests, and the "based on N" display.
+  // 1:1 counts CLIENTS, because the unique already guarantees one review per
+  // client per track — a review IS a data point and there is nothing to
+  // collapse. GROUP counts EVENTS, and an event only counts once it has
+  // MIN_GROUP_RESPONSES_PER_EVENT responses, so a 200-seat webinar with two
+  // replies buys no published score.
+  ratedClientsOneToOne Int @default(0)
+  ratedEventsGroup     Int @default(0)
+
+  // The raw, undecayed, unshrunk means. Staff-facing and diagnostic: without
+  // them nobody can tell whether a low published score is shrinkage toward the
+  // platform mean, recency decay, or genuinely bad work — and "why is my rating
+  // 4.1 when every review says 5" is the most predictable consultant escalation
+  // this design creates.
+  rawRatingOneToOne Float?
+  rawRatingGroup    Float?
+
+  // Effective sample size, the sum of the per-review weights. Decay-dependent
+  // and therefore stale the moment it is written — but stale in exact lockstep
+  // with the score it explains, so the pair is always internally consistent.
+  // This is what separates "the score moved because a review landed" from "the
+  // score moved because time passed".
+  effectiveSampleOneToOne Float?
+  effectiveSampleGroup    Float?
+
+  // WHICH parameters and platform priors produced the two scores above. Without
+  // it a score is not reproducible: the platform mean moves as the corpus grows,
+  // so recomputing one consultant tomorrow gives a different answer for reasons
+  // that have nothing to do with them. Same shape and the same argument as
+  // Appointment.cancellationPolicyId.
+  scoringSnapshot   ScoringSnapshot? @relation(fields: [scoringSnapshotId], references: [id], onDelete: SetNull)
+  scoringSnapshotId String?
 
   // New fields for enhanced consultant profile
   headline                    String?                      @db.VarChar(120) // Professional headline, max 120 chars
@@ -3054,6 +3175,13 @@ model ConsultantProfile {
   @@index([verificationStatus])
   // #705 — explore sorts and filters on the published score, not the raw mean.
   @@index([publishedRating])
+  // #1300 — explore sorts on ONE track at a time, with `nulls: "last"`. Two
+  // single-column indexes rather than a composite: a composite cannot serve a
+  // sort on its trailing column.
+  @@index([publishedRatingOneToOne])
+  @@index([publishedRatingGroup])
+  // Prisma does not index a foreign key for you; the SetNull scans by this.
+  @@index([scoringSnapshotId])
 }
 
 model Domain {
@@ -3117,17 +3245,75 @@ model ConsultantReview {
   appointment   Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
   appointmentId String?
 
-  // #705 — the unit that contributes exactly ONE data point to
-  // ConsultantProfile.rating, so a 200-seat webinar cannot dominate a
-  // consultant whose 1:1 work is the real offering, and one bad event cannot
-  // tank them. Denormalized at write time because Prisma `groupBy` can only
-  // group on this model's own scalars.
-  // Format: "appointment:<id>" for 1:1, "webinar:<id>", "class:<id>".
-  // A plain sessionType enum cannot do this job: a WEBINAR shares one
-  // Appointment across every attendee, but a CLASS mints one per enrolment, so
-  // grouping by type alone would collapse every class the consultant ever ran
-  // into a single point — worse than the problem being fixed.
+  // #1300 — the GROUP EVENT key, and now only that. Format "webinar:<id>" /
+  // "class:<id>"; NULL on a 1:1 review, where it is no longer needed.
+  //
+  // It used to be the collapse mechanism for one blended score. The two-track
+  // split retires that job for 1:1 work — `@@unique` below already guarantees
+  // one review per client per track, so a review IS a data point and there is
+  // nothing to collapse — but the group track still needs the event identity,
+  // for the reason that has not changed: a WEBINAR shares one Appointment across
+  // every attendee while a CLASS mints one per enrolment, so a sessionType enum
+  // cannot tell "one event" from "one enrolment". It is also what
+  // MIN_GROUP_RESPONSES_PER_EVENT counts against.
+  //
+  // Deliberately NOT moved on edit. Reassigning it merges event buckets, and two
+  // clients revising their reviews could drop a consultant below the publication
+  // threshold.
   ratingUnitId String?
+
+  // #1300 — WHICH reputation this review belongs to. NULL = legacy and
+  // unclassifiable: it is NOT "presumed 1:1". The 59 pre-#705 rows carry a NULL
+  // `appointmentId` too, so nothing on them says which track the session was,
+  // and both aggregates filter on an explicit track — unknown provenance fails
+  // closed, the same call as `AppointmentFeedback.raterRole`. Zero user-visible
+  // cost: no profile has a published score today (0 of 83, max 4 units).
+  //
+  // Part of the unique below, so a client who attends a webinar AND books 1:1
+  // holds one review of each rather than one review that overwrites the other.
+  track ReviewTrack?
+
+  // #1300 — the version number of the LIVE text. 1 = never edited. Also the
+  // allocator for `ConsultantReviewRevision.revisionNo`: the row lock this
+  // update takes IS the serialization point between two concurrent edits, the
+  // same trick `AppointmentSupportThread.messageSeq` uses for messages.
+  revisionNo Int @default(1)
+
+  // #1300 — when the review TEXT last changed. BIS IS 19000:2022 asks that an
+  // edited review be indicated as edited, and `updatedAt` cannot answer it:
+  // `replyBody`, `repliedAt`, `replyDeletedAt` and `deletedAt` all live on this
+  // row, so a consultant replying moves `updatedAt` without the consumer having
+  // touched a word. NULL = never edited, which is the badge's own predicate, so
+  // the profile page needs no join to the revision trail.
+  editedAt DateTime? @db.Timestamptz
+
+  // #1300 (Uber ratings protection) — the reviewer's CLAIM about what caused a
+  // low score, and the ADJUDICATED exclusion, which are deliberately separate.
+  // If a self-reported cause removed a rating by itself, every consultant would
+  // coach clients to tick "platform issue".
+  //
+  // Only rows with a NULL `excludedFromAggregateAt` enter either published
+  // score. Distinct from `deletedAt`: a rating excluded because our video stack
+  // failed is still a true statement about that session and still renders on the
+  // profile with its text — it simply stops arithmetically punishing the person
+  // who did not cause it.
+  ratingCause             RatingCause?
+  excludedFromAggregateAt DateTime?    @db.Timestamptz
+  excludedReason          String?      @db.VarChar(200)
+  excludedBy              User?        @relation("ReviewAggregateExcluder", fields: [excludedByUserId], references: [id], onDelete: SetNull)
+  excludedByUserId        String?
+
+  // #1300 — the SESSION's clock, for recency decay. The weight must measure the
+  // age of the conversation, not of the row: a client who edits a year-old
+  // review this week has not held a recent session. Stamped from the run
+  // anchor's `endsAt` at write time, because deriving it needs a join through
+  // the nullable `appointmentId` on every recompute. NULL = legacy, or an
+  // offline session with no bounds; the recompute falls back to `createdAt`,
+  // which is the honest approximation and owes no backfill.
+  ratedSessionAt DateTime? @db.Timestamptz
+
+  // #1300 — the append-only edit trail.
+  revisions ConsultantReviewRevision[]
 
   // #705 — the consultant's right of reply. One reply per review, so columns
   // rather than a table: every read of a review already loads this row.
@@ -3151,16 +3337,37 @@ model ConsultantReview {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // ONE review per consultee per consultant, ever — Practo's model. A reader
-  // wants one considered opinion of a person, not four near-identical ones from
-  // the same client; the reviewer edits theirs as the relationship develops, and
-  // `appointmentId` above records which session last prompted that.
+  // ONE review per consultee per consultant PER TRACK — Practo's model, with the
+  // one column their model does not need. A reader wants one considered opinion
+  // of a person, not four near-identical ones from the same client, and the
+  // reviewer edits theirs as the relationship develops; `appointmentId` records
+  // which session last prompted that.
   //
-  // This is NOT partial on deletedAt: a moderation-removed review must not free
-  // the slot for the same person to re-post it. POST maps P2002 here to 409,
-  // which the client turns into "update your review" rather than an error.
-  @@unique([consultantProfileId, consulteeProfileId])
-  // Serves recomputeConsultantRating's groupBy — the only hot aggregate.
+  // `track` is in the key because without it a consultee who attends a webinar
+  // and later books the same consultant 1:1 holds exactly ONE row for two
+  // different products. The P2002 below is mapped to a 409 that the client
+  // renders as "update your review", so their attempt to review the 1:1
+  // engagement would OVERWRITE the webinar review — and `track` is pinned at
+  // first write, so a year of 1:1 work would be filed under group reputation.
+  // In a product that sells both, that is the upsell path, not an edge case.
+  // "One opinion per person" becomes "one per person per thing they bought",
+  // which is still one card per reviewer per product.
+  //
+  // Postgres treats NULLs as distinct, so the 59 legacy NULL-track rows do not
+  // collide with a new tracked review by the same pair. The write path adopts an
+  // existing NULL-track row for the pair instead of inserting beside it — see
+  // `lib/reviews.ts` — because a sidecar NULLS NOT DISTINCT variant on this same
+  // tuple would be matched by column list and renamed onto this constraint,
+  // which is exactly the trap #1268 hit.
+  //
+  // NOT partial on deletedAt: a moderation-removed review must not free the slot
+  // for the same person to re-post it.
+  @@unique([consultantProfileId, consulteeProfileId, track])
+  // Serves the score recompute's per-consultant scan. It is no longer a
+  // `groupBy`: Bayesian shrinkage with per-row recency decay cannot be expressed
+  // as a Prisma aggregate, because the weight is a function of each row's own age
+  // — so the recompute reads raw rows and this index's leading two columns serve
+  // the seek.
   @@index([consultantProfileId, deletedAt, ratingUnitId])
   @@index([appointmentId])
   // #696 — explore "trending" sort orders ConsultantProfile by
@@ -3169,6 +3376,128 @@ model ConsultantReview {
   // (The @@unique above already prefixes consultantProfileId, so no separate
   // single-column index is needed for it.)
   @@index([consulteeProfileId])
+}
+
+/// #1300 — which reputation a review contributes to.
+///
+/// Two published scores, not one blend. There is no MIXED label: a review lands
+/// in exactly one track, or in neither (NULL, meaning legacy and
+/// unclassifiable).
+enum ReviewTrack {
+  ONE_TO_ONE
+  GROUP
+}
+
+/// #1300 — one append-only row per SUPERSEDED version of a review's text.
+///
+/// It stores what the review USED to say, never what it says now. The live text
+/// is on `ConsultantReview` and every read of a review already loads that row,
+/// so mirroring the current version here would double every write and create two
+/// places that claim to be true. That gives the property which makes the trail
+/// cheap: a review that has never been edited has ZERO rows — 62 of 62 today —
+/// so the "Edited" disclosure is an existence check and the profile page pays
+/// nothing for a feature almost nobody has used.
+///
+/// Append-only is enforced by `review_revision_immutable` in
+/// prisma/sql/check-constraints.sql, not by convention: BIS IS 19000:2022 asks
+/// that an edit be indicated, and a trail an application bug can rewrite
+/// indicates nothing.
+///
+/// `Restrict`, not `Cascade`: a review with an edit history cannot be
+/// hard-deleted out from under its own evidence. The immutability trigger would
+/// refuse the cascade anyway, so `Cascade` would surface as an opaque database
+/// error instead of a decision.
+model ConsultantReviewRevision {
+  id String @id @default(uuid())
+
+  review   ConsultantReview @relation(fields: [reviewId], references: [id], onDelete: Restrict)
+  reviewId String
+
+  /// The version number this snapshot WAS. Allocated from
+  /// `ConsultantReview.revisionNo` inside the same transaction as the edit, so
+  /// the review row's lock serialises two concurrent editors and the unique
+  /// below turns any residual race into a P2002 to retry.
+  revisionNo Int
+
+  /// The superseded values. `rating` is not nullable — a review always had one.
+  rating            Int     @db.SmallInt
+  reviewDescription String? @db.Text
+
+  /// When this text stopped being the live text.
+  supersededAt DateTime @default(now()) @db.Timestamptz
+
+  /// STORED, not derived from `supersededAt > review.repliedAt`. That
+  /// predicate's inputs are mutable — a consultant can delete and re-post a
+  /// reply, moving `repliedAt` — and whether an edit was made after the
+  /// consultant had publicly answered must not change afterwards. Same rationale
+  /// as storing the SLA deadlines at intake rather than deriving them.
+  ///
+  /// Recorded for moderation context, NOT used to decide whether the public
+  /// surface marks the edit: every edit is marked. Making the mark conditional on
+  /// a reply would hand the consultant a switch — reply to everything and every
+  /// subsequent edit carries a badge — and BIS asks for edits to be indicated,
+  /// full stop.
+  afterPublicReply Boolean @default(false)
+
+  /// Who caused the supersession: normally the author, occasionally a staff
+  /// redaction, and a surface that publishes "edited" must be able to tell them
+  /// apart. SetNull: a departed staff member must not delete a consumer's edit
+  /// history.
+  editor       User?   @relation("ReviewRevisionEditor", fields: [editorUserId], references: [id], onDelete: SetNull)
+  editorUserId String?
+
+  /// No `updatedAt`. A row that is only ever inserted has nothing to update, and
+  /// the column would invite a writer to try.
+  createdAt DateTime @default(now()) @db.Timestamptz
+
+  /// Two concurrent edits cannot both claim revision 3. This is the guard behind
+  /// the allocator, not merely a shape assertion.
+  @@unique([reviewId, revisionNo])
+  /// "This review's history, newest first" — the public disclosure and the staff
+  /// moderation surface. Its leftmost prefix also serves the Restrict check on
+  /// review delete, which Postgres does not index for you.
+  @@index([reviewId, supersededAt])
+}
+
+/// #1300 — one immutable row per scoring run: the platform priors it used and
+/// the parameters in force when it ran.
+///
+/// The PARAMETERS are policy and live as code constants in lib/reviews.ts, for
+/// the reason `MIN_RATED_UNITS_FOR_PUBLIC_SCORE` does: a per-consultant column
+/// invites tuning, which is the gaming vector the thresholds exist to close, and
+/// an env var lets preview and production disagree about a number users can see.
+/// They are COPIED here so a score published six months ago is still explainable
+/// after the constant moves.
+///
+/// The PRIORS are data, not policy — the platform mean shifts as the corpus
+/// grows — and pinning them per run is what makes a run internally consistent.
+/// Without it, the first profile in a walk is shrunk toward the mean as it stood
+/// at the start and the last toward the mean as it stood at the end.
+model ScoringSnapshot {
+  id String @id @default(uuid())
+
+  /// Track priors: the mean each track is shrunk toward, and the corpus behind it.
+  platformMeanOneToOne Float
+  platformMeanGroup    Float
+  sampleCountOneToOne  Int
+  sampleCountGroup     Int
+
+  /// The parameters this run applied, copied from lib/reviews.ts.
+  priorWeight               Float
+  halfLifeDays              Int
+  minRatedClientsOneToOne   Int
+  minRatedEventsGroup       Int
+  minGroupResponsesPerEvent Int
+
+  profiles ConsultantProfile[]
+
+  /// No `updatedAt`: a snapshot is inserted once and never edited.
+  computedAt DateTime @default(now()) @db.Timestamptz
+
+  /// "The current snapshot" and "the snapshot in force on date X" are the only
+  /// two reads, and a descending btree scan is as cheap as an ascending one, so
+  /// one index serves both.
+  @@index([computedAt])
 }
 
 model ConsulteeProfile {

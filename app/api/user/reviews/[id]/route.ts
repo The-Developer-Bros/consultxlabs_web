@@ -10,7 +10,7 @@ import {
   forbiddenResponse,
 } from "@/lib/auth-helpers";
 import { recomputeConsultantRating, ModeratedReviewError } from "@/lib/reviews";
-import { stripAnonymousReviewer } from "@/lib/data/review-privacy";
+import { sanitisePublicReview } from "@/lib/data/review-public";
 import { purgeReviewSurfaces } from "@/lib/data/public-cache";
 import { withSerializableRetry } from "@/lib/db/serializable-retry";
 import { UpdateReviewSchema } from "@/schemas/feedbacks";
@@ -45,7 +45,7 @@ export async function GET(
     // userId for a review they marked anonymous — one GET per id and the whole
     // feature was cosmetic. The strip belongs on every public read, not just
     // the list.
-    return NextResponse.json(stripAnonymousReviewer(review), { status: 200 });
+    return NextResponse.json(sanitisePublicReview(review), { status: 200 });
   } catch (error) {
     Sentry.captureException(
       error instanceof Error ? error : new Error(String(error)),
