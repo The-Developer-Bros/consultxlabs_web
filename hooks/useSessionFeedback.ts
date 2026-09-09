@@ -1,12 +1,20 @@
 /**
- * #705 — this viewer's per-call ratings for one booking, keyed by slot id.
+ * #705 / #1540 — this viewer's per-call ratings for a whole BOOKING, keyed by slot.
  *
- * The feedback GET returns every call of the booking the caller has rated, so
- * the session timeline can show which are already rated without a request per
- * row.
+ * ONE request, not one per child appointment. The sessions of a subscription each
+ * belong to a different child `Appointment`, and this hook used to fan out a
+ * request per id through `useQueries` — up to 25 for one booking, each of them
+ * re-authorizing and re-reading the appointment graph, so rendering a single page
+ * cost roughly a hundred Prisma operations. Under `PG_POOL_MAX=1` on Netlify every
+ * one of those serialises, so the parallelism `useQueries` appeared to buy did not
+ * exist at the database.
+ *
+ * `scope=booking` widens the server's answer to the booking and its siblings, which
+ * costs it no extra query because the authorization it already performed had loaded
+ * them.
  */
 
-import { useQueries } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { throwSupportError } from "@/lib/support/error-copy";
 
 interface SlotFeedback {
@@ -14,85 +22,81 @@ interface SlotFeedback {
   rating: number;
 }
 
-/**
- * Sessions in a subscription or class group belong to DIFFERENT appointments —
- * `SessionVM.appointmentId` differs per row — so fetching only the page's own
- * appointment left every child session looking unrated, and its invalidation
- * key pointed at the wrong query.
- */
+/** The one cache key for a booking's ratings.
+ *
+ *  Exported because `SessionRatingRow` writes a rating for a CHILD appointment and
+ *  has to invalidate the BOOKING's entry — invalidating its own child id would
+ *  leave the stars unchanged after a save, which is the bug the per-appointment
+ *  keys created the moment the reads were consolidated. */
+export const bookingFeedbackKey = (bookingAppointmentId: string) =>
+  ["booking-feedback", bookingAppointmentId] as const;
+
 export interface SessionFeedbackState {
   /** slot id → the rating this viewer gave it. */
   ratings: Record<string, number>;
   /** Slots this viewer may rate at all — attended, or offline. */
   rateable: Set<string>;
   /**
-   * True when ANY of the per-appointment reads failed.
+   * True when the read failed.
    *
-   * The hook throws per query so React Query records the failure and retries,
-   * but the aggregation below reads `r.data?` — so a failed appointment
-   * contributed no ratings and no rateable slots, which renders exactly like
-   * "you have rated nothing here and may rate nothing here". The consumer has
-   * to be able to tell those apart, or a transient 500 silently tells someone
+   * The query throws so React Query records the failure and retries, but the
+   * aggregation below reads optional data — so a failed read contributed no
+   * ratings and no rateable slots, which renders identically to "you have rated
+   * nothing here and may rate nothing here". A transient 500 would tell somebody
    * their rating never happened.
    */
   isError: boolean;
-  /** Re-run just the reads that failed. */
+  /** Re-run the read. */
   retry: () => void;
 }
 
 export function useSessionFeedback(
-  appointmentIds: readonly string[],
+  bookingAppointmentId: string,
 ): SessionFeedbackState {
-  const results = useQueries({
-    queries: appointmentIds.map((appointmentId) => ({
-      queryKey: ["appointment-feedback", appointmentId],
-      queryFn: async (): Promise<{
-        ratings: Record<string, number>;
-        rateable: string[];
-      }> => {
-        const res = await fetch(`/api/appointments/${appointmentId}/feedback`);
-        // A failed read is NOT "you have rated nothing". Returning an empty
-        // result made React Query record success, skip its retry and cache the
-        // emptiness, so a 500 rendered as unrated stars on a call the user had
-        // already rated — indistinguishable from the truth. Throw and let the
-        // consumer decide, which is the rule SessionReviewCard already states.
-        if (!res.ok) await throwSupportError(res, "session feedback load");
-        const { data, rateableSlotIds } = await res.json();
-        const rows = (data ?? []) as SlotFeedback[];
-        // A provider's read returns EVERY attendee's rating, so a group call
-        // yields several rows for one slot. `Object.fromEntries` kept whichever
-        // came last — the consultant saw one arbitrary attendee's score and
-        // read it as the session's. Averaged instead, which is also how that
-        // call contributes to the rating unit.
-        const bySlot = new Map<string, { total: number; n: number }>();
-        for (const r of rows) {
-          if (!r.slotOfAppointmentId) continue;
-          const acc = bySlot.get(r.slotOfAppointmentId) ?? { total: 0, n: 0 };
-          acc.total += r.rating;
-          acc.n += 1;
-          bySlot.set(r.slotOfAppointmentId, acc);
-        }
-        return {
-          ratings: Object.fromEntries(
-            [...bySlot].map(([slotId, a]) => [
-              slotId,
-              Math.round((a.total / a.n) * 10) / 10,
-            ]),
-          ),
-          rateable: (rateableSlotIds ?? []) as string[],
-        };
-      },
-    })),
-  });
-  return {
-    ratings: Object.assign({}, ...results.map((r) => r.data?.ratings ?? {})),
-    rateable: new Set(results.flatMap((r) => r.data?.rateable ?? [])),
-    isError: results.some((r) => r.isError),
-    // Not memoized on purpose: `results` is a fresh array every render, so a
-    // useCallback keyed on it would be recreated anyway, and the identity of
-    // this function is not a render input anywhere.
-    retry: () => {
-      for (const r of results) if (r.isError) void r.refetch();
+  const query = useQuery({
+    queryKey: bookingFeedbackKey(bookingAppointmentId),
+    queryFn: async (): Promise<{
+      ratings: Record<string, number>;
+      rateable: string[];
+    }> => {
+      const res = await fetch(
+        `/api/appointments/${bookingAppointmentId}/feedback?scope=booking`,
+      );
+      // A failed read is NOT "you have rated nothing". Returning an empty result
+      // made React Query record success, skip its retry and cache the emptiness,
+      // so a 500 rendered as unrated stars on a call the user had already rated.
+      if (!res.ok) await throwSupportError(res, "session feedback load");
+      const { data, rateableSlotIds } = await res.json();
+      const rows = (data ?? []) as SlotFeedback[];
+      // A provider's read returns EVERY attendee's rating, so a group call yields
+      // several rows for one slot. `Object.fromEntries` kept whichever came last —
+      // the consultant saw one arbitrary attendee's score and read it as the
+      // session's. Averaged instead, which is also how that call contributes to
+      // the group score.
+      const bySlot = new Map<string, { total: number; n: number }>();
+      for (const r of rows) {
+        if (!r.slotOfAppointmentId) continue;
+        const acc = bySlot.get(r.slotOfAppointmentId) ?? { total: 0, n: 0 };
+        acc.total += r.rating;
+        acc.n += 1;
+        bySlot.set(r.slotOfAppointmentId, acc);
+      }
+      return {
+        ratings: Object.fromEntries(
+          [...bySlot].map(([slotId, a]) => [
+            slotId,
+            Math.round((a.total / a.n) * 10) / 10,
+          ]),
+        ),
+        rateable: (rateableSlotIds ?? []) as string[],
+      };
     },
+  });
+
+  return {
+    ratings: query.data?.ratings ?? {},
+    rateable: new Set(query.data?.rateable ?? []),
+    isError: query.isError,
+    retry: () => void query.refetch(),
   };
 }

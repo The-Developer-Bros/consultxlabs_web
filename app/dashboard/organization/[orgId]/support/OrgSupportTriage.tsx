@@ -286,8 +286,9 @@ export function OrgSupportTriage({ orgId }: { orgId: string }) {
         {!summary.isLoading && (s?.consultantsSuppressed ?? 0) > 0 && (
           <p className="mt-2 text-xs text-muted-foreground">
             {s?.consultantsSuppressed} expert
-            {(s?.consultantsSuppressed ?? 0) === 1 ? "" : "s"} withheld — too few
-            people have rated their sessions for an average to stay anonymous.
+            {(s?.consultantsSuppressed ?? 0) === 1 ? "" : "s"} withheld — too
+            few people have rated their sessions for an average to stay
+            anonymous.
           </p>
         )}
         <p className="mt-2 text-xs text-muted-foreground">

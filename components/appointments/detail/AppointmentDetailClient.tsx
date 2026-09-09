@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import Link from "next/link";
 import { format } from "date-fns";
 import { useQuery } from "@tanstack/react-query";
@@ -157,22 +157,13 @@ export function AppointmentDetailClient({
   });
 
   const mapped = detail ? mapAppointmentDetail(detail, role) : null;
-  // Which calls of this booking the viewer has already rated.
-  // Every appointment the rendered sessions belong to, not just this page's:
-  // a subscription group's rows carry their own child appointment ids.
-  const feedbackScopes = useMemo(
-    () =>
-      Array.from(
-        new Set([
-          appointmentId,
-          ...(mapped?.vm.sessions ?? []).map(
-            (s) => s.appointmentId ?? appointmentId,
-          ),
-        ]),
-      ),
-    [appointmentId, mapped?.vm.sessions],
-  );
-  const sessionFeedback = useSessionFeedback(feedbackScopes);
+  // #1540 — which calls of this booking the viewer has already rated, in ONE
+  // request. The sessions of a subscription each carry their own child
+  // appointment id, and this used to fan out a request per id — up to 25 — each
+  // re-authorizing and re-reading the appointment graph. `scope=booking` covers
+  // the page's appointment and its siblings, which is every id those sessions
+  // can belong to.
+  const sessionFeedback = useSessionFeedback(appointmentId);
   useSetBreadcrumbLabel(mapped?.vm.title);
 
   const payments = detail?.appointment.payment ?? [];
@@ -476,6 +467,7 @@ export function AppointmentDetailClient({
                     return (
                       <SessionRatingRow
                         appointmentId={session.appointmentId ?? appointmentId}
+                        bookingAppointmentId={appointmentId}
                         slotId={session.slotId}
                         existingRating={rating}
                         // The consultant sees what a call scored; only the

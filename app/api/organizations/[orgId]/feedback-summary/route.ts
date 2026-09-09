@@ -142,11 +142,21 @@ export async function GET(
    *  disclosure trivial, and the previous shape returned `totalResponses` and
    *  `respondents` unconditionally, so at one respondent an organisation learned
    *  that exactly one member had rated exactly one session. */
-  const reportable = <T extends { respondents: number; responses: number; average: number | null }>(
+  const reportable = <
+    T extends {
+      respondents: number;
+      responses: number;
+      average: number | null;
+    },
+  >(
     c: T,
   ) =>
     c.respondents >= ORG_QUALITY_MIN_RESPONDENTS
-      ? { average: c.average, responses: c.responses, respondents: c.respondents }
+      ? {
+          average: c.average,
+          responses: c.responses,
+          respondents: c.respondents,
+        }
       : { average: null, responses: null, respondents: null };
 
   return NextResponse.json({

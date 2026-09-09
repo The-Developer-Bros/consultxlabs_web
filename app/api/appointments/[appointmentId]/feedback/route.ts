@@ -31,7 +31,7 @@ const feedbackSchema = z.object({
 });
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ appointmentId: string }> },
 ) {
   const id = await parseRouteParams(AppointmentIdParams, params, {
@@ -57,13 +57,30 @@ export async function GET(
     const asProvider =
       appointmentRaterRole(auth.userId, auth.detail) === "PROVIDER";
 
+    // #1540 — one request for the whole BOOKING, not one per child appointment.
+    //
+    // The timeline renders every session of a booking, and a subscription's
+    // sessions each carry their own child appointment id — up to 25 of them. The
+    // hook fanned out one request per id, each re-authorizing and re-reading the
+    // appointment graph, so rendering one page cost roughly a hundred Prisma
+    // operations. Under `PG_POOL_MAX=1` on Netlify every one of those serialises,
+    // so the parallelism the client appeared to buy did not exist at the database.
+    //
+    // `authorizeAppointment` already loaded the siblings to decide the answer, so
+    // widening the scope costs NO extra query — the ids are in hand.
+    const scope = new URL(req.url).searchParams.get("scope");
+    const scopeIds =
+      scope === "booking"
+        ? [auth.detail.appointment.id, ...auth.detail.siblings.map((s) => s.id)]
+        : [appointmentId];
+
     // Which calls of this booking the caller may rate at all, so the timeline
     // offers stars only where a rating would be accepted rather than erroring
     // after the click.
     const rateable = asProvider
       ? []
       : await prisma.slotOfAppointment.findMany({
-          where: { appointmentId, ...heldSlot(auth.userId) },
+          where: { appointmentId: { in: scopeIds }, ...heldSlot(auth.userId) },
           select: { id: true },
         });
 
@@ -72,8 +89,16 @@ export async function GET(
     // breakdown instead of one number for the package.
     const feedback = await prisma.appointmentFeedback.findMany({
       where: asProvider
-        ? { appointmentId, raterRole: "CONSULTEE" }
-        : { appointmentId, userId: auth.userId },
+        ? {
+            appointmentId: { in: scopeIds },
+            raterRole: "CONSULTEE",
+            deletedAt: null,
+          }
+        : {
+            appointmentId: { in: scopeIds },
+            userId: auth.userId,
+            deletedAt: null,
+          },
       select: {
         id: true,
         slotOfAppointmentId: true,

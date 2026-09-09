@@ -51,13 +51,17 @@ import { NextRequest } from "next/server";
 import prisma from "../../lib/prisma";
 import { authorizeAppointment } from "../../lib/api/appointment-access";
 import { appointmentRaterRole } from "../../lib/data/appointment-detail";
-import { POST } from "../../app/api/appointments/[appointmentId]/feedback/route";
+import {
+  GET,
+  POST,
+} from "../../app/api/appointments/[appointmentId]/feedback/route";
 
 const mockedAuthorize = authorizeAppointment as jest.Mock;
 const mockedRaterRole = appointmentRaterRole as jest.Mock;
 const mockedFindFirst = prisma.slotOfAppointment.findFirst as jest.Mock;
 const mockedFindMany = prisma.slotOfAppointment.findMany as jest.Mock;
 const mockedUpsert = prisma.appointmentFeedback.upsert as jest.Mock;
+const mockedFeedbackFindMany = prisma.appointmentFeedback.findMany as jest.Mock;
 
 const APPT = "appt-offline-90";
 
@@ -108,6 +112,66 @@ beforeEach(() => {
   mockedRaterRole.mockReturnValue("CONSULTEE");
   mockedFindMany.mockResolvedValue(RUN);
   mockedUpsert.mockResolvedValue({ id: "fb1" });
+});
+
+describe("#1540 — one read for the whole booking", () => {
+  /** The subscription shape: the page's appointment plus two child appointments,
+   *  which is what `authorizeAppointment` already loaded to answer at all. */
+  const withSiblings = {
+    userId: "u1",
+    isOrgParty: false,
+    organizationId: null,
+    detail: {
+      appointment: { id: APPT },
+      siblings: [{ id: "appt-child-1" }, { id: "appt-child-2" }],
+    },
+  };
+
+  const get = (url: string) =>
+    GET(new NextRequest(url), {
+      params: Promise.resolve({ appointmentId: APPT }),
+    });
+
+  beforeEach(() => {
+    mockedAuthorize.mockResolvedValue(withSiblings);
+    mockedFeedbackFindMany.mockResolvedValue([]);
+    mockedFindMany.mockResolvedValue([]);
+  });
+
+  it("covers the booking and its siblings under scope=booking", async () => {
+    // This is the whole fix: the timeline renders sessions belonging to child
+    // appointments, and fanning out one request per child cost ~100 Prisma
+    // operations for one page — serialised, because PG_POOL_MAX=1.
+    await get(`http://x/api/appointments/${APPT}/feedback?scope=booking`);
+
+    const ids = { in: [APPT, "appt-child-1", "appt-child-2"] };
+    expect(mockedFindMany.mock.calls[0][0].where.appointmentId).toEqual(ids);
+    expect(mockedFeedbackFindMany.mock.calls[0][0].where.appointmentId).toEqual(
+      ids,
+    );
+  });
+
+  it("still answers for one appointment when the scope is not asked for", async () => {
+    // The narrow read stays the default: a caller that wants one booking's own
+    // ratings must not silently receive its siblings'. Expressed as a
+    // single-element `in` rather than an equality so the query shape is the same
+    // either way — Prisma emits `IN (...)`, which uses the same index as `=`.
+    await get(`http://x/api/appointments/${APPT}/feedback`);
+    expect(mockedFindMany.mock.calls[0][0].where.appointmentId).toEqual({
+      in: [APPT],
+    });
+    expect(mockedFeedbackFindMany.mock.calls[0][0].where.appointmentId).toEqual(
+      { in: [APPT] },
+    );
+  });
+
+  it("excludes moderation-removed ratings", async () => {
+    // `AppointmentFeedback.deletedAt` is new in #1300 and this read is what a
+    // consultee and a consultant both see; a removed comment's rating goes with
+    // it.
+    await get(`http://x/api/appointments/${APPT}/feedback?scope=booking`);
+    expect(mockedFeedbackFindMany.mock.calls[0][0].where.deletedAt).toBeNull();
+  });
 });
 
 describe("a rating identifies the meeting, not the row it was clicked on", () => {
