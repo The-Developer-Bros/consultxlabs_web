@@ -10,7 +10,10 @@ import {
   forbiddenResponse,
 } from "@/lib/auth-helpers";
 import { recomputeConsultantRating, ModeratedReviewError } from "@/lib/reviews";
-import { sanitisePublicReview } from "@/lib/data/review-public";
+import {
+  publicReviewSelect,
+  sanitisePublicReview,
+} from "@/lib/data/review-public";
 import { purgeReviewSurfaces } from "@/lib/data/public-cache";
 import { withSerializableRetry } from "@/lib/db/serializable-retry";
 import { UpdateReviewSchema } from "@/schemas/feedbacks";
@@ -23,19 +26,20 @@ export async function GET(
   try {
     const { id } = await params;
 
-    const review = await prisma.consultantReview.findUnique({
-      where: { id: id },
-      include: {
-        // #946 allowlist. `consultantProfile: true` returns every scalar,
-        // including panNumber / ibanOrAccount / swiftBic / udyamNumber — and
-        // this route is public.
-        consultantProfile: { select: consultantPublicScalars },
-        consulteeProfile: { select: { id: true, userId: true } },
-      },
+    const review = await prisma.consultantReview.findFirst({
+      // #693 — a moderation-removed review reads as gone. In the WHERE rather
+      // than a branch below, so `deletedAt` never has to be selected onto a
+      // public payload to be checked.
+      where: { id, deletedAt: null },
+      // #1300 — the shared public allowlist. This selected
+      // `consulteeProfile: { id, userId }`, so a public route returned the
+      // reviewer's User id for every NAMED review; the anonymity strip only
+      // nulls it for rows that asked to be anonymous. A review card needs a name
+      // and an avatar, and nothing else about the person.
+      select: publicReviewSelect,
     });
 
-    // #693 — a moderation-removed review reads as gone
-    if (!review || review.deletedAt) {
+    if (!review) {
       return NextResponse.json({ error: "Review not found" }, { status: 404 });
     }
 
