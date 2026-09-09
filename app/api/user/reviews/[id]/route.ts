@@ -123,9 +123,46 @@ export async function PUT(
           // it published.
           const current = await tx.consultantReview.findUnique({
             where: { id: id },
-            select: { deletedAt: true },
+            select: {
+              deletedAt: true,
+              rating: true,
+              reviewDescription: true,
+              revisionNo: true,
+              repliedAt: true,
+              replyDeletedAt: true,
+            },
           });
           if (current?.deletedAt) throw new ModeratedReviewError();
+
+          // #1300 — the edit trail, and the only attribution this write has.
+          // `isPrivileged` admits STAFF and ADMIN into this handler, so before
+          // the trail existed a staff member could rewrite the text of a consumer
+          // review and the row afterwards was indistinguishable from an author
+          // edit: no ModerationAction, no audit row, no `updatedById`. Under FTC
+          // 16 CFR §465 that is the highest-exposure write in the subsystem.
+          // `editorUserId` now records who did it, whoever they are.
+          //
+          // Only a changed OPINION counts. `isAnonymous` is a display choice, not
+          // a change to what was said, so toggling it alone is not a revision.
+          const textChanged =
+            current !== null &&
+            ((body.rating !== undefined && body.rating !== current.rating) ||
+              (body.reviewDescription !== undefined &&
+                (body.reviewDescription ?? null) !==
+                  (current.reviewDescription ?? null)));
+          if (textChanged && current) {
+            await tx.consultantReviewRevision.create({
+              data: {
+                reviewId: id,
+                revisionNo: current.revisionNo,
+                rating: current.rating,
+                reviewDescription: current.reviewDescription,
+                afterPublicReply:
+                  current.repliedAt !== null && current.replyDeletedAt === null,
+                editorUserId: session.user.id,
+              },
+            });
+          }
 
           const updated = await tx.consultantReview.update({
             where: { id: id },
@@ -133,6 +170,9 @@ export async function PUT(
               rating: body.rating,
               reviewDescription: body.reviewDescription,
               isAnonymous: body.isAnonymous,
+              ...(textChanged
+                ? { revisionNo: { increment: 1 }, editedAt: new Date() }
+                : {}),
             },
             include: {
               consultantProfile: { select: consultantPublicScalars },
@@ -200,13 +240,9 @@ export async function DELETE(
       },
     });
 
-    // #693 — an AUTHOR must not be able to hard-delete a review moderation has
-    // removed. The soft delete is the audit trail, and the unique on
-    // (consultantProfileId, consulteeProfileId) is deliberately not partial on
-    // deletedAt precisely so the row keeps occupying the slot: deleting it here
-    // both destroyed the record and freed the pair for the same person to
-    // re-post the text that was taken down. Staff keep the power.
-    if (!review || (review.deletedAt && !isPrivileged(session.user.role))) {
+    // #693 / #1300 — nobody hard-deletes a review any more, so an
+    // already-removed row is simply gone as far as this handler is concerned.
+    if (!review || review.deletedAt) {
       return NextResponse.json({ error: "Review not found" }, { status: 404 });
     }
 
@@ -220,13 +256,35 @@ export async function DELETE(
       return forbiddenResponse("You can only delete your own reviews");
     }
 
-    // Delete + rating recompute in one transaction — see PUT.
+    // #1300 — SOFT delete, for the author and for staff alike. This was a hard
+    // `delete()`, which had two consequences the code around it argued against.
+    //
+    // The unique on (consultantProfileId, consulteeProfileId, track) is
+    // deliberately NOT partial on `deletedAt`, so that a removed row keeps
+    // occupying the slot and the same person cannot re-post the text that was
+    // taken down — the comment two lines up used to say exactly that, and then
+    // the next statement destroyed the row for the live case, leaving the
+    // invariant holding only against reviews moderation had already removed. An
+    // unlimited post/delete/re-post cycle was available to anyone.
+    //
+    // And a privileged caller could hard-delete ANY review, while the sibling
+    // moderation route restricts even the SOFT delete to ADMIN — the stricter
+    // gate sat on the safer operation. Upwork had to retire exactly this kind of
+    // "remove a review" privilege after granting it.
+    //
+    // `deletedByUserId` is what makes the author's withdrawal revivable while a
+    // moderation removal is not; see the schema comment.
     await withSerializableRetry(() =>
       prisma.$transaction(
         async (tx) => {
-          await tx.consultantReview.delete({
-            where: { id: id },
+          const removed = await tx.consultantReview.updateMany({
+            // Idempotent and race-safe: the second of two concurrent deletes
+            // writes nothing rather than overwriting the first one's timestamp
+            // and its attribution.
+            where: { id, deletedAt: null },
+            data: { deletedAt: new Date(), deletedByUserId: session.user.id },
           });
+          if (removed.count === 0) return;
           await recomputeConsultantRating(tx, review.consultantProfileId);
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },

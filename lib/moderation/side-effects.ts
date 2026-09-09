@@ -116,7 +116,7 @@ export async function applyTransactionalEffects(
     case "CONTENT_REMOVED":
       // A reported chat message is removed in phase 2 — the delete is a Stream
       // API call and cannot join this transaction (#1270).
-      return softDeleteReview(tx, report.reviewId);
+      return softDeleteReview(tx, report.reviewId, input.staffUserId);
     case "WARNING_ISSUED":
     case "NO_ACTION":
     case "USER_REINSTATED":
@@ -212,6 +212,7 @@ async function unverifyProfiles(
 async function softDeleteReview(
   tx: Tx,
   reviewId: string | null,
+  staffUserId: string,
 ): Promise<TransactionalEffectResult> {
   if (!reviewId) return {};
   const review = await tx.consultantReview.findUnique({
@@ -219,10 +220,17 @@ async function softDeleteReview(
     select: { consultantProfileId: true, deletedAt: true },
   });
   if (!review || review.deletedAt) return {};
-  await tx.consultantReview.update({
-    where: { id: reviewId },
-    data: { deletedAt: new Date() },
+  // #1300 — CAS'd in the WHERE rather than trusting the read above, and
+  // attributed. `deletedByUserId` is what distinguishes a moderation takedown
+  // from an author withdrawing their own review: the author may revive theirs,
+  // and before this column the two were the same state, so a consultee who
+  // deleted their own review was told staff had removed it and could never write
+  // another about that person.
+  const removed = await tx.consultantReview.updateMany({
+    where: { id: reviewId, deletedAt: null },
+    data: { deletedAt: new Date(), deletedByUserId: staffUserId },
   });
+  if (removed.count === 0) return {};
   // #705 — was an inlined plain `_avg`, a second implementation of the rating
   // rule that silently disagreed with lib/reviews.ts once group sessions became
   // one data point, and never touched publishedRating at all.

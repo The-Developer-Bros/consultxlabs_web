@@ -80,11 +80,24 @@ export async function GET(req: NextRequest) {
         image: review.consulteeProfile.user.image,
       },
       createdAt: review.createdAt,
+      // #1300 — this queue deliberately does NOT filter `deletedAt`, so staff see
+      // removed rows; it then projected neither `deletedAt` nor `isAnonymous`, so
+      // a removed review was indistinguishable from a live one and an anonymous
+      // author from a named one — on the one surface whose whole job is telling
+      // them apart. `editedAt` is here for the same reason: a review that has
+      // been rewritten since it was reported is a different review.
+      deletedAt: review.deletedAt,
+      isAnonymous: review.isAnonymous,
+      editedAt: review.editedAt,
     }));
 
-    // Get rating distribution
+    // Get rating distribution.
+    // #1300 — scoped to LIVE rows. It had no `where` at all while the list above
+    // it does, so the histogram counted moderation-removed reviews and the two
+    // numbers on the same screen described different populations.
     const ratingDistribution = await prisma.consultantReview.groupBy({
       by: ["rating"],
+      where: { deletedAt: null },
       _count: { id: true },
     });
 

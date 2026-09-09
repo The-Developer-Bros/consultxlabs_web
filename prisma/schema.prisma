@@ -89,6 +89,7 @@ model User {
   supportFlowOutcomes          SupportFlowOutcome[]
   // #1300 — review moderation and the edit trail.
   reviewsExcludedFromAggregate ConsultantReview[]         @relation("ReviewAggregateExcluder")
+  reviewsRemoved               ConsultantReview[]         @relation("ReviewRemover")
   reviewRevisionsEdited        ConsultantReviewRevision[] @relation("ReviewRevisionEditor")
 
   accounts         Account[] // BetterAuth Accounts
@@ -3333,6 +3334,25 @@ model ConsultantReview {
   // Moderation CONTENT_REMOVED soft-delete (#693); public reads filter on
   // null, staff moderation surfaces keep seeing the row.
   deletedAt DateTime? @db.Timestamptz
+
+  // #1300 — WHO removed it, which is the difference between two states that were
+  // previously indistinguishable.
+  //
+  // An author withdrawing their own review and moderation taking one down both
+  // set `deletedAt`, and the POST path refused BOTH with "removed by our
+  // moderation team" — so a consultee who deleted their own review was told,
+  // wrongly, that staff had removed it, and could never write another one about
+  // that person. The author may revive a row they withdrew themselves; nobody may
+  // revive one moderation removed.
+  //
+  // NULL means one of two things and both are safe: a live row, or a legacy
+  // removal whose actor was never recorded. A legacy removal therefore reads as
+  // moderation, which fails closed.
+  //
+  // SetNull, never Cascade: a departed staff member must not delete the record of
+  // what they removed.
+  deletedBy       User?   @relation("ReviewRemover", fields: [deletedByUserId], references: [id], onDelete: SetNull)
+  deletedByUserId String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

@@ -167,6 +167,7 @@ export async function POST(req: NextRequest) {
             select: {
               id: true,
               deletedAt: true,
+              deletedByUserId: true,
               track: true,
               rating: true,
               reviewDescription: true,
@@ -181,7 +182,22 @@ export async function POST(req: NextRequest) {
             candidates.find((c) => c.track === reviewable.track) ??
             candidates[0] ??
             null;
-          if (existing?.deletedAt) throw new ModeratedReviewError();
+          // #1300 — withdrawing your own review and having it moderated away
+          // both set `deletedAt`, and this refused BOTH with "removed by our
+          // moderation team". So a consultee who deleted their own review was
+          // told, wrongly, that staff had taken it down — and because the unique
+          // keeps the removed row occupying the pair, they could never write
+          // another one about that person. `deletedByUserId` separates the two.
+          //
+          // A NULL remover on a removed row reads as moderation, which is the
+          // safe direction for the legacy rows that predate the column.
+          const withdrawnByAuthor =
+            existing !== null &&
+            existing.deletedAt !== null &&
+            existing.deletedByUserId === session.user.id;
+          if (existing?.deletedAt && !withdrawnByAuthor) {
+            throw new ModeratedReviewError();
+          }
 
           const include = {
             // #946 allowlist — the response goes back to the consultee who wrote
@@ -249,8 +265,12 @@ export async function POST(req: NextRequest) {
                 ...(textChanged
                   ? { revisionNo: { increment: 1 }, editedAt: new Date() }
                   : {}),
-                // A moderated-away review must not be resurrected by re-submitting.
-                deletedAt: undefined,
+                // Reviving what you withdrew yourself is allowed and is the
+                // whole point of `deletedByUserId`; a moderation removal never
+                // reaches here, because the guard above threw.
+                ...(withdrawnByAuthor
+                  ? { deletedAt: null, deletedByUserId: null }
+                  : {}),
               },
               include,
             });
