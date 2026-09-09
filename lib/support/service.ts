@@ -106,7 +106,15 @@ export async function runSupportTurn(
     update: {},
   });
 
-  const ctx = await buildSupportContext(thread.id, appointmentId, userId);
+  // The intent being STARTED wins over the one stored, because the chip click
+  // is what re-scopes the thread — otherwise the first no-show turn would still
+  // be answered with the previous intent's session.
+  const ctx = await buildSupportContext(
+    thread.id,
+    appointmentId,
+    userId,
+    input.category ?? thread.category,
+  );
   if (!ctx) return null;
 
   // Switching intent restarts the flow at its entry node.
@@ -263,7 +271,18 @@ export async function runSupportTurn(
   // and no turn that leaves the user's message hanging without a reply.
   const status = turn.resolved ? "RESOLVED" : "IN_PROGRESS";
   const wroteMessages = !!input.userMessage || turn.messages.length > 0;
-  await prisma.$transaction(async (tx) => {
+  // Guarded, like the human path. This write used to set `status`
+  // unconditionally, so a thread staff had CLOSED was silently reopened by a
+  // self-serve turn — the exact write `persistHumanTurn` refuses, reached
+  // through the other door.
+  //
+  // CLOSED only, deliberately, where the human path also refuses RESOLVED.
+  // RESOLVED means the bot's flow reached a terminal answer, and with one
+  // thread per booking (see the deferred scoping issue) refusing it would
+  // leave a user who resolved a question unable to ask a second one. CLOSED is
+  // staff saying the matter is finished, which is not ours to undo.
+  let refusedStatus: SupportThreadStatus | null = null;
+  const accepted = await prisma.$transaction(async (tx) => {
     // The user's side of the conversation FIRST, then the bot's. A chip press
     // is an answer just as much as typed text is — without it the stored
     // transcript is a run of bot questions with no record of what produced
@@ -287,8 +306,8 @@ export async function runSupportTurn(
         data: { threadId: thread.id, seq: ++seq, ...m },
       });
     }
-    await tx.appointmentSupportThread.update({
-      where: { id: thread.id },
+    const moved = await tx.appointmentSupportThread.updateMany({
+      where: { id: thread.id, status: { not: "CLOSED" } },
       data: {
         category,
         currentNodeId: turn.nextNodeId,
@@ -299,12 +318,28 @@ export async function runSupportTurn(
         ...(wroteMessages ? { lastMessageAt: new Date() } : {}),
       },
     });
+    return moved.count > 0;
   });
+
+  if (!accepted) {
+    // Nothing was written — the messages above share this transaction, so they
+    // rolled back with the refused status write. Report where the thread
+    // actually is, and that the turn was not stored, which is the contract the
+    // drawer's "your message wasn't sent" recovery reads.
+    const current = await prisma.appointmentSupportThread.findUniqueOrThrow({
+      where: { id: thread.id },
+      select: { status: true },
+    });
+    refusedStatus = current.status;
+  }
 
   // #705 — a terminal turn is the unit the deflection rate counts. Recorded
   // AFTER the transaction and never allowed to throw: a counter must not be
   // able to roll back the conversation it is counting.
-  if (turn.resolved) {
+  // Only a turn that actually landed counts. Recording a deflection for a
+  // conversation the database refused would inflate the rate with turns no
+  // user ever received.
+  if (accepted && turn.resolved) {
     await recordFlowOutcome({
       scope: "APPOINTMENT",
       flowKey: category,
@@ -318,13 +353,16 @@ export async function runSupportTurn(
 
   return {
     threadId: thread.id,
-    status,
+    status: refusedStatus ?? status,
     activeChannel: "SELF_SERVE",
-    currentNodeId: turn.nextNodeId,
-    messages: turn.messages,
-    actions: turn.actions,
+    currentNodeId: accepted ? turn.nextNodeId : thread.currentNodeId,
+    // Nothing was stored, so nothing is echoed: rendering the bot's reply to a
+    // turn that rolled back is how a refused message looks delivered.
+    messages: accepted ? turn.messages : [],
+    actions: accepted ? turn.actions : [],
     escalated: false,
-    resolved: turn.resolved,
+    resolved: accepted && turn.resolved,
+    accepted,
     supportTicketId: thread.supportTicketId,
     reason: turn.reason,
   };

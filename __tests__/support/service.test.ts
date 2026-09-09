@@ -352,9 +352,58 @@ describe("runSupportTurn", () => {
     // The clamped flow self-serves — no ticket may be filed for the smuggled
     // intent.
     expect(mockPrisma.supportTicket.create).not.toHaveBeenCalled();
-    expect(mockPrisma.appointmentSupportThread.update).toHaveBeenCalledWith(
+    // The self-serve status write is a GUARDED updateMany, not a bare update.
+    expect(mockPrisma.appointmentSupportThread.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ category: "ORG_ADMIN_DISPUTE" }),
+      }),
+    );
+  });
+
+  it("refuses a self-serve turn on a CLOSED thread instead of reopening it", async () => {
+    // The asymmetry that made this reachable: `persistHumanTurn` has always
+    // CAS'd, so an escalated message could not land on a settled thread, while
+    // the self-serve path wrote `status` unconditionally and quietly reopened
+    // what staff had closed. Same door, two rules.
+    mockPrisma.appointmentSupportThread.upsert.mockResolvedValue(
+      threadRow({ category: "CANCEL_REFUND", status: "CLOSED" }),
+    );
+    mockPrisma.appointmentSupportThread.updateMany.mockResolvedValue({
+      count: 0,
+    });
+    mockPrisma.appointmentSupportThread.findUniqueOrThrow.mockResolvedValue({
+      status: "CLOSED",
+      messageSeq: 3,
+    });
+
+    const r = await runSupportTurn("appt1", "user1", {
+      chosenOptionId: "cancel",
+    });
+
+    expect(r?.accepted).toBe(false);
+    expect(r?.status).toBe("CLOSED");
+    // Nothing is echoed back: a bot reply rendered for a turn that rolled back
+    // is how a refused message ends up looking delivered.
+    expect(r?.messages).toEqual([]);
+    expect(r?.resolved).toBe(false);
+  });
+
+  it("still lets a RESOLVED thread be picked up again", async () => {
+    // Deliberately NOT refused. RESOLVED means the bot answered the question;
+    // with one thread per booking, refusing it would leave someone who
+    // resolved one question unable to ask a second.
+    mockPrisma.appointmentSupportThread.upsert.mockResolvedValue(
+      threadRow({ category: "CANCEL_REFUND", status: "RESOLVED" }),
+    );
+
+    const r = await runSupportTurn("appt1", "user1", {
+      chosenOptionId: "cancel",
+    });
+
+    expect(r?.accepted).not.toBe(false);
+    expect(mockPrisma.appointmentSupportThread.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: { not: "CLOSED" } }),
       }),
     );
   });

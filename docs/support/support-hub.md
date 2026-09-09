@@ -127,6 +127,62 @@ detail/feedback/support routes:
 - Routes without an org-party surface (detail, feedback) call it bare; the
   type system then makes `isOrgParty: false` a fact, not a check to remember.
 
+## What each object is ABOUT
+
+Feedback, support and reviews all hang off a booking, and they answer three
+different questions, so they anchor to three different things. Getting this
+wrong is how the same five-star widget ended up on screen twice. The vocabulary
+matters because two of these words are not interchangeable:
+
+- An **appointment** is the purchase. One consultation, a subscription holding
+  up to twenty-four meetings, or a webinar with two hundred attendees.
+- A **session** is one meeting that actually took place. It is stored as a
+  contiguous run of thirty-minute `SlotOfAppointment` rows and identified by the
+  run's first row, its anchor (#1061). `MeetingSession` hangs off exactly that
+  row, and so does a rating.
+- A **slot** is a thirty-minute storage row. It is never the unit a user sees,
+  and nothing should be keyed to one directly.
+- A **relationship** is one consultee and one consultant, across every booking
+  they have ever shared.
+
+| Object                                              | Anchored to                                                                     | Also carries                                                          | Why                                                                                                                                                                                                                                                                                   |
+| --------------------------------------------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AppointmentFeedback` — the private per-call rating | the **session**, via `slotOfAppointmentId` pointing at the run anchor           | `appointmentId`, denormalised                                         | You rate the conversation you had. One rating per appointment gave a three-month subscription a single score; one per slot would ask you to rate one conversation three times. The denormalised `appointmentId` exists only so the organisation aggregate can roll up without a join. |
+| `AppointmentSupportThread` — the help conversation  | the **appointment**, via `@@unique([appointmentId, userId])`                    | a single `category`                                                   | This is the one that does not yet fit. Most intents are about a specific call, and the thread cannot say which. See the gap below.                                                                                                                                                    |
+| `ConsultantReview` — the public review              | the **relationship**, via `@@unique([consultantProfileId, consulteeProfileId])` | `appointmentId` as provenance, `ratingUnitId` as the weighting bucket | A reader wants one considered opinion of a person, not four near-identical ones from the same client. The appointment proves the review is genuine; it is not its subject.                                                                                                            |
+
+The rule that falls out of the table is short. A rating is about a conversation,
+a review is about a person, and a support thread is about a problem.
+
+### The support gap, and what is done about it for now
+
+The support thread is anchored one level too high. Of the ten appointment
+intents, five are about a particular call — `NO_SHOW`, `RESCHEDULE`,
+`RECORDING_ACCESS`, `TECHNICAL` and `QUALITY_COMPLAINT` — while the rest
+(`CANCEL_REFUND`, `PAYMENT_STATUS`, `DOCUMENTS`, `SPONSORSHIP_BILLING`,
+`ORG_ADMIN_DISPUTE`) genuinely belong to the booking. Because the unique is
+`(appointmentId, userId)`, a no-show reported in week two and a billing question
+asked in week nine share one thread, one category and one transcript, which is
+not how a ticketing system is supposed to work.
+
+Moving the anchor is a schema change that also touches the operations queue, the
+SLA clocks and the staff notifications, so it is tracked separately rather than
+bolted onto the review work. Two things were done in the meantime, and both are
+worth knowing about because they change what staff see.
+
+`buildSupportContext` now takes the thread's category and resolves the session
+from it. A retrospective intent describes the most recently finished session,
+and everything else describes the current-or-next one. Previously every intent
+was answered with the next upcoming session, so a report of a missed call came
+back describing a call that had not happened yet. The refund preview is
+deliberately exempt and always measures against the session you would actually
+be cancelling.
+
+The same function now groups slots into runs before reading the session bounds.
+Taking a single row gave a ninety-minute meeting a thirty-minute window, so
+`endsAt` fell an hour early and the stage flipped to `COMPLETED` while the call
+was still running — which is what decides the intents on offer.
+
 ## Invariants worth knowing before you edit
 
 1. **Status mirrors are transactional.** Thread ⇄ ticket status changes
