@@ -55,6 +55,7 @@ export type OrgSurface =
   // recordings, analytics — one read grant for the whole group, incl. the
   // L1/L2 SUPPORT carve-out)
   | "operations.read"
+  | "quality.read"
   // Member-facing home surfaces (exact-role, capability-gated in the layout)
   | "myProgram.read"
   | "myArrangement.read";
@@ -112,6 +113,18 @@ export const ORG_PERMISSIONS: Record<OrgSurface, ReadonlySet<MemberRole>> = {
 
   // Operations — includes the SUPPORT carve-out (L1/L2 triage reads).
   "operations.read": OPERATIONS_READERS,
+
+  // #1300 — the quality signal over the organisation's own sessions. Its own key
+  // rather than riding `operations.read`, which is the grant that opens the
+  // org-wide appointments feed, the recordings list and the documents list. Those
+  // are spend-and-utilisation surfaces; this one is aggregated satisfaction
+  // drawn from a member's private rating of a named colleague-facing session, and
+  // ADR 20 classifies the underlying rating as CONTENT. Sharing one grant between
+  // them means the day somebody widens operations.read for an unrelated reason,
+  // they widen this too without noticing.
+  //
+  // Same roles today. The point is that they can now diverge without a rename.
+  "quality.read": OPERATIONS_READERS,
 
   // Member-facing surfaces.
   "myProgram.read": roles("LEARNER"),
