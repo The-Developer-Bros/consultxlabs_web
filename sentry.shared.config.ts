@@ -28,6 +28,19 @@ export function initSentry(overrides?: Partial<SentryInitOptions>): void {
     enabled: Boolean(dsn) && isNotDevelopmentEnvironment(),
     environment: process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT,
 
+    // #1086 — deploy previews used to report to a SEPARATE Sentry project, so
+    // an error found on a preview was invisible in the one anybody watches and
+    // had to be dug out of Netlify function logs. They now share the production
+    // project; `environment` ("preview" vs "production") keeps them out of
+    // production alerting, and this tag says WHICH branch produced it.
+    initialScope: {
+      tags: {
+        ...(process.env.NEXT_PUBLIC_SENTRY_BRANCH
+          ? { branch: process.env.NEXT_PUBLIC_SENTRY_BRANCH }
+          : {}),
+      },
+    },
+
     // Sample 10% of traces in production; everything outside production.
     tracesSampleRate: isProductionEnvironment() ? 0.1 : 1,
 

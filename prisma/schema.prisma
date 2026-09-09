@@ -564,7 +564,16 @@ enum SupportFlowOutcomeKind {
 // ConsultantReview. Gives webinar/class a feedback path they lack today and
 // feeds the org-level quality signal. One per (appointment, user).
 model AppointmentFeedback {
-  id             String        @id @default(uuid())
+  id String @id @default(uuid())
+
+  // The call being rated. Nullable only for rows written before feedback moved
+  // to the per-call unit; the API requires it.
+  slotOfAppointment   SlotOfAppointment? @relation(fields: [slotOfAppointmentId], references: [id], onDelete: Cascade)
+  slotOfAppointmentId String?
+
+  // Kept alongside the slot: the org quality aggregate and every appointment-
+  // scoped read filter on this, and denormalizing it avoids a join on the
+  // hottest path.
   appointmentId  String
   appointment    Appointment   @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
   userId         String
@@ -585,7 +594,12 @@ model AppointmentFeedback {
 
   createdAt DateTime @default(now())
 
-  @@unique([appointmentId, userId])
+  // One rating per person per CALL. Rows predating the column carry a NULL slot
+  // and Postgres treats a NULL key as distinct, so they coexist rather than
+  // colliding on the appointment they share.
+  @@unique([slotOfAppointmentId, userId])
+  // Still the unit for "show me this booking's feedback".
+  @@index([appointmentId, userId])
   // The org aggregate filters raterRole before the date range, so
   // (organizationId, createdAt) is no longer a usable prefix for it.
   @@index([organizationId, raterRole, createdAt])
@@ -3094,12 +3108,12 @@ model ConsultantReview {
   consulteeProfile   ConsulteeProfile @relation(fields: [consulteeProfileId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   consulteeProfileId String
 
-  // #705 — the session that earned the review. This is what makes "verified
-  // booking" a fact rather than a claim, and it is what lets a repeat client
-  // review each session instead of being locked out forever by the old
-  // per-pair unique. SetNull, not Cascade: tombstoning an appointment must not
-  // silently delete published consumer reviews. Nullable only for rows written
-  // before the column existed — the API requires it, so NULL means legacy.
+  // #705 — PROVENANCE, not subject. The review is about the consultant and
+  // renders on their profile; this records which session prompted or last
+  // updated it, which is what makes "verified booking" a fact rather than a
+  // claim. SetNull, not Cascade: tombstoning an appointment must not silently
+  // delete published consumer reviews. Nullable only for rows written before
+  // the column existed — the API requires it, so NULL means legacy.
   appointment   Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
   appointmentId String?
 
@@ -3123,6 +3137,13 @@ model ConsultantReview {
   repliedAt      DateTime? @db.Timestamptz
   replyDeletedAt DateTime? @db.Timestamptz
 
+  // Display choice only. Authenticity never depends on it: the review is welded
+  // to a paid, attended session either way, which is what separates this from
+  // the anonymous public reviews Google stepped away from. What it buys is
+  // candour — a consultee who wants to book this person again has an obvious
+  // reason to soften criticism that carries their name.
+  isAnonymous Boolean @default(false)
+
   // Moderation CONTENT_REMOVED soft-delete (#693); public reads filter on
   // null, staff moderation surfaces keep seeing the row.
   deletedAt DateTime? @db.Timestamptz
@@ -3130,15 +3151,15 @@ model ConsultantReview {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // #705 — one review per attendee per SESSION, replacing the per-pair unique.
-  // A webinar's attendees share one appointmentId with distinct consultees, so
-  // this still caps each attendee at one review of that event. Deliberately
-  // not partial on deletedAt: a moderation-removed review must not free the
-  // slot for the same person to re-post it. POST maps P2002 here to 409.
-  // Legacy rows carry a NULL appointmentId, and Postgres treats a NULL key as
-  // distinct, so they coexist — prisma/sql/check-constraints.sql keeps the old
-  // per-pair rule alive for exactly that band.
-  @@unique([appointmentId, consulteeProfileId])
+  // ONE review per consultee per consultant, ever — Practo's model. A reader
+  // wants one considered opinion of a person, not four near-identical ones from
+  // the same client; the reviewer edits theirs as the relationship develops, and
+  // `appointmentId` above records which session last prompted that.
+  //
+  // This is NOT partial on deletedAt: a moderation-removed review must not free
+  // the slot for the same person to re-post it. POST maps P2002 here to 409,
+  // which the client turns into "update your review" rather than an error.
+  @@unique([consultantProfileId, consulteeProfileId])
   // Serves recomputeConsultantRating's groupBy — the only hot aggregate.
   @@index([consultantProfileId, deletedAt, ratingUnitId])
   @@index([appointmentId])
@@ -4759,7 +4780,9 @@ model SlotOfAppointment {
   /// load-bearing: it makes concurrent checkout `connect` calls
   /// double-assignment-safe. Restored automatically at every push/reset;
   /// do not convert to an explicit join model without re-declaring it.
-  user User[] @relation("SlotOfAppointmentToUser")
+  user     User[]                @relation("SlotOfAppointmentToUser")
+  // #705 — the per-call private rating.
+  feedback AppointmentFeedback[]
 
   startsAt    DateTime @db.Timestamptz
   endsAt      DateTime @db.Timestamptz

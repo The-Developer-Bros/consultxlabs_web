@@ -1,17 +1,21 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { TConsultantReview } from "@/types/review";
+import { TPublicConsultantReview } from "@/types/review";
 import Image from "next/image";
 
 import { StarIcon } from "lucide-react";
 import React from "react";
 
-const Review: React.FC<Readonly<TConsultantReview>> = ({
+const Review: React.FC<Readonly<TPublicConsultantReview>> = ({
   consulteeProfile,
   createdAt,
   rating,
   reviewDescription,
 }) => {
-  const reviewerName = consulteeProfile?.user?.name || "Anonymous";
+  // "Verified client" rather than "Anonymous": the trust here comes from the
+  // review being welded to a paid, attended session, and that is worth saying
+  // out loud when the name is withheld. The server has already removed the
+  // name — this is the label for that, not the mechanism.
+  const reviewerName = consulteeProfile?.user?.name || "Verified client";
   const reviewerImage = consulteeProfile?.user?.image || null;
 
   return (

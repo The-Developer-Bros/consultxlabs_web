@@ -31,10 +31,21 @@ export const CreateReviewSchema = z.object({
    * between the pair.
    */
   appointmentId: z.string().min(1, "Session is required").max(64),
+  /**
+   * Display choice only. The review is welded to a paid, attended session
+   * either way, so hiding the name costs no authenticity — it buys candour
+   * from someone who may want to book this person again.
+   */
+  isAnonymous: z.boolean().optional(),
 });
 
 // PUT only mutates the two consultee-owned fields; a partial keeps either optional.
+// #705 — `isAnonymous` MUST be here. It was omitted, so zod silently stripped
+// it from every PUT: the checkbox stayed ticked, the toast said "updated", and
+// the row never changed. Anonymity could only ever be set at creation, which
+// the UI never does once a review exists.
 export const UpdateReviewSchema = CreateReviewSchema.pick({
   rating: true,
   reviewDescription: true,
+  isAnonymous: true,
 }).partial();

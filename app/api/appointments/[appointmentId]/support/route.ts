@@ -18,10 +18,7 @@ import { flowsForContext } from "@/lib/support/flows";
 import { MESSAGE_ORDER } from "@/lib/support/message-seq";
 import { AppointmentIdParams } from "@/schemas/support";
 import { SupportThreadCategoryEnum } from "@/schemas/enums";
-import {
-  parseRouteParams,
-  supportError,
-} from "@/lib/api/support-http";
+import { parseRouteParams, supportError } from "@/lib/api/support-http";
 import {
   authorizeAppointment,
   appointmentAuthzError,
@@ -53,11 +50,21 @@ export async function GET(
   try {
     // orgParty: true — an operator may open their OWN thread (ADR 20).
     const auth = await authorizeAppointment(appointmentId, true);
-    if ("code" in auth) return appointmentAuthzError(auth, { route: SUPPORT_ROUTE, appointmentId });
+    if ("code" in auth)
+      return appointmentAuthzError(auth, {
+        route: SUPPORT_ROUTE,
+        appointmentId,
+      });
 
     const thread = await prisma.appointmentSupportThread.findUnique({
       where: { appointmentId_userId: { appointmentId, userId: auth.userId } },
-      include: { messages: { orderBy: MESSAGE_ORDER } },
+      include: {
+        messages: { orderBy: MESSAGE_ORDER },
+        // #705 — an escalated thread is ASYNCHRONOUS: nobody is composing a
+        // reply, and a typing indicator promised otherwise. The drawer shows
+        // this deadline instead, which we already committed to at intake.
+        supportTicket: { select: { referenceNumber: true, ackDueAt: true } },
+      },
     });
 
     // #support-hub — the intents the SERVER offers for this appointment
@@ -65,6 +72,10 @@ export async function GET(
     // this list instead of a hardcoded menu).
     let intents: { category: string; title: string }[] = [];
     try {
+      // Deliberately UNSCOPED: this context decides which intents to OFFER,
+      // so it must describe the current-or-next session. Scoping it to the
+      // thread's stored category would let a resolved no-show thread keep
+      // gating the menu on a session that finished weeks ago.
       const ctx = await buildSupportContext(
         thread?.id ?? "unstarted",
         appointmentId,
@@ -110,7 +121,11 @@ export async function POST(
   try {
     // orgParty: true — an operator may open their OWN thread (ADR 20).
     const auth = await authorizeAppointment(appointmentId, true);
-    if ("code" in auth) return appointmentAuthzError(auth, { route: SUPPORT_ROUTE, appointmentId });
+    if ("code" in auth)
+      return appointmentAuthzError(auth, {
+        route: SUPPORT_ROUTE,
+        appointmentId,
+      });
 
     const body = turnSchema.safeParse(await req.json().catch(() => ({})));
     if (!body.success) {
@@ -118,7 +133,11 @@ export async function POST(
         status: 400,
         code: "VALIDATION_FAILED",
         detail: body.error.flatten(),
-        context: { route: "appointments.support", action: "turn", appointmentId },
+        context: {
+          route: "appointments.support",
+          action: "turn",
+          appointmentId,
+        },
       });
     }
     // Org parties raise only the org-party intents on someone else's session.
@@ -147,7 +166,11 @@ export async function POST(
       return supportError({
         status: 404,
         code: "NOT_FOUND",
-        context: { route: "appointments.support", action: "turn", appointmentId },
+        context: {
+          route: "appointments.support",
+          action: "turn",
+          appointmentId,
+        },
       });
     }
     return NextResponse.json({ data: result });

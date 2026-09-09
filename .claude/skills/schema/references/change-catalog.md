@@ -119,12 +119,12 @@ Build the index concurrently, then promote it, so that the expensive build
 happens under the weak lock and only the promotion takes the strong one.
 
 ```sql
-CREATE UNIQUE INDEX CONCURRENTLY "AppointmentFeedback_appointmentId_userId_key"
-  ON "AppointmentFeedback" ("appointmentId", "userId");
+CREATE UNIQUE INDEX CONCURRENTLY "SomeTable_columnA_columnB_key"
+  ON "SomeTable" ("columnA", "columnB");
 
-ALTER TABLE "AppointmentFeedback"
-  ADD CONSTRAINT "AppointmentFeedback_appointmentId_userId_key"
-  UNIQUE USING INDEX "AppointmentFeedback_appointmentId_userId_key";
+ALTER TABLE "SomeTable"
+  ADD CONSTRAINT "SomeTable_columnA_columnB_key"
+  UNIQUE USING INDEX "SomeTable_columnA_columnB_key";
 ```
 
 The build fails outright if duplicates already exist, which is the desired

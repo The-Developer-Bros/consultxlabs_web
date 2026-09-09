@@ -1,11 +1,11 @@
 "use client";
 
 import { Star, MessageSquare } from "lucide-react";
-import { TConsultantReview } from "@/types/review";
+import { TPublicConsultantReview } from "@/types/review";
 import Review from "./Review";
 
 interface ReviewsSectionProps {
-  reviews: TConsultantReview[];
+  reviews: TPublicConsultantReview[];
   /**
    * #705 — the published score, or null when too few sessions have been rated
    * to publish one. Passed in rather than derived here: this list is a `take`
@@ -22,7 +22,6 @@ export function ReviewsSection({
   publishedRating,
   reviewCount,
 }: ReviewsSectionProps) {
-
   return (
     <div className="bg-card rounded-2xl border border-border p-6 md:p-8">
       <div className="flex items-center justify-between mb-6">
