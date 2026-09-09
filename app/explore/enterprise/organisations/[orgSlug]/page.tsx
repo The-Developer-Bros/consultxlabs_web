@@ -14,7 +14,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import prisma from "@/lib/prisma";
-import { displayedScore } from "@/lib/reviews";
+import { displayedScore } from "@/lib/reviews-display";
 import { eventPlanDiscoverableWhere } from "@/lib/api/plans/visibility";
 
 import {

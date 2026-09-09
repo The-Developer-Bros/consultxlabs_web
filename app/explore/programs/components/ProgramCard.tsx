@@ -9,7 +9,7 @@ import { useRouter } from "next/navigation";
 import { useCurrency } from "@/hooks/useCurrency";
 import { CompanyLogo } from "@/components/ui/company-logo";
 import { isClassProgram, Program } from "@/lib/explore/programs";
-import { displayedScore } from "@/lib/reviews";
+import { displayedScore } from "@/lib/reviews-display";
 
 type ProgramCardVariant = "grid" | "list" | "carousel";
 export type ProgramBadge = "featured" | "trending" | "new";
@@ -100,9 +100,7 @@ function getProgramInstructor(program: Program): { headline: string } | null {
 }
 
 /** Extract instructor work experiences (for company logo stickers), including collaborator experiences (deduplicated). */
-function getInstructorWorkExperiences(
-  program: Program,
-): Array<{
+function getInstructorWorkExperiences(program: Program): Array<{
   company: string;
   companyDomain: string | null;
   isCurrent: boolean;

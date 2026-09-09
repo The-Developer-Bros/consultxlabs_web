@@ -1,7 +1,7 @@
 import { unstable_cache } from "next/cache";
 import prisma from "@/lib/prisma";
 import { sanitisePublicReviews } from "@/lib/data/review-public";
-import { displayedScore, displayedScoreCount } from "@/lib/reviews";
+import { displayedScore, displayedScoreCount } from "@/lib/reviews-display";
 import { toPlain } from "@/lib/data/serialize";
 import { consultantPublicScalars } from "@/lib/data/consultant-public";
 import { deriveDirectoryRating } from "@/lib/data/public-stats";
