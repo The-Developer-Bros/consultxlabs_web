@@ -389,6 +389,12 @@ describe("runSupportTurn", () => {
     // is how a refused message ends up looking delivered.
     expect(r?.messages).toEqual([]);
     expect(r?.resolved).toBe(false);
+    // The whole point of CAS-ing first: the refusal wrote NOTHING. The
+    // assertions above pass just as well when the messages were inserted and
+    // then survived a `return false`, which is the regression this test exists
+    // for.
+    expect(mockPrisma.supportMessage.create).not.toHaveBeenCalled();
+    expect(mockPrisma.supportTicket.create).not.toHaveBeenCalled();
   });
 
   it("still lets a RESOLVED thread be picked up again", async () => {
@@ -441,6 +447,9 @@ describe("runSupportTurn", () => {
     // The thread keeps whatever ticket it had — no new link, nothing echoed.
     expect(r?.supportTicketId).toBeNull();
     expect(r?.messages).toEqual([]);
+    // And nothing landed: no transcript row, no second ticket minted.
+    expect(mockPrisma.supportMessage.create).not.toHaveBeenCalled();
+    expect(mockPrisma.supportTicket.create).not.toHaveBeenCalled();
     // And the guard was actually expressed in the WHERE, not checked in JS.
     expect(mockPrisma.appointmentSupportThread.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({

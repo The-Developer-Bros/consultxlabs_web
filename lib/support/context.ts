@@ -63,7 +63,19 @@ export async function buildSupportContext(
         // stage flipped to COMPLETED while the call was still running, which
         // is what gates the intents on offer. Grouping below restores the
         // real session bounds.
-        where: { completionStatus: "SCHEDULED" },
+        //
+        // Live means "not called off", NOT "still SCHEDULED". A session that has
+        // happened is COMPLETED or UNVERIFIED, so the old status equality
+        // deleted exactly the rows the retrospective intents are about:
+        // `lastEndedRun` was always null, a no-show report fell back to the
+        // upcoming session, and with nothing upcoming `endsAt` was null — so the
+        // server-side 48-hour recording-window check could not run at all. Same
+        // exclusion as `heldSlot` (lib/reviews.ts) and `isDeadSlot`
+        // (lib/appointments/slots.ts), which the grouping below re-applies.
+        where: {
+          deletedAt: null,
+          completionStatus: { notIn: ["CANCELLED", "RESCHEDULED"] },
+        },
         orderBy: { startsAt: "asc" },
         select: {
           id: true,
@@ -129,9 +141,9 @@ export async function buildSupportContext(
   const startsAt = subjectRun?.startsAt ?? null;
   const endsAt: Date | null = subjectRun?.endsAt ?? null;
 
-  // Session stage from the slot window. A past slot (or no scheduled slot at
-  // all — e.g. cancelled/completed tombstones filtered out above) reads as
-  // COMPLETED; a slot whose window contains now is LIVE.
+  // Session stage from the slot window. A past slot (or no live slot at all —
+  // e.g. a booking whose every row was cancelled away) reads as COMPLETED; a
+  // slot whose window contains now is LIVE.
   const now = nowMs;
   const stage: SupportStage = startsAt
     ? endsAt && now >= endsAt.getTime()

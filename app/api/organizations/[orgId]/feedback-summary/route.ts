@@ -12,13 +12,25 @@
 
 import { NextResponse } from "next/server";
 import { requireOrgAccess } from "@/lib/auth-helpers";
+import { parseRouteParams } from "@/lib/api/support-http";
+import { OrgIdParams } from "@/schemas/support";
 import prisma from "@/lib/prisma";
+
+const ORG_FEEDBACK_SUMMARY_ROUTE = "organizations.feedback-summary";
 
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ orgId: string }> },
 ) {
-  const { orgId } = await params;
+  // Parse before authorizing, like the sibling org route. `requireOrgAccess`
+  // goes straight to `organization.findUnique`, so an unparsed id answered a
+  // malformed value with "organization not found" — an authorization verdict
+  // for what is a validation failure.
+  const id = await parseRouteParams(OrgIdParams, params, {
+    route: ORG_FEEDBACK_SUMMARY_ROUTE,
+  });
+  if (!id.ok) return id.response;
+  const { orgId } = id.data;
   const access = await requireOrgAccess(orgId, {
     permission: "operations.read",
   });

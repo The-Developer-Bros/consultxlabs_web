@@ -282,52 +282,59 @@ export async function runSupportTurn(
   // leave a user who resolved a question unable to ask a second one. CLOSED is
   // staff saying the matter is finished, which is not ours to undo.
   let refusedStatus: SupportThreadStatus | null = null;
-  const accepted = await prisma.$transaction(async (tx) => {
-    // The CAS runs FIRST, before a single row is written. It used to run last
-    // and the callback returned `moved.count > 0` — but returning `false` from
-    // a Prisma interactive transaction COMMITS it, so the messages inserted
-    // above survived the refused status write: the user was told their message
-    // had not been sent while the row was in fact stored on the closed thread,
-    // and staff watched turns arrive on a conversation they had finished.
-    // Claiming the thread first makes the refusal a no-op by construction.
-    const moved = await tx.appointmentSupportThread.updateMany({
-      where: { id: thread.id, status: { not: "CLOSED" } },
-      data: {
-        category,
-        currentNodeId: turn.nextNodeId,
-        status,
-        resolvedAt: turn.resolved ? new Date() : null,
-        // Keep the hub's "latest activity first" clock honest — updatedAt
-        // alone won't move on message inserts.
-        ...(wroteMessages ? { lastMessageAt: new Date() } : {}),
-      },
-    });
-    if (moved.count === 0) return false;
-    // The user's side of the conversation FIRST, then the bot's. A chip press
-    // is an answer just as much as typed text is — without it the stored
-    // transcript is a run of bot questions with no record of what produced
-    // them, which is what the back-office inbox shows a staff member.
-    const userSaid = input.userMessage ?? turn.chosenLabel;
-    const outgoing = [
-      ...(userSaid
-        ? [{ sender: "USER" as const, body: userSaid, metadata: undefined }]
-        : []),
-      ...turn.messages.map((m) => ({
-        sender: m.sender,
-        body: m.body,
-        metadata: (m.metadata as object) ?? undefined,
-      })),
-    ];
-    // Both rows share a transaction and therefore a timestamp; `seq` is what
-    // makes the question sort above the answer.
-    let seq = await allocateMessageSeq(tx, thread.id, outgoing.length);
-    for (const m of outgoing) {
-      await tx.supportMessage.create({
-        data: { threadId: thread.id, seq: ++seq, ...m },
+  // Same budget as the escalation path below. Three to four sequential round
+  // trips (CAS, seq allocation, one or two inserts) serialise under
+  // PG_POOL_MAX=1 on Netlify, so Prisma's default 2s maxWait / 5s timeout turned
+  // a cold instance into a 500 on a turn that would have committed.
+  const accepted = await prisma.$transaction(
+    async (tx) => {
+      // The CAS runs FIRST, before a single row is written. It used to run last
+      // and the callback returned `moved.count > 0` — but returning `false` from
+      // a Prisma interactive transaction COMMITS it, so the messages inserted
+      // above survived the refused status write: the user was told their message
+      // had not been sent while the row was in fact stored on the closed thread,
+      // and staff watched turns arrive on a conversation they had finished.
+      // Claiming the thread first makes the refusal a no-op by construction.
+      const moved = await tx.appointmentSupportThread.updateMany({
+        where: { id: thread.id, status: { not: "CLOSED" } },
+        data: {
+          category,
+          currentNodeId: turn.nextNodeId,
+          status,
+          resolvedAt: turn.resolved ? new Date() : null,
+          // Keep the hub's "latest activity first" clock honest — updatedAt
+          // alone won't move on message inserts.
+          ...(wroteMessages ? { lastMessageAt: new Date() } : {}),
+        },
       });
-    }
-    return true;
-  });
+      if (moved.count === 0) return false;
+      // The user's side of the conversation FIRST, then the bot's. A chip press
+      // is an answer just as much as typed text is — without it the stored
+      // transcript is a run of bot questions with no record of what produced
+      // them, which is what the back-office inbox shows a staff member.
+      const userSaid = input.userMessage ?? turn.chosenLabel;
+      const outgoing = [
+        ...(userSaid
+          ? [{ sender: "USER" as const, body: userSaid, metadata: undefined }]
+          : []),
+        ...turn.messages.map((m) => ({
+          sender: m.sender,
+          body: m.body,
+          metadata: (m.metadata as object) ?? undefined,
+        })),
+      ];
+      // Both rows share a transaction and therefore a timestamp; `seq` is what
+      // makes the question sort above the answer.
+      let seq = await allocateMessageSeq(tx, thread.id, outgoing.length);
+      for (const m of outgoing) {
+        await tx.supportMessage.create({
+          data: { threadId: thread.id, seq: ++seq, ...m },
+        });
+      }
+      return true;
+    },
+    { maxWait: ALLOCATION_TX_MAX_WAIT_MS, timeout: ALLOCATION_TX_TIMEOUT_MS },
+  );
 
   if (!accepted) {
     // Nothing was written at all — the claim is the first statement in the
