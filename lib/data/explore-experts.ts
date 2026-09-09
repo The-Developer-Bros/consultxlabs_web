@@ -2,7 +2,10 @@ import { unstable_cache } from "next/cache";
 import prisma from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import type { IConsultantCardData } from "@/types/consultant";
-import { sanitisePublicReviews } from "@/lib/data/review-public";
+import {
+  publicReviewSelect,
+  sanitisePublicReviews,
+} from "@/lib/data/review-public";
 import { deriveDirectoryRating } from "@/lib/data/public-stats";
 
 /**
@@ -364,18 +367,11 @@ const getCachedRecentReviews = unstable_cache(
       },
       orderBy: { createdAt: "desc" },
       take: limit,
-      include: {
-        consultantProfile: {
-          include: {
-            user: { select: { name: true } },
-          },
-        },
-        consulteeProfile: {
-          include: {
-            user: { select: { name: true, image: true } },
-          },
-        },
-      },
+      // #1300 — the allowlist, not a bare `include`. This one was the worst of the
+      // three: `consultantProfile: { include: … }` returned every ConsultantProfile
+      // scalar, so the statutory-PII columns `consultantPublicScalars` exists to
+      // keep out of a public payload (#946) were being fetched and cached too.
+      select: publicReviewSelect,
     });
     return sanitisePublicReviews(rows);
   },

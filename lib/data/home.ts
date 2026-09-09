@@ -1,6 +1,9 @@
 import { unstable_cache } from "next/cache";
 import prisma from "@/lib/prisma";
-import { sanitisePublicReviews } from "@/lib/data/review-public";
+import {
+  publicReviewSelect,
+  sanitisePublicReviews,
+} from "@/lib/data/review-public";
 import { displayedScore, displayedScoreCount } from "@/lib/reviews-display";
 import { toPlain } from "@/lib/data/serialize";
 import { consultantPublicScalars } from "@/lib/data/consultant-public";
@@ -102,19 +105,10 @@ export const getHomeReviews = unstable_cache(
         consultantProfile: { deletedAt: null },
       },
       take: 20,
-      include: {
-        consultantProfile: {
-          select: {
-            ...consultantPublicScalars,
-            user: { select: { name: true } },
-          },
-        },
-        consulteeProfile: {
-          include: {
-            user: { select: { name: true, image: true } },
-          },
-        },
-      },
+      // #1300 — the allowlist, not a bare `include`: these rows are cached for an
+      // hour and serialised into the landing page's RSC payload for every
+      // anonymous visitor, which is the widest audience any review read has.
+      select: publicReviewSelect,
       orderBy: { rating: "desc" },
     });
     return toPlain(sanitisePublicReviews(reviews));

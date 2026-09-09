@@ -21,6 +21,7 @@
 import {
   ORG_QUALITY_MIN_RESPONDENTS,
   applyCohortSuppression,
+  suppressNarrowerWindow,
 } from "@/lib/enterprise/quality-thresholds";
 
 const cohort = (respondents: number, id = `c${respondents}`) => ({
@@ -116,5 +117,43 @@ describe("secondary suppression", () => {
     expect(
       applyCohortSuppression(input).published.map((c) => c.consultantProfileId),
     ).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("overlapping time windows", () => {
+  /** The two windows this endpoint publishes side by side. `last30` is always a
+   *  subset of `overall`, so their difference is a cohort nobody chose to publish. */
+  const windows = (overall: number, last30: number) =>
+    suppressNarrowerWindow({ respondents: overall }, { respondents: last30 });
+
+  it("suppresses the recent window when six all-time meets five recent", () => {
+    // The case the floor waves through and subtraction defeats: both windows clear
+    // 5, both averages are published, and 6 − 5 = 1 — so the sixth respondent's
+    // rating is (overall × 6) − (last30 × 5). One person, named by arithmetic.
+    expect(windows(6, 5)).toBe(true);
+  });
+
+  it("publishes both when the two windows hold the same people", () => {
+    // Nothing sits outside the narrower window, so there is no complement to
+    // recover. Suppressing here would hide a figure that leaks nothing.
+    expect(windows(6, 6)).toBe(false);
+  });
+
+  it("publishes both when the older cohort clears the floor on its own", () => {
+    // Ten all-time and five recent leaves five older respondents — a cohort we
+    // would have published unaided, so the subtraction reveals an aggregate rather
+    // than a person.
+    expect(windows(10, 5)).toBe(false);
+  });
+
+  it("suppresses at every complement between one and the floor", () => {
+    for (
+      let complement = 1;
+      complement < ORG_QUALITY_MIN_RESPONDENTS;
+      complement++
+    ) {
+      expect(windows(20 + complement, 20)).toBe(true);
+    }
+    expect(windows(20 + ORG_QUALITY_MIN_RESPONDENTS, 20)).toBe(false);
   });
 });

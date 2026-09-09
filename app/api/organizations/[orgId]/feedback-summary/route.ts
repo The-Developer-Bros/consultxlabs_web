@@ -25,6 +25,7 @@ import prisma from "@/lib/prisma";
 import {
   ORG_QUALITY_MIN_RESPONDENTS,
   applyCohortSuppression,
+  suppressNarrowerWindow,
 } from "@/lib/enterprise/quality-thresholds";
 
 const ORG_FEEDBACK_SUMMARY_ROUTE = "organizations.feedback-summary";
@@ -65,11 +66,20 @@ export async function GET(
     excludedFromAggregateAt: null,
   };
 
-  // One read, aggregated in application code. `AppointmentFeedback` carries no
-  // consultant column — the consultant is on the slot — and Prisma cannot
-  // `groupBy` a relation's scalar, so the alternative is a raw query. An
-  // organisation's own feedback is small enough that this is the cheaper honest
-  // option, and it keeps one filter definition instead of two.
+  // One read, aggregated in application code, and the ceiling stated out loud.
+  //
+  // `AppointmentFeedback` carries no consultant column — the consultant is on the
+  // slot — and Prisma cannot `groupBy` a relation's scalar, so the per-consultant
+  // breakdown has to see rows. Moving only the two WINDOW figures back to
+  // `aggregate` + `groupBy(["userId"])` would not help: this findMany still has to
+  // run for the breakdown, so peak memory is unchanged, and under `PG_POOL_MAX=1`
+  // the four extra statements serialise behind it rather than running alongside.
+  //
+  // What bounds it is the WHERE: one organisation's own attendee feedback, one row
+  // per rated call, and no page of this response is public. The realistic ceiling
+  // is members × sessions-per-member, and three ints per row. A denormalised
+  // `consultantProfileId` on this table is what would turn the last pass into a
+  // `groupBy`, and that is a schema change for the pre-MVP reset — #1543.
   const rows = await prisma.appointmentFeedback.findMany({
     where: attendeeRatings,
     select: {
@@ -159,15 +169,24 @@ export async function GET(
         }
       : { average: null, responses: null, respondents: null };
 
+  /** The 30-day window sits INSIDE the all-time one, so publishing both publishes
+   *  the difference — the people who answered longer ago, and their mean, by
+   *  subtraction. Six all-time respondents beside five recent ones is one
+   *  person's exact rating. Same attack `applyCohortSuppression` handles for the
+   *  per-consultant breakdown; it did not cover the two windows. */
+  const last30Reported = suppressNarrowerWindow(overall, last30)
+    ? { average: null, responses: null, respondents: null }
+    : reportable(last30);
+
   return NextResponse.json({
     data: {
       // Kept under the old names so the existing card keeps rendering.
       averageRating: reportable(overall).average,
       totalResponses: reportable(overall).responses,
       respondents: reportable(overall).respondents,
-      averageRating30d: reportable(last30).average,
-      responses30d: reportable(last30).responses,
-      respondents30d: reportable(last30).respondents,
+      averageRating30d: last30Reported.average,
+      responses30d: last30Reported.responses,
+      respondents30d: last30Reported.respondents,
       /** The floor itself, so the UI can say "needs 5 responses" rather than
        *  rendering an unexplained blank. */
       minRespondents: ORG_QUALITY_MIN_RESPONDENTS,

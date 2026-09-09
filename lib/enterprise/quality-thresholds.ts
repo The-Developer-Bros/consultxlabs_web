@@ -48,6 +48,29 @@ export const ORG_QUALITY_MIN_RESPONDENTS_FOR_COMMENTS = 10;
  * hide the smallest surviving cohort too. Either nothing is hidden or at least two
  * are, and the sum of the hidden ones is all that can be derived.
  */
+/**
+ * Whether a narrower TIME WINDOW may be published beside the wider one it sits
+ * inside.
+ *
+ * `applyCohortSuppression` protects the per-consultant breakdown, and nothing
+ * protected the two windows — but they are the same attack. `last30` is a subset
+ * of `overall`, so publishing both counts and both averages publishes the
+ * complement: the respondents who answered EARLIER than 30 days ago, and their
+ * mean, by subtraction. Six all-time respondents beside five recent ones names
+ * the sixth person's rating exactly.
+ *
+ * So the narrower window is withheld whenever its complement is a cohort we would
+ * have refused to publish on its own. A complement of zero is safe — the two
+ * windows describe the same people and there is nothing outside to recover.
+ */
+export function suppressNarrowerWindow(
+  wider: { respondents: number },
+  narrower: { respondents: number },
+): boolean {
+  const complement = wider.respondents - narrower.respondents;
+  return complement > 0 && complement < ORG_QUALITY_MIN_RESPONDENTS;
+}
+
 export function applyCohortSuppression<T extends { respondents: number }>(
   cohorts: readonly T[],
 ): { published: T[]; suppressed: number } {

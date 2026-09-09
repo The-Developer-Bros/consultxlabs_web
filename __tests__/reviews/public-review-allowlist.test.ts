@@ -19,6 +19,9 @@
  * there passes the day someone adds a field to both.
  */
 
+import fs from "node:fs";
+import path from "node:path";
+
 import {
   publicReviewSelect,
   sanitisePublicReview,
@@ -117,5 +120,74 @@ describe("sanitisePublicReview", () => {
     expect(out.ratingUnitId).toBeNull();
     // ...and the reply is the consultant's own words, so it survives.
     expect(out.replyBody).toBe("Thanks — glad it helped.");
+  });
+});
+
+/**
+ * The CALL SITES, not only the helper.
+ *
+ * The leak survived a change that swapped the sanitiser in all three public review
+ * loaders, because the projection is what leaks and the projection is at the call
+ * site. A pin on `publicReviewSelect` alone cannot see that, and the three loaders
+ * had gone on returning every review scalar and the reviewer's whole
+ * ConsulteeProfile row.
+ *
+ * Globbed over `lib/data/` rather than listing the three files: a fourth public
+ * review loader is the same defect, and naming paths would let it ship untested and
+ * would break on a pure move.
+ */
+const DATA_DIR = path.join(process.cwd(), "lib", "data");
+
+/** The argument object of every `consultantReview.findMany(...)` in a file, by
+ *  balancing parentheses from the call — a regex cannot match a nested object. */
+function reviewReadArgs(source: string): string[] {
+  const out: string[] = [];
+  const needle = "consultantReview.findMany(";
+  let from = 0;
+  for (;;) {
+    const start = source.indexOf(needle, from);
+    if (start === -1) return out;
+    let depth = 0;
+    let i = start + needle.length - 1;
+    for (; i < source.length; i++) {
+      if (source[i] === "(") depth++;
+      else if (source[i] === ")" && --depth === 0) break;
+    }
+    // Comments stripped: the prose explaining why a bare `include` was wrong must
+    // not read as one.
+    out.push(source.slice(start, i).replace(/\/\/[^\n]*/g, ""));
+    from = i;
+  }
+}
+
+describe("every public review read in lib/data", () => {
+  const files = fs
+    .readdirSync(DATA_DIR)
+    .filter((f) => f.endsWith(".ts"))
+    .map((f) => ({
+      f,
+      source: fs.readFileSync(path.join(DATA_DIR, f), "utf8"),
+    }))
+    .flatMap(({ f, source }) =>
+      reviewReadArgs(source).map((args, n) => ({
+        where: `${f} #${n + 1}`,
+        args,
+      })),
+    );
+
+  it("finds the loaders it is supposed to be guarding", () => {
+    // If this drops to zero the suite below is vacuously green, which is the one
+    // way a source-derived pin fails silently.
+    expect(files.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it.each(files)("$where projects through the allowlist", ({ args }) => {
+    expect(args).toContain("select: publicReviewSelect");
+  });
+
+  it.each(files)("$where does not use a bare include", ({ args }) => {
+    // A top-level `include` on a root model returns every scalar, and every column
+    // added to ConsultantReview afterwards becomes public by default.
+    expect(args).not.toMatch(/\binclude:/);
   });
 });

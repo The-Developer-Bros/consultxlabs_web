@@ -1,8 +1,10 @@
 import { cache } from "react";
 import { reportSentryError } from "@/lib/observability/report";
 import prisma from "@/lib/prisma";
-import { sanitisePublicReviews } from "@/lib/data/review-public";
-import { consultantPublicScalars } from "@/lib/data/consultant-public";
+import {
+  publicReviewSelect,
+  sanitisePublicReviews,
+} from "@/lib/data/review-public";
 
 /**
  * Server-side data access for the expert detail page.
@@ -129,17 +131,12 @@ export const getConsultantReviews = cache(
       // #693 — moderation-removed reviews stay hidden from the public page
       where: { consultantProfileId, deletedAt: null },
       take: 20,
-      include: {
-        consultantProfile: {
-          select: {
-            ...consultantPublicScalars,
-            user: { select: { name: true } },
-          },
-        },
-        consulteeProfile: {
-          include: { user: { select: { name: true, image: true } } },
-        },
-      },
+      // #1300 — the ALLOWLIST, not a bare `include`. `sanitisePublicReviews` only
+      // strips the anonymous reviewer and a removed reply; swapping the sanitiser
+      // while leaving the projection wide still shipped `excludedReason`,
+      // `revisionNo`, `ratedSessionAt` and the reviewer's whole ConsulteeProfile
+      // row into this page's client props.
+      select: publicReviewSelect,
       orderBy: { rating: "desc" },
     });
     // The reviewer chose to be unnamed; that has to hold in the payload.
