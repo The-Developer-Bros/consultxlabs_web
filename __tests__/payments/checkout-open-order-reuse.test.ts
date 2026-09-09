@@ -157,9 +157,13 @@ jest.mock("../../lib/novu/org-workflows", () => ({
   notifyOrgProgramExhausted: jest.fn(),
   notifyOrgProgramCapNear: jest.fn(),
 }));
-jest.mock("../../lib/payments/operations/cancellation-policy", () => ({
+// #1499 — checkout now resolves a policy VERSION id rather than freezing Json.
+jest.mock("../../lib/payments/operations/cancellation-policy-store", () => ({
   __esModule: true,
-  resolveCancellationPolicySnapshot: jest.fn(() => ({})),
+  // #1513 review — the platform row is provisioned on the global client just
+  // before the booking transaction opens, so the mock has to answer that too.
+  ensurePlatformCancellationPolicy: jest.fn(async () => "policy-platform"),
+  resolveCheckoutCancellationPolicyId: jest.fn(async () => "policy-1"),
 }));
 
 import prisma from "../../lib/prisma";
@@ -258,7 +262,10 @@ function openSibling(overrides: Record<string, any> = {}) {
       // Window gate reads the first slot (WEBINAR flow skips it, but keep the
       // shape faithful for the direct unit cases below).
       slotsOfAppointment: [
-        { startsAt: new Date("2026-09-01T10:00:00Z"), endsAt: new Date("2026-09-01T11:00:00Z") },
+        {
+          startsAt: new Date("2026-09-01T10:00:00Z"),
+          endsAt: new Date("2026-09-01T11:00:00Z"),
+        },
       ],
     },
     ...overrides,
@@ -289,6 +296,13 @@ beforeEach(() => {
     },
     webinar: { findUnique: jest.fn(async () => webinarRow()) },
     slotOfAppointment: { update: jest.fn(async ({ where }: any) => where) },
+    appointmentParticipant: {
+      createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    consulteeProfile: {
+      findUnique: jest.fn(async () => ({ userId: "user_1" })),
+    },
     payment: {
       create: jest.fn(async ({ data }: any) => ({
         id: "pay-new",
@@ -298,9 +312,7 @@ beforeEach(() => {
     },
     paymentLeg: {
       create: jest.fn(async () => ({})),
-      findMany: jest.fn(async () => [
-        { source: "CARD", amountPaise: 100000 },
-      ]),
+      findMany: jest.fn(async () => [{ source: "CARD", amountPaise: 100000 }]),
     },
   };
   (createPaymentIntent as jest.Mock).mockResolvedValue({
@@ -348,8 +360,7 @@ describe("rec C — checkout adopts an open PENDING order across remounts", () =
 
     // The lookup must be scoped tightly — user + PENDING + fresh window +
     // org equality + gateway + this event's appointment join.
-    const where = (prisma.payment.findMany as jest.Mock).mock.calls[0][0]
-      .where;
+    const where = (prisma.payment.findMany as jest.Mock).mock.calls[0][0].where;
     expect(where).toMatchObject({
       userId: "user-1",
       paymentStatus: "PENDING",
@@ -371,7 +382,10 @@ describe("rec C — checkout adopts an open PENDING order across remounts", () =
       "the hold has expired",
       openSibling({ expiresAt: new Date(Date.now() - 60 * 1000) }),
     ],
-    ["the sibling already SUCCEEDED", openSibling({ paymentStatus: "SUCCEEDED" })],
+    [
+      "the sibling already SUCCEEDED",
+      openSibling({ paymentStatus: "SUCCEEDED" }),
+    ],
     ["the sibling belongs to another user", openSibling({ userId: "user-2" })],
     [
       "the sibling is for a different event's appointment",
@@ -405,12 +419,16 @@ describe("rec C — checkout adopts an open PENDING order across remounts", () =
 // above cannot discriminate them: eventId already pins scope and its fixtures
 // share one price).
 // ---------------------------------------------------------------------------
-import {
-  findReusablePendingOrderPayment,
-} from "../../lib/payments/operations/checkout";
+import { findReusablePendingOrderPayment } from "../../lib/payments/operations/checkout";
 
-const SLOT = { startsAt: new Date("2026-09-01T10:00:00Z"), endsAt: new Date("2026-09-01T11:00:00Z") };
-const OTHER_SLOT = { startsAt: new Date("2026-09-02T10:00:00Z"), endsAt: new Date("2026-09-02T11:00:00Z") };
+const SLOT = {
+  startsAt: new Date("2026-09-01T10:00:00Z"),
+  endsAt: new Date("2026-09-01T11:00:00Z"),
+};
+const OTHER_SLOT = {
+  startsAt: new Date("2026-09-02T10:00:00Z"),
+  endsAt: new Date("2026-09-02T11:00:00Z"),
+};
 
 function gateDb(rows: Array<Record<string, unknown>>) {
   return { payment: { findMany: async () => rows } };
@@ -419,7 +437,10 @@ function gateDb(rows: Array<Record<string, unknown>>) {
 describe("#1220-triage — reuse gates", () => {
   test("CONSULTATION: a different slot time is superseded, never resumed", async () => {
     const row = openSibling({
-      appointment: { consultationId: "cons_1", slotsOfAppointment: [OTHER_SLOT] },
+      appointment: {
+        consultationId: "cons_1",
+        slotsOfAppointment: [OTHER_SLOT],
+      },
     });
     const { reusable, supersede } = await findReusablePendingOrderPayment(
       gateDb([row]) as never,
@@ -434,7 +455,9 @@ describe("#1220-triage — reuse gates", () => {
       },
     );
     expect(reusable).toBeNull();
-    expect(supersede).toEqual([{ id: "pay-open", reason: "slot-window-mismatch" }]);
+    expect(supersede).toEqual([
+      { id: "pay-open", reason: "slot-window-mismatch" },
+    ]);
   });
 
   test("CONSULTATION: identical slot window resumes", async () => {

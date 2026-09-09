@@ -8,61 +8,19 @@
  * Schedule: Hourly (via GitHub Actions or external cron)
  */
 
-import { NextRequest, NextResponse } from "next/server";
+import { cleanupRoute, parseLimitParam } from "@/lib/cron/cleanup-route";
 import { syncPaymentEarnings } from "@/scripts/earnings/sync-payment-earnings";
-import { CronLockHeldError } from "@/lib/cron/with-cron-lock";
-import * as Sentry from "@sentry/nextjs";
 
-export async function GET(req: NextRequest): Promise<NextResponse> {
-  try {
-    // Verify cron secret to prevent unauthorized access
-    const authHeader = req.headers.get("authorization");
-    const cronSecret =
-      process.env.CRON_SECRET || process.env.VERCEL_CRON_SECRET;
-
-    if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
-      console.warn("Unauthorized payment-earning sync attempt");
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    Sentry.logger.info("cron:sync-payment-earnings started");
-    console.log("🔄 Starting payment-earning sync via API...");
-
-    const result = await syncPaymentEarnings();
-
-    Sentry.logger.info("cron:sync-payment-earnings finished", {
-      totalProcessed: result.totalProcessed,
-      createdCount: result.createdCount,
-      skippedCount: result.skippedCount,
-      errorCount: result.errorCount,
-    });
-    console.log("✅ Payment-earning sync completed:", {
-      totalProcessed: result.totalProcessed,
-      createdCount: result.createdCount,
-      skippedCount: result.skippedCount,
-      errorCount: result.errorCount,
-    });
-
-    return NextResponse.json(result);
-  } catch (error) {
-    // #476 — concurrent invocation (schedule overlap / manual re-run)
-    // skips with a 409 instead of double-running.
-    if (error instanceof CronLockHeldError) {
-      return NextResponse.json({ error: error.message }, { status: 409 });
-    }
-    Sentry.captureException(error, { tags: { subsystem: "cron", job: "sync-payment-earnings" } });
-    console.error("Error in payment-earning sync:", error);
-    return NextResponse.json(
-      {
-        error: "Failed to sync payment earnings",
-        details: error instanceof Error ? error.message : String(error),
-      },
-      { status: 500 },
-    );
-  }
-}
-
-// Also support POST for manual triggering
-export async function POST(req: NextRequest): Promise<NextResponse> {
-  return GET(req);
-}
+export const { GET, POST } = cleanupRoute({
+  job: "sync-payment-earnings",
+  run: (req) => syncPaymentEarnings({ limit: parseLimitParam(req) }),
+  summarize: (r) => ({
+    totalProcessed: r.totalProcessed,
+    createdCount: r.createdCount,
+    skippedCount: r.skippedCount,
+    errorCount: r.errorCount,
+  }),
+  // #1390 review — the constant 200 masked errorCount>0 runs as healthy; the
+  // default statusFor already reads result.success.
+  failureMessage: "Failed to sync payment earnings",
+});

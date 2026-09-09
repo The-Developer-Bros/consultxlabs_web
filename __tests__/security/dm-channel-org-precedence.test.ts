@@ -109,7 +109,7 @@ describe("no site re-types the precedence chain", () => {
   const CONSUMERS: [string, string][] = [
     ["creators", "actions/stream/chat/channel.action.ts"],
     ["reconcile", "actions/stream/chat/event-channel.action.ts"],
-    ["webhook", "lib/payments/webhooks/handlers.ts"],
+    ["webhook", "lib/payments/webhooks/ensure-channels.ts"],
     [
       "consultation approval",
       "app/api/bookings/consultations/[consultationId]/route.ts",
@@ -138,7 +138,7 @@ describe("no site re-types the precedence chain", () => {
     ["creators", "actions/stream/chat/channel.action.ts"],
     ["reconcile", "actions/stream/chat/event-channel.action.ts"],
     ["search", "app/api/stream/channels/search-appointments/route.ts"],
-    ["webhook", "lib/payments/webhooks/handlers.ts"],
+    ["webhook", "lib/payments/webhooks/ensure-channels.ts"],
     [
       "subscription approval",
       "app/api/bookings/subscriptions/[subscriptionId]/route.ts",

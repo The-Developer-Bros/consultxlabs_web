@@ -6,8 +6,13 @@ name: Sweep Stuck Webhook Events
 
 on:
   schedule:
+    # ADR 22 — this schedule is an upper bound on frequency, not a delivered cadence; ADR 27 — the Netlify ticker (netlify/functions/cron-tick.mts) is what actually holds the cadence for the money sweeps.
     - cron: "4-59/10 * * * *"
   workflow_dispatch: # Allow manual triggering
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   sweep-stuck-webhook-events:

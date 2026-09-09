@@ -1,6 +1,5 @@
 "use client";
 
-import * as Sentry from "@sentry/nextjs";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -28,11 +27,18 @@ import {
   createRazorpayCheckoutHandlers,
   createStripeCheckoutHandlers,
   handleUnifiedCheckout,
+  paymentGateways,
+  reportPaymentsError,
 } from "../../utils";
 import { calculatePricing, formatPercentage } from "../../math";
 import { useCurrency } from "@/hooks/useCurrency";
 import type { AppliedDiscount } from "@/types/checkout";
 import { OrgPayerSelector } from "@/app/checkout/components/OrgPayerSelector";
+import { FxEstimateNote } from "@/app/checkout/components/FxEstimateNote";
+import {
+  BillingStateSelect,
+  useBillingState,
+} from "@/app/checkout/components/BillingStateSelect";
 import { useCheckoutTaxContext } from "../../useCheckoutTaxContext";
 
 import type {
@@ -111,6 +117,9 @@ export default function ClassCheckoutPage({
   const [isApplyingDiscount, setIsApplyingDiscount] = useState(false);
   const [discountError, setDiscountError] = useState<string | null>(null);
   const [useReferralCredits, setUseReferralCredits] = useState(false);
+  // #1365 — GST place of supply. Blank is the statutory s.12(2)(b) default, so
+  // this never blocks checkout.
+  const billingState = useBillingState(checkoutTaxContext.billingStateCode);
   const [selectedOrganizationId, setSelectedOrganizationId] = useState<
     string | null
   >(null);
@@ -194,10 +203,7 @@ export default function ClassCheckoutPage({
           );
         }
       } catch (error) {
-        Sentry.captureException(
-          error instanceof Error ? error : new Error(String(error)),
-          { tags: { subsystem: "payments" } },
-        );
+        reportPaymentsError(error);
         console.error("Error fetching referral credits:", error);
       } finally {
         setIsLoadingCredits(false);
@@ -264,6 +270,7 @@ export default function ClassCheckoutPage({
             ? false
             : useReferralCredits,
           organizationId: selectedOrganizationId ?? undefined,
+          ...billingState.bodyField,
         });
 
         await handleUnifiedCheckout(
@@ -274,10 +281,7 @@ export default function ClassCheckoutPage({
           isMockPayment,
         );
       } catch (error) {
-        Sentry.captureException(
-          error instanceof Error ? error : new Error(String(error)),
-          { tags: { subsystem: "payments" } },
-        );
+        reportPaymentsError(error);
         console.error("Checkout error:", error);
         if (error instanceof Error) {
           // Provide more informative error messages based on the error type
@@ -327,6 +331,7 @@ export default function ClassCheckoutPage({
       appliedDiscount,
       useReferralCredits,
       selectedOrganizationId,
+      billingState.bodyField,
       validatedSearchParams,
       currency,
       availableClassId,
@@ -357,10 +362,7 @@ export default function ClassCheckoutPage({
         );
         _setReviews(reviewsData);
       } catch (error) {
-        Sentry.captureException(
-          error instanceof Error ? error : new Error(String(error)),
-          { tags: { subsystem: "payments" } },
-        );
+        reportPaymentsError(error);
         console.error("Error fetching plan data:", error);
         setError(
           error instanceof Error
@@ -605,6 +607,11 @@ export default function ClassCheckoutPage({
           }}
         />
         <Separator className="bg-border" />
+        <BillingStateSelect
+          value={billingState.value}
+          onChange={billingState.onChange}
+        />
+        <Separator className="bg-border" />
         <div className="grid gap-4">
           <div className="font-semibold">Discount Codes</div>
           <div className="flex items-center gap-2">
@@ -772,6 +779,10 @@ export default function ClassCheckoutPage({
                 <div>Total</div>
                 <div>{formatPrice(pricing.total)}</div>
               </div>
+              <FxEstimateNote
+                totalPaise={pricing.total}
+                organizationId={selectedOrganizationId}
+              />
             </div>
           </CardContent>
         </Card>
@@ -782,20 +793,7 @@ export default function ClassCheckoutPage({
               Select your preferred payment method
             </div>
           </div>
-          {[
-            {
-              name: "Stripe",
-              description: "Card payments (international)",
-              gateway: "STRIPE" as const,
-              isActive: true,
-            },
-            {
-              name: "Razorpay",
-              description: "UPI, cards & bank transfer",
-              gateway: "RAZORPAY" as const,
-              isActive: true,
-            },
-          ].map((gateway) => (
+          {paymentGateways.map((gateway) => (
             <Card key={gateway.name} className="border-border">
               <CardHeader>
                 <CardTitle className="text-foreground">
@@ -830,6 +828,7 @@ export default function ClassCheckoutPage({
                               ? false
                               : useReferralCredits,
                             organizationId: selectedOrganizationId ?? undefined,
+                            ...billingState.bodyField,
                           })}
                           onPaymentSuccess={razorpayHandlers.onPaymentSuccess}
                           onPaymentError={razorpayHandlers.onPaymentError}
@@ -848,6 +847,7 @@ export default function ClassCheckoutPage({
                               ? false
                               : useReferralCredits,
                             organizationId: selectedOrganizationId ?? undefined,
+                            ...billingState.bodyField,
                           })}
                           onPaymentSuccess={stripeHandlers.onPaymentSuccess}
                           onPaymentError={stripeHandlers.onPaymentError}

@@ -8,7 +8,15 @@ color: blue
 
 ## Before you start
 
-**Read these first, under `.claude/skills/razorpay/`: references/not-used-here/subscriptions.md (note the banner) and references/this-repo.md.** Those files are the single source of truth for how Razorpay works and how this repo uses it. Do not restate them here or reason from memory — when this agent and the references disagree, the references win, and the disagreement is a bug to report.
+**This repo does not use Razorpay Subscriptions.** Recurring billing is in-house
+(`BillingSubscription` + `jobs/billing/`), each cycle is paid with an ordinary one-off order, and
+GST invoices come from `lib/compliance/gst.ts` and `lib/payments/billing/`. The subscription
+reference below lives under `not-used-here/` for exactly that reason. If the task is to
+understand or change recurring billing, say so and stop — this agent only applies when the
+decision to stay off Razorpay Subscriptions is being deliberately reversed, and that reversal is
+a product decision, not one this agent may make on its own.
+
+**Read these first, under `.claude/skills/finance/references/razorpay/`: references/not-used-here/subscriptions.md (note the banner) and references/this-repo.md.** Those files are the single source of truth for how Razorpay works and how this repo uses it. Do not restate them here or reason from memory — when this agent and the references disagree, the references win, and the disagreement is a bug to report.
 
 Facts that override generic Razorpay advice in this repo:
 

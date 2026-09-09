@@ -5,8 +5,14 @@ import {
 } from "@tanstack/react-query";
 import { OperatorAppointmentsClient } from "./OperatorAppointmentsClient";
 import { getStaffAppointments } from "@/lib/data/staff-appointments";
+import type { Scope } from "@/lib/api/scope/parse";
 
-export async function OperatorAppointmentsPage() {
+/**
+ * `scope` is passed in rather than defaulted so each operator tree states what
+ * it is looking at (#674 defect 13). Both callers pass `{ kind: "all" }` — the
+ * platform-wide triage view these pages exist for.
+ */
+export async function OperatorAppointmentsPage({ scope }: { scope: Scope }) {
   const queryClient = new QueryClient();
 
   // #890 — SSR prefetch the DEFAULT view (page 1, no filters) so the client
@@ -21,7 +27,7 @@ export async function OperatorAppointmentsPage() {
         "staff-appointments",
         { page: 1, type: "all", status: "all", search: "" },
       ],
-      queryFn: () => getStaffAppointments({ page: 1 }),
+      queryFn: () => getStaffAppointments({ page: 1, scope }),
     }),
   ]);
 

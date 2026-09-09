@@ -5,13 +5,14 @@
 **Dev server:** already running (`npm run dev`)
 
 > **Coverage marker:** this case covers the reschedule-proposal **response loop**
-> (propose → counterparty accepts/declines → state assertions), whose response
-> endpoints land with **train PR 3 of #1169 (issue #1162)**. Run it only on a
-> branch where that PR is merged; on plain `dev` the propose/withdraw halves
-> exist but the respond phase will 404. The proposal model, transitions and
-> expiry policy asserted here are already live (`lib/booking/transitions.ts`,
-> `lib/booking/reschedule-proposals.ts`, `prisma/schema.prisma model
-> RescheduleRequest`).
+> (propose → counterparty accepts/declines → state assertions). Every endpoint
+> it exercises is live on `dev`: `POST
+/api/appointments/[appointmentId]/reschedule`, its `respond` child and its
+> `withdraw` child all exist, as do the proposal model, the transitions and the
+> expiry policy (`lib/booking/transitions.ts`,
+> `lib/booking/reschedule-proposals.ts`, `lib/booking/reschedule-respond.ts`,
+> `lib/booking/reschedule-withdraw.ts`, `prisma/schema.prisma model
+RescheduleRequest`).
 
 You are a senior QA engineer. Your job is to run end-to-end tests of the
 reschedule-proposal lifecycle — the asymmetric auto-confirm rule, the response
@@ -104,10 +105,16 @@ async () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        releasedSlotIds: ["<ORIGINAL_SLOT_ID>"],
-        proposedSlots: [
-          { startsAt: "<D+6T14:00Z>", endsAt: "<D+6T14:30Z>" },
-        ],
+        // The REQUEST field is `slotIds` (legacy single `slotId` also accepted).
+        // `releasedSlotIds` is the COLUMN the route writes from the slots it
+        // resolved — sending it here does nothing, and because
+        // RescheduleProposalSchema is `.passthrough()` it is silently ignored
+        // rather than rejected, so the whole booking would be released.
+        slotIds: ["<ORIGINAL_SLOT_ID>"],
+        // Each proposed row must be EXACTLY one 30-minute atom; the schema
+        // rejects anything else, because manual mode reads each entry as one
+        // slot start and a 60-minute row would book half a session.
+        proposedSlots: [{ startsAt: "<D+6T14:00Z>", endsAt: "<D+6T14:30Z>" }],
         reason: "Agent 007 consultant-initiated proposal",
       }),
     },
@@ -143,12 +150,26 @@ route). DB verify the count of open rows for the appointment is exactly 1.
 
 ---
 
-## Phase 2 — Counterparty ACCEPTS (train PR 3 response loop)
+## Phase 2 — Counterparty ACCEPTS
 
-Login as CONSULTEE and accept `PROPOSAL_ID` via the respond endpoint shipped by
-train PR 3 (#1162) — consult `docs/booking/07-rescheduling-flow.md` on that
-branch for the exact path/body; it accepts an `ACCEPTED`/`DECLINED` response
-from the non-initiating party.
+Login as CONSULTEE and accept the open proposal. The endpoint is `POST
+/api/appointments/<APPOINTMENT_ID>/reschedule/respond` and its whole body is
+`{ "action": "accept" | "decline" }` — the proposal is found from the
+appointment, not passed by id:
+
+```javascript
+async () => {
+  const response = await fetch(
+    "/api/appointments/<APPOINTMENT_ID>/reschedule/respond",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "accept" }),
+    },
+  );
+  return { status: response.status, body: await response.json() };
+};
+```
 
 **Expected:** 200. Then assert the full post-acceptance state:
 
@@ -180,7 +201,10 @@ mapped to a 409/400, never a second acceptance).
 ### Test 2.3 — Only the counterparty may respond
 
 As CONSULTANT (the initiator), attempt to accept your own proposal.
-**Expected:** 403/404 — the initiator cannot answer their own proposal.
+**Expected:** **404**, with the same `No open reschedule request for this
+booking.` message a caller with no open proposal gets — the respond route
+answers `!open || !isCounterparty` identically on purpose, so it cannot be used
+as a membership oracle. See Phase 4b item 2.
 
 ---
 
@@ -190,7 +214,8 @@ As CONSULTANT, open a second proposal (the lock is free again) moving the
 session to **6 days out, 15:00 UTC**, releasing the current confirmed slot.
 Verify `PENDING_REVIEW` + the new lock claim as in Phase 1.
 
-As CONSULTEE, respond `DECLINED`.
+As CONSULTEE, `POST /api/appointments/<APPOINTMENT_ID>/reschedule/respond` with
+`{ "action": "decline" }`.
 
 **Expected:** 200, and the booking **stands unchanged**:
 
@@ -233,6 +258,29 @@ assert `WITHDRAWN` + lock released.
 
 ---
 
+## Phase 4b — The respond and withdraw negatives
+
+These four answers are deliberate and each has a reason; assert all of them.
+
+1. **Respond with a bad action.** `{ "action": "maybe" }`.
+   **Expected:** **400**, `action must be "accept" or "decline"`.
+2. **Respond when there is no open proposal**, or as a user who is not the
+   counterparty, or as the **initiator** of the open proposal.
+   **Expected:** **404** in all three cases, with the identical message
+   `No open reschedule request for this booking.` The sameness is the point: a
+   403 here would be a membership oracle letting any signed-in user walk
+   appointment ids and learn which bookings have a live reschedule and whose it
+   is.
+3. **Withdraw as someone who is not the initiator**, or with no open request.
+   **Expected:** **404**, same message, same reasoning. `POST
+.../reschedule/withdraw` takes **no body**.
+4. **Withdraw a proposal the other party already answered.**
+   **Expected:** **409** with `code: "PROPOSAL_NOT_OPEN"` — the counterparty
+   answered while the request was in flight, which is a conflict rather than a
+   failure of the caller's input.
+
+---
+
 ## Phase 5 — Expiry Math Spot-Check
 
 For any proposal created above, assert the two-bound expiry rule directly:
@@ -250,22 +298,24 @@ FROM "RescheduleRequest" WHERE "appointmentId" = '<APPOINTMENT_ID>';
 
 ## Verification Checklist (End-to-End)
 
-| # | Check | Expected |
-| --- | --- | --- |
-| 1 | Consultant proposal → PENDING_REVIEW, never auto-confirms | PENDING_REVIEW |
-| 2 | Open proposal claims `openForAppointmentId` | = appointment id |
-| 3 | Second open proposal on same appointment | 409 |
-| 4 | Released slot flips to RESCHEDULED, not deleted | RESCHEDULED |
-| 5 | Consultee ACCEPT → terminal + slot confirmed at proposed time | ACCEPTED |
-| 6 | Payment row untouched by the whole loop | 1 row, unchanged |
-| 7 | Double-respond | 4xx (CAS dead edge) |
-| 8 | Initiator cannot respond to own proposal | 403/404 |
-| 9 | DECLINE → booking re-confirmed at original time | DECLINED, slot back |
-| 10 | Consultee in-availability proposal | AUTO_ACCEPTED |
-| 11 | Consultee out-of-availability proposal | stays PENDING_REVIEW |
-| 12 | Withdraw releases the lock | WITHDRAWN, lock NULL |
-| 13 | expiresAt within the 72h lifetime cap | true |
-| 14 | Cleanup complete | all counts = 0 |
+| #   | Check                                                         | Expected                    |
+| --- | ------------------------------------------------------------- | --------------------------- |
+| 1   | Consultant proposal → PENDING_REVIEW, never auto-confirms     | PENDING_REVIEW              |
+| 2   | Open proposal claims `openForAppointmentId`                   | = appointment id            |
+| 3   | Second open proposal on same appointment                      | 409                         |
+| 4   | Released slot flips to RESCHEDULED, not deleted               | RESCHEDULED                 |
+| 5   | Consultee ACCEPT → terminal + slot confirmed at proposed time | ACCEPTED                    |
+| 6   | Payment row untouched by the whole loop                       | 1 row, unchanged            |
+| 7   | Double-respond                                                | 4xx (CAS dead edge)         |
+| 8   | Initiator cannot respond to own proposal                      | 404, same message as "none" |
+| 9   | DECLINE → booking re-confirmed at original time               | DECLINED, slot back         |
+| 10  | Consultee in-availability proposal                            | AUTO_ACCEPTED               |
+| 11  | Consultee out-of-availability proposal                        | stays PENDING_REVIEW        |
+| 12  | Withdraw releases the lock                                    | WITHDRAWN, lock NULL        |
+| 13  | Respond with an action other than accept/decline              | 400                         |
+| 14  | Withdraw a proposal already answered                          | 409 `PROPOSAL_NOT_OPEN`     |
+| 15  | expiresAt within the 72h lifetime cap                         | true                        |
+| 16  | Cleanup complete                                              | all counts = 0              |
 
 ---
 

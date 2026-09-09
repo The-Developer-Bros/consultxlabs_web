@@ -426,7 +426,7 @@ _Kit free tier covers 10K subscribers. Creator ($39/mo) only needed for drip seq
 6. Update `app/api/webhooks/directus/route.ts` to handle real events
 7. Build blog frontend pages in Next.js
 
-**Architecture docs:** `docs/roadmap/content-strategy/01-directus-cms-setup.md`
+**Architecture docs:** the Directus CMS design was deleted with `docs/roadmap/` in #1535; the live question is tracked in #767.
 
 ---
 

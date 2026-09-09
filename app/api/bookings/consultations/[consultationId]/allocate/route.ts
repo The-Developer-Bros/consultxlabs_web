@@ -97,6 +97,12 @@ export async function PATCH(
         // time outside the published availability is the consultant's call,
         // not something a consultee may assert about someone else's schedule.
         override: body.override === true && canOverride,
+        // #1206 — only the consultant (or a privileged caller) may decide to
+        // schedule fewer sessions than the plan sold.
+        allowPartial: body.allowPartial === true && canOverride,
+        // #1206 — top up the sessions an earlier partial allocation left
+        // unplaced instead of deleting the confirmed ones and re-planning.
+        topUp: body.topUp === true && canOverride,
       });
 
       const duration = Date.now() - startTime;
@@ -111,6 +117,11 @@ export async function PATCH(
             // structured code to render a cause-specific toast instead of
             // guessing from the raw message string.
             errorCode: result.errorCode,
+            // #1206 — a SLOT_SHORTAGE the consultant could still act on: the
+            // client offers "allocate N now, the rest later" instead of a
+            // dead end.
+            placeableSessions: result.placeableSessions,
+            requiredSessions: result.requiredSessions,
             details: {
               consultationId,
               mode,
@@ -134,6 +145,14 @@ export async function PATCH(
       return NextResponse.json({
         data: result.appointments,
         warnings: result.warnings,
+        // #1206 — derived, never stored: how much of the plan now has times.
+        partial: result.partial,
+        placedSessions: result.placedSessions,
+        requiredSessions: result.requiredSessions,
+        unplacedSessions: result.unplacedSessions,
+        // #1206 — a top-up that wrote nothing. Lets the caller tell "already
+        // complete / still no room" from "sessions were added".
+        noChange: result.noChange,
       });
     } catch (validationError) {
       const duration = Date.now() - startTime;

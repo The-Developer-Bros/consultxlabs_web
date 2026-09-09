@@ -8,7 +8,7 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev --name init",
     "db:pull": "prisma db pull",
-    "db:push": "npm run db:push:schema && npm run db:sidecars",
+    "db:push": "npm run db:push:schema && npm run db:assert-sidecars",
     "db:push:schema": "prisma db push && npm run db:sidecars",
     "db:sidecars": "npm run db:triggers && npm run db:leg-triggers && npm run db:constraints",
     "db:recompute-ratings": "npx tsx -r dotenv/config scripts/db/recompute-consultant-ratings.ts",

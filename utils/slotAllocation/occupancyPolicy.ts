@@ -9,7 +9,13 @@
  * (not yet completed, cancelled, rejected, or expired).
  */
 
-import { AppointmentStatus, TrialSessionStatus, Prisma } from "@prisma/client";
+import {
+  AppointmentStatus,
+  BookingSource,
+  PaymentStatus,
+  TrialSessionStatus,
+  Prisma,
+} from "@prisma/client";
 
 /**
  * Consultation/Subscription statuses that count as "slot occupied"
@@ -156,5 +162,61 @@ export function buildConsultantOccupancyWhere(
 
   return {
     AND: [{ OR: buildOccupiedAppointmentFilter() }, { OR: reachesConsultant }],
+  };
+}
+
+/**
+ * #1319 — the SQL twin of isOccupiedByLiveAppointment, for callers that select
+ * SLOTS rather than appointments and so cannot run the JS predicate (checkout
+ * step 1, the trial route). Subtracts the two dead-hold shapes from the
+ * occupancy filter: an APPROVED_PENDING_PAYMENT or DIRECT_CHECKOUT PENDING
+ * request whose every payment is EXPIRED or past its window. Kept beside
+ * buildOccupiedAppointmentFilter so the two cannot drift silently;
+ * hold-expiry-predicate.test.ts asserts they agree.
+ *
+ * Prisma subtlety: `every` is vacuously true on an appointment with no
+ * payments, so `some: {}` is required alongside it — that is the SQL form of
+ * the `payments.length > 0` guard in the JS predicate.
+ */
+export function buildDeadHoldFilter(now: Date): Prisma.AppointmentWhereInput {
+  const allPaymentsDead: Prisma.AppointmentWhereInput = {
+    payment: {
+      some: {},
+      every: {
+        OR: [
+          { paymentStatus: PaymentStatus.EXPIRED },
+          { paymentStatus: PaymentStatus.FAILED },
+          // Clock-dead only while still PENDING: a SUCCEEDED row keeps its
+          // expiresAt and must never free the slot it paid for.
+          { paymentStatus: PaymentStatus.PENDING, expiresAt: { lt: now } },
+        ],
+      },
+    },
+  };
+  return {
+    OR: [
+      {
+        consultation: { status: AppointmentStatus.APPROVED_PENDING_PAYMENT },
+        ...allPaymentsDead,
+      },
+      {
+        subscription: { status: AppointmentStatus.APPROVED_PENDING_PAYMENT },
+        ...allPaymentsDead,
+      },
+      {
+        consultation: {
+          status: AppointmentStatus.PENDING,
+          bookingSource: BookingSource.DIRECT_CHECKOUT,
+        },
+        ...allPaymentsDead,
+      },
+      {
+        subscription: {
+          status: AppointmentStatus.PENDING,
+          bookingSource: BookingSource.DIRECT_CHECKOUT,
+        },
+        ...allPaymentsDead,
+      },
+    ],
   };
 }

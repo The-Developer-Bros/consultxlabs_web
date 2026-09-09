@@ -136,7 +136,12 @@ describe("checkout hardening (#1093 tail + tentative visibility)", () => {
     const step5 = checkout.indexOf(
       "// STEP 5: Create tentative appointment + payment record",
     );
-    const window = checkout.slice(step5, step5 + 600);
+    // #1435 — the window is measured in characters, so the comment block
+    // between the marker and the call decides whether this passes. Strip the
+    // comments and assert on the code instead of enlarging it again.
+    const window = checkout
+      .slice(step5, step5 + 2000)
+      .replace(/^\s*\/\/.*$/gm, "");
     expect(window).toContain("withSerializableRetry(");
   });
 });

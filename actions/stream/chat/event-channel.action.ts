@@ -226,7 +226,7 @@ export async function addUserToEventChannel(
 
     // Create channel with all data and members in a single atomic call
     // This fixes the "created_by_id must be provided" error and reduces 3 API calls to 1
-    const { consultantId, members, name } = eventData;
+    const { consultantId, members, name, organizationId } = eventData;
     // #1270 — host and joiner FIRST. `Webinar.maxParticipants` is unbounded and
     // only the first 100 members fit in the create() body, so ordering decides
     // who is guaranteed a seat in the atomic call and who arrives in a
@@ -240,10 +240,27 @@ export async function addUserToEventChannel(
 
     // Re-initialize channel with all required data for atomic creation
     // Note: Explicitly typing channel data for stream-chat v9
+    // #1280 PR 7 — tag the funding org AT SOURCE.
+    //
+    // Measured live on 2026-08-30: ZERO of 886 channels carried
+    // `organization_id`, in any form. The org Messages tab and the
+    // `/api/organizations/[orgId]/stream/channels` compliance route both filter
+    // on it, so both returned empty for every organization — a compliance
+    // export that silently reported "no channels" rather than failing.
+    //
+    // #746 §1 records per-org channel tagging as done. It is not, and this is
+    // the path that made that false: `createChannel` tags on the eager path,
+    // but this lazy create-on-miss is what actually mints most channels, and it
+    // never carried the field.
+    //
+    // Spread rather than a null assignment: a literal `organization_id: null`
+    // is a SET on Stream's side, and the reconciler's `$exists` filters treat a
+    // present-but-null field differently from an absent one.
     const eventChannelData = {
       name,
       created_by_id: consultantId,
       [`${eventType}_id`]: eventId,
+      ...(organizationId ? { organization_id: organizationId } : {}),
       members: createMemberChunk(allMembers),
     };
     const channelWithData = client.channel(
@@ -415,7 +432,20 @@ async function getEventData(eventType: EventType, eventId: string) {
           s.user.map((u) => u.id),
         ) || [];
 
-      return { consultantId, members, name: webinar.webinarPlan.title };
+      // #1280 PR 7 — the funding org, resolved by the SAME `bookingOrgId`
+      // precedence the DM path and the eligibility gate use: plan first, then
+      // appointment. Carried out of here so the create() below can tag it.
+      const organizationId = bookingOrgId({
+        webinarPlan: webinar.webinarPlan,
+        appointment: webinar.appointment,
+      });
+
+      return {
+        consultantId,
+        members,
+        name: webinar.webinarPlan.title,
+        organizationId,
+      };
     }
 
     case "class": {
@@ -449,7 +479,20 @@ async function getEventData(eventType: EventType, eventId: string) {
             a.slotsOfAppointment?.flatMap((s) => s.user.map((u) => u.id)) || [],
         ) || [];
 
-      return { consultantId, members, name: classData.classPlan.title };
+      const organizationId = bookingOrgId({
+        // A class is funded once but holds many appointments, so `bookingOrgId`
+        // takes the first org-tagged one — the same `find`, not `[0]`, that the
+        // DM path relies on for a subscription.
+        classPlan: classData.classPlan,
+        appointments: classData.appointments,
+      });
+
+      return {
+        consultantId,
+        members,
+        name: classData.classPlan.title,
+        organizationId,
+      };
     }
 
     case "consultation": {
@@ -464,6 +507,15 @@ async function getEventData(eventType: EventType, eventId: string) {
             },
           },
           requestedBy: { include: { user: { select: { id: true } } } },
+          // #1280 PR 7 — the appointment is the second arm of `bookingOrgId`'s
+          // precedence. Without it this branch could only ever see the plan's
+          // org, so a personal plan booked under an organization would produce
+          // an untagged channel while the DM-eligibility path, which does read
+          // it, considered the pair org-scoped. These two arms are reachable
+          // only from tests today (the open route restricts `eventType` to
+          // webinar/class), but a resolver that disagrees with itself depending
+          // on the caller is exactly what this change exists to remove.
+          appointment: { select: { organizationId: true } },
         },
       });
       if (!consultation) return null;
@@ -477,6 +529,10 @@ async function getEventData(eventType: EventType, eventId: string) {
         consultantId,
         members: [consulteeId],
         name: consultation.consultationPlan.title,
+        organizationId: bookingOrgId({
+          consultationPlan: consultation.consultationPlan,
+          appointment: consultation.appointment,
+        }),
       };
     }
 
@@ -492,6 +548,9 @@ async function getEventData(eventType: EventType, eventId: string) {
             },
           },
           requestedBy: { include: { user: { select: { id: true } } } },
+          // Plural here — a subscription holds many appointments and is funded
+          // once, so `bookingOrgId` takes the first org-tagged one.
+          appointments: { select: { organizationId: true } },
         },
       });
       if (!subscription) return null;
@@ -505,6 +564,10 @@ async function getEventData(eventType: EventType, eventId: string) {
         consultantId,
         members: [consulteeId],
         name: subscription.subscriptionPlan.title,
+        organizationId: bookingOrgId({
+          subscriptionPlan: subscription.subscriptionPlan,
+          appointments: subscription.appointments,
+        }),
       };
     }
 

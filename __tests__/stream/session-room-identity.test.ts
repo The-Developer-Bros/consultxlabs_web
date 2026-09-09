@@ -461,17 +461,54 @@ describe("the call describes the session it belongs to", () => {
     // asserting them inside `custom` would pass for any implementation,
     // because nothing could ever put them there.
     expect(mockCallPayloads[0].data?.backstage).toBeUndefined();
-    expect(mockCallPayloads[0].data?.settings_override).toBeUndefined();
-    // The strongest form of the same pin: adding either field, at any nesting,
-    // changes this key set and fails here. `created_by_id` joined it in #1270 —
-    // a server-side getOrCreate carries no user context, so Stream refuses the
-    // whole request without an explicit author.
+
+    // #1280 — `settings_override` is no longer empty, so the pin moved INTO it
+    // rather than being dropped.
+    //
+    // It used to assert the whole object absent, which was the strongest
+    // available form when nothing legitimately belonged there. The duration cap
+    // now does: `limits.max_duration_seconds` ENDS a session that is already
+    // running and cannot refuse anyone entry, so it does not touch the
+    // invariant this case exists for. Whitelisting the exact nested shape keeps
+    // that invariant sharper than the old blanket check did — a `backstage` or
+    // `join_ahead_time_seconds` smuggled in one level down would have satisfied
+    // "settings_override is undefined" only by not existing at all, whereas now
+    // it fails on the key set.
+    const settingsOverride = mockCallPayloads[0].data?.settings_override as
+      | Record<string, unknown>
+      | undefined;
+    expect(Object.keys(settingsOverride ?? {})).toEqual(["limits"]);
+    expect(
+      Object.keys((settingsOverride?.limits as Record<string, unknown>) ?? {}),
+    ).toEqual(["max_duration_seconds"]);
+
+    // Adding a field at the top level still fails here. `created_by_id` joined
+    // this set in #1270 — a server-side getOrCreate carries no user context, so
+    // Stream refuses the whole request without an explicit author.
     expect(Object.keys(mockCallPayloads[0].data ?? {}).sort()).toEqual([
       "created_by_id",
       "custom",
       "members",
+      "settings_override",
       "starts_at",
     ]);
+  });
+
+  it("sends a duration cap that cannot cut the booked session short", async () => {
+    // The cap counts from FIRST JOIN, not from `starts_at` (#1160 correcting
+    // #1144). A 30-minute booking whose consultant arrives 15 minutes early
+    // must still have the full booked window left when the clock starts.
+    seed([slotRow("A", "10:00", "10:30")]);
+
+    await join(rows[0]);
+
+    const cap = (
+      (mockCallPayloads[0].data?.settings_override as Record<string, unknown>)
+        ?.limits as Record<string, number>
+    ).max_duration_seconds;
+
+    expect(Number.isInteger(cap)).toBe(true);
+    expect(cap).toBeGreaterThan(30 * 60);
   });
 
   it("still creates the call when only the profile fails", async () => {
@@ -495,6 +532,13 @@ describe("the call describes the session it belongs to", () => {
     expect(custom().sessionEndsAt).toBeUndefined();
     expect(custom().anchorSlotId).toBe("A");
     expect(startedAt(mockCallPayloads[0])).toBe(at("10:00").toISOString());
+
+    // #1305 review — and NO duration cap. The cap counts from first join, so a
+    // value guessed from a default would terminate a four-hour webinar two
+    // hours in. With no resolved run there is no safe number, and omitting the
+    // field is exactly the behaviour before the backstop existed: the call type
+    // carries no limit of its own.
+    expect(mockCallPayloads[0].data?.settings_override).toBeUndefined();
   });
 
   it("creates nothing at all when the slot resolves to no appointment", async () => {

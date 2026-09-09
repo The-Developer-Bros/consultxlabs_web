@@ -37,6 +37,9 @@ export interface AllocationRequest {
   initialAllocation?: boolean;
   /** #1012 — reschedule stale-tab precondition. */
   expectedTentativeSlotCount?: number;
+  /** #1206 — the consultant's explicit "place what fits now". Only ever sent
+   * on the second attempt, after the server has said how many sessions fit. */
+  allowPartial?: boolean;
 }
 
 /** What the allocate endpoints actually return in `data`: the created (or
@@ -54,6 +57,14 @@ export interface AllocationResponse {
   errorCode?: string;
   /** HTTP status of the failed response — 409 means "allocated elsewhere". */
   httpStatus?: number;
+  /** #1206 — set on success when fewer sessions were placed than the plan
+   * requires, and on a SLOT_SHORTAGE refusal (`placeableSessions`) to say how
+   * many a partial attempt would place. Counts are whole sessions. */
+  partial?: boolean;
+  placedSessions?: number;
+  requiredSessions?: number;
+  unplacedSessions?: number;
+  placeableSessions?: number;
 }
 
 export interface AllocationCallOptions {
@@ -65,6 +76,8 @@ export interface AllocationCallOptions {
   /** Sent as the Idempotency-Key header; the server replays the original
    * batch for a repeated key instead of double-booking (#837). */
   idempotencyKey?: string;
+  /** #1206 — allocate the sessions that fit instead of refusing them all. */
+  allowPartial?: boolean;
 }
 
 export interface ValidationResponse {
@@ -136,12 +149,19 @@ export class AllocationService {
           error: data.error || fallbackError,
           errorCode: data.errorCode,
           httpStatus: response.status,
+          // #1206 — a shortage the consultant can still act on.
+          placeableSessions: data.placeableSessions,
+          requiredSessions: data.requiredSessions,
         };
       }
 
       return {
         success: true,
         data: data.data,
+        partial: data.partial,
+        placedSessions: data.placedSessions,
+        requiredSessions: data.requiredSessions,
+        unplacedSessions: data.unplacedSessions,
       };
     } catch (error) {
       console.error(`Allocation request failed (${url}):`, error);
@@ -191,7 +211,10 @@ export class AllocationService {
       };
     } catch (error) {
       console.error("Error validating consultation slots:", error);
-      reportSentryError(error, { subsystem: "scheduling", op: "slot-allocation" });
+      reportSentryError(error, {
+        subsystem: "scheduling",
+        op: "slot-allocation",
+      });
       return {
         success: false,
         error:
@@ -234,7 +257,10 @@ export class AllocationService {
       };
     } catch (error) {
       console.error("Error validating subscription slots:", error);
-      reportSentryError(error, { subsystem: "scheduling", op: "slot-allocation" });
+      reportSentryError(error, {
+        subsystem: "scheduling",
+        op: "slot-allocation",
+      });
       return {
         success: false,
         error:
@@ -273,6 +299,7 @@ export class AllocationService {
       useRequestedSlots: allocationOptions?.useRequestedSlots,
       initialAllocation: allocationOptions?.initialAllocation,
       expectedTentativeSlotCount: allocationOptions?.expectedTentativeSlotCount,
+      allowPartial: allocationOptions?.allowPartial,
     };
 
     const paths = {
@@ -332,7 +359,10 @@ export class AllocationService {
       };
     } catch (error) {
       console.error("Error validating class slots:", error);
-      reportSentryError(error, { subsystem: "scheduling", op: "slot-allocation" });
+      reportSentryError(error, {
+        subsystem: "scheduling",
+        op: "slot-allocation",
+      });
       return {
         success: false,
         error:
@@ -375,7 +405,10 @@ export class AllocationService {
       };
     } catch (error) {
       console.error("Error validating webinar slots:", error);
-      reportSentryError(error, { subsystem: "scheduling", op: "slot-allocation" });
+      reportSentryError(error, {
+        subsystem: "scheduling",
+        op: "slot-allocation",
+      });
       return {
         success: false,
         error:
@@ -488,6 +521,14 @@ export class AllocationService {
      * consultant would not see the slots they just booked.
      */
     bypassHttpCache?: boolean,
+    /**
+     * #1319 PR 9 — the previous response's ETag. The route recomputes its
+     * change marker in one indexed read and answers 304 when nothing this grid
+     * depends on has moved, so an unchanged 60s poll costs one statement
+     * instead of eight. Skipped on the bypass path: that caller just mutated
+     * and wants the body regardless.
+     */
+    ifNoneMatch?: string | null,
   ) {
     if (!consultantId) {
       throw new Error("Consultant ID is required");
@@ -516,10 +557,26 @@ export class AllocationService {
       if (consulteeUserId) {
         params.set("consulteeUserId", consulteeUserId);
       }
+      // Sending a conditional header makes fetch treat the request as
+      // `no-store` (Fetch spec §4.6), so the browser's own 30s freshness
+      // shortcut no longer short-circuits it. That is the trade: one cheap
+      // round trip that ends in 304, in exchange for never repainting from a
+      // body the browser may have evicted.
+      const conditional =
+        !bypassHttpCache && ifNoneMatch
+          ? { headers: { "If-None-Match": ifNoneMatch } }
+          : undefined;
       const response = await fetch(
         `/api/slots/availability-with-allocation/${consultantId}?${params}`,
-        bypassHttpCache ? { cache: "no-store" } : undefined,
+        bypassHttpCache ? { cache: "no-store" } : conditional,
       );
+      // 304 — the marker says nothing this grid reads has changed. The caller
+      // keeps the state it already has; no body was sent to parse.
+      if (response.status === 304) {
+        // Discriminated: the 304 branch carries NO arrays, so a caller that
+        // forgets to check `notModified` cannot mistake it for an empty week.
+        return { etag: ifNoneMatch ?? null, notModified: true as const };
+      }
       if (!response.ok) {
         const errorData = await response.json();
         // See fetchConsultantData: httpStatus lets the catch distinguish a
@@ -541,6 +598,8 @@ export class AllocationService {
       return {
         weekly: allSlots.filter((s) => s.type === "WEEKLY"),
         custom: allSlots.filter((s) => s.type === "CUSTOM"),
+        etag: response.headers.get("ETag"),
+        notModified: false as const,
       };
     } catch (error) {
       console.error("Error fetching availability slots:", error);

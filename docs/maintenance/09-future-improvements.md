@@ -55,60 +55,19 @@ export function isWriteBlockedInDegraded(
 
 ---
 
-## 2. Cron Job Maintenance Guard
+## 2. Cron Job Maintenance Guard ✅ IMPLEMENTED (completed 2026-09-02)
 
 **Problem**: All 27 cron jobs bypass middleware entirely. They connect directly to PostgreSQL and have no awareness of maintenance mode.
 
-**Proposed Change**: Create a shared utility that every cron job calls at startup to check maintenance state.
+**Update (wave-5 sweep, `fix/maintenance-and-cron-coverage`)**: This item was marked done below on the strength of the original `lib/maintenance-cron.ts` utility, but the guard had not actually reached the whole fleet: 13 scheduled jobs, including six that move money or rewrite org entitlement state (`dunning`, `advance-program-cycles`, `auto-renew-contracts`, `expire-contracts`, `timeout-member-overages`, `release-pending-trust-earnings`, plus `wallet-low-balance`), never called `abortIfMaintenance()`. The wave-5 sweep added the call to all 13, added the six financial ones to `FINANCIAL_JOB_NAMES` so they also exit on DEGRADED, and flipped `auto-renew-contracts` and `expire-contracts` from fail-open to fail-closed locks. Review of the pull request found one more omission of the same kind, `irp-uploader`, which registers IRNs with the government portal: it joined the registry and went fail-closed too. Every job under `jobs/**` now calls the guard; the three that remain unguarded (`cleanup-empty-folders`, `cron-heartbeat`, `stream-webhook-drift`) are read-only or storage-only scripts with no database connection to protect, and are enumerated in [the cron jobs reference](./04-cron-jobs-reference.md#jobs-that-ignore-maintenance-mode).
 
-**Files to Create**:
+The same sweep closed a second hole the guard never covered: the HTTP twins under `app/api/cleanup/*` import these job cores directly, so an authenticated ops trigger could run a job straight through an OFFLINE window with no check at all. `abortIfMaintenance()` cannot be reused there because its `process.exit(0)` would take the whole Next.js instance down with the request, so those routes now call `assertNotInMaintenance()`, which throws a `MaintenanceActiveError` the route handler answers with a 503 instead of exiting.
 
-- `lib/maintenance-cron.ts` -- Guard utility
+Finally, the DEGRADED write-block matcher from item 1 above was widened at the same time: it now matches by path prefix instead of exact segment equality, and covers the gaps that prefix matching exposed — the `/api/organizations/*` money routes, request-for-approval, availability writes, and reschedule respond/withdraw. The `/api/slots/appointments` pattern that used to appear in that list was removed as a no-op, since no route matches it.
 
-**Files to Modify**:
+**Where it lives now**: the guard is `abortIfMaintenance(jobName)` in `lib/maintenance-cron.ts` for the `jobs/**` entrypoints, and `assertNotInMaintenance(jobName)` for the HTTP twins that cannot call `process.exit(0)`. Both read the phase once through the same helper and reach a verdict through the same function, so they cannot drift. The per-job table, including which jobs are on `FINANCIAL_JOB_NAMES` and therefore also skip DEGRADED, is [the cron jobs reference](./04-cron-jobs-reference.md).
 
-- All 27 job files in `jobs/` -- Add guard call at entry
-
-**Implementation**:
-
-```typescript
-// lib/maintenance-cron.ts
-import { Redis } from "@upstash/redis";
-
-const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL!,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN!,
-});
-
-export async function abortIfMaintenance(jobName: string): Promise<void> {
-  try {
-    const phase = await redis.get<string>("maintenance:phase");
-    if (phase === "OFFLINE") {
-      console.log(
-        `⚠️ [${jobName}] Maintenance mode is OFFLINE. Skipping job execution.`,
-      );
-      process.exit(0); // Clean exit, GitHub Actions marks as success
-    }
-    if (phase === "DEGRADED") {
-      console.log(
-        `ℹ️ [${jobName}] Maintenance mode is DEGRADED. Proceeding with caution.`,
-      );
-    }
-  } catch (error) {
-    // Fail-open: if Redis is unreachable, proceed with the job
-    console.warn(
-      `⚠️ [${jobName}] Could not check maintenance state. Proceeding.`,
-    );
-  }
-}
-
-// Usage in each job:
-// import { abortIfMaintenance } from "@/lib/maintenance-cron";
-// await abortIfMaintenance("cleanup-abandoned-payments");
-```
-
-**Effort**: 4-6 hours (utility + updating all 27 jobs)
-**Priority**: **CRITICAL** -- This is the biggest gap in the current system. Cron jobs running during DB migration can corrupt data.
+The original proposal that stood here — a twenty-line sketch, a 27-job scope and a 4-6 hour estimate — has been removed rather than kept as history, because it described a guard that blocked OFFLINE only and merely logged during DEGRADED. Anyone reading it as a specification would have reimplemented the hole this item exists to record.
 
 ---
 
@@ -299,14 +258,14 @@ File: `scripts/cleanup/reconcile-document-storage.ts`
 
 ## Implementation Priority Order
 
-| #   | Improvement                                        | Priority | Status  |
-| --- | -------------------------------------------------- | -------- | ------- |
-| 2   | Cron job maintenance guard                         | CRITICAL | ✅ Done |
-| 1   | DEGRADED write-blocking                            | HIGH     | ✅ Done |
-| 3   | Webhook DB health check (Stripe/Razorpay) | HIGH     | ✅ Done |
-| A   | Admin system-jobs DEGRADED blocking                | MEDIUM   | ✅ Done |
-| B   | Stream.io webhook DB health check                  | MEDIUM   | ✅ Done |
-| C   | `reconcile-document-storage` storage probe         | MEDIUM   | ✅ Done |
-| 4   | UI maintenance guard hook                          | MEDIUM   | ✅ Done |
-| 5   | Admin pre-flight API                               | MEDIUM   | ✅ Done |
-| 6   | Scheduled maintenance                              | LOW      | Pending |
+| #   | Improvement                                | Priority | Status  |
+| --- | ------------------------------------------ | -------- | ------- |
+| 2   | Cron job maintenance guard                 | CRITICAL | ✅ Done |
+| 1   | DEGRADED write-blocking                    | HIGH     | ✅ Done |
+| 3   | Webhook DB health check (Stripe/Razorpay)  | HIGH     | ✅ Done |
+| A   | Admin system-jobs DEGRADED blocking        | MEDIUM   | ✅ Done |
+| B   | Stream.io webhook DB health check          | MEDIUM   | ✅ Done |
+| C   | `reconcile-document-storage` storage probe | MEDIUM   | ✅ Done |
+| 4   | UI maintenance guard hook                  | MEDIUM   | ✅ Done |
+| 5   | Admin pre-flight API                       | MEDIUM   | ✅ Done |
+| 6   | Scheduled maintenance                      | LOW      | Pending |

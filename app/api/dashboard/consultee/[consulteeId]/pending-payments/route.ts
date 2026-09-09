@@ -1,6 +1,7 @@
 import * as Sentry from "@sentry/nextjs";
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { scopeToWhereOrgId } from "@/lib/api/scope/parse";
 import { AppointmentStatus, TrialSessionStatus } from "@prisma/client";
 import {
   requireApiAuth,
@@ -73,11 +74,15 @@ export async function GET(
 
     // Fetch all four data sources in parallel
     //
-    // #1166 ORG-4 — personal surface: sources 1-3 pin organizationId: null
+    // #1166 ORG-4 — personal surface: sources 1-3 pin the personal scope
     // (ADR 19; same personal filter as the payments route). Org-funded
     // checkouts settle on the org side and never owe the learner a payment.
     // Trials (source 4) stay unpinned: org tags on trials are attribution
     // only, and a paid trial always charges the consultee.
+    //
+    // #674 defect 13 — the pin is projected from the shared Scope vocabulary
+    // rather than written out four times as a literal.
+    const personalOrgPin = scopeToWhereOrgId({ kind: "personal" });
     const [
       pendingConsultations,
       pendingSubscriptions,
@@ -89,7 +94,7 @@ export async function GET(
         where: {
           requestedById: consulteeId,
           status: AppointmentStatus.APPROVED_PENDING_PAYMENT,
-          appointment: { is: { organizationId: null } },
+          appointment: { is: personalOrgPin },
         },
         include: {
           consultationPlan: {
@@ -114,7 +119,7 @@ export async function GET(
         where: {
           requestedById: consulteeId,
           status: AppointmentStatus.APPROVED_PENDING_PAYMENT,
-          appointments: { some: { organizationId: null } },
+          appointments: { some: personalOrgPin },
         },
         include: {
           subscriptionPlan: {
@@ -135,7 +140,7 @@ export async function GET(
           // with an earlier org-funded appointment must not leak its frozen
           // amount onto the personal dashboard.
           appointments: {
-            where: { organizationId: null },
+            where: personalOrgPin,
             orderBy: [{ createdAt: "asc" }, { id: "asc" }],
             select: { id: true, payment: frozenPaymentSelect },
             take: 1,
@@ -149,7 +154,7 @@ export async function GET(
         where: {
           userId: consulteeProfile.userId,
           paymentStatus: "PENDING",
-          organizationId: null,
+          ...personalOrgPin,
           OR: [
             // Has explicit expiresAt that's still in the future
             { expiresAt: { gt: new Date() } },

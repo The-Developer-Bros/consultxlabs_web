@@ -32,6 +32,7 @@ import {
   logWebhookEvent,
   markWebhookEventProcessed,
   isDbHealthy,
+  permanentFailure,
 } from "@/lib/webhooks/event-log";
 
 // Imported AND re-exported: a bare `export … from` creates no local binding,
@@ -211,6 +212,62 @@ export async function recordStreamEventReceipt(
   await logWebhookEvent("stream", eventId, eventType, event, signature);
 }
 
+/**
+ * One entry per handled event type: the schema that validates the payload, and
+ * the handler that consumes it.
+ *
+ * `entry()` exists so the pairing is type-checked at the definition site — the
+ * handler's parameter has to be assignable from `z.infer<typeof schema>`, or
+ * this does not compile. Where a handler's declared type is narrower than what
+ * the schema infers, the cast is written here and only here, which is where the
+ * eight `case` blocks were each doing it before.
+ *
+ * `satisfies Record<HandledEventType, …>` is the exhaustiveness proof: adding a
+ * type to HANDLED_EVENT_TYPES without adding a row here fails `tsc`, exactly as
+ * the `never` in the old default branch did.
+ */
+function entry<S extends z.ZodTypeAny>(
+  schema: S,
+  handle: (event: z.infer<S>) => Promise<void>,
+): { schema: z.ZodTypeAny; handle: (event: unknown) => Promise<void> } {
+  return { schema, handle: (event) => handle(event as z.infer<S>) };
+}
+
+const EVENT_HANDLERS = {
+  "call.recording_started": entry(
+    streamRecordingStartedSchema,
+    handleRecordingStarted,
+  ),
+  "call.recording_stopped": entry(
+    streamRecordingStoppedSchema,
+    handleRecordingStopped,
+  ),
+  "call.recording_ready": entry(streamRecordingReadySchema, (e) =>
+    handleRecordingReady(e as StreamRecordingReadyEvent),
+  ),
+  "call.recording_failed": entry(streamRecordingFailedSchema, (e) =>
+    handleRecordingFailed(e as StreamRecordingFailedEvent),
+  ),
+  "call.session_ended": entry(streamSessionEndedSchema, (e) =>
+    handleSessionEnded(e as StreamSessionEndedEvent),
+  ),
+  "call.ended": entry(streamCallEndedSchema, (e) =>
+    handleCallEnded(e as StreamCallEndedEvent),
+  ),
+  "call.session_participant_joined": entry(
+    streamSessionParticipantJoinedSchema,
+    (e) =>
+      handleSessionParticipantJoined(e as StreamSessionParticipantJoinedEvent),
+  ),
+  "call.session_participant_left": entry(
+    streamSessionParticipantLeftSchema,
+    (e) => handleSessionParticipantLeft(e as StreamSessionParticipantLeftEvent),
+  ),
+} satisfies Record<
+  HandledEventType,
+  { schema: z.ZodTypeAny; handle: (event: unknown) => Promise<void> }
+>;
+
 export async function processStreamEvent(
   event: unknown,
   eventType: string,
@@ -293,79 +350,53 @@ export async function processStreamEvent(
       return;
     }
 
+    // #1280 — one `safeParse` at a choke point, not eight `.parse()` calls.
+    //
+    // Each case used to `.parse()` its own payload. A ZodError landed in the
+    // handler catch below, was stamped on the row as an ordinary failure, and
+    // the sweeper then re-drove it every ten minutes for its 168-hour give-up
+    // window — roughly a thousand attempts at a payload that cannot become
+    // valid. Schema mismatch is not a transient failure; treating it as one
+    // burns the sweeper's budget on a row no retry can help while hiding a real
+    // contract break behind noise that ages out on its own.
+    //
+    // Parsing in one place also means adding an event type cannot reintroduce a
+    // bare `.parse()`: the schema comes from the table below, which the
+    // exhaustiveness proof in `dispatch` keeps honest.
+    const { schema, handle } = EVENT_HANDLERS[eventType];
+    const parsed = schema.safeParse(event);
+
+    if (!parsed.success) {
+      // Terminal. `markWebhookEventProcessed` in the `finally` stamps this, and
+      // the prefix keeps the sweeper away from it for good.
+      const detail = parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      processingError = permanentFailure(
+        `${eventType} payload does not match its schema — ${detail}`,
+      );
+      streamLogger.error(
+        `Stream webhook ${eventId} is permanently unprocessable`,
+        { eventType, detail },
+      );
+      // Paged, because a schema that stops matching means Stream changed a
+      // contract we depend on. That is the opposite of the churn this replaces:
+      // one alert with the field names in it, rather than a thousand silent
+      // retries.
+      Sentry.captureException(
+        new Error(`Stream ${eventType} payload failed schema validation`),
+        {
+          tags: { subsystem: "stream", reason: "stream.schema_mismatch" },
+          extra: { eventId, detail },
+          level: "error",
+        },
+      );
+      await markWebhookEventProcessed(eventId, processingError);
+      return;
+    }
+
     try {
-      switch (eventType) {
-        // Recording events
-        case "call.recording_started": {
-          const startedEvent = streamRecordingStartedSchema.parse(event);
-          await handleRecordingStarted(startedEvent);
-          break;
-        }
-
-        case "call.recording_stopped": {
-          const stoppedEvent = streamRecordingStoppedSchema.parse(event);
-          await handleRecordingStopped(stoppedEvent);
-          break;
-        }
-
-        case "call.recording_ready": {
-          const readyEvent = streamRecordingReadySchema.parse(event);
-          await handleRecordingReady(readyEvent as StreamRecordingReadyEvent);
-          break;
-        }
-
-        case "call.recording_failed": {
-          const failedEvent = streamRecordingFailedSchema.parse(event);
-          await handleRecordingFailed(
-            failedEvent as StreamRecordingFailedEvent,
-          );
-          break;
-        }
-
-        // Session events
-        case "call.session_ended": {
-          const sessionEndedEvent = streamSessionEndedSchema.parse(event);
-          await handleSessionEnded(
-            sessionEndedEvent as StreamSessionEndedEvent,
-          );
-          break;
-        }
-
-        case "call.ended": {
-          const callEndedEvent = streamCallEndedSchema.parse(event);
-          await handleCallEnded(callEndedEvent as StreamCallEndedEvent);
-          break;
-        }
-
-        // STR-4 — per-attendee presence
-        case "call.session_participant_joined": {
-          const joinedEvent = streamSessionParticipantJoinedSchema.parse(event);
-          await handleSessionParticipantJoined(
-            joinedEvent as StreamSessionParticipantJoinedEvent,
-          );
-          break;
-        }
-
-        case "call.session_participant_left": {
-          const leftEvent = streamSessionParticipantLeftSchema.parse(event);
-          await handleSessionParticipantLeft(
-            leftEvent as StreamSessionParticipantLeftEvent,
-          );
-          break;
-        }
-
-        default: {
-          // Compile-time proof that the switch covers HANDLED_EVENT_TYPES. The
-          // guard above narrows eventType to that union, so adding an entry to
-          // the list without adding a case here leaves a residual member and
-          // this assignment stops compiling. No cast — a cast would make it
-          // always pass, which is the whole failure mode this replaces.
-          const exhaustive: never = eventType;
-          throw new Error(
-            `Unreachable Stream event type: ${String(exhaustive)}`,
-          );
-        }
-      }
+      await handle(parsed.data);
     } catch (handlerError) {
       processingError =
         handlerError instanceof Error

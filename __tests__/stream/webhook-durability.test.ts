@@ -27,17 +27,45 @@
 const mockLogWebhookEvent = jest.fn();
 const mockMarkProcessed = jest.fn();
 const mockIsDbHealthy = jest.fn();
+const mockHandleRecordingReady = jest.fn();
 
 /** Ordered trace, so we can assert sequence rather than mere occurrence. */
 let sequence: string[] = [];
 
 jest.mock("../../lib/webhooks/event-log", () => ({
+  // The real constant, not a copy. This suite asserts that what dispatch stamps
+  // is something the sweeper's selector will actually skip, so a hand-written
+  // duplicate here would assert the two agree while guaranteeing they cannot.
+  TERMINAL_ERROR_PREFIXES: jest.requireActual("../../lib/webhooks/event-log")
+    .TERMINAL_ERROR_PREFIXES,
   logWebhookEvent: (...a: unknown[]) => {
     sequence.push("persist");
     return mockLogWebhookEvent(...a);
   },
   markWebhookEventProcessed: (...a: unknown[]) => mockMarkProcessed(...a),
   isDbHealthy: () => mockIsDbHealthy(),
+  // #1280 — a schema mismatch is stamped with this prefix so the sweeper never
+  // re-drives it. Not mocking it made `permanentFailure` undefined, the call
+  // threw a TypeError into the outer catch, and the completion mark never ran —
+  // which read exactly like the early-return regression the case below pins.
+  permanentFailure: (reason: string) => `permanent: ${reason}`,
+}));
+
+// Relative paths, not the `@/` alias — the alias resolves to a different module
+// instance here, so the mock silently does not bind and the failure looks
+// identical to a bad fixture.
+jest.mock("../../lib/stream/recording-handlers", () => ({
+  handleRecordingStarted: jest.fn(),
+  handleRecordingStopped: jest.fn(),
+  handleRecordingReady: (...a: unknown[]) => mockHandleRecordingReady(...a),
+  handleRecordingFailed: jest.fn(),
+}));
+
+jest.mock("../../lib/stream/session-handlers", () => ({
+  handleSessionEnded: jest.fn(),
+  handleCallEnded: jest.fn(),
+  handleSessionParticipantJoined: jest.fn(),
+  handleSessionParticipantLeft: jest.fn(),
 }));
 
 jest.mock("../../lib/stream-logger", () => ({
@@ -55,6 +83,7 @@ import {
   recordStreamEventReceipt,
   processStreamEvent,
 } from "../../lib/stream/webhook-dispatch";
+import { TERMINAL_ERROR_PREFIXES } from "../../lib/webhooks/event-log";
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -62,6 +91,7 @@ beforeEach(() => {
   mockLogWebhookEvent.mockResolvedValue({ isNew: true, eventRecordId: "r1" });
   mockMarkProcessed.mockResolvedValue(undefined);
   mockIsDbHealthy.mockResolvedValue(true);
+  mockHandleRecordingReady.mockResolvedValue(undefined);
 });
 
 describe("recordStreamEventReceipt — the durable half", () => {
@@ -111,9 +141,16 @@ describe("processStreamEvent — safe to defer, now that the receipt exists", ()
     // returned having handled nothing, so every event waited for the sweeper.
     mockLogWebhookEvent.mockResolvedValue({ isNew: false });
 
-    await processStreamEvent({}, "call.ended", "stream_abc", undefined, {}, {
-      claimAlreadyHeld: true,
-    });
+    await processStreamEvent(
+      {},
+      "call.ended",
+      "stream_abc",
+      undefined,
+      {},
+      {
+        claimAlreadyHeld: true,
+      },
+    );
 
     // It must NOT have consulted the claim, and must have reached dispatch
     // rather than bailing out. The payload here is a bare `{}`, so the handler's
@@ -147,6 +184,97 @@ describe("processStreamEvent — safe to defer, now that the receipt exists", ()
     await processStreamEvent({}, "call.not_a_real_event", "id", undefined, {});
 
     expect(mockMarkProcessed).toHaveBeenCalledWith("id", undefined);
+  });
+});
+
+describe("a payload that cannot match its schema is terminal, not retryable", () => {
+  /**
+   * #1280 — the eight `.parse()` sites threw a ZodError into the handler catch,
+   * which stamped it as an ordinary failure. The sweeper re-drives any errored
+   * row every ten minutes for a 168-hour give-up window, so a payload that can
+   * never be valid churned through roughly a thousand attempts and then aged out
+   * on its own — burning the sweeper's budget and hiding a real contract break
+   * behind noise nobody had to act on.
+   */
+  it("stamps the terminal prefix so the sweeper skips it for good", async () => {
+    // `{}` satisfies neither `call_cid` nor `call_recording`.
+    await processStreamEvent(
+      {},
+      "call.recording_ready",
+      "stream_bad",
+      undefined,
+      {},
+      {
+        claimAlreadyHeld: true,
+      },
+    );
+
+    expect(mockMarkProcessed).toHaveBeenCalledTimes(1);
+    const [id, error] = mockMarkProcessed.mock.calls[0] as [string, string];
+    expect(id).toBe("stream_bad");
+    // The prefix is what the sweeper's selector matches on. Losing it would
+    // silently restore the churn.
+    expect(error).toMatch(/^permanent: /);
+    expect(TERMINAL_ERROR_PREFIXES.some((p) => error.startsWith(p))).toBe(true);
+  });
+
+  it("names the offending fields, so the alert is actionable", async () => {
+    await processStreamEvent(
+      {},
+      "call.recording_ready",
+      "stream_bad",
+      undefined,
+      {},
+      {
+        claimAlreadyHeld: true,
+      },
+    );
+
+    const [, error] = mockMarkProcessed.mock.calls[0] as [string, string];
+    // A contract break is worth one alert that says WHICH field moved, rather
+    // than a thousand retries that say nothing.
+    expect(error).toContain("call.recording_ready");
+    expect(error).toContain("call_cid");
+  });
+
+  it("does not reach the handler at all", async () => {
+    await processStreamEvent(
+      {},
+      "call.recording_ready",
+      "stream_bad",
+      undefined,
+      {},
+      {
+        claimAlreadyHeld: true,
+      },
+    );
+
+    expect(mockHandleRecordingReady).not.toHaveBeenCalled();
+  });
+
+  it("still runs the handler when the payload IS valid", async () => {
+    // The counterweight: the guard above must not be rejecting good traffic.
+    await processStreamEvent(
+      {
+        type: "call.recording_ready",
+        call_cid: "default:slot-1",
+        created_at: "2026-09-01T00:30:05Z",
+        call_recording: {
+          filename: "rec.mp4",
+          url: "https://example.invalid/rec.mp4",
+          start_time: "2026-09-01T00:00:00Z",
+          end_time: "2026-09-01T00:30:00Z",
+        },
+      },
+      "call.recording_ready",
+      "stream_good",
+      undefined,
+      { call_cid: "default:slot-1" },
+      { claimAlreadyHeld: true },
+    );
+
+    expect(mockHandleRecordingReady).toHaveBeenCalledTimes(1);
+    expect(mockMarkProcessed).toHaveBeenCalledWith("stream_good", undefined);
   });
 });
 

@@ -11,11 +11,10 @@
  */
 import * as Sentry from "@sentry/nextjs";
 import prisma from "@/lib/prisma";
-import {
-  notifyAppointmentCancelled,
-} from "@/lib/novu";
+import { notifyAppointmentCancelled } from "@/lib/novu";
 import { notificationScope } from "@/lib/novu/workflows";
 import { notificationHref } from "@/lib/novu/resolve-href";
+import { planTitleOrSessionLabel } from "@/lib/novu/humanize";
 import { refundBookingPayment } from "@/lib/payments/operations/booking-refund";
 import { refundWholeEventPayments } from "@/lib/payments/operations/event-refunds";
 import {
@@ -445,7 +444,11 @@ function notifyExclusiveCancellation(
       engagement.appointments[0]?.appointmentType ?? kind.toUpperCase(),
     consultantName: engagement.consultantUser?.name || "Consultant",
     consulteeName: engagement.consulteeUser?.name || "Consultee",
-    planTitle: engagement.planTitle || "N/A",
+    // #536 — never show the customer a placeholder as the session's name.
+    planTitle: planTitleOrSessionLabel(
+      engagement.planTitle,
+      engagement.appointments[0]?.appointmentType ?? kind,
+    ),
     dashboardUrl: notificationHref(engagementOrgId, "appointments"),
     reason: "MODERATION",
     cancelledBy: "system",
@@ -552,7 +555,9 @@ async function cancelGroupEvent(
       appointmentType: isWebinar ? "WEBINAR" : "CLASS",
       consultantName: "Consultant",
       consulteeName: "Attendee",
-      planTitle: "N/A",
+      // #536 — the event's own title is not loaded on this path, so the
+      // session label stands in rather than a placeholder.
+      planTitle: planTitleOrSessionLabel(null, isWebinar ? "WEBINAR" : "CLASS"),
       dashboardUrl: notificationHref(eventOrgId, "appointments"),
       reason: "MODERATION",
       cancelledBy: "system",

@@ -464,6 +464,10 @@ export function useConsulteeAppointmentsAdapter(options?: {
           isLoading={actions.isLoading || actionLoading}
           isPendingPayment={isPendingPayment}
           mode={dialogMode}
+          // R13 — without this the quote is disabled for every consultee, which
+          // is the one side of the booking whose money the quote is about. The
+          // consultant adapter has always passed it.
+          appointmentId={activeVm.appointmentId}
         />
 
         {activeVm.appointmentId && dialog === "report" && (

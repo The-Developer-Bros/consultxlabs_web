@@ -41,6 +41,9 @@ jest.mock("../../lib/collaborators/service", () => ({
 }));
 jest.mock("../../lib/api/organizations/rate-card", () => ({
   resolveEffectiveRateCard: jest.fn(),
+  // #1335 — settlement destructures this from the same module; a partial mock
+  // leaves it undefined and every split throws before it resolves a card.
+  isScopedRateCardResolutionEnabled: () => false,
 }));
 jest.mock("../../lib/feature-flags", () => ({
   ...jest.requireActual("../../lib/feature-flags"),

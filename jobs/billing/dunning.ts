@@ -10,7 +10,7 @@
  *     escalation stage.
  *
  * No booking-suspend stage yet — dunningSuspendedAt stays unwritten.
- * TODO(#779): config-gated booking-suspend cascade once OVERDUE drags past
+ * TODO(#1319): config-gated booking-suspend cascade once OVERDUE drags past
  * the grace window.
  *
  * Schedule: daily at 05:00 IST (`.github/workflows/dunning.yml`), after the
@@ -32,6 +32,7 @@ import { AUDIT_ACTIONS } from "@/lib/enterprise/audit-actions";
 import { notifyOrgInvoiceOverdue } from "@/lib/novu/org-workflows";
 import { getAppUrl } from "@/lib/url";
 import { withCronLock } from "@/lib/cron/with-cron-lock";
+import { abortIfMaintenance } from "@/lib/maintenance-cron";
 import { withSerializableRetry } from "@/lib/db/serializable-retry";
 import * as Sentry from "@sentry/nextjs";
 import { runJob } from "@/lib/observability/job-sentry";
@@ -80,7 +81,10 @@ async function claimInvoiceGuarded(
   try {
     return await withSerializableRetry(run);
   } catch (err) {
-    console.error(`[dunning] ${label} claim failed for invoice ${inv.id}:`, err);
+    console.error(
+      `[dunning] ${label} claim failed for invoice ${inv.id}:`,
+      err,
+    );
     return false;
   }
 }
@@ -119,38 +123,35 @@ export async function runDunning(): Promise<DunningStats> {
     // #1132 follow-up — transient P2034 aborts are retried by the house
     // helper; persistent failures skip this invoice so one bad row can't
     // kill the day's run.
-    const claimed = await claimInvoiceGuarded(
-      inv,
-      "stage",
-      () =>
-        prisma.$transaction(
-      async (tx) => {
-        // Claim the row only if still ISSUED + un-stamped so two replicas
-        // don't both flip + notify. Loser sees count 0 and skips.
-        const claim = await tx.organizationInvoice.updateMany({
-          where: { id: inv.id, status: "ISSUED", markedOverdueAt: null },
-          data: { status: "OVERDUE", markedOverdueAt: now },
-        });
-        if (claim.count === 0) return false;
+    const claimed = await claimInvoiceGuarded(inv, "stage", () =>
+      prisma.$transaction(
+        async (tx) => {
+          // Claim the row only if still ISSUED + un-stamped so two replicas
+          // don't both flip + notify. Loser sees count 0 and skips.
+          const claim = await tx.organizationInvoice.updateMany({
+            where: { id: inv.id, status: "ISSUED", markedOverdueAt: null },
+            data: { status: "OVERDUE", markedOverdueAt: now },
+          });
+          if (claim.count === 0) return false;
 
-        await tx.orgAuditLog.create({
-          data: {
-            organizationId: inv.organizationId,
-            actorMembershipId: null,
-            targetMembershipId: null,
-            category: "INVOICE",
-            action: AUDIT_ACTIONS.INVOICE.INVOICE_OVERDUE,
-            description: `Invoice ${inv.invoiceNumber} marked OVERDUE (due ${inv.dueDate.toISOString()})`,
-            details: {
-              invoiceId: inv.id,
-              invoiceNumber: inv.invoiceNumber,
-              dueDate: inv.dueDate.toISOString(),
-              daysLate: daysBetween(inv.dueDate, now),
+          await tx.orgAuditLog.create({
+            data: {
+              organizationId: inv.organizationId,
+              actorMembershipId: null,
+              targetMembershipId: null,
+              category: "INVOICE",
+              action: AUDIT_ACTIONS.INVOICE.INVOICE_OVERDUE,
+              description: `Invoice ${inv.invoiceNumber} marked OVERDUE (due ${inv.dueDate.toISOString()})`,
+              details: {
+                invoiceId: inv.id,
+                invoiceNumber: inv.invoiceNumber,
+                dueDate: inv.dueDate.toISOString(),
+                daysLate: daysBetween(inv.dueDate, now),
+              },
             },
-          },
-        });
-        return true;
-      },
+          });
+          return true;
+        },
         { isolationLevel: "Serializable", maxWait: 10_000, timeout: 15_000 },
       ),
     );
@@ -206,26 +207,23 @@ export async function runDunning(): Promise<DunningStats> {
     // #1132 follow-up — transient P2034 aborts are retried by the house
     // helper; persistent failures skip this invoice so one bad row can't
     // kill the day's run.
-    const claimed = await claimInvoiceGuarded(
-      inv,
-      "stage",
-      () =>
-        prisma.$transaction(
-      async (tx) => {
-        const claim = await tx.organizationInvoice.updateMany({
-          where: {
-            id: inv.id,
-            status: "OVERDUE",
-            lastDunningReminderAt: priorReminderAt,
-            dunningReminderCount: { lt: MAX_REMINDERS },
-          },
-          data: {
-            lastDunningReminderAt: now,
-            dunningReminderCount: { increment: 1 },
-          },
-        });
-        return claim.count > 0;
-      },
+    const claimed = await claimInvoiceGuarded(inv, "stage", () =>
+      prisma.$transaction(
+        async (tx) => {
+          const claim = await tx.organizationInvoice.updateMany({
+            where: {
+              id: inv.id,
+              status: "OVERDUE",
+              lastDunningReminderAt: priorReminderAt,
+              dunningReminderCount: { lt: MAX_REMINDERS },
+            },
+            data: {
+              lastDunningReminderAt: now,
+              dunningReminderCount: { increment: 1 },
+            },
+          });
+          return claim.count > 0;
+        },
         { isolationLevel: "Serializable", maxWait: 10_000, timeout: 15_000 },
       ),
     );
@@ -282,7 +280,11 @@ export async function runDunning(): Promise<DunningStats> {
         prisma.$transaction(
           async (tx) => {
             const claim = await tx.organizationInvoice.updateMany({
-              where: { id: inv.id, dunningSuspendedAt: null, status: "OVERDUE" },
+              where: {
+                id: inv.id,
+                dunningSuspendedAt: null,
+                status: "OVERDUE",
+              },
               data: { dunningSuspendedAt: now },
             });
             if (claim.count === 0) return false;
@@ -317,12 +319,11 @@ export async function runDunning(): Promise<DunningStats> {
 }
 
 async function main() {
+  await abortIfMaintenance("dunning");
   console.log(`[dunning] Starting at ${new Date().toISOString()}`);
   Sentry.logger.info("job:dunning started");
-  const stats = await withCronLock(
-    "dunning",
-    { failMode: "closed" },
-    () => runDunning(),
+  const stats = await withCronLock("dunning", { failMode: "closed" }, () =>
+    runDunning(),
   );
   console.log(
     `[dunning] Done. scannedStage1=${stats.scannedStage1} markedOverdue=${stats.markedOverdue} scannedStage2=${stats.scannedStage2} remindersSent=${stats.remindersSent} suspended=${stats.suspended}`,

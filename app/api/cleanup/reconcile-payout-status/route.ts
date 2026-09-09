@@ -7,67 +7,20 @@
  * Schedule: Every 6 hours (via GitHub Actions or external cron)
  */
 
-import { NextRequest, NextResponse } from "next/server";
+import { cleanupRoute, statusFor } from "@/lib/cron/cleanup-route";
 import { reconcilePayoutStatus } from "@/scripts/payouts/reconcile-payout-status";
-import { CronLockHeldError } from "@/lib/cron/with-cron-lock";
-import * as Sentry from "@sentry/nextjs";
 
-export async function GET(req: NextRequest): Promise<NextResponse> {
-  try {
-    // Verify cron secret to prevent unauthorized access
-    const authHeader = req.headers.get("authorization");
-    const cronSecret =
-      process.env.CRON_SECRET || process.env.VERCEL_CRON_SECRET;
-
-    if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
-      console.warn("Unauthorized payout reconciliation attempt");
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    console.log("🔄 Starting payout status reconciliation via API...");
-    Sentry.logger.info("cron:reconcile-payout-status started");
-
-    const result = await reconcilePayoutStatus();
-
-    console.log("✅ Payout reconciliation completed:", {
-      totalProcessed: result.totalProcessed,
-      reconciledCount: result.reconciledCount,
-      completedCount: result.completedCount,
-      failedCount: result.failedCount,
-      discrepanciesCount: result.discrepancies.length,
-    });
-    Sentry.logger.info("cron:reconcile-payout-status finished", {
-      totalProcessed: result.totalProcessed,
-      reconciledCount: result.reconciledCount,
-      completedCount: result.completedCount,
-      failedCount: result.failedCount,
-      discrepanciesCount: result.discrepancies.length,
-    });
-
-    // Return 207 if discrepancies found (partial success/needs attention)
-    const status =
-      result.discrepancies.length > 0 ? 207 : result.success ? 200 : 500;
-
-    return NextResponse.json(result, { status });
-  } catch (error) {
-    // #476 — concurrent invocation (schedule overlap / manual re-run)
-    // skips with a 409 instead of double-running.
-    if (error instanceof CronLockHeldError) {
-      return NextResponse.json({ error: error.message }, { status: 409 });
-    }
-    Sentry.captureException(error, { tags: { subsystem: "cron", job: "reconcile-payout-status" } });
-    console.error("Error in payout reconciliation:", error);
-    return NextResponse.json(
-      {
-        error: "Failed to reconcile payout status",
-        details: error instanceof Error ? error.message : String(error),
-      },
-      { status: 500 },
-    );
-  }
-}
-
-// Also support POST for manual triggering
-export async function POST(req: NextRequest): Promise<NextResponse> {
-  return GET(req);
-}
+export const { GET, POST } = cleanupRoute({
+  job: "reconcile-payout-status",
+  run: () => reconcilePayoutStatus(),
+  summarize: (r) => ({
+    totalProcessed: r.totalProcessed,
+    reconciledCount: r.reconciledCount,
+    completedCount: r.completedCount,
+    failedCount: r.failedCount,
+    discrepanciesCount: r.discrepancies.length,
+  }),
+  // 207 when discrepancies were found and the run itself was clean.
+  status: (r) => statusFor(r, r.discrepancies.length > 0),
+  failureMessage: "Failed to reconcile payout status",
+});

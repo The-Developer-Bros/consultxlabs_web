@@ -18,13 +18,17 @@ import {
   ensureBucketExists,
   generateStorageFileName,
 } from "@/lib/supabase-storage-core";
-import { RECORDINGS_BUCKET, storageClient } from "./recording-storage";
+import {
+  RECORDINGS_BUCKET,
+  RECORDING_MAX_OBJECT_BYTES,
+  RECORDING_MIME_TYPES,
+  storageClient,
+} from "./recording-storage";
 
-// Maximum file size for direct transfer (500MB)
-// #899 — uploads now stream (no in-memory buffering), but the recordings
-// bucket is provisioned with a 500MB fileSizeLimit, so keep the pre-flight
-// reject to fail fast instead of burning a full upload into a server 413.
-const MAX_TRANSFER_SIZE = 500 * 1024 * 1024; // 500MB
+// #899 — uploads stream (no in-memory buffering), so the pre-flight reject is
+// not about memory. It exists to fail fast instead of burning a full upload
+// into a server 413, which only works while it matches what the bucket accepts
+// — hence one shared constant rather than a second copy of the number.
 
 // STR-2/3 — page engineering once a recording has burned through this many
 // transfer attempts. Below the threshold, retries are normal (transient S3 /
@@ -32,14 +36,6 @@ const MAX_TRANSFER_SIZE = 500 * 1024 * 1024; // 500MB
 // silently expiring, so it warrants a system_events alert.
 const TRANSFER_FAILURE_ALERT_THRESHOLD = 3;
 
-// Allowed video MIME types
-const ALLOWED_VIDEO_TYPES = [
-  "video/mp4",
-  "video/webm",
-  "video/quicktime",
-  "video/x-msvideo",
-  "application/octet-stream", // Stream may return this
-];
 
 /**
  * Recording Transfer Service for moving recordings to permanent storage
@@ -200,14 +196,8 @@ export class RecordingTransferService {
       // Ensure the recordings bucket exists
       const bucketReady = await ensureBucketExists(RECORDINGS_BUCKET, {
         public: false,
-        allowedMimeTypes: [
-          "video/mp4",
-          "video/webm",
-          "video/quicktime",
-          "video/x-msvideo",
-          "application/octet-stream",
-        ],
-        fileSizeLimit: 524288000, // 500MB
+        allowedMimeTypes: RECORDING_MIME_TYPES,
+        fileSizeLimit: RECORDING_MAX_OBJECT_BYTES,
       });
       if (!bucketReady) {
         const error = `Recordings bucket not found. Please create a '${RECORDINGS_BUCKET}' bucket in Supabase.`;
@@ -237,19 +227,19 @@ export class RecordingTransferService {
       const fileSizeNumber = contentLength ? parseInt(contentLength, 10) : null;
 
       // Check file size before attempting transfer to prevent OOM
-      if (fileSizeNumber && fileSizeNumber > MAX_TRANSFER_SIZE) {
+      if (fileSizeNumber && fileSizeNumber > RECORDING_MAX_OBJECT_BYTES) {
         streamLogger.warn("Recording too large for direct transfer", {
           recordingId,
           fileSize: fileSizeNumber,
-          maxSize: MAX_TRANSFER_SIZE,
+          maxSize: RECORDING_MAX_OBJECT_BYTES,
         });
-        const error = `Recording is too large for direct transfer (${Math.round(fileSizeNumber / 1024 / 1024)}MB). Maximum size is 500MB. Large recordings will need to be transferred manually or via a background job.`;
+        const error = `Recording is too large for direct transfer (${Math.round(fileSizeNumber / 1024 / 1024)}MB). Maximum is ${Math.round(RECORDING_MAX_OBJECT_BYTES / 1024 / 1024)}MB.`;
         await this.recordTransferFailure(recordingId, error);
         return { success: false, error };
       }
 
       // Validate content type
-      if (!ALLOWED_VIDEO_TYPES.includes(contentType)) {
+      if (!RECORDING_MIME_TYPES.includes(contentType)) {
         streamLogger.warn("Unexpected content type for recording", {
           recordingId,
           contentType,

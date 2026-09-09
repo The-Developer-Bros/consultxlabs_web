@@ -107,6 +107,36 @@ describe("the script actually implements this", () => {
       source.indexOf("return false;"),
     );
     expect(msg).toContain("--restore-user-join");
-    expect(msg).toContain("--join-route-is-deployed");
+    expect(msg).toContain("--routes-are-deployed");
+  });
+
+  describe("the confirmation flag is named after everything it asserts", () => {
+    /**
+     * #1301 follow-up. The flag is what an operator types from memory; the
+     * refusal message is what they read only after being refused.
+     *
+     * Naming it `--join-route-is-deployed` was a trap, and a live one:
+     * verified on 2026-09-01 the join route IS on prod and the END route is
+     * NOT, so an operator asserting something true about the join route would
+     * have stripped `end-call` and taken End Call away from every host —
+     * prod's `EndCallButton` still calls `call.endCall()` client-side.
+     */
+    it("accepts the plural flag", () => {
+      expect(source).toContain('argv.includes("--routes-are-deployed")');
+    });
+
+    it("still accepts the old spelling, so a runbook keeps working", () => {
+      // Being refused because you typed the previously-documented flag would
+      // be its own small outage.
+      expect(source).toContain('argv.includes("--join-route-is-deployed")');
+    });
+
+    it("documents the plural flag in the usage header and the refusal", () => {
+      // Both places an operator copies from. Leaving either on the old name
+      // would keep handing out the misleading one.
+      const header = source.slice(0, source.indexOf("import "));
+      expect(header).toContain("--routes-are-deployed");
+      expect(header).not.toContain("--join-route-is-deployed");
+    });
   });
 });

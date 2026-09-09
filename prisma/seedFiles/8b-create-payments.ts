@@ -128,8 +128,17 @@ export async function createPayments(users: UserWithProfiles[]) {
           : {}),
       };
 
-      await prisma.payment.create({
+      const created = await prisma.payment.create({
         data: paymentData,
+      });
+      // #1319 A9 — stamp the funding payment on the buyer's participant row.
+      await prisma.appointmentParticipant.updateMany({
+        where: {
+          appointmentId: appointment.id,
+          userId: user.id,
+          paymentId: null,
+        },
+        data: { paymentId: created.id },
       });
     } catch (error) {
       console.error(

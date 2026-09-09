@@ -39,6 +39,43 @@ export const CONSULTATION_PREFIX = "consultation-";
 export const SUBSCRIPTION_PREFIX = "subscription-";
 
 /**
+ * Legacy UNDERSCORE event ids — `webinar_…` / `class_…`, 351 of them live.
+ *
+ * Found 2026-08-30 and in no prior audit. Nothing has minted these for months;
+ * everything now uses the hyphen forms above. They matter because they are
+ * invisible to every mechanism that manages a channel: `isEventChannel` misses
+ * them, so nothing freezes or expires them, and `getChannelTypeFromId` only
+ * resolved them by falling through to its `team` fallback — the right answer
+ * reached by accident, which is the same accident that had `dmo-` addressing
+ * the wrong channel type for months.
+ *
+ * ## Deliberately NOT in MANAGED_CHANNEL_PREFIXES
+ *
+ * Adding them there is the obvious move and it would be a serious bug. That
+ * list makes the reconciler REMOVE a user from any channel carrying the prefix
+ * that is absent from the expected set — and the expected set is built by
+ * `getWebinarIdsForUser` / `getClassIdsForUser`, which emit `webinar-<id>`,
+ * never `webinar_<id>`. Every one of the 351 would be classified stale on the
+ * owner's next dashboard load and its members removed. That is #1134 P0-7
+ * exactly, which is the bug the comment on that list exists to prevent.
+ *
+ * They are swept by `scripts/stream/sweep-legacy-underscore-channels.ts`
+ * instead: a one-off, dry-run by default, with a human reading the list.
+ */
+export const LEGACY_WEBINAR_PREFIX = "webinar_";
+export const LEGACY_CLASS_PREFIX = "class_";
+export const LEGACY_EVENT_PREFIXES = [
+  LEGACY_WEBINAR_PREFIX,
+  LEGACY_CLASS_PREFIX,
+] as const;
+
+/** True for the legacy underscore event ids described above. */
+export function isLegacyEventChannel(channelId: string | undefined): boolean {
+  if (!channelId) return false;
+  return LEGACY_EVENT_PREFIXES.some((prefix) => channelId.startsWith(prefix));
+}
+
+/**
  * Prefixes managed by syncUserEventChannels for reconciliation.
  *
  * Adding a prefix here makes the reconciler REMOVE the user from any channel
@@ -62,8 +99,7 @@ export const MANAGED_CHANNEL_PREFIXES = [
 export function isEventChannel(channelId: string | undefined): boolean {
   if (!channelId) return false;
   return (
-    channelId.startsWith(WEBINAR_PREFIX) ||
-    channelId.startsWith(CLASS_PREFIX)
+    channelId.startsWith(WEBINAR_PREFIX) || channelId.startsWith(CLASS_PREFIX)
   );
 }
 
@@ -78,9 +114,7 @@ export function isDMChannel(channelId: string | undefined): boolean {
 }
 
 /** Check if channel is a collaborator channel */
-export function isCollaboratorChannel(
-  channelId: string | undefined,
-): boolean {
+export function isCollaboratorChannel(channelId: string | undefined): boolean {
   if (!channelId) return false;
   return channelId.startsWith(COLLAB_PREFIX);
 }
@@ -96,9 +130,7 @@ export function isCollaboratorChannel(
  * `client.channel(type, id)`, which then addresses a channel that does not
  * exist and 404s or creates a second one.
  */
-export function getChannelTypeFromId(
-  channelId: string,
-): "messaging" | "team" {
+export function getChannelTypeFromId(channelId: string): "messaging" | "team" {
   if (
     isDMChannel(channelId) ||
     channelId.startsWith(COLLAB_PREFIX) ||
@@ -107,5 +139,11 @@ export function getChannelTypeFromId(
   ) {
     return "messaging";
   }
+  // Everything else is `team`, INCLUDING the legacy underscore event ids —
+  // which is the right answer for them, reached by the fallback rather than by
+  // a match. That is worth knowing rather than relying on: the same fallback
+  // returning a plausible answer is how `dmo-` addressed the wrong channel type
+  // for months. `isLegacyEventChannel` is what to reach for when the
+  // distinction matters.
   return "team";
 }

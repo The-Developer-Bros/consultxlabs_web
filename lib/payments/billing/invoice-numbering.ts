@@ -110,3 +110,62 @@ export async function generateOrgInvoiceNumber(
     seq,
   };
 }
+
+// ============================================================================
+// Platform (B2C) invoice numbering — #1365
+// ============================================================================
+
+/**
+ * The platform-wide invoice prefix for consumer tax invoices. One series
+ * serves every B2C buyer, so unlike the org series there is no per-tenant
+ * prefix to fall back to; `PLATFORM_INVOICE_PREFIX` lets finance rename the
+ * series without a deploy, and "FAM" is the default.
+ */
+function platformPrefix(nonPrefixLength: number): string {
+  return fitPrefixToRule46(
+    (process.env.PLATFORM_INVOICE_PREFIX ?? "FAM").toUpperCase(),
+    nonPrefixLength,
+  );
+}
+
+/**
+ * Atomically reserve the next platform invoice sequence for a fiscal year.
+ * Same shape as {@link allocateOrgInvoiceSeq}: the create path seeds
+ * `nextSeq = 2` and allocates 1, the update path increments and allocates the
+ * pre-increment value. Caller must be inside a Prisma $transaction.
+ */
+export async function allocatePlatformInvoiceSeq(
+  tx: Tx,
+  fiscalYear: number,
+): Promise<number> {
+  const counter = await tx.platformInvoiceCounter.upsert({
+    where: { fiscalYear },
+    create: { fiscalYear, nextSeq: 2 },
+    update: { nextSeq: { increment: 1 } },
+    select: { nextSeq: true },
+  });
+  return counter.nextSeq - 1;
+}
+
+/**
+ * Generate the next consumer tax-invoice number: `<PREFIX>-<FY>-<SEQ5>`.
+ *
+ * Five sequence digits (99,999 invoices per fiscal year) because one series
+ * covers every consumer supply on the platform, not one buyer's. Two
+ * separators plus the four-digit fiscal year plus five digits is eleven
+ * characters, leaving five for the prefix inside the Rule 46(b) sixteen.
+ */
+export async function generateConsumerInvoiceNumber(
+  tx: Tx,
+  issuedAt: Date,
+): Promise<{ invoiceNumber: string; fiscalYear: number; seq: number }> {
+  const fiscalYear = indianFiscalYear(issuedAt);
+  const seq = await allocatePlatformInvoiceSeq(tx, fiscalYear);
+  const padded = seq.toString().padStart(5, "0");
+  const nonPrefixLength = 2 + String(fiscalYear).length + padded.length;
+  return {
+    invoiceNumber: `${platformPrefix(nonPrefixLength)}-${fiscalYear}-${padded}`,
+    fiscalYear,
+    seq,
+  };
+}

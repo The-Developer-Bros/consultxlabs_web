@@ -48,14 +48,25 @@ interface StatusCas {
   where: { id: string; status?: { in: string[] } };
   data: Data;
 }
+/** transitionSlotCompletion's shape: the from-set is an `in` list. */
 interface SlotCas {
-  where: { id: { in: string[] }; completionStatus: string };
+  where: { id: { in: string[] }; completionStatus: { in: string[] } };
   data: Data;
+}
+
+function matchSlots(where: SlotCas["where"]): SlotRow[] {
+  return state.slots.filter(
+    (s) =>
+      where.id.in.includes(s.id) &&
+      where.completionStatus.in.includes(s.completionStatus),
+  );
 }
 
 function makeTx() {
   return {
+    bookingStatusHistory: { create: jest.fn().mockResolvedValue({}) },
     rescheduleRequest: {
+      findUnique: jest.fn(async () => state.request),
       updateMany: jest.fn(async ({ where, data }: StatusCas) => {
         const row = state.request;
         if (!row || row.id !== where.id) return { count: 0 };
@@ -68,14 +79,16 @@ function makeTx() {
       }),
     },
     slotOfAppointment: {
-      updateMany: jest.fn(async ({ where, data }: SlotCas) => {
-        const targets = state.slots.filter(
-          (s) =>
-            where.id.in.includes(s.id) &&
-            s.completionStatus === where.completionStatus,
-        );
+      findMany: jest.fn(async ({ where }: SlotCas) =>
+        matchSlots(where).map((s) => ({
+          id: s.id,
+          completionStatus: s.completionStatus,
+        })),
+      ),
+      updateManyAndReturn: jest.fn(async ({ where, data }: SlotCas) => {
+        const targets = matchSlots(where);
         targets.forEach((s) => Object.assign(s, data));
-        return { count: targets.length };
+        return targets.map((s) => ({ id: s.id }));
       }),
     },
     subscription: {
@@ -95,6 +108,7 @@ function makeTx() {
       }),
     },
     consultation: {
+      findUnique: jest.fn(async () => state.consultation ?? null),
       updateMany: jest.fn(async ({ where, data }: StatusCas) => {
         const row = state.consultation;
         if (!row || row.id !== where.id) return { count: 0 };
@@ -116,8 +130,8 @@ jest.mock("../../lib/prisma", () => ({
     rescheduleRequest: {
       findUnique: jest.fn(async () => state.request),
     },
-    $transaction: jest.fn(async (fn: (t: ReturnType<typeof makeTx>) => unknown) =>
-      fn(tx),
+    $transaction: jest.fn(
+      async (fn: (t: ReturnType<typeof makeTx>) => unknown) => fn(tx),
     ),
   },
 }));
@@ -148,7 +162,9 @@ function seed(
     { id: "slot-2", isTentative: true, completionStatus: "RESCHEDULED" },
   ];
   const consultationId =
-    overrides.consultationId === undefined ? "cons-1" : overrides.consultationId;
+    overrides.consultationId === undefined
+      ? "cons-1"
+      : overrides.consultationId;
 
   state = {
     request: {
@@ -165,7 +181,10 @@ function seed(
     },
     slots,
     consultation: consultationId
-      ? { id: consultationId, status: overrides.consultationStatus ?? "PENDING" }
+      ? {
+          id: consultationId,
+          status: overrides.consultationStatus ?? "PENDING",
+        }
       : null,
     subscription: overrides.subscriptionId
       ? {

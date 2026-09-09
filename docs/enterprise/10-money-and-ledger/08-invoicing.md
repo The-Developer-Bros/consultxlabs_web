@@ -265,6 +265,16 @@ The status-level invoice transition is the coarse view (`PAID → REFUNDED` for 
 
 ---
 
+## 8b. Consumer invoices (B2C) — #1365
+
+Everything above concerns `OrganizationInvoice`, which is the document a sponsoring organization receives. A personal buyer paying by card receives a different document on a different series, and that path is documented separately in [B2C tax invoices and credit notes](../../payments/07-b2c-tax-invoice.md).
+
+The two families are deliberately separate models rather than one model with nullable columns. `OrganizationInvoice` requires an organization, a billing account and a due date, and those columns are load-bearing for dunning and for the IRP e-invoice payload; a consumer invoice has none of them, is paid before it is issued, and runs on one platform-wide gapless series instead of one series per organization. Collapsing them would make every one of those columns optional and would quietly weaken the B2B guarantees this page describes.
+
+What the two families share is the register. `jobs/compliance/gst-outward-register-export.ts` reads both invoice models and both credit-note models for a period and emits a single outward-supplies CSV for GSTR-1, stamping `gstr1ExportedAt` on the rows it reported so a re-run never re-stamps them.
+
+---
+
 ## 9. Overage roll-up into a line item (#715 / #775)
 
 A `CHARGE_ORG` program overage isn't billed instantly — its marginal accrues as an `OVERAGE_INVOICE_ACCRUAL` `PaymentLeg` at checkout ([booking → earnings §6.3](05-booking-to-earnings.md)) and is **rolled into the cycle's invoice** alongside the base bookings. `rollupOrgInvoiceAccruals` (`lib/payments/billing/invoice-rollup.ts`, driven by `jobs/billing/settle-invoice-accruals.ts`) gathers each org's unbilled `SUCCEEDED` payments carrying **either** accrual source, sums **both** leg sources into the line `unitPricePaise` (the base + the overage), and emits one `InvoiceLineItem` per booking. The accrual read, invoice create, and stamp all run inside a single **Serializable** transaction (#813), so two overlapping rollup runs can no longer both issue an invoice for the same accrual set — the loser aborts with a P2034 serialization error, which the job treats as a benign skip. The monthly cadence and the workflow's `concurrency` group are the outer belt; the in-transaction read is the suspenders.

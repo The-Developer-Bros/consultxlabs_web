@@ -26,10 +26,10 @@ describe("idempotency keys are always minted (#1093 §3)", () => {
     // Exactly one mint, on the payout row. A second mint had landed in the
     // audit payload, stamping details with a UUID matching no payout row.
     expect(
-      src.split(
-        "idempotencyKey: opts.idempotencyKey ?? globalThis.crypto.randomUUID()",
-      ).length,
-    ).toBe(2);
+      src.match(
+        /idempotencyKey:\s*opts\.idempotencyKey \?\? globalThis\.crypto\.randomUUID\(\)/g,
+      ),
+    ).toHaveLength(1);
     expect(src).toContain("idempotencyKey: created.idempotencyKey");
   });
 

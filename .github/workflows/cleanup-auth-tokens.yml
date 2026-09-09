@@ -6,6 +6,14 @@ on:
     - cron: "3 0 * * *"
   workflow_dispatch: # Allow manual triggering
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+  # A second workflow_dispatch while one is already pending would replace it
+  # under the default single-pending-run policy; queue: max keeps every
+  # trigger instead of silently dropping one.
+  queue: max
+
 jobs:
   cleanup-auth-tokens:
     runs-on: ubuntu-latest

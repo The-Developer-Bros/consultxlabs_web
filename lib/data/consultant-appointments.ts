@@ -10,10 +10,9 @@
  *
  * Auth + `?orgScope=` resolution stay in the route; this function carries
  * no request/session coupling and is callable from a Server Component. The
- * route resolves the personal/org/all filter and passes it as
- * `orgScopeFilter` — this function spreads it verbatim, so the route's
- * external behavior across every consumer (the page, fetchHelpers,
- * allocationService) is byte-identical to the pre-extraction inline query.
+ * route resolves the Scope and passes it through unflattened — projecting it
+ * to a WHERE clause happens here, via the shared projector, so a caller can no
+ * longer get the projection subtly wrong on its own (#674 defect 13).
  *
  * Serialization: appointment rows spread the money-`$extends` plan/payment
  * models (#780/#781 result extension carries an inspect symbol), so the
@@ -28,6 +27,8 @@ import { AppointmentsType, AppointmentStatus, Prisma } from "@prisma/client";
 import type { User } from "@prisma/client";
 import { toPlain } from "@/lib/data/serialize";
 import type { TAppointment } from "@/types/appointment";
+import type { Scope } from "@/lib/api/scope/parse";
+import { scopeToWhereOrgId } from "@/lib/api/scope/parse";
 
 export interface GetConsultantAppointmentsArgs {
   type?: AppointmentsType;
@@ -48,10 +49,10 @@ export interface GetConsultantAppointmentsArgs {
     consultationId?: string | null;
     subscriptionId?: string | null;
   };
-  /// #674 org-scope filter resolved upstream — { organizationId: null }
-  /// for personal scope, { organizationId: <id> } for an org context,
-  /// {} for admin all-scope. Spread into the appointment WHERE clause.
-  orgScopeFilter?: Partial<Prisma.AppointmentWhereInput>;
+  /// #674 org scope resolved upstream (`resolveOrgScope`). Required: this
+  /// read spans every tenant when unfiltered, so the caller has to say which
+  /// slice it means rather than inheriting one.
+  scope: Scope;
 }
 
 /**
@@ -60,9 +61,9 @@ export interface GetConsultantAppointmentsArgs {
  * caller's responsibility.
  *
  * The consultant Appointments page calls this with just
- * `{ consultantProfileId, orgScopeFilter: { organizationId: null } }`
- * (the default "personal" view); the route passes the full arg set parsed
- * from the request query string.
+ * `{ consultantProfileId, scope: { kind: "personal" } }` (the default
+ * "personal" view); the route passes the full arg set parsed from the
+ * request query string.
  */
 /**
  * Slot users on this surface are projected down to `listUserSelect`. TAppointment
@@ -93,10 +94,12 @@ export async function getConsultantAppointments(
     startDate,
     endDate,
     eventIds,
-    orgScopeFilter = {},
+    scope,
   } = args;
 
-  const whereClause: Prisma.AppointmentWhereInput = { ...orgScopeFilter };
+  const whereClause: Prisma.AppointmentWhereInput = {
+    ...scopeToWhereOrgId(scope),
+  };
 
   // Date range filtering for appointments. This is the primary filter.
   // It looks for appointments where any of its slots overlap with the given date range.

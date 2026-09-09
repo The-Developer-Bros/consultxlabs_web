@@ -4,6 +4,25 @@
  */
 
 import { reportSentryError } from "@/lib/observability/report";
+import {
+  findUncoveredAtom,
+  loadPublishedCoverage,
+  windowAtoms,
+} from "@/utils/slotAllocation/availabilityCoverage";
+import {
+  linkParticipantsToPayment,
+  recordParticipants,
+  setParticipantStatus,
+} from "@/lib/booking/participants";
+import {
+  appendCreationHistory,
+  transitionConsultationRequest,
+  transitionSlotCompletion,
+  transitionSubscriptionRequest,
+  transitionTrialSession,
+} from "@/lib/booking/transitions";
+import { IllegalTransitionError } from "@/lib/enterprise/transitions";
+import { PaymentError } from "@/lib/payments/core/types";
 import prisma, { type Tx } from "@/lib/prisma";
 import { CheckoutInput, checkoutSchema } from "@/schemas/checkout";
 import { calculateSubscriptionEndDate } from "@/utils/dateUtils";
@@ -16,11 +35,9 @@ import {
   AppointmentStatus,
   TrialSessionStatus,
 } from "@prisma/client";
-import { cancelPaymentIntent, createPaymentIntent } from "../index";
 import {
   CHECKOUT_WAIT_RETRY_CONFIG,
   EventFullError,
-
   lockSlotBooking,
   unlockSlotBooking,
   lockEventCheckout,
@@ -33,9 +50,13 @@ import {
   ApprovalLock,
 } from "@/utils/appointmentlock";
 import { validateSlotTiming } from "@/lib/payments/utils/slot-validation";
+import { buildContiguousSlotAtomsForWindow } from "@/lib/appointments/contiguous-slot-run";
+import { connectAttendeeToEventSlots } from "@/lib/appointments/attendee-seats";
 import { ensureConsulteeProfile } from "@/lib/profiles/ensure-consultee-profile";
-import { isMinuteWithinWeeklySlot } from "@/utils/slotAllocation/slotTimeUtils";
-import { buildOccupiedAppointmentFilter } from "@/utils/slotAllocation/occupancyPolicy";
+import {
+  buildDeadHoldFilter,
+  buildOccupiedAppointmentFilter,
+} from "@/utils/slotAllocation/occupancyPolicy";
 import { withSerializableRetry } from "@/lib/db/serializable-retry";
 import { isUserEnrolled } from "@/lib/payments/utils/participants";
 import { getClassCapacity, getWebinarCapacity } from "@/lib/events/capacity";
@@ -47,10 +68,13 @@ import {
   processQualifyingAction,
   processConsultantBookingReferral,
 } from "@/lib/referrals/service";
-import { MIN_CREDIT_REDEMPTION_PAISE } from "@/lib/referrals/constants";
+import {
+  deriveCheckoutAmount,
+  type CheckoutDiscountInput,
+} from "@/lib/payments/pricing/derive-checkout-amount";
 import {
   createEarningsFromPayment,
-  type AppointmentType,
+  resolvePaymentForEarnings,
 } from "@/lib/payments/payouts";
 import { walletDebit } from "@/lib/api/organizations/wallet";
 import {
@@ -62,16 +86,18 @@ import {
   recordBookingUtilization,
   ProgramAssignmentLimitError,
 } from "@/lib/api/organizations/program-helpers";
-import {
-  determineTax,
-  appointmentTypeToServiceType,
-} from "@/lib/payments/tax/tax-engine";
+import { appointmentTypeToServiceType } from "@/lib/payments/tax/tax-engine";
 import {
   validatePlanCurrency,
   validateDiscountCurrency,
 } from "@/lib/payments/validation/currency-guards";
 import { checkPaymentLegsSumToAmount } from "@/lib/payments/payment-legs";
-import { recordOverageAtCheckout } from "@/lib/payments/billing/overage-settlement";
+import {
+  recordOverageAtCheckout,
+  notifyOverageDueAfterCommit,
+  type PendingOverageNotification,
+} from "@/lib/payments/billing/overage-settlement";
+import { mintConsumerInvoiceBestEffort } from "@/lib/payments/billing/consumer-invoice";
 import {
   getInvoiceCreditLimitPaise,
   assertVerifiedDomainOrThrow,
@@ -85,7 +111,11 @@ import {
 } from "@/lib/novu/org-workflows";
 import { sumPaise } from "@/lib/payments/utils/money";
 import { MARKETPLACE_VISIBILITY } from "@/lib/api/plans/visibility";
-import { resolveCancellationPolicySnapshot } from "@/lib/payments/operations/cancellation-policy";
+import {
+  ensurePlatformCancellationPolicy,
+  resolveCheckoutCancellationPolicyId,
+} from "@/lib/payments/operations/cancellation-policy-store";
+import { isBusinessErrorCode } from "@/lib/errors/classification/payment-error-classification";
 
 // Re-export for backward compatibility
 export const unifiedCheckoutSchema = checkoutSchema;
@@ -125,6 +155,33 @@ type SubscriptionCheckoutResult = {
 // ============================================================================
 
 /**
+ * #1437 — Razorpay caps an order's `notes` at 15 keys and 256 characters per
+ * value, and this object is that payload (Stripe's own limits are far looser,
+ * so the tighter gateway sets the shape for both).
+ *
+ * Two consequences are handled here. The buyer's booking note is truncated
+ * rather than forwarded verbatim: `checkoutSchema` already rejects anything
+ * longer, and the full text is persisted on the Payment and Appointment rows,
+ * so this copy exists only for the gateway dashboard and losing its tail costs
+ * nothing — whereas exceeding the limit costs the buyer the whole purchase.
+ * And `discountCode` was dropped: the org-sponsored event case emitted exactly
+ * 15 keys, leaving no headroom for the next one, and the discount is already
+ * reflected in the order amount and recorded on the Payment row, while nothing
+ * in the webhook path ever reads it back out of the gateway.
+ *
+ * #1462 — an optional field with no value is omitted rather than emitted as an
+ * empty string, because the webhook schemas type those fields as `.optional()`,
+ * which admits an absent key but rejects `""`; sending the empty key made every
+ * scheduling-period subscription fail validation at capture, and it also spent
+ * key budget the 15-key ceiling above has no room for.
+ */
+const GATEWAY_NOTE_MAX_CHARS = 256;
+
+/** Why a superseded open order's booking was cancelled (#1463). */
+const SUPERSEDED_HOLD_NOTE =
+  "Superseded by a newer checkout attempt for the same booking";
+
+/**
  * Build payment metadata for both payment intents and webhook handlers
  * Ensures consistency between payment creation and mock payment flows.
  *
@@ -134,7 +191,7 @@ type SubscriptionCheckoutResult = {
  * and gives invoice-fraud reconcilers a server-side proof that the
  * booker's claimed org matches the gateway's record.
  */
-function buildPaymentMetadata(
+export function buildPaymentMetadata(
   data: CheckoutInput,
   userId: string,
   orgContext?: {
@@ -142,19 +199,31 @@ function buildPaymentMetadata(
     fundingSource: "PERSONAL" | "WALLET" | "INVOICE" | "LICENSE" | null;
   },
 ): { appointmentId: string; appointmentType: string; [key: string]: string } {
+  const notes = (data.notes || "").slice(0, GATEWAY_NOTE_MAX_CHARS);
   return {
     appointmentId: "pending",
     appointmentType: data.appointmentType,
     userId: userId,
     planId: data.planId,
-    startsAt: data.startsAt || "",
-    endsAt: data.endsAt || "",
-    slotOfAvailabilityWeeklyId: data.slotOfAvailabilityWeeklyId || "",
-    slotOfAvailabilityCustomId: data.slotOfAvailabilityCustomId || "",
-    schedulingPeriodStartsAt: data.schedulingPeriodStartsAt || "",
-    schedulingPeriodEndsAt: data.schedulingPeriodEndsAt || "",
-    discountCode: data.discountCode || "",
-    notes: data.notes || "",
+    // #1462 — every key below is conditional. A scheduling-period subscription
+    // carries no direct slots, so `startsAt`/`endsAt` used to reach the gateway
+    // as `""` and then failed `z.string().datetime().optional()` on the way
+    // back in, stranding a captured sale as REQUIRES_MANUAL_RECOVERY.
+    ...(data.startsAt && { startsAt: data.startsAt }),
+    ...(data.endsAt && { endsAt: data.endsAt }),
+    ...(data.slotOfAvailabilityWeeklyId && {
+      slotOfAvailabilityWeeklyId: data.slotOfAvailabilityWeeklyId,
+    }),
+    ...(data.slotOfAvailabilityCustomId && {
+      slotOfAvailabilityCustomId: data.slotOfAvailabilityCustomId,
+    }),
+    ...(data.schedulingPeriodStartsAt && {
+      schedulingPeriodStartsAt: data.schedulingPeriodStartsAt,
+    }),
+    ...(data.schedulingPeriodEndsAt && {
+      schedulingPeriodEndsAt: data.schedulingPeriodEndsAt,
+    }),
+    ...(notes && { notes }),
     ...(data.eventId && { eventId: data.eventId }),
     ...(orgContext?.organizationId && {
       organizationId: orgContext.organizationId,
@@ -201,11 +270,30 @@ interface ReusableOrder {
   amount: number;
   currency: string;
   isMockPayment: boolean;
-  /** First slot of the booked window (consultation/class shape); empty for
+  /** The booked window's slot rows (consultation/class shape); empty for
    *  subscription placeholders whose period lives on the slot rows too. */
   appointment?: {
     slotsOfAppointment: Array<{ startsAt: Date; endsAt: Date }>;
   } | null;
+}
+
+/**
+ * The [start, end) a set of slot rows actually covers.
+ *
+ * #1463 — a booked window is stored as N contiguous 30-minute atoms (#1319), so
+ * the window gate below cannot read the first row's endpoints: for anything
+ * longer than half an hour the first atom ends 30 minutes into the booking and
+ * every resume was rejected as a slot-window mismatch. The run's first start and
+ * last end are the window.
+ */
+function slotRunWindow(
+  slots: Array<{ startsAt: Date; endsAt: Date }> | undefined,
+): { startsAt: Date; endsAt: Date } | null {
+  if (!slots || slots.length === 0) return null;
+  return {
+    startsAt: new Date(Math.min(...slots.map((s) => s.startsAt.getTime()))),
+    endsAt: new Date(Math.max(...slots.map((s) => s.endsAt.getTime()))),
+  };
 }
 
 export async function findReusablePendingOrderPayment(
@@ -285,7 +373,9 @@ export async function findReusablePendingOrderPayment(
           slotsOfAppointment: {
             select: { startsAt: true, endsAt: true },
             orderBy: { startsAt: "asc" as const },
-            take: 1,
+            // #1463 — the whole run, not its first atom. Bounded well above any
+            // single bookable window so a pathological row cannot widen the read.
+            take: 48,
           },
         },
       },
@@ -296,23 +386,21 @@ export async function findReusablePendingOrderPayment(
   const supersede: Array<{ id: string; reason: string }> = [];
 
   for (const candidate of candidates) {
-    const appt = candidate.appointment as
-      | { slotsOfAppointment: Array<{ startsAt: Date; endsAt: Date }> }
-      | null;
+    const appt = candidate.appointment as {
+      slotsOfAppointment: Array<{ startsAt: Date; endsAt: Date }>;
+    } | null;
 
     // Gate 1 — slot window (#1220-triage Critical): a second checkout for a
     // DIFFERENT appointment time must never resume the first attempt's order.
-    if (
-      params.appointmentType === "CONSULTATION"
-    ) {
-      const slot = appt?.slotsOfAppointment?.[0];
-      if (!params.slotWindow || !slot) {
+    if (params.appointmentType === "CONSULTATION") {
+      const run = slotRunWindow(appt?.slotsOfAppointment);
+      if (!params.slotWindow || !run) {
         supersede.push({ id: candidate.id, reason: "window-unmatchable" });
         continue;
       }
       if (
-        slot.startsAt.getTime() !== params.slotWindow.startsAt.getTime() ||
-        slot.endsAt.getTime() !== params.slotWindow.endsAt.getTime()
+        run.startsAt.getTime() !== params.slotWindow.startsAt.getTime() ||
+        run.endsAt.getTime() !== params.slotWindow.endsAt.getTime()
       ) {
         supersede.push({ id: candidate.id, reason: "slot-window-mismatch" });
         continue;
@@ -322,9 +410,7 @@ export async function findReusablePendingOrderPayment(
       const reqPeriod = params.schedulingPeriod ?? null;
       // Subscription windows ride the SAME slot rows as consultations — the
       // minted placeholder's slot carries the scheduling-period bounds.
-      const subSlot = appt?.slotsOfAppointment?.[0];
-      const rowPeriod =
-        subSlot ? { startsAt: subSlot.startsAt, endsAt: subSlot.endsAt } : null;
+      const rowPeriod = slotRunWindow(appt?.slotsOfAppointment);
       if (!!reqPeriod !== !!rowPeriod) {
         supersede.push({ id: candidate.id, reason: "period-mismatch" });
         continue;
@@ -353,6 +439,122 @@ export async function findReusablePendingOrderPayment(
   }
 
   return { reusable: reusable[0] ?? null, supersede };
+}
+
+/**
+ * #1463 — superseding an open order is a RELEASE, not just a status flip.
+ *
+ * Expiring the Payment row alone left the superseded attempt's tentative
+ * appointment and slots occupying the calendar, so the very next attempt for
+ * the same window hit "Time slot is already booked" again and the buyer was
+ * walled in until the cleanup sweep ran. The hold has to go back at the same
+ * moment its payment stops being payable, which is why the payment CAS, the
+ * slot release and the parent request's cancellation all sit in one
+ * transaction: a partial release is exactly the state that reopens the wall.
+ *
+ * Every write is CAS-in-WHERE per ADR 21 — the payment claim carries
+ * `paymentStatus: PENDING` so a capture that landed a millisecond earlier wins
+ * and its booking is left completely alone, and the appointment and slot moves
+ * go through the guarded helpers in `lib/booking/transitions.ts` rather than a
+ * bare update. A parent that has already moved on (its own payment succeeded)
+ * throws `IllegalTransitionError`, which is caught per appointment so the rest
+ * of the release still commits.
+ *
+ * Group events are deliberately untouched: their slots are shared between
+ * attendees, so releasing a seat is a disconnect rather than a status move and
+ * belongs to `cancelPendingCheckout`, which owns that shape. No event checkout
+ * is blocked by a per-buyer hold, so nothing here depends on it.
+ */
+async function releaseSupersededHolds(params: {
+  paymentIds: string[];
+  userId: string;
+}): Promise<void> {
+  await prisma.$transaction(async (tx: Tx) => {
+    const claimed = await tx.payment.updateManyAndReturn({
+      where: {
+        id: { in: params.paymentIds },
+        userId: params.userId,
+        paymentStatus: PaymentStatus.PENDING,
+      },
+      data: { paymentStatus: PaymentStatus.EXPIRED, expiresAt: new Date() },
+      select: { id: true, appointmentId: true },
+    });
+
+    const appointmentIds = claimed
+      .map((row) => row.appointmentId)
+      .filter((id): id is string => id !== null);
+    if (appointmentIds.length === 0) return;
+
+    const appointments = await tx.appointment.findMany({
+      where: { id: { in: appointmentIds }, deletedAt: null },
+      select: {
+        id: true,
+        webinarId: true,
+        classId: true,
+        consultation: { select: { id: true } },
+        subscription: { select: { id: true } },
+      },
+    });
+
+    for (const appointment of appointments) {
+      if (appointment.webinarId || appointment.classId) continue;
+
+      // Doctrine rule 2: a slot is freed by status, never by DELETE — the
+      // buyer keeps the record of the attempt they abandoned.
+      await transitionSlotCompletion(tx, {
+        where: {
+          appointmentId: appointment.id,
+          isTentative: true,
+          deletedAt: null,
+        },
+        to: "CANCELLED",
+        data: { deletedAt: new Date() },
+        reason: SUPERSEDED_HOLD_NOTE,
+        actorUserId: params.userId,
+        allowZero: true,
+      });
+
+      try {
+        if (appointment.consultation) {
+          await transitionConsultationRequest(tx, {
+            where: { id: appointment.consultation.id },
+            to: "CANCELLED",
+            fromIn: ["PENDING", "APPROVED_PENDING_PAYMENT"],
+            actorUserId: params.userId,
+            reason: SUPERSEDED_HOLD_NOTE,
+            data: {
+              cancellationNotes: SUPERSEDED_HOLD_NOTE,
+              cancelledAt: new Date(),
+            },
+          });
+        }
+        if (appointment.subscription) {
+          await transitionSubscriptionRequest(tx, {
+            where: { id: appointment.subscription.id },
+            to: "CANCELLED",
+            fromIn: ["PENDING", "APPROVED_PENDING_PAYMENT"],
+            actorUserId: params.userId,
+            reason: SUPERSEDED_HOLD_NOTE,
+            data: {
+              cancellationNotes: SUPERSEDED_HOLD_NOTE,
+              cancelledAt: new Date(),
+            },
+          });
+        }
+      } catch (error) {
+        // The parent moved past the payment stage under us, which means some
+        // other payment already carried it — that booking is not ours to
+        // cancel. Modelled, so it is reported for visibility only.
+        if (!(error instanceof IllegalTransitionError)) throw error;
+        reportSentryError(error, {
+          subsystem: "payments",
+          level: "warning",
+          expected: true,
+          extra: { appointmentId: appointment.id },
+        });
+      }
+    }
+  });
 }
 
 // ============================================================================
@@ -385,6 +587,9 @@ export class PaymentIntentManager {
     isMockPayment?: boolean;
   }) {
     try {
+      // Imported at call time so the checkout bundle does not evaluate the
+      // Razorpay core (and its #1219 test-key guard) at module load.
+      const { createPaymentIntent } = await import("../index");
       const paymentResponse = await createPaymentIntent(params);
 
       // Evict oldest entries first (Map iterates in insertion order) so a
@@ -422,6 +627,10 @@ export class PaymentIntentManager {
     } catch (error) {
       console.error("Payment intent creation failed:", error);
       reportSentryError(error, { subsystem: "payments" });
+      // A typed gateway error (the #1219 test-key guard, an UNKNOWN_GATEWAY)
+      // keeps its code so the route can answer with the right status; only
+      // untyped failures are flattened into the retry-later message.
+      if (error instanceof PaymentError) throw error;
       throw new Error(
         "Failed to create payment intent. Please try again later.",
       );
@@ -436,6 +645,7 @@ export class PaymentIntentManager {
     reason: string = "Database operation failed",
   ) {
     try {
+      const { cancelPaymentIntent } = await import("../index");
       await cancelPaymentIntent(intentId, reason);
     } catch (error) {
       console.error(`Failed to cancel payment intent ${intentId}:`, error);
@@ -471,6 +681,13 @@ export async function calculateAmountAndValidate(
   validatedData: CheckoutInput,
   userId: string,
   buyerCountry: string = "IN",
+  /**
+   * #1465-triage — the org scope `handleCheckout` already resolved (membership
+   * verified) before it calls this. Only reaches the slot-availability gate,
+   * where it scopes the self-hold exclusion to holds this request could
+   * actually resume. Null default keeps every non-org caller personal.
+   */
+  organizationId: string | null = null,
 ) {
   return await prisma.$transaction(async (tx) => {
     let amount = 0;
@@ -553,11 +770,14 @@ export async function calculateAmountAndValidate(
 
         assertPlanPurchasable(plan, "This consultation");
 
+        // #1463 — the buyer's User id, not their ConsulteeProfile id: the
+        // duplicate-hold step compares it to `Payment.userId`.
         await validateSlotAvailability(
           tx,
           validatedData,
-          user.consulteeProfile.id,
+          userId,
           plan.consultantProfile.user.id, // FIX: Pass consultant user ID to filter by consultant
+          organizationId,
         );
         amount = plan.price;
         priceCurrency = plan.priceCurrency;
@@ -584,11 +804,13 @@ export async function calculateAmountAndValidate(
 
         assertPlanPurchasable(plan, "This subscription");
 
+        // #1463 — the buyer's User id; see the consultation arm above.
         await validateSlotAvailability(
           tx,
           validatedData,
-          user.consulteeProfile.id,
+          userId,
           plan.consultantProfile.user.id, // FIX: Pass consultant user ID to filter by consultant
+          organizationId,
         );
         amount = plan.price;
         priceCurrency = plan.priceCurrency;
@@ -702,12 +924,9 @@ export async function calculateAmountAndValidate(
         throw new Error("Invalid appointment type");
     }
 
-    // Capture original plan price before any discounts/credits
-    // This is used for consultant earnings — discounts are platform-funded, not consultant-funded
-    const originalAmount = amount;
-
     // Apply discount if provided - with full backend re-validation
     let discountCodeId = null;
+    let appliedDiscount: CheckoutDiscountInput | null = null;
     if (validatedData.discountCode) {
       const discount = await tx.discountCode.findUnique({
         where: { code: validatedData.discountCode.toUpperCase().trim() },
@@ -747,28 +966,11 @@ export async function calculateAmountAndValidate(
           );
         }
 
-        // Calculate discounted amount with maxDiscount cap
-        if (discount.discountType === "PERCENTAGE") {
-          // Guard: discountValue must be 1–100 for PERCENTAGE (data integrity check)
-          if (discount.discountValue < 1 || discount.discountValue > 100) {
-            throw new Error(
-              `Invalid discount code: percentage value must be between 1 and 100, got ${discount.discountValue}`,
-            );
-          }
-          let discountAmount = Math.round(
-            amount * (discount.discountValue / 100),
-          );
-          // Apply maxDiscount cap if set
-          if (
-            discount.maxDiscount !== null &&
-            discountAmount > discount.maxDiscount
-          ) {
-            discountAmount = discount.maxDiscount;
-          }
-          amount = amount - discountAmount;
-        } else if (discount.discountType === "FIXED_AMOUNT") {
-          amount = Math.max(0, amount - discount.discountValue);
-        }
+        appliedDiscount = {
+          discountType: discount.discountType,
+          discountValue: discount.discountValue,
+          maxDiscount: discount.maxDiscount,
+        };
 
         // NOTE: currentUses increment is done in the payment transaction
         // to ensure count only increases when payment is successfully created
@@ -781,34 +983,26 @@ export async function calculateAmountAndValidate(
     // Validate plan currency (MVP: all plans must be INR)
     validatePlanCurrency(currency);
 
-    // Calculate GST on the discounted price (tax-exclusive: plan.price + 18% GST)
-    // Zero-rate GST for international buyers (export of services is zero-rated under IGST Act §2(6))
-    // BUG FIX: Previously used `currency !== "INR"` which never triggered since all plans default to INR.
-    // Now uses buyer country detection for correct tax jurisdiction determination.
-    const isInternational = buyerCountry !== "IN";
-    const taxDetermination = determineTax({
-      baseAmountPaise: amount,
+    // #1319 — list price, then discount, then GST on the discounted base, then
+    // referral credits against the tax-inclusive total. That sequence is now a
+    // single pure function the parity suite imports instead of transcribing.
+    // The credit balance is still read lazily, only once the order clears the
+    // redemption floor, so orders that cannot spend a credit keep it out of the
+    // transaction's read set.
+    const derived = await deriveCheckoutAmount({
+      basePaise: amount,
       buyerCountry,
       serviceType: appointmentTypeToServiceType(validatedData.appointmentType),
+      discount: appliedDiscount,
+      useReferralCredits: validatedData.useReferralCredits === true,
+      resolveAvailableCreditsPaise: async () =>
+        (await getUserCredits(userId, tx)).totalAvailable,
     });
-    const taxAmount = taxDetermination.taxAmount;
-    amount = amount + taxAmount;
-
-    // Apply referral credits AFTER tax (credits act as a payment method, not a trade discount)
-    // Both credits and amount are now in paise — no conversion needed
-    // #880 — credits redeem only when the order is ₹500+ so a credit never
-    // exceeds the value of the booking it discounts.
-    let creditsApplied = 0;
-    if (
-      validatedData.useReferralCredits &&
-      amount >= MIN_CREDIT_REDEMPTION_PAISE
-    ) {
-      const { totalAvailable } = await getUserCredits(userId, tx);
-      if (totalAvailable > 0) {
-        creditsApplied = Math.min(totalAvailable, amount);
-        amount = amount - creditsApplied;
-      }
-    }
+    // Original plan price before any discounts/credits, used for consultant
+    // earnings — discounts are platform-funded, not consultant-funded.
+    const { originalAmount, taxAmount, creditsApplied, isInternational } =
+      derived;
+    amount = derived.amount;
 
     // Guard: reject amounts in the 1-99 paise range (> ₹0 but < ₹1).
     // Razorpay requires a minimum order value of ₹1 (100 paise). An amount of exactly 0
@@ -828,6 +1022,9 @@ export async function calculateAmountAndValidate(
       currency,
       discountCodeId,
       consulteeProfileId: user.consulteeProfile.id,
+      // #1365 — the buyer's remembered GST state, resolved in the same lookup
+      // that resolves the consultee so the invoice mint needs no extra read.
+      consulteeBillingStateCode: user.consulteeProfile.billingStateCode,
       creditsApplied,
       buyerCountry,
       isInternational,
@@ -840,31 +1037,202 @@ export async function calculateAmountAndValidate(
 // ============================================================================
 
 /**
+ * The one definition of "this buyer's hold is still live".
+ *
+ * #1463 — step 2 below and the self-hold exclusion must agree exactly on what
+ * a live hold is, or a hold could be excluded from one and not the other. The
+ * shape is the one step 2 has always used: still PENDING, and either inside its
+ * minted expiry window or young enough that the window has not been stamped yet.
+ * `deletedAt: null` is the single addition, matching what
+ * `findReusablePendingOrderPayment` will adopt — a soft-deleted payment is not
+ * a hold anybody can resume.
+ *
+ * Liveness only. The self-hold exclusion narrows this further with the resume
+ * gate's own scope (gateway + org) — see `findSelfHoldAppointmentIds`. Step 2's
+ * duplicate-attempt guard must NOT carry that scope: it asks "does this buyer
+ * already hold this window at all", and scoping it would let a second attempt
+ * on another gateway slip past the guard entirely.
+ */
+function buildLiveHoldPaymentFilter(
+  buyerUserId: string,
+  now: Date,
+): Prisma.PaymentWhereInput {
+  return {
+    userId: buyerUserId,
+    paymentStatus: PaymentStatus.PENDING,
+    deletedAt: null,
+    OR: [
+      { expiresAt: { gt: now } },
+      {
+        AND: [
+          { expiresAt: null },
+          { createdAt: { gte: new Date(now.getTime() - 5 * 60 * 1000) } },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * #1463 — the appointments that are this buyer's OWN open order for exactly
+ * this booking, and therefore are not occupants of the slot they hold.
+ *
+ * A buyer who closes the gateway modal and clicks Pay again used to be told
+ * "Time slot is already booked" by their own hold, which made the documented
+ * open-order resume (`findReusablePendingOrderPayment`, "Rec C") unreachable:
+ * the availability gate ran first and threw. Excluding these appointments lets
+ * the request reach that gate, which then either resumes the same gateway order
+ * or supersedes it and releases the hold.
+ *
+ * The exclusion is deliberately as narrow as the resume gate itself. It takes
+ * the same buyer, the same plan, the same gateway and the same org scope, a
+ * payment that is still PENDING and still live, and a window that matches
+ * EXACTLY — a different buyer, a different plan, or any
+ * overlapping-but-different window keeps blocking, and a shape whose plan
+ * identity cannot be resolved (webinars and classes, whose slots are shared
+ * between attendees) is never excluded at all.
+ *
+ * #1465-triage — gateway and org are part of that narrowness, not decoration.
+ * `findReusablePendingOrderPayment` requires both to match before it will
+ * resume or supersede a candidate, so a hold minted on a different gateway (or
+ * under a different org scope) is one this request can neither adopt nor
+ * expire. Excluding it from availability without those two terms let the same
+ * buyer mint a SECOND tentative appointment and a second payable order over the
+ * same window, and both orders could capture. A hold that cannot be resumed
+ * must keep blocking; the buyer waits out its `expiresAt` instead of
+ * double-paying.
+ *
+ * Exactness is decided in code rather than in the WHERE clause because a booked
+ * window is stored as N contiguous 30-minute atoms (#1319), so no single row
+ * carries both endpoints: the run's first start and last end are what must
+ * equal the request.
+ */
+export async function findSelfHoldAppointmentIds(
+  tx: Tx,
+  params: {
+    buyerUserId: string;
+    appointmentType: CheckoutInput["appointmentType"];
+    planId: string;
+    /** The gateway this request will mint on — the resume gate's own scope. */
+    paymentGateway: PaymentGateway;
+    /** Server-resolved org scope; null for personal/marketplace checkouts. */
+    organizationId: string | null;
+    slotStart: Date;
+    slotEnd: Date;
+    now: Date;
+  },
+): Promise<string[]> {
+  // A switch rather than a ternary chain: sonar S3358 flags the nested form,
+  // and the exhaustive shape is what keeps a new appointment type from silently
+  // inheriting an exclusion it was never reasoned about.
+  let planScope: Prisma.AppointmentWhereInput | null;
+  switch (params.appointmentType) {
+    case "CONSULTATION":
+      planScope = { consultation: { consultationPlanId: params.planId } };
+      break;
+    case "SUBSCRIPTION":
+      planScope = { subscription: { subscriptionPlanId: params.planId } };
+      break;
+    default:
+      planScope = null;
+  }
+  if (!planScope) return [];
+
+  const candidates = await tx.appointment.findMany({
+    where: {
+      ...planScope,
+      deletedAt: null,
+      payment: {
+        some: {
+          ...buildLiveHoldPaymentFilter(params.buyerUserId, params.now),
+          // The two terms `findReusablePendingOrderPayment` also requires.
+          // Null-safe org equality: personal stays personal.
+          paymentGateway: params.paymentGateway,
+          organizationId: params.organizationId,
+        },
+      },
+      // Cheap index-served pre-filter on the run's first atom; the run's full
+      // extent is checked below.
+      slotsOfAppointment: {
+        some: {
+          startsAt: params.slotStart,
+          isTentative: true,
+          deletedAt: null,
+        },
+      },
+    },
+    select: {
+      id: true,
+      slotsOfAppointment: {
+        where: { deletedAt: null },
+        select: { startsAt: true, endsAt: true },
+      },
+    },
+    // Bounded: one buyer can hold one window on one plan; anything beyond a
+    // handful is a state this exclusion should not be widening for anyway.
+    take: 5,
+  });
+
+  return candidates
+    .filter((appointment) => {
+      const slots = appointment.slotsOfAppointment;
+      if (slots.length === 0) return false;
+      const runStart = Math.min(...slots.map((s) => s.startsAt.getTime()));
+      const runEnd = Math.max(...slots.map((s) => s.endsAt.getTime()));
+      return (
+        runStart === params.slotStart.getTime() &&
+        runEnd === params.slotEnd.getTime()
+      );
+    })
+    .map((appointment) => appointment.id);
+}
+
+/**
  * Validate slot availability with protection against race conditions
  * Checks for:
  * 1. Confirmed overlapping bookings
  * 2. Duplicate tentative bookings by same user
  * 3. Excessive tentative bookings (rate limiting)
+ *
+ * #1463 — returns the buyer's own self-held appointment ids so the caller's
+ * own conflict checks can exclude the same rows this function did; re-deriving
+ * them there would be a second query answering an identical question.
  */
 export async function validateSlotAvailability(
   tx: Tx,
   data: CheckoutInput,
-  userId?: string,
+  buyerUserId?: string,
   consultantUserId?: string, // NEW: Filter by consultant to prevent blocking across different consultants
-) {
-  if (!data.startsAt || !data.endsAt) return;
+  /**
+   * #1465-triage — the SERVER-resolved org scope for this request, which is
+   * what `findReusablePendingOrderPayment` matches on. Defaults to null
+   * (personal) so a caller that cannot resolve it fails closed: an org-scoped
+   * hold then keeps blocking rather than being excluded from availability by a
+   * request that could never resume it.
+   */
+  organizationId: string | null = null,
+): Promise<{ selfHoldAppointmentIds: string[] }> {
+  if (!data.startsAt || !data.endsAt) return { selfHoldAppointmentIds: [] };
 
   // LCY-2 consent cascade (#701/#1230) — a consultant who withdrew
   // SESSION_BOOKING consent must not receive new bookings. Fail-closed:
   // no artifact or withdrawn artifact ⇒ block.
   if (consultantUserId) {
-    const { checkConsent } = await import("@/lib/compliance/dpdp");
-    const { PURPOSE_CODES } = await import("@/lib/compliance/purpose-codes");
+    // #1421 — `tx`, not the global client. Every caller of this helper is
+    // already inside an interactive transaction, and under PG_POOL_MAX=1 that
+    // transaction holds the pool's only connection: a global-client read here
+    // waits for a connection that cannot be freed until the transaction it is
+    // blocking commits, so checkout died at the 3 s pg connect timeout with
+    // "timeout exceeded when trying to connect". The dynamic imports this
+    // block used to carry are gone too; both symbols are static imports above.
     if (
-      !(await checkConsent({
-        userId: consultantUserId,
-        purposeCode: PURPOSE_CODES.SESSION_BOOKING,
-      }))
+      !(await checkConsent(
+        {
+          userId: consultantUserId,
+          purposeCode: PURPOSE_CODES.SESSION_BOOKING,
+        },
+        tx,
+      ))
     ) {
       throw Object.assign(
         new Error(
@@ -877,6 +1245,7 @@ export async function validateSlotAvailability(
 
   const slotStart = new Date(data.startsAt);
   const slotEnd = new Date(data.endsAt);
+  const now = new Date();
 
   // 0. Validate slot is not in the past or too soon (minimum lead time check)
   const timingError = validateSlotTiming(slotStart);
@@ -884,64 +1253,92 @@ export async function validateSlotAvailability(
     throw new Error(timingError);
   }
 
-  // 0b. Validate slot falls within the specified availability window
-  if (data.slotOfAvailabilityWeeklyId) {
-    const avail = await tx.slotOfAvailabilityWeekly.findUnique({
-      where: { id: data.slotOfAvailabilityWeeklyId },
-      include: {
-        consultantProfile: { select: { userId: true, deletedAt: true } },
+  // 0b. Validate the whole [start, end) window against the consultant's
+  // PUBLISHED availability. #1320 — this used to check the window against the
+  // single row the client named (`slotOfAvailabilityWeeklyId`), so a two-hour
+  // booking spanning two adjacent one-hour rows was rejected even though the
+  // expert-page grid drew them as one block and the generator now merges
+  // them. The rule is now interval containment against the UNION of the
+  // consultant's rows: every 30-minute atom of the window must fall inside
+  // some published row. The named id, when present, still proves ownership
+  // and catches a soft-deleted profile (B13); it is no longer the boundary.
+  if (data.slotOfAvailabilityWeeklyId || data.slotOfAvailabilityCustomId) {
+    // Both row kinds are read for the same three facts, so they share one
+    // include; a checkout names at most one of them.
+    const namedRowInclude = {
+      consultantProfile: {
+        select: { id: true, userId: true, deletedAt: true },
       },
-    });
-    if (!avail) {
+    } as const;
+    const named =
+      (data.slotOfAvailabilityWeeklyId
+        ? await tx.slotOfAvailabilityWeekly.findUnique({
+            where: { id: data.slotOfAvailabilityWeeklyId },
+            include: namedRowInclude,
+          })
+        : null) ??
+      (data.slotOfAvailabilityCustomId
+        ? await tx.slotOfAvailabilityCustom.findUnique({
+            where: { id: data.slotOfAvailabilityCustomId },
+            include: namedRowInclude,
+          })
+        : null);
+    // A named row can legitimately vanish mid-checkout: a save on the
+    // consultant's side coalesces adjacent rows into one and re-ids it. The
+    // union check below is the authority, so a missing row is not fatal
+    // unless we cannot resolve the consultant at all.
+    if (named) {
+      if (named.consultantProfile.deletedAt) {
+        throw new Error("This expert is no longer accepting bookings");
+      }
+      if (
+        consultantUserId &&
+        named.consultantProfile.userId !== consultantUserId
+      ) {
+        throw new Error(
+          "Availability slot does not belong to the specified consultant",
+        );
+      }
+    }
+    const profileId =
+      named?.consultantProfile.id ??
+      (consultantUserId
+        ? (
+            await tx.consultantProfile.findFirst({
+              // The named row got its deletedAt check above; this fallback
+              // runs when there is no named row, so it carries its own.
+              where: { userId: consultantUserId, deletedAt: null },
+              select: { id: true },
+            })
+          )?.id
+        : undefined);
+    if (!profileId) {
       throw new Error("Availability slot not found");
     }
-    // B13 — the plan-level soft-delete check can race a deletion landing
-    // between plan fetch and slot validation; recheck at the slot level.
-    if (avail.consultantProfile.deletedAt) {
-      throw new Error("This expert is no longer accepting bookings");
-    }
-    // Verify the availability slot belongs to the correct consultant
-    if (
-      consultantUserId &&
-      avail.consultantProfile.userId !== consultantUserId
-    ) {
-      throw new Error(
-        "Availability slot does not belong to the specified consultant",
-      );
-    }
-    // Overnight-aware check: use shared utility instead of same-day-only guard
-    const candidateDay = slotStart.getUTCDay();
-    const candidateMinutes =
-      slotStart.getUTCHours() * 60 + slotStart.getUTCMinutes();
-    const slotDurationMinutes = Math.round(
-      (slotEnd.getTime() - slotStart.getTime()) / (60 * 1000),
-    );
 
-    // FIX #520 Bug 2: Diagnostic logging for intermittent slot validation failures
-    const slotValidationResult = isMinuteWithinWeeklySlot(
-      candidateDay,
-      candidateMinutes,
-      slotDurationMinutes,
-      avail.startDay,
-      avail.startTimeUtc,
-      avail.endTimeUtc,
-      avail.utcOffsetMinutes,
-    );
+    const atoms = windowAtoms(slotStart, slotEnd);
+    // ScheduleType is exclusive, so only the consultant's active arm publishes
+    // availability; the loader hands back [] for the dormant one (#1320).
+    const { scheduleType, weeklyRows, customRows } =
+      await loadPublishedCoverage(tx, profileId, slotStart, slotEnd);
+    const uncovered = findUncoveredAtom(atoms, weeklyRows, customRows);
 
-    if (!slotValidationResult) {
+    if (uncovered) {
+      // FIX #520 Bug 2: Diagnostic logging for intermittent slot validation failures
       console.error(
         JSON.stringify({
           event: "slot_validation_failed",
-          candidateDay,
-          candidateMinutes,
-          slotDurationMinutes,
-          availStartDay: avail.startDay,
-          availStartTimeUtc: avail.startTimeUtc,
-          availEndTimeUtc: avail.endTimeUtc,
-          utcOffsetMinutes: avail.utcOffsetMinutes,
+          reason: "atom_outside_published_availability",
+          scheduleType,
+          uncoveredAtomStart: uncovered.start.toISOString(),
+          candidateDay: uncovered.day,
+          candidateMinutes: uncovered.minutes,
+          weeklyRows: weeklyRows.length,
+          customRows: customRows.length,
           slotStartISO: data.startsAt,
           slotEndISO: data.endsAt,
-          availId: data.slotOfAvailabilityWeeklyId,
+          namedWeeklyId: data.slotOfAvailabilityWeeklyId ?? null,
+          namedCustomId: data.slotOfAvailabilityCustomId ?? null,
           timestamp: new Date().toISOString(),
         }),
       );
@@ -949,29 +1346,27 @@ export async function validateSlotAvailability(
         "Selected slot does not fall within the specified availability window",
       );
     }
-  } else if (data.slotOfAvailabilityCustomId) {
-    const avail = await tx.slotOfAvailabilityCustom.findUnique({
-      where: { id: data.slotOfAvailabilityCustomId },
-      include: { consultantProfile: { select: { userId: true } } },
-    });
-    if (!avail) {
-      throw new Error("Custom availability slot not found");
-    }
-    // Verify the custom availability slot belongs to the correct consultant
-    if (
-      consultantUserId &&
-      avail.consultantProfile.userId !== consultantUserId
-    ) {
-      throw new Error(
-        "Availability slot does not belong to the specified consultant",
-      );
-    }
-    if (slotStart < avail.startsAt || slotEnd > avail.endsAt) {
-      throw new Error(
-        "Selected slot does not fall within the specified availability window",
-      );
-    }
   }
+
+  // #1463 — the buyer's own open order for exactly this booking. Resolved once
+  // and subtracted from both blocking steps below; see
+  // findSelfHoldAppointmentIds for why the exclusion is this narrow.
+  const selfHoldAppointmentIds = buyerUserId
+    ? await findSelfHoldAppointmentIds(tx, {
+        buyerUserId,
+        appointmentType: data.appointmentType,
+        planId: data.planId,
+        paymentGateway: data.paymentGateway,
+        organizationId,
+        slotStart,
+        slotEnd,
+        now,
+      })
+    : [];
+  const notSelfHeld: Prisma.SlotOfAppointmentWhereInput[] =
+    selfHoldAppointmentIds.length > 0
+      ? [{ NOT: { appointmentId: { in: selfHoldAppointmentIds } } }]
+      : [];
 
   // 1. Check for confirmed overlapping appointments FOR THIS CONSULTANT ONLY
   // FIX Bug #05: Use canonical overlap predicate that catches all 4 overlap shapes
@@ -1003,12 +1398,23 @@ export async function validateSlotAvailability(
               },
             ]
           : []),
-        // FIX #540: Only count slots from active/occupied appointments
+        // FIX #540: Only count slots from active/occupied appointments.
+        // #1319 — minus dead holds (lapsed DIRECT_CHECKOUT / pay-link windows),
+        // so a slot frees the moment its payment window passes rather than
+        // when the sweep runs. The JS twin is isOccupiedByLiveAppointment.
         {
           appointment: {
-            OR: buildOccupiedAppointmentFilter(),
+            AND: [
+              { OR: buildOccupiedAppointmentFilter() },
+              { NOT: buildDeadHoldFilter(now) },
+            ],
           },
         },
+        // #1463 — the buyer's own live hold on exactly this window and plan is
+        // their open order, not another occupant, and the Rec C block below
+        // (findReusablePendingOrderPayment) is the path that resumes or
+        // supersedes it. Everything else still blocks.
+        ...notSelfHeld,
       ],
     },
   });
@@ -1019,7 +1425,12 @@ export async function validateSlotAvailability(
 
   // 2. Check for duplicate tentative bookings by the same user FOR THIS CONSULTANT
   // FIX Bug #05: Use canonical overlap predicate
-  if (userId) {
+  //
+  // #1463 — this step took the caller's ConsulteeProfile id and compared it to
+  // `Payment.userId`, which is a User id, so it could never match and the step
+  // never fired. The parameter is the buyer's User id now, which is also the
+  // identity the self-hold exclusion needs.
+  if (buyerUserId) {
     const recentAttempt = await tx.slotOfAppointment.findFirst({
       where: {
         AND: [
@@ -1041,30 +1452,14 @@ export async function validateSlotAvailability(
           {
             appointment: {
               payment: {
-                some: {
-                  AND: [
-                    { userId: userId },
-                    { paymentStatus: "PENDING" },
-                    {
-                      OR: [
-                        { expiresAt: { gt: new Date() } }, // Not yet expired
-                        {
-                          AND: [
-                            { expiresAt: null }, // No expiration set
-                            {
-                              createdAt: {
-                                gte: new Date(Date.now() - 5 * 60 * 1000),
-                              },
-                            }, // Within 5 min
-                          ],
-                        },
-                      ],
-                    },
-                  ],
-                },
+                some: buildLiveHoldPaymentFilter(buyerUserId, now),
               },
             },
           },
+          // #1463 — same exclusion as step 1: telling the buyer to "complete
+          // your current payment" while giving them no way to do so is the
+          // dead end this issue is about.
+          ...notSelfHeld,
         ],
       },
     });
@@ -1076,62 +1471,12 @@ export async function validateSlotAvailability(
     }
   }
 
-  // 3. Check for excessive tentative bookings (rate limiting) FOR THIS CONSULTANT
-  // FIX Bug #05: Use canonical overlap predicate
-  const tentativeCount = await tx.slotOfAppointment.count({
-    where: {
-      AND: [
-        { startsAt: { lt: slotEnd } },
-        { endsAt: { gt: slotStart } },
-        { isTentative: true },
-        // FIX: Filter by consultant - only count tentative slots for this consultant
-        ...(consultantUserId
-          ? [
-              {
-                user: {
-                  some: {
-                    id: consultantUserId,
-                  },
-                },
-              },
-            ]
-          : []),
-        {
-          appointment: {
-            payment: {
-              some: {
-                AND: [
-                  { paymentStatus: "PENDING" },
-                  {
-                    OR: [
-                      { expiresAt: { gt: new Date() } },
-                      {
-                        AND: [
-                          { expiresAt: null },
-                          {
-                            createdAt: {
-                              gte: new Date(Date.now() - 30 * 60 * 1000),
-                            },
-                          },
-                        ],
-                      },
-                    ],
-                  },
-                ],
-              },
-            },
-          },
-        },
-      ],
-    },
-  });
+  // #1319 — the former "max 3 pending attempts per slot" step is gone: since
+  // #1169 PR 2 step 1 blocks on ANY live hold, this count could never reach
+  // one, let alone three. Do not re-add a per-slot attempt cap here; the hold
+  // itself is the cap.
 
-  // Allow max 3 pending attempts for the same slot for this consultant
-  if (tentativeCount >= 3) {
-    throw new Error(
-      "This time slot is temporarily unavailable due to high demand. Please try again later.",
-    );
-  }
+  return { selfHoldAppointmentIds };
 }
 
 // ============================================================================
@@ -1433,12 +1778,21 @@ async function verifyPlanExistsInsideLock(
  * Re-validate availability inside the lock
  * Critical for preventing TOCTOU race conditions
  */
+/** What the pre-lock org gate chain resolved; re-asserted under the lock. */
+interface OrgFundingContext {
+  organizationId: string;
+  callerMembershipId: string;
+  programAssignmentId: string | null;
+  appointmentType: "CONSULTATION" | "SUBSCRIPTION" | "WEBINAR" | "CLASS";
+}
+
 async function revalidateInsideLock(
   data: CheckoutInput,
   userId: string,
   // ADR 18 — Program funding this org-sponsored booking; null for
   // PERSONAL/marketplace checkouts. Drives the curated-panel check.
   programId: string | null = null,
+  orgContext: OrgFundingContext | null = null,
 ): Promise<void> {
   // Re-run the same validation as calculateAmountAndValidate
   // but this time we're inside the lock, so it's safe
@@ -1486,6 +1840,108 @@ async function revalidateInsideLock(
       plan.consultantProfileId === user.consultantProfile.id
     ) {
       throw new Error("You cannot book your own plan.");
+    }
+
+    // #1319 (B2B gap 3) — the org gate chain ran BEFORE the locks, so an org
+    // suspended, a membership revoked, an assignment rolled or a consent
+    // withdrawn between the gate and the write still got sponsored. Re-assert
+    // the resolved rows by id under the lock; the credit limit is re-checked
+    // inside the Serializable booking tx already.
+    if (orgContext) {
+      const now = new Date();
+      const org = await tx.organization.findUnique({
+        where: { id: orgContext.organizationId },
+        select: { status: true, canSponsor: true },
+      });
+      if (
+        !org ||
+        !org.canSponsor ||
+        (org.status !== "ACTIVE" && org.status !== "PENDING_VERIFICATION")
+      ) {
+        throw new Error(
+          "This organization can no longer sponsor bookings. Please refresh and try again.",
+        );
+      }
+      const membership = await tx.membership.findUnique({
+        where: { id: orgContext.callerMembershipId },
+        select: { status: true },
+      });
+      if (membership?.status !== "ACTIVE") {
+        throw new Error("You are not an active member of this organization.");
+      }
+      if (orgContext.programAssignmentId) {
+        const assignment = await tx.programAssignment.findFirst({
+          where: {
+            id: orgContext.programAssignmentId,
+            status: "ACTIVE",
+            periodStart: { lte: now },
+            periodEnd: { gte: now },
+            program: {
+              status: "ACTIVE",
+              OR: [
+                { coveredPlanTypes: { isEmpty: true } },
+                { coveredPlanTypes: { has: orgContext.appointmentType } },
+              ],
+              contract: {
+                organizationId: orgContext.organizationId,
+                status: "ACTIVE",
+                effectiveFrom: { lte: now },
+                OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }],
+              },
+            },
+          },
+          select: { id: true },
+        });
+        if (!assignment) {
+          throw new Error(
+            "Your program assignment changed while this booking was in progress. Please refresh and try again.",
+          );
+        }
+      }
+      if (ENABLE_DUNNING_SUSPEND) {
+        const suspended = await tx.organizationInvoice.findFirst({
+          where: {
+            organizationId: orgContext.organizationId,
+            status: "OVERDUE",
+            dunningSuspendedAt: { not: null },
+          },
+          select: { id: true },
+        });
+        if (suspended) {
+          // #1467 — the in-lock re-check of the same dunning gate. It throws
+          // inside the checkout transaction, so without the code the catch below
+          // rewrites it to "Failed to record payment information"; with it the
+          // buyer gets the same 402 the pre-lock gate returns.
+          throw Object.assign(
+            new Error(
+              "This organization is suspended from new sponsored bookings until its overdue invoice is paid.",
+            ),
+            { httpStatus: 402, code: "BILLING_SUSPENDED_DUNNING" },
+          );
+        }
+      }
+      if (
+        // #1421 — same pool-starvation rule as validateSlotAvailability: this
+        // runs inside revalidateInsideLock's transaction.
+        !(await checkConsent(
+          {
+            userId,
+            purposeCode: PURPOSE_CODES.SESSION_BOOKING,
+          },
+          tx,
+        ))
+      ) {
+        throw Object.assign(
+          new Error(
+            "Consent required before your organization can book sessions for you.",
+          ),
+          {
+            httpStatus: 403,
+            code: "CONSENT_REQUIRED",
+            purposeCode: "SESSION_BOOKING",
+          },
+        );
+      }
     }
 
     // ADR 18 — curated-panel enforcement (#971 shipped the stub). Rows on
@@ -1541,11 +1997,14 @@ async function revalidateInsideLock(
           });
           if (!consultationPlan) throw new Error("Consultation plan not found");
 
-          await validateSlotAvailability(
+          // #1463 — the buyer's User id, and the self-held appointments it
+          // resolves are excluded from the consultee-side check below too.
+          const { selfHoldAppointmentIds } = await validateSlotAvailability(
             tx,
             data,
-            user.consulteeProfile.id,
+            userId,
             consultationPlan.consultantProfile.user.id,
+            orgContext?.organizationId ?? null,
           );
 
           // Consultee-side conflict check.
@@ -1572,6 +2031,16 @@ async function revalidateInsideLock(
             where: {
               AND: [
                 { OR: buildOccupiedAppointmentFilter() },
+                // #1319 — parity with step 1 of validateSlotAvailability.
+                { NOT: buildDeadHoldFilter(new Date()) },
+                // #1463 — and parity with its self-hold exclusion: the buyer's
+                // own open order for this exact window is not a competing
+                // session on their calendar, it is the thing they are trying to
+                // finish paying for. Without this the availability fix above
+                // would only move the wall one query to the right.
+                ...(selfHoldAppointmentIds.length > 0
+                  ? [{ NOT: { id: { in: selfHoldAppointmentIds } } }]
+                  : []),
                 {
                   slotsOfAppointment: {
                     some: {
@@ -1610,11 +2079,13 @@ async function revalidateInsideLock(
           });
           if (!subscriptionPlan) throw new Error("Subscription plan not found");
 
-          await validateSlotAvailability(
+          // #1463 — the buyer's User id; see the consultation arm above.
+          const { selfHoldAppointmentIds } = await validateSlotAvailability(
             tx,
             data,
-            user.consulteeProfile.id,
+            userId,
             subscriptionPlan.consultantProfile.user.id,
+            orgContext?.organizationId ?? null,
           );
 
           // Consultee-side conflict check for direct-slot subscriptions.
@@ -1626,6 +2097,12 @@ async function revalidateInsideLock(
             where: {
               AND: [
                 { OR: buildOccupiedAppointmentFilter() },
+                // #1319 — parity with step 1 of validateSlotAvailability.
+                { NOT: buildDeadHoldFilter(new Date()) },
+                // #1463 — same self-hold exclusion as the consultation arm.
+                ...(selfHoldAppointmentIds.length > 0
+                  ? [{ NOT: { id: { in: selfHoldAppointmentIds } } }]
+                  : []),
                 {
                   slotsOfAppointment: {
                     some: {
@@ -1753,6 +2230,11 @@ export async function handleConsultationCheckout(
    * was flagged in the May 2026 production-readiness audit.
    */
   organizationId: string | null,
+  /**
+   * #1499 — the CancellationPolicy version this sale is governed by, resolved once
+   * by the caller so every appointment of one checkout cites the same row.
+   */
+  cancellationPolicyId: string,
 ) {
   const plan = await tx.consultationPlan.findUnique({
     where: { id: data.planId },
@@ -1773,71 +2255,75 @@ export async function handleConsultationCheckout(
 
   // Validate slot availability
   // FIX: Pass consultant user ID to filter by consultant
+  // #1463 — the buyer's User id, which is what `Payment.userId` holds.
   await validateSlotAvailability(
     tx,
     data,
-    consulteeProfileId,
+    consulteeUserId,
     consultantUserId,
+    organizationId,
   );
 
   // Create consultation
+  const initialStatus = skipPayment
+    ? AppointmentStatus.APPROVED
+    : AppointmentStatus.PENDING;
   const consultation = await tx.consultation.create({
     data: {
       consultationPlanId: plan.id,
-      status: skipPayment
-        ? AppointmentStatus.APPROVED
-        : AppointmentStatus.PENDING,
+      status: initialStatus,
       requestedById: consulteeProfileId,
       requestNotes: data.notes,
       bookingSource: "DIRECT_CHECKOUT",
     },
   });
 
-  // Create appointment with 30-min slot chunks (consistent with SlotAllocationService).
-  // Each SlotOfAppointment is exactly 30 minutes so conflict detection works correctly.
-  // Both consultant and consultee are connected so the user-scoped conflict filter works.
-  const SLOT_MS = 30 * 60 * 1000;
-  const startTime = new Date(data.startsAt!);
-  const endTime = new Date(data.endsAt!);
-  const slotChunks: { startsAt: Date; endsAt: Date }[] = [];
-  let cur = new Date(startTime);
-  while (cur < endTime) {
-    slotChunks.push({
-      startsAt: new Date(cur),
-      endsAt: new Date(cur.getTime() + SLOT_MS),
-    });
-    cur = new Date(cur.getTime() + SLOT_MS);
-  }
-  if (slotChunks.length === 0)
-    throw new Error("Invalid slot: start must be before end");
+  // N x 30-minute atoms, both parties on every one (#1071 / ADR B1). Half-hour
+  // rows are what conflict detection compares against, and the consultant has
+  // to be connected or the user-scoped filter in validateNoConflicts
+  // (`user.some.id === consultantUserId`) cannot see the booking at all.
+  // #1319 — shared with the webhook capture fallback, which had drifted to one
+  // oversized row carrying only the buyer.
+  const slotAtoms = buildContiguousSlotAtomsForWindow({
+    startsAt: new Date(data.startsAt!),
+    endsAt: new Date(data.endsAt!),
+    // #440 — denormalized for the DB-level overlap guard.
+    consultantProfileId: plan.consultantProfileId,
+    isTentative: !skipPayment,
+    userIds: [consultantUserId, consulteeUserId],
+  });
 
   const appointment = await tx.appointment.create({
     data: {
       appointmentType: AppointmentsType.CONSULTATION,
       consultationId: consultation.id,
       organizationId,
-      // B1 — freeze the refund terms at booking; the cancel flow reads this.
-      cancellationPolicySnapshot: JSON.parse(
-        JSON.stringify(resolveCancellationPolicySnapshot()),
-      ),
-      slotsOfAppointment: {
-        create: slotChunks.map((chunk) => ({
-          startsAt: chunk.startsAt,
-          endsAt: chunk.endsAt,
-          isTentative: !skipPayment,
-          // #440 — denormalized for the DB-level overlap guard.
-          consultantProfileId: plan.consultantProfileId,
-          // Connect BOTH consultant and consultee so the user-scoped conflict
-          // filter in validateNoConflicts (user.some.id === consultantUserId)
-          // can see this slot. dev branch only connected the consultee, which
-          // left the slot invisible to auto/manual allocation conflict checks.
-          user: {
-            connect: [{ id: consultantUserId }, { id: consulteeUserId }],
-          },
-        })),
-      },
+      // B1/#1499 — freeze the refund terms at booking by pointing at the immutable
+      // policy version; the cancel flow reads it back through this FK.
+      cancellationPolicyId,
+      slotsOfAppointment: { create: slotAtoms },
     },
   });
+  // #1319 A9 — shadow participant rows, same tx as the slot connects.
+  await recordParticipants(
+    tx,
+    appointment.id,
+    [
+      { userId: consultantUserId, role: "CONSULTANT" },
+      { userId: consulteeUserId, role: "CONSULTEE" },
+    ],
+    { organizationId, status: skipPayment ? "CONFIRMED" : "HELD" },
+  );
+  // #1333 — the opening timeline row, written here rather than left to the
+  // first CAS so a booking that has not moved yet still has a story. Same tx as
+  // the create: a consultation that exists always has one.
+  await appendCreationHistory(
+    tx,
+    "CONSULTATION",
+    consultation.id,
+    initialStatus,
+    { appointmentId: appointment.id, actorUserId: userId, organizationId },
+  );
 
   return { appointment, plan, amount: plan.price };
 }
@@ -1849,6 +2335,8 @@ export async function handleSubscriptionCheckout(
   _skipPayment: boolean,
   /** Resolved org context — see handleConsultationCheckout for rationale. */
   organizationId: string | null,
+  /** #1499 — see handleConsultationCheckout. */
+  cancellationPolicyId: string,
 ): Promise<SubscriptionCheckoutResult> {
   const plan = await tx.subscriptionPlan.findUnique({
     where: { id: data.planId },
@@ -1935,12 +2423,12 @@ export async function handleSubscriptionCheckout(
 
   if (completedTrial) {
     // Mark the trial as converted and link to this subscription
-    await tx.trialSession.update({
+    // CAS (#1319): the findFirst above filtered COMPLETED; the WHERE here is
+    // what makes that hold at write time.
+    await transitionTrialSession(tx, {
       where: { id: completedTrial.id },
-      data: {
-        status: TrialSessionStatus.CONVERTED,
-        convertedToSubscriptionId: subscription.id,
-      },
+      to: TrialSessionStatus.CONVERTED,
+      data: { convertedToSubscriptionId: subscription.id },
     });
 
     console.log(
@@ -1963,9 +2451,42 @@ export async function handleSubscriptionCheckout(
       appointmentType: AppointmentsType.SUBSCRIPTION,
       subscriptionId: subscription.id,
       organizationId,
+      // #1499 — the placeholder carries the money, so it must carry the terms too:
+      // the sessions allocated later inherit this row's policy, and `cancellation-
+      // scope` reads the terms off whichever row the Payment hangs on. The old Json
+      // snapshot was never written here, which is why the fallback in that module
+      // existed at all.
+      cancellationPolicyId,
       // No slots created - consultant allocates later via Requests tab
     },
   });
+  // #1319 A9 — the placeholder has no slots yet, but the buyer is a
+  // participant of the engagement from the moment they hold it.
+  const consulteeUser = await tx.consulteeProfile.findUnique({
+    where: { id: consulteeProfileId },
+    select: { userId: true },
+  });
+  if (consulteeUser) {
+    await recordParticipants(
+      tx,
+      appointment.id,
+      [{ userId: consulteeUser.userId, role: "CONSULTEE" }],
+      { organizationId, status: _skipPayment ? "CONFIRMED" : "HELD" },
+    );
+  }
+  // #1333 — see handleConsultationCheckout. Placed after the buyer lookup so
+  // the opening row carries the same attribution the participant rows do.
+  await appendCreationHistory(
+    tx,
+    "SUBSCRIPTION",
+    subscription.id,
+    AppointmentStatus.PENDING,
+    {
+      appointmentId: appointment.id,
+      actorUserId: consulteeUser?.userId ?? null,
+      organizationId,
+    },
+  );
 
   return {
     appointment,
@@ -2065,6 +2586,11 @@ export async function handleWebinarCheckout(
     // the first registrant's booking org. This makes "events we host"
     // discoverable in the org dashboard, and avoids first-registrant-
     // wins org leakage.
+    // #1499 — for the same reason no cancellationPolicyId is stamped: one row
+    // cannot carry one buyer's terms when several orgs are seated on it. A null
+    // FK reads as the platform ladder, which is what whole-event refunds already
+    // assume. Org tiers therefore do not reach event seats — a documented
+    // limitation, not an oversight.
     appointment = await tx.appointment.create({
       data: {
         appointmentType: AppointmentsType.WEBINAR,
@@ -2085,14 +2611,17 @@ export async function handleWebinarCheckout(
   // Webinar participants attend the entire session, so they must be
   // connected to every SlotOfAppointment (not given a new duplicate slot).
   if (appointment && appointment.slotsOfAppointment.length > 0) {
-    for (const slot of appointment.slotsOfAppointment) {
-      await tx.slotOfAppointment.update({
-        where: { id: slot.id },
-        data: {
-          user: { connect: { id: userId } },
-        },
-      });
-    }
+    await connectAttendeeToEventSlots(tx, {
+      appointments: [appointment],
+      userId,
+    });
+    // #1319 A9 — one participant row per seat holder.
+    await recordParticipants(
+      tx,
+      appointment.id,
+      [{ userId, role: "CONSULTEE" }],
+      { status: _skipPayment ? "CONFIRMED" : "HELD" },
+    );
   }
 
   return { appointment, plan, amount: plan.price };
@@ -2174,17 +2703,18 @@ export async function handleClassCheckout(
   // Link user to ALL existing slots of ALL class appointments (sessions).
   // Class participants attend every session, so they must be connected to
   // every existing SlotOfAppointment (not given duplicate slots).
-  let linkedSlotCount = 0;
+  const linkedSlotCount = await connectAttendeeToEventSlots(tx, {
+    appointments: classInstance.appointments,
+    userId,
+  });
+  // #1319 A9 — one participant row per session the buyer is enrolled in.
   for (const appointment of classInstance.appointments) {
-    for (const slot of appointment.slotsOfAppointment) {
-      await tx.slotOfAppointment.update({
-        where: { id: slot.id },
-        data: {
-          user: { connect: { id: userId } },
-        },
-      });
-      linkedSlotCount++;
-    }
+    await recordParticipants(
+      tx,
+      appointment.id,
+      [{ userId, role: "CONSULTEE" }],
+      { status: _skipPayment ? "CONFIRMED" : "HELD" },
+    );
   }
 
   // Return the first appointment for compatibility
@@ -2208,6 +2738,85 @@ export async function handleClassCheckout(
 // ============================================================================
 // Main Checkout Flows
 // ============================================================================
+
+/**
+ * Ring one org-programme bell for a ProgramAssignment, after the checkout
+ * transaction has settled.
+ *
+ * #1435 — both bells used to run this lookup on the global client from INSIDE
+ * the Serializable transaction. Under PG_POOL_MAX=1 that query queues behind
+ * the transaction's own connection and dies at the 3 s pg connect timeout, and
+ * the .catch below swallowed it, so the bell was lost silently on Netlify.
+ *
+ * Fire-and-forget: a booking must not fail because a notification did not go
+ * out. `Program.organizationId` lives on its parent Contract, not on Program
+ * itself, so the select chain hops Program → Contract → Organization.
+ */
+function dispatchProgramBell(
+  programAssignmentId: string,
+  bell:
+    | { kind: "EXHAUSTED" }
+    | {
+        kind: "CAP_NEAR";
+        engagementsUsed: number;
+        cap: number;
+        usedPct: number;
+      },
+): void {
+  void prisma.programAssignment
+    .findUnique({
+      where: { id: programAssignmentId },
+      select: {
+        membership: {
+          select: {
+            userId: true,
+            user: { select: { name: true, email: true } },
+          },
+        },
+        program: {
+          select: {
+            name: true,
+            contract: {
+              select: {
+                organizationId: true,
+                organization: { select: { name: true } },
+              },
+            },
+          },
+        },
+      },
+    })
+    .then((ctx) => {
+      if (!ctx) return;
+      const orgId = ctx.program.contract.organizationId;
+      const common = {
+        orgName: ctx.program.contract.organization.name,
+        programName: ctx.program.name,
+        assigneeName: ctx.membership.user.name ?? ctx.membership.user.email,
+        dashboardUrl: `/dashboard/organization/${orgId}/programs`,
+      };
+      return bell.kind === "EXHAUSTED"
+        ? notifyOrgProgramExhausted(orgId, ctx.membership.userId, common)
+        : notifyOrgProgramCapNear(orgId, ctx.membership.userId, {
+            ...common,
+            engagementsUsed: bell.engagementsUsed,
+            cap: bell.cap,
+            usedPct: bell.usedPct,
+          });
+    })
+    .catch((notifyErr) => {
+      console.error(
+        bell.kind === "EXHAUSTED"
+          ? "[notifyOrgProgramExhausted] failed:"
+          : "[notifyOrgProgramCapNear] failed:",
+        notifyErr,
+      );
+      reportSentryError(notifyErr, {
+        subsystem: "payments",
+        level: "warning",
+      });
+    });
+}
 
 /**
  * Production checkout flow (real payments)
@@ -2316,8 +2925,15 @@ export async function handleCheckout(
         orderBy: { dueDate: "asc" },
       });
       if (suspended) {
-        throw new Error(
-          `This organization has an overdue invoice (${suspended.invoiceNumber}) and is suspended from new sponsored bookings until it is paid.`,
+        // #1467 — same shape as the assignment refusal below: a bare Error here
+        // would 500 the moment the flag is switched on. 402 because the block is
+        // lifted by paying money that is already owed, which is exactly what
+        // Payment Required means to the buyer's client.
+        throw Object.assign(
+          new Error(
+            `This organization has an overdue invoice (${suspended.invoiceNumber}) and is suspended from new sponsored bookings until it is paid.`,
+          ),
+          { httpStatus: 402, code: "BILLING_SUSPENDED_DUNNING" },
         );
       }
     }
@@ -2454,10 +3070,19 @@ export async function handleCheckout(
       });
 
       if (!assignment) {
-        throw new Error(
-          "No active program assignment covers this booking. Ask your organization admin to assign you to a Program that covers " +
-            appointmentType +
-            ".",
+        // #1467 — a lapsed contract or a closed programme is a routine refusal
+        // the member's own admin can undo, but the bare Error matched nothing in
+        // BUSINESS_ERROR_PATTERNS and classifyError answered 500 UNKNOWN_ERROR:
+        // the buyer could not tell it from a crash and Sentry logged a false
+        // incident. 409 because the request is well-formed and the org's
+        // entitlement state is what conflicts with it.
+        throw Object.assign(
+          new Error(
+            "No active program assignment covers this booking. Ask your organization admin to assign you to a Program that covers " +
+              appointmentType +
+              ".",
+          ),
+          { httpStatus: 409, code: "PROGRAM_ASSIGNMENT_INACTIVE" },
         );
       }
       programAssignmentId = assignment.id;
@@ -2481,10 +3106,18 @@ export async function handleCheckout(
       currency,
       discountCodeId,
       consulteeProfileId,
+      consulteeBillingStateCode,
       creditsApplied,
       buyerCountry: detectedBuyerCountry,
       isInternational,
-    } = await calculateAmountAndValidate(validatedData, userId, buyerCountry);
+    } = await calculateAmountAndValidate(
+      validatedData,
+      userId,
+      buyerCountry,
+      // #1465-triage — resolved and membership-verified above; the slot gate
+      // needs it to scope the self-hold exclusion to a resumable hold.
+      organizationId,
+    );
 
     const displayCurrencyAtCheckout =
       validatedData.displayCurrency?.toUpperCase() || currency;
@@ -2540,7 +3173,19 @@ export async function handleCheckout(
     );
 
     // STEP 3: RE-VALIDATE INSIDE LOCK (critical for preventing TOCTOU race conditions)
-    await revalidateInsideLock(validatedData, userId, fundingProgramId);
+    await revalidateInsideLock(
+      validatedData,
+      userId,
+      fundingProgramId,
+      organizationId && callerMembershipId
+        ? {
+            organizationId,
+            callerMembershipId,
+            programAssignmentId,
+            appointmentType,
+          }
+        : null,
+    );
 
     console.log(
       JSON.stringify({
@@ -2617,12 +3262,12 @@ export async function handleCheckout(
           : {}),
       });
     if (supersededOrders.length > 0) {
-      await prisma.payment.updateMany({
-        where: { id: { in: supersededOrders.map((s) => s.id) } },
-        data: {
-          paymentStatus: PaymentStatus.EXPIRED,
-          expiresAt: new Date(),
-        },
+      // #1463 — expiring the payment is only half of it; the hold it minted has
+      // to come off the calendar in the same transaction or this buyer's next
+      // attempt walls itself out again. See releaseSupersededHolds.
+      await releaseSupersededHolds({
+        paymentIds: supersededOrders.map((s) => s.id),
+        userId,
       });
       console.log(
         JSON.stringify({
@@ -2658,6 +3303,10 @@ export async function handleCheckout(
         amount: Number(reusableOrder.amount),
         currency: reusableOrder.currency,
         isMockPayment: reusableOrder.isMockPayment,
+        // #1437 — PENDING reuse is always a real gateway hold (mock/zero/
+        // org-sponsored payments never land in PENDING, see the comment
+        // above findReusablePendingOrderPayment), so the page must open it.
+        skipPayment: reusableOrder.isMockPayment,
         message: "Resuming your in-progress checkout.",
       };
     }
@@ -2669,18 +3318,29 @@ export async function handleCheckout(
     // heartbeat is deliberately avoided: serverless freeze makes intervals
     // unreliable, and the message must contain "already in progress" so
     // classifyError maps it to LOCK_CONTENTION → 409.
-    if (lock) {
-      const renewalTtl =
-        CHECKOUT_LOCK_TTL_MS[validatedData.appointmentType] ?? 60_000;
+    // #1319 (R8) — one renewal here did not cover the Serializable retry loop
+    // below: four 25 s attempts outlive a 60 s CONSULTATION grant, and the
+    // lock silently lapsed mid-payment. Renew at the top of EVERY attempt
+    // with a grant sized to one attempt plus slack, so elapsed time stops
+    // mattering; only per-attempt duration does. Ownership lost → abort the
+    // attempt (not a P2034, so the retry helper rethrows immediately).
+    const checkoutTxTimeoutMs = 25_000;
+    const perAttemptTtl = Math.max(
+      CHECKOUT_LOCK_TTL_MS[validatedData.appointmentType] ?? 60_000,
+      checkoutTxTimeoutMs + 10_000,
+    );
+    const renewOrAbort = async (ttl: number): Promise<void> => {
+      if (!lock) return;
       const renewed = Array.isArray(lock)
-        ? await extendSlotInterval(lock, renewalTtl)
-        : await extendLock(lock, renewalTtl);
+        ? await extendSlotInterval(lock, ttl)
+        : await extendLock(lock, ttl);
       if (!renewed) {
         throw new Error(
           "Checkout took too long and its hold expired — another checkout for this slot may be already in progress. Please try again.",
         );
       }
-    }
+    };
+    await renewOrAbort(perAttemptTtl);
 
     // Enterprise org funding skips the gateway entirely.
     if (isOrgSponsoredPayment) {
@@ -2718,6 +3378,8 @@ export async function handleCheckout(
       } catch (paymentError) {
         console.error("Payment intent creation failed:", paymentError);
         reportSentryError(paymentError, { subsystem: "payments" });
+        // Typed gateway errors keep their code for the route's classifier.
+        if (paymentError instanceof PaymentError) throw paymentError;
         throw new Error(
           "Failed to create payment intent. Please try again later.",
         );
@@ -2729,603 +3391,653 @@ export async function handleCheckout(
     try {
       // #1093 tail — the ONLY Serializable site that wasn't retried: a P2034
       // under hot-webinar contention surfaced as a generic failure instead of
-      // being retried into the sibling's committed state. Anything the body
-      // does on the OUTER prisma client therefore has to be idempotent across
-      // attempts — see capNearNotified.
-      let capNearNotified = false;
-      const result = await withSerializableRetry(() =>
-        prisma.$transaction(
-        async (tx) => {
-          // #785 B6 — re-check the INVOICE credit limit INSIDE the Serializable
-          // tx. The pre-lock check ran on the global client before this tx, so
-          // two concurrent disjoint-slot bookings (which take different per-slot
-          // locks) could both pass it. Reading the accrual set here — the same
-          // rows this tx is about to add to — makes SSI abort one of a racing
-          // pair; the retry then sees the sibling's committed accrual.
-          if (
-            isOrgInvoicedPayment &&
-            creditEffectiveLimit !== null &&
-            organizationId
-          ) {
-            const [accrualAgg, outstandingAgg] = await Promise.all([
-              tx.paymentLeg.aggregate({
-                where: {
-                  source: {
-                    in: ["INVOICE_ACCRUAL", "OVERAGE_INVOICE_ACCRUAL"],
-                  },
-                  payment: {
-                    organizationId,
-                    paymentStatus: "SUCCEEDED",
-                    billableToOrgInvoiceId: null,
-                  },
-                },
-                _sum: { amountPaise: true },
-              }),
-              tx.organizationInvoice.aggregate({
-                where: {
-                  organizationId,
-                  status: { in: ["ISSUED", "OVERDUE"] },
-                },
-                _sum: { totalPaise: true },
-              }),
-            ]);
-            const exposure =
-              sumPaise(accrualAgg._sum.amountPaise) +
-              sumPaise(outstandingAgg._sum.totalPaise);
-            // Same gate as the pre-lock check (>= limit), re-run inside the tx so
-            // a concurrent sibling's just-committed accrual is visible — SSI then
-            // aborts the loser of a racing pair instead of both straddling the cap.
-            if (exposure >= creditEffectiveLimit) {
-              throw new Error(
-                `Organization has reached its invoice credit limit (${creditEffectiveLimit} paise). Outstanding invoices must be paid before new bookings.`,
-              );
-            }
-          }
+      // being retried into the sibling's committed state.
+      //
+      // #1435 — so the body no longer touches the OUTER prisma client at all.
+      // Every org-programme bell is CAPTURED inside the transaction and rung
+      // once it has settled. The two success-path bells travel out on the
+      // transaction's return value, which by construction is the committing
+      // attempt's, so a P2034 retry cannot ring them twice; the cap-exhausted
+      // bell cannot (it throws), so it rides out on this holder instead.
+      const exhaustedBell: { programAssignmentId: string | null } = {
+        programAssignmentId: null,
+      };
 
-          let createdAppointment;
-          // Engagement count for enterprise cap (issue #710). One
-          // engagement = one Appointment row = one calendar occurrence.
-          //   - CONSULTATION/WEBINAR: 1 (single Appointment created here)
-          //   - CLASS: N (count of appointments the learner enrolled in,
-          //     all known at checkout because consultant pre-allocated)
-          //   - SUBSCRIPTION: null → SKIP recordBookingUtilization at
-          //     checkout. Slots are allocated lazily by the consultant;
-          //     debits land in SlotAllocationService.createAppointments,
-          //     1 per allocation batch.
-          let engagementsForCap: number | null = null;
+      // #1513 review — provision the platform policy row HERE, on the global
+      // client, not from inside the transaction below. The provisioner recovers
+      // from a P2002 by re-reading the winner's row, and inside a Serializable
+      // transaction a P2002 aborts the transaction, so that re-read would fail
+      // and take the sale with it. On the global client every statement is its
+      // own autocommit unit, so the loser of the race really does get to re-read.
+      // It must also stay OUTSIDE any `$transaction` callback: PG_POOL_MAX=1
+      // means a global-client query issued while a transaction holds the single
+      // connection deadlocks (#1435, see lib/prisma.ts).
+      await ensurePlatformCancellationPolicy(prisma);
 
-          // FIX #520: Zero-amount payments (credits cover full cost) skip the
-          // gateway, so slots should be confirmed immediately just like mock payments.
-          // Enterprise: org-sponsored payments also skip the gateway.
-          const skipPayment =
-            isMockPayment || isZeroAmountPayment || isOrgSponsoredPayment;
+      const result = await withSerializableRetry(async () => {
+        await renewOrAbort(perAttemptTtl);
+        return prisma.$transaction(
+          async (tx) => {
+            // #1435 — this attempt's bells, returned below and rung post-commit.
+            let capNearBell: {
+              programAssignmentId: string;
+              engagementsUsed: number;
+              cap: number;
+              usedPct: number;
+            } | null = null;
+            let overageBell: PendingOverageNotification | null = null;
 
-          // Create appointment based on type (with isTentative flag)
-          switch (validatedData.appointmentType) {
-            case "CONSULTATION": {
-              const consultationResult = await handleConsultationCheckout(
-                tx,
-                validatedData,
-                consulteeProfileId,
-                userId,
-                skipPayment,
-                organizationId,
-              );
-              createdAppointment = consultationResult.appointment;
-              engagementsForCap = 1;
-              break;
-            }
-
-            case "SUBSCRIPTION": {
-              const subscriptionResult = await handleSubscriptionCheckout(
-                tx,
-                validatedData,
-                consulteeProfileId,
-                skipPayment,
-                organizationId,
-              );
-              // Use placeholder appointment for payment linkage
-              // This ensures webhook uses NEW FLOW (confirm) not LEGACY FLOW (create duplicate)
-              createdAppointment = subscriptionResult.appointment;
-              // engagementsForCap stays null — debit happens at
-              // SlotAllocationService.createAppointments time.
-              break;
-            }
-
-            case "WEBINAR": {
-              const webinarResult = await handleWebinarCheckout(
-                tx,
-                validatedData,
-                userId,
-                skipPayment,
-              );
-              createdAppointment = webinarResult.appointment;
-              engagementsForCap = 1;
-              break;
-            }
-
-            case "CLASS": {
-              const classResult = await handleClassCheckout(
-                tx,
-                validatedData,
-                userId,
-                skipPayment,
-              );
-              // Class creates slots across multiple appointments
-              // Use first appointment for payment linkage
-              createdAppointment = classResult.appointment || null;
-              engagementsForCap = classResult.engagementsConsumed;
-              break;
-            }
-
-            default:
-              throw new Error(
-                `Unsupported appointment type: ${validatedData.appointmentType}`,
-              );
-          }
-
-          // Create payment record linked to appointment (if created)
-          // paymentResponse is guaranteed to be set at this point (we'd have thrown in the try-catch above)
-          const payment = await tx.payment.create({
-            data: {
-              amount,
-              originalAmount,
-              taxAmount,
-              currency,
-              paymentMethod: isOrgWalletPayment
-                ? "WALLET"
-                : isOrgInvoicedPayment
-                  ? "INVOICE"
-                  : isOrgLicensedPayment
-                    ? "LICENSE"
-                    : isZeroAmountPayment
-                      ? "CREDITS"
-                      : "CARD",
-              paymentIntent: paymentResponse!.id,
-              // #828 — unique; a concurrent duplicate attempt dies on P2002
-              // and the route replays this payment's original response.
-              clientIdempotencyKey: validatedData.clientIdempotencyKey ?? null,
-              paymentGateway: validatedData.paymentGateway,
-              // FIX #520: Zero-amount and mock payments succeed immediately (no webhook)
-              paymentStatus: skipPayment
-                ? PaymentStatus.SUCCEEDED
-                : PaymentStatus.PENDING,
-              isMockPayment:
-                isMockPayment || isZeroAmountPayment || isOrgSponsoredPayment,
-              userId: userId,
-              appointmentId: createdAppointment?.id || null,
-              discountCodeId,
-              expiresAt: skipPayment
-                ? null
-                : new Date(Date.now() + 30 * 60 * 1000), // 30 minutes
-              buyerCountry: detectedBuyerCountry,
-              isInternational,
-              displayCurrencyAtCheckout,
-              exchangeRateAtCheckout,
-              // Enterprise (Arch 4): org tag for reporting / billing.
-              organizationId,
-              billingAccountId,
-            },
-          });
-
-          // Enterprise: WALLET fundingSource — debit from BillingAccount
-          // atomically via the wallet helper (raw-SQL conditional UPDATE).
-          // Triggered only when we also have a resolved program assignment,
-          // which guarantees the booking is actually sponsored.
-          if (isOrgWalletPayment && billingAccountId) {
-            // #837 — refuse to spend a wallet whose cache drifted from the
-            // journal (frozen by the ledger-reconcile job): the balance can't
-            // be trusted until ops reconciles. Chargeback recovery is NOT gated
-            // (see wallet-freeze.ts).
-            if (await isWalletFrozen(tx, billingAccountId)) {
-              throw new WalletFrozenError(billingAccountId);
-            }
-            await walletDebit(tx, {
-              billingAccountId,
-              amountPaise: amount,
-              reason: "BOOKING",
-              paymentId: payment.id,
-              membershipId: callerMembershipId ?? undefined,
-            });
-          }
-
-          // Enterprise: write the Program utilization row + a PaymentLeg
-          // that describes where the money (or commitment) actually came
-          // from. This is the runtime source of truth for sponsorship
-          // attribution — analytics / invoicing / cap enforcement all read
-          // these rows rather than back-deriving from `paymentMethod`.
-          //
-          // E2E-audit F-1 fix — the FUNDING LEG is written for every
-          // org-sponsored payment, INCLUDING SUBSCRIPTION. Subscriptions
-          // meter engagements lazily (at allocation), but their money moves
-          // HERE: the wallet debit above journals against the WALLET leg in
-          // the ledger, the invoice rollup only collects INVOICE_ACCRUAL
-          // legs, and refunds credit wallets back leg-proportionally.
-          // Skipping the leg made (SUBSCRIPTION × WALLET) journal real
-          // money as platform CASH (guaranteed WALLET_BALANCE_DRIFT →
-          // auto-frozen wallet), left (SUBSCRIPTION × INVOICE) permanently
-          // unbilled, and gave (SUBSCRIPTION × LICENSE) no fulfillment
-          // proof. Utilization metering stays gated on engagementsForCap.
-          if (programAssignmentId && isOrgSponsoredPayment) {
-            await tx.paymentLeg.create({
-              data: {
-                paymentId: payment.id,
-                source: isOrgWalletPayment
-                  ? "WALLET"
-                  : isOrgLicensedPayment
-                    ? "LICENSE"
-                    : "INVOICE_ACCRUAL",
-                // LICENSE absorbs the cost entirely at the contract level
-                // — the per-booking leg is zero so totals across all legs
-                // still reconcile to the Payment amount.
-                amountPaise: isOrgLicensedPayment ? 0 : amount,
-                sourceRef: programAssignmentId,
-              },
-            });
-          }
-
-          if (
-            programAssignmentId &&
-            isOrgSponsoredPayment &&
-            engagementsForCap !== null
-          ) {
-            let utilizationResult: Awaited<
-              ReturnType<typeof recordBookingUtilization>
-            > = {
-              wasOverage: false,
-              engagementsConsumedDelta: 0,
-              engagementsUsedAfter: 0,
-              cap: null,
-              programType: "LICENSED_SEAT",
-              consumedPaiseAfter: 0,
-              creditBudgetPaise: null,
-            };
-            try {
-              utilizationResult = await recordBookingUtilization(tx, {
-                programAssignmentId,
-                paymentId: payment.id,
-                engagementsConsumed: engagementsForCap,
-                priceAtBookingPaise: amount,
-              });
-            } catch (err) {
-              if (err instanceof ProgramAssignmentLimitError) {
-                // Fire-and-forget bell notification to the assignee + org
-                // operators. Lookup uses the outer prisma client (not the
-                // about-to-roll-back `tx`) so the query runs against
-                // committed state. The TX still rolls back on throw —
-                // the notification is the correct signal whether or not
-                // the booking eventually succeeds.
-                //
-                // `Program.organizationId` lives on its parent Contract,
-                // not on Program itself, so the select chain hops
-                // Program → Contract → Organization.
-                prisma.programAssignment
-                  .findUnique({
-                    where: { id: programAssignmentId },
-                    select: {
-                      membership: {
-                        select: {
-                          userId: true,
-                          user: { select: { name: true, email: true } },
-                        },
-                      },
-                      program: {
-                        select: {
-                          name: true,
-                          contract: {
-                            select: {
-                              organizationId: true,
-                              organization: { select: { name: true } },
-                            },
-                          },
-                        },
-                      },
+            // #785 B6 — re-check the INVOICE credit limit INSIDE the Serializable
+            // tx. The pre-lock check ran on the global client before this tx, so
+            // two concurrent disjoint-slot bookings (which take different per-slot
+            // locks) could both pass it. Reading the accrual set here — the same
+            // rows this tx is about to add to — makes SSI abort one of a racing
+            // pair; the retry then sees the sibling's committed accrual.
+            if (
+              isOrgInvoicedPayment &&
+              creditEffectiveLimit !== null &&
+              organizationId
+            ) {
+              const [accrualAgg, outstandingAgg] = await Promise.all([
+                tx.paymentLeg.aggregate({
+                  where: {
+                    source: {
+                      in: ["INVOICE_ACCRUAL", "OVERAGE_INVOICE_ACCRUAL"],
                     },
-                  })
-                  .then((ctx) => {
-                    if (!ctx) return;
-                    const orgId = ctx.program.contract.organizationId;
-                    return notifyOrgProgramExhausted(
-                      orgId,
-                      ctx.membership.userId,
-                      {
-                        orgName: ctx.program.contract.organization.name,
-                        programName: ctx.program.name,
-                        assigneeName:
-                          ctx.membership.user.name ?? ctx.membership.user.email,
-                        dashboardUrl: `/dashboard/organization/${orgId}/programs`,
-                      },
-                    );
-                  })
-                  .catch((notifyErr) => {
-                    console.error(
-                      "[notifyOrgProgramExhausted] failed:",
-                      notifyErr,
-                    );
-                    reportSentryError(notifyErr, {
-                      subsystem: "payments",
-                      level: "warning",
-                    });
-                  });
-
+                    payment: {
+                      organizationId,
+                      paymentStatus: "SUCCEEDED",
+                      billableToOrgInvoiceId: null,
+                    },
+                  },
+                  _sum: { amountPaise: true },
+                }),
+                tx.organizationInvoice.aggregate({
+                  where: {
+                    organizationId,
+                    status: { in: ["ISSUED", "OVERDUE"] },
+                  },
+                  _sum: { totalPaise: true },
+                }),
+              ]);
+              const exposure =
+                sumPaise(accrualAgg._sum.amountPaise) +
+                sumPaise(outstandingAgg._sum.totalPaise);
+              // Same gate as the pre-lock check (>= limit), re-run inside the tx so
+              // a concurrent sibling's just-committed accrual is visible — SSI then
+              // aborts the loser of a racing pair instead of both straddling the cap.
+              if (exposure >= creditEffectiveLimit) {
                 throw new Error(
-                  "Your program has hit its session cap for this cycle. Ask your organization admin to upgrade the program or wait for the next cycle.",
+                  `Organization has reached its invoice credit limit (${creditEffectiveLimit} paise). Outstanding invoices must be paid before new bookings.`,
                 );
               }
-              throw err;
             }
 
-            // #768 #22 — 80% cap-near early warning. Fire ONCE per cycle on
-            // the <80% → >=80% transition (not on every booking past 80%).
-            // Integer-only threshold cross: before/cap < 0.8 (before*5 <
-            // cap*4) AND after/cap >= 0.8 (after*5 >= cap*4). Skipped when
-            // cap is null (unlimited) or 0. Fire-and-forget on the outer
-            // prisma client + same roster as the 100% event — mirrors the
-            // notifyOrgProgramExhausted call below.
-            {
-              // #775 — LICENSED_SEAT meters in engagements, CREDIT_POOL in
-              // paise (consumedPaise vs creditBudgetPaise). The 80% transition
-              // math is unit-agnostic; the Novu payload reports credits for
-              // pools (÷100) and engagements for seats.
-              const isCredit = utilizationResult.programType === "CREDIT_POOL";
-              const capAfter = isCredit
-                ? utilizationResult.creditBudgetPaise
-                : utilizationResult.cap;
-              const after = isCredit
-                ? utilizationResult.consumedPaiseAfter
-                : utilizationResult.engagementsUsedAfter;
-              const before = isCredit
-                ? after - amount
-                : after - utilizationResult.engagementsConsumedDelta;
+            let createdAppointment;
+            // Engagement count for enterprise cap (issue #710). One
+            // engagement = one Appointment row = one calendar occurrence.
+            //   - CONSULTATION/WEBINAR: 1 (single Appointment created here)
+            //   - CLASS: N (count of appointments the learner enrolled in,
+            //     all known at checkout because consultant pre-allocated)
+            //   - SUBSCRIPTION: null → SKIP recordBookingUtilization at
+            //     checkout. Slots are allocated lazily by the consultant;
+            //     debits land in SlotAllocationService.createAppointments,
+            //     1 per allocation batch.
+            let engagementsForCap: number | null = null;
+
+            // FIX #520: Zero-amount payments (credits cover full cost) skip the
+            // gateway, so slots should be confirmed immediately just like mock payments.
+            // Enterprise: org-sponsored payments also skip the gateway.
+            const skipPayment =
+              isMockPayment || isZeroAmountPayment || isOrgSponsoredPayment;
+
+            // #1499 — whose ladder governs this sale, resolved once inside the
+            // booking transaction. Org-funded means the ORG'S MONEY moves on a
+            // refund, so the org's published version binds; a personal booking
+            // merely tagged to an org keeps the platform ladder.
+            const cancellationPolicyId =
+              await resolveCheckoutCancellationPolicyId(tx, {
+                organizationId: isOrgSponsoredPayment ? organizationId : null,
+              });
+
+            // Create appointment based on type (with isTentative flag)
+            switch (validatedData.appointmentType) {
+              case "CONSULTATION": {
+                const consultationResult = await handleConsultationCheckout(
+                  tx,
+                  validatedData,
+                  consulteeProfileId,
+                  userId,
+                  skipPayment,
+                  organizationId,
+                  cancellationPolicyId,
+                );
+                createdAppointment = consultationResult.appointment;
+                engagementsForCap = 1;
+                break;
+              }
+
+              case "SUBSCRIPTION": {
+                const subscriptionResult = await handleSubscriptionCheckout(
+                  tx,
+                  validatedData,
+                  consulteeProfileId,
+                  skipPayment,
+                  organizationId,
+                  cancellationPolicyId,
+                );
+                // Use placeholder appointment for payment linkage
+                // This ensures webhook uses NEW FLOW (confirm) not LEGACY FLOW (create duplicate)
+                createdAppointment = subscriptionResult.appointment;
+                // engagementsForCap stays null — debit happens at
+                // SlotAllocationService.createAppointments time.
+                break;
+              }
+
+              case "WEBINAR": {
+                const webinarResult = await handleWebinarCheckout(
+                  tx,
+                  validatedData,
+                  userId,
+                  skipPayment,
+                );
+                createdAppointment = webinarResult.appointment;
+                engagementsForCap = 1;
+                break;
+              }
+
+              case "CLASS": {
+                const classResult = await handleClassCheckout(
+                  tx,
+                  validatedData,
+                  userId,
+                  skipPayment,
+                );
+                // Class creates slots across multiple appointments
+                // Use first appointment for payment linkage
+                createdAppointment = classResult.appointment || null;
+                engagementsForCap = classResult.engagementsConsumed;
+                break;
+              }
+
+              default:
+                throw new Error(
+                  `Unsupported appointment type: ${validatedData.appointmentType}`,
+                );
+            }
+
+            // Create payment record linked to appointment (if created)
+            // paymentResponse is guaranteed to be set at this point (we'd have thrown in the try-catch above)
+            const payment = await tx.payment.create({
+              data: {
+                amount,
+                originalAmount,
+                taxAmount,
+                currency,
+                paymentMethod: isOrgWalletPayment
+                  ? "WALLET"
+                  : isOrgInvoicedPayment
+                    ? "INVOICE"
+                    : isOrgLicensedPayment
+                      ? "LICENSE"
+                      : isZeroAmountPayment
+                        ? "CREDITS"
+                        : "CARD",
+                paymentIntent: paymentResponse!.id,
+                // #828 — unique; a concurrent duplicate attempt dies on P2002
+                // and the route replays this payment's original response.
+                clientIdempotencyKey:
+                  validatedData.clientIdempotencyKey ?? null,
+                paymentGateway: validatedData.paymentGateway,
+                // FIX #520: Zero-amount and mock payments succeed immediately (no webhook)
+                paymentStatus: skipPayment
+                  ? PaymentStatus.SUCCEEDED
+                  : PaymentStatus.PENDING,
+                isMockPayment:
+                  isMockPayment || isZeroAmountPayment || isOrgSponsoredPayment,
+                userId: userId,
+                appointmentId: createdAppointment?.id || null,
+                discountCodeId,
+                expiresAt: skipPayment
+                  ? null
+                  : new Date(Date.now() + 30 * 60 * 1000), // 30 minutes
+                buyerCountry: detectedBuyerCountry,
+                isInternational,
+                displayCurrencyAtCheckout,
+                exchangeRateAtCheckout,
+                // #1365 — GST place of supply for the tax invoice: what the
+                // buyer declared here, else what their profile already holds,
+                // else null (the s.12(2)(b) supplier-state default).
+                consumerStateCode:
+                  validatedData.consumerStateCode ??
+                  consulteeBillingStateCode ??
+                  null,
+                // Enterprise (Arch 4): org tag for reporting / billing.
+                organizationId,
+                billingAccountId,
+              },
+            });
+
+            // #1365 — remember a newly declared billing state on the profile so
+            // a repeat buyer is never asked for it twice. Same transaction as
+            // the Payment: the declaration and the supply it applies to are one
+            // fact. updateMany, so a missing profile is a no-op, not a throw.
+            if (
+              validatedData.consumerStateCode &&
+              validatedData.consumerStateCode !== consulteeBillingStateCode
+            ) {
+              await tx.consulteeProfile.updateMany({
+                where: { userId },
+                data: { billingStateCode: validatedData.consumerStateCode },
+              });
+            }
+
+            // #1319 A9 — stamp the funding Payment on the participant rows and,
+            // when no gateway leg follows (mock / zero-amount / org-sponsored),
+            // confirm them here since no capture webhook ever will.
+            if (createdAppointment) {
+              const participantWhere =
+                validatedData.appointmentType === "CLASS" &&
+                validatedData.eventId
+                  ? { appointment: { classId: validatedData.eventId }, userId }
+                  : validatedData.appointmentType === "WEBINAR"
+                    ? { appointmentId: createdAppointment.id, userId }
+                    : { appointmentId: createdAppointment.id };
               if (
-                capAfter != null &&
-                capAfter > 0 &&
-                before * 5 < capAfter * 4 &&
-                after * 5 >= capAfter * 4 &&
-                // #1169 PR 2 — this fires on the OUTER client and is not
-                // rolled back, so a P2034 retry of this tx would ring the
-                // 80% bell twice for one booking. Once per request, matching
-                // the "once per cycle" intent above.
-                !capNearNotified
+                validatedData.appointmentType === "CLASS" &&
+                validatedData.eventId
               ) {
-                capNearNotified = true;
-                const usedPct = Math.round((after / capAfter) * 100);
-                const reportUsed = isCredit ? Math.round(after / 100) : after;
-                const reportCap = isCredit
-                  ? Math.round(capAfter / 100)
-                  : capAfter;
-                prisma.programAssignment
-                  .findUnique({
-                    where: { id: programAssignmentId },
-                    select: {
-                      membership: {
-                        select: {
-                          userId: true,
-                          user: { select: { name: true, email: true } },
-                        },
-                      },
-                      program: {
-                        select: {
-                          name: true,
-                          contract: {
-                            select: {
-                              organizationId: true,
-                              organization: { select: { name: true } },
-                            },
-                          },
-                        },
-                      },
-                    },
-                  })
-                  .then((ctx) => {
-                    if (!ctx) return;
-                    const orgId = ctx.program.contract.organizationId;
-                    return notifyOrgProgramCapNear(
-                      orgId,
-                      ctx.membership.userId,
-                      {
-                        orgName: ctx.program.contract.organization.name,
-                        programName: ctx.program.name,
-                        assigneeName:
-                          ctx.membership.user.name ?? ctx.membership.user.email,
-                        engagementsUsed: reportUsed,
-                        cap: reportCap,
-                        usedPct,
-                        dashboardUrl: `/dashboard/organization/${orgId}/programs`,
-                      },
-                    );
-                  })
-                  .catch((notifyErr) => {
-                    console.error(
-                      "[notifyOrgProgramCapNear] failed:",
-                      notifyErr,
-                    );
-                    reportSentryError(notifyErr, {
-                      subsystem: "payments",
-                      level: "warning",
-                    });
-                  });
+                // Cross-appointment scope (every session of the class); the
+                // helper is per-appointment.
+                await tx.appointmentParticipant.updateMany({
+                  where: { ...participantWhere, paymentId: null },
+                  data: { paymentId: payment.id },
+                });
+              } else {
+                await linkParticipantsToPayment(
+                  tx,
+                  createdAppointment.id,
+                  payment.id,
+                  validatedData.appointmentType === "WEBINAR"
+                    ? userId
+                    : undefined,
+                );
+              }
+              if (skipPayment) {
+                await setParticipantStatus(tx, participantWhere, "CONFIRMED");
               }
             }
 
-            // C2: overage charging. recordBookingUtilization above flagged
-            // `wasOverage = true` if the increment crossed the cap (only
-            // possible when overageBehavior is CHARGE_MEMBER or CHARGE_ORG;
-            // BLOCK throws inside the helper). Branch on the program's
-            // configured behavior (#775):
-            //   - CHARGE_ORG: write an OVERAGE_INVOICE_ACCRUAL PaymentLeg +
-            //     OverageEvent(PENDING). The monthly invoice rollup picks it
-            //     up (→ ACCRUED) and the invoice-paid handler marks it CHARGED.
-            //   - CHARGE_MEMBER: the booking proceeds; the member owes the
-            //     marginal. Create a parent-linked PENDING side-Payment +
-            //     OverageEvent(PENDING). The member completes it via the
-            //     resume-checkout surface (order created there, not in this TX)
-            //     and the gateway webhook transitions it → CHARGED.
-            //   - BLOCK behavior: never reaches here (helper already threw).
-            //     The circuit-breaker veto is the only BLOCK decision here.
-            if (utilizationResult.wasOverage) {
-              // #778 elegance — extracted to recordOverageAtCheckout (resolves
-              // the behaviour via computeOverage, enforces the circuit breaker,
-              // persists the OverageEvent + CHARGE_MEMBER side-Payment /
-              // CHARGE_ORG accrual leg). Throws PROGRAM_CAP_EXHAUSTED (402) on
-              // the breaker veto.
-              await recordOverageAtCheckout({
-                tx,
-                programAssignmentId,
-                utilization: {
-                  programType: utilizationResult.programType,
-                  engagementsConsumedDelta:
-                    utilizationResult.engagementsConsumedDelta,
-                  engagementsUsedAfter: utilizationResult.engagementsUsedAfter,
-                  consumedPaiseAfter: utilizationResult.consumedPaiseAfter,
-                  creditBudgetPaise: utilizationResult.creditBudgetPaise,
-                },
-                bookingPricePaise: amount,
-                currency,
+            // Enterprise: WALLET fundingSource — debit from BillingAccount
+            // atomically via the wallet helper (raw-SQL conditional UPDATE).
+            // Triggered only when we also have a resolved program assignment,
+            // which guarantees the booking is actually sponsored.
+            if (isOrgWalletPayment && billingAccountId) {
+              // #837 — refuse to spend a wallet whose cache drifted from the
+              // journal (frozen by the ledger-reconcile job): the balance can't
+              // be trusted until ops reconciles. Chargeback recovery is NOT gated
+              // (see wallet-freeze.ts).
+              if (await isWalletFrozen(tx, billingAccountId)) {
+                throw new WalletFrozenError(billingAccountId);
+              }
+              await walletDebit(tx, {
+                billingAccountId,
+                amountPaise: amount,
+                reason: "BOOKING",
                 paymentId: payment.id,
-                userId,
-                organizationId,
-                paymentGateway: validatedData.paymentGateway,
+                membershipId: callerMembershipId ?? undefined,
               });
             }
-          }
 
-          // Enterprise: every successful Payment must have at least one
-          // PaymentLeg (`docs/enterprise/10-money-and-ledger/09-payment-legs.md`). For non-
-          // org-sponsored learner-pays-via-gateway flows that's the CARD
-          // leg, written here so the invariant holds whether or not the
-          // payment ever transitions to SUCCEEDED. We record the gateway
-          // payment-intent id in `sourceRef` so refund / reconciliation
-          // jobs can join back to the gateway txn without scanning the
-          // Payment table. `amount` is the post-credit gateway charge,
-          // mirroring the field-level comment on `Payment.amount`. The
-          // REFERRAL_CREDIT leg (if any) is written by
-          // `applyCreditsToPayment` further down in this same TX.
-          if (!isOrgSponsoredPayment && amount > 0) {
-            await tx.paymentLeg.create({
-              data: {
-                paymentId: payment.id,
-                source: "CARD",
-                amountPaise: amount,
-                sourceRef: paymentResponse!.id,
-              },
-            });
-          }
-
-          // Increment discount code usage count atomically (only after payment is created)
-          // This ensures count only increases when payment is successfully created.
-          // Re-validate maxUses inside the Serializable TX: two concurrent checkouts could
-          // both pass the check in calculateAmountAndValidate (non-Serializable TX) and
-          // both reach here. The Serializable re-read ensures only one succeeds.
-          if (discountCodeId) {
-            const discountForIncrement = await tx.discountCode.findUnique({
-              where: { id: discountCodeId },
-              select: { maxUses: true, currentUses: true },
-            });
-
-            if (!discountForIncrement) {
-              throw new Error(
-                "Discount code is no longer available. Please remove the code and try again.",
-              );
+            // Enterprise: write the Program utilization row + a PaymentLeg
+            // that describes where the money (or commitment) actually came
+            // from. This is the runtime source of truth for sponsorship
+            // attribution — analytics / invoicing / cap enforcement all read
+            // these rows rather than back-deriving from `paymentMethod`.
+            //
+            // E2E-audit F-1 fix — the FUNDING LEG is written for every
+            // org-sponsored payment, INCLUDING SUBSCRIPTION. Subscriptions
+            // meter engagements lazily (at allocation), but their money moves
+            // HERE: the wallet debit above journals against the WALLET leg in
+            // the ledger, the invoice rollup only collects INVOICE_ACCRUAL
+            // legs, and refunds credit wallets back leg-proportionally.
+            // Skipping the leg made (SUBSCRIPTION × WALLET) journal real
+            // money as platform CASH (guaranteed WALLET_BALANCE_DRIFT →
+            // auto-frozen wallet), left (SUBSCRIPTION × INVOICE) permanently
+            // unbilled, and gave (SUBSCRIPTION × LICENSE) no fulfillment
+            // proof. Utilization metering stays gated on engagementsForCap.
+            if (programAssignmentId && isOrgSponsoredPayment) {
+              await tx.paymentLeg.create({
+                data: {
+                  paymentId: payment.id,
+                  source: isOrgWalletPayment
+                    ? "WALLET"
+                    : isOrgLicensedPayment
+                      ? "LICENSE"
+                      : "INVOICE_ACCRUAL",
+                  // LICENSE absorbs the cost entirely at the contract level
+                  // — the per-booking leg is zero so totals across all legs
+                  // still reconcile to the Payment amount.
+                  amountPaise: isOrgLicensedPayment ? 0 : amount,
+                  sourceRef: programAssignmentId,
+                },
+              });
             }
 
             if (
-              discountForIncrement.maxUses !== null &&
-              discountForIncrement.currentUses >= discountForIncrement.maxUses
+              programAssignmentId &&
+              isOrgSponsoredPayment &&
+              engagementsForCap !== null
             ) {
-              throw new Error(
-                "Discount code has reached maximum uses — please remove the code and try again.",
-              );
-            }
-            await tx.discountCode.update({
-              where: { id: discountCodeId },
-              data: { currentUses: { increment: 1 } },
-            });
-          }
-
-          // FIX A3: Re-read credits inside the main transaction to prevent stale reads.
-          // creditsApplied was calculated in TX1 (calculateAmountAndValidate), but between
-          // TX1 and TX2, concurrent checkouts may have consumed the credits.
-          let actualCreditsApplied = 0;
-          if (creditsApplied > 0) {
-            const { totalAvailable } = await getUserCredits(userId, tx);
-            // Both creditsApplied and totalAvailable are in paise — direct comparison
-            const actualCredits = Math.min(totalAvailable, creditsApplied);
-
-            if (actualCredits > 0) {
-              await applyCreditsToPayment(
-                userId,
-                actualCredits,
-                tx,
-                payment.id,
-              );
-              console.log(
-                `🎁 Applied ${actualCredits} paise referral credits for user ${userId}` +
-                  (actualCredits !== creditsApplied
-                    ? ` (requested ${creditsApplied} paise, available ${totalAvailable} paise)`
-                    : ""),
-              );
-            }
-
-            // FIX #2: If fewer credits were available than expected (due to concurrent
-            // checkout consuming them between TX1 and TX2), abort the transaction.
-            // The payment intent was created with a reduced amount based on TX1's
-            // credit calculation, so proceeding would undercharge the user.
-            if (actualCredits < creditsApplied) {
-              throw new Error(
-                `CREDIT_SHORTFALL: expected ${creditsApplied} paise credits but only ${actualCredits} available. ` +
-                  `Payment ${payment.id} amount is stale. Aborting for retry.`,
-              );
-            }
-            actualCreditsApplied = creditsApplied; // In paise
-          }
-
-          // Invariant sweep: every Payment should have legs that sum to
-          // `Payment.amount` (`docs/enterprise/10-money-and-ledger/09-payment-legs.md`). We
-          // log-only here rather than throw because the hot checkout
-          // path is the worst place to discover a leg-accounting drift
-          // — a surprise 500 blocks real bookings. A mismatch signals
-          // either (a) an org branch above wrote the wrong amount, or
-          // (b) a future PaymentLegSource was added without updating
-          // its write site. Reconciliation jobs + tests call the
-          // hard-throwing `assertPaymentLegsSumToAmount` instead.
-          if (!isMockPayment) {
-            const writtenLegs = await tx.paymentLeg.findMany({
-              where: { paymentId: payment.id },
-              select: { source: true, amountPaise: true },
-            });
-            const legMismatch = checkPaymentLegsSumToAmount({
-              paymentAmountPaise: payment.amount,
-              legs: writtenLegs,
-            });
-            if (legMismatch) {
-              console.warn(
-                JSON.stringify({
-                  event: "payment_leg_sum_mismatch",
+              let utilizationResult: Awaited<
+                ReturnType<typeof recordBookingUtilization>
+              > = {
+                wasOverage: false,
+                engagementsConsumedDelta: 0,
+                engagementsUsedAfter: 0,
+                cap: null,
+                programType: "LICENSED_SEAT",
+                consumedPaiseAfter: 0,
+                creditBudgetPaise: null,
+              };
+              try {
+                utilizationResult = await recordBookingUtilization(tx, {
+                  programAssignmentId,
                   paymentId: payment.id,
-                  organizationId: validatedData.organizationId ?? null,
-                  appointmentType: validatedData.appointmentType,
-                  ...legMismatch,
-                }),
-              );
-            }
-          }
+                  engagementsConsumed: engagementsForCap,
+                  priceAtBookingPaise: amount,
+                  // PR-1e (G3) — the helper's set-diff idempotency guard only
+                  // arms itself when the caller NAMES the appointments.
+                  // Omitting them left every checkout debit unguarded, so a
+                  // replay against the same Payment (retried webhook, resumed
+                  // order) incremented the meter a second time.
+                  // CONSULTATION/WEBINAR are one engagement on the appointment
+                  // just created; CLASS meters one per class session, which is
+                  // exactly the set handleClassCheckout counted.
+                  appointmentIds:
+                    validatedData.appointmentType === "CLASS"
+                      ? (
+                          await tx.appointment.findMany({
+                            where: { classId: validatedData.eventId },
+                            select: { id: true },
+                          })
+                        ).map((a) => a.id)
+                      : createdAppointment
+                        ? [createdAppointment.id]
+                        : [],
+                });
+              } catch (err) {
+                if (err instanceof ProgramAssignmentLimitError) {
+                  // The assignee + org operators are told the programme is
+                  // spent. This is the one bell that belongs on the ROLLBACK
+                  // path — the refusal IS the news — so it is rung from the
+                  // retry wrapper's catch rather than after a commit that
+                  // never happens.
+                  exhaustedBell.programAssignmentId = programAssignmentId;
 
-          return {
-            appointmentId: createdAppointment?.id,
-            creditsApplied: actualCreditsApplied,
-          };
-        },
-        {
-          timeout: 25000,
-          // H6 FIX: Use Serializable isolation for booking transactions to prevent
-          // phantom reads on capacity-limited events (webinars, classes). The
-          // distributed lock serializes per-event, but Serializable adds DB-level
-          // safety for edge cases like lock expiry under high load.
-          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-        },
-        ),
-      );
+                  // #1458 — a stable code, because the message-preservation
+                  // list below never matched this sentence and the buyer got
+                  // "Failed to record payment information" for a cap they can
+                  // ask an admin to raise.
+                  throw Object.assign(
+                    new Error(
+                      "Your program has hit its session cap for this cycle. Ask your organization admin to upgrade the program or wait for the next cycle.",
+                    ),
+                    { httpStatus: 402, code: "PROGRAM_SESSION_CAP_REACHED" },
+                  );
+                }
+                throw err;
+              }
+
+              // #768 #22 — 80% cap-near early warning. Fire ONCE per cycle on
+              // the <80% → >=80% transition (not on every booking past 80%).
+              // Integer-only threshold cross: before/cap < 0.8 (before*5 <
+              // cap*4) AND after/cap >= 0.8 (after*5 >= cap*4). Skipped when
+              // cap is null (unlimited) or 0. Captured for post-commit
+              // delivery + same roster as the 100% event.
+              {
+                // #775 — LICENSED_SEAT meters in engagements, CREDIT_POOL in
+                // paise (consumedPaise vs creditBudgetPaise). The 80% transition
+                // math is unit-agnostic; the Novu payload reports credits for
+                // pools (÷100) and engagements for seats.
+                const isCredit =
+                  utilizationResult.programType === "CREDIT_POOL";
+                const capAfter = isCredit
+                  ? utilizationResult.creditBudgetPaise
+                  : utilizationResult.cap;
+                const after = isCredit
+                  ? utilizationResult.consumedPaiseAfter
+                  : utilizationResult.engagementsUsedAfter;
+                const before = isCredit
+                  ? after - amount
+                  : after - utilizationResult.engagementsConsumedDelta;
+                if (
+                  capAfter != null &&
+                  capAfter > 0 &&
+                  before * 5 < capAfter * 4 &&
+                  after * 5 >= capAfter * 4
+                ) {
+                  // #1169 PR 2 — the bell must ring once per booking, not once
+                  // per Serializable attempt. The slot is a local of this
+                  // attempt and only the committing attempt's is returned,
+                  // which is what enforces that now.
+                  capNearBell = {
+                    programAssignmentId,
+                    engagementsUsed: isCredit ? Math.round(after / 100) : after,
+                    cap: isCredit ? Math.round(capAfter / 100) : capAfter,
+                    usedPct: Math.round((after / capAfter) * 100),
+                  };
+                }
+              }
+
+              // C2: overage charging. recordBookingUtilization above flagged
+              // `wasOverage = true` if the increment crossed the cap (only
+              // possible when overageBehavior is CHARGE_MEMBER or CHARGE_ORG;
+              // BLOCK throws inside the helper). Branch on the program's
+              // configured behavior (#775):
+              //   - CHARGE_ORG: write an OVERAGE_INVOICE_ACCRUAL PaymentLeg +
+              //     OverageEvent(PENDING). The monthly invoice rollup picks it
+              //     up (→ ACCRUED) and the invoice-paid handler marks it CHARGED.
+              //   - CHARGE_MEMBER: the booking proceeds; the member owes the
+              //     marginal. Create a parent-linked PENDING side-Payment +
+              //     OverageEvent(PENDING). The member completes it via the
+              //     resume-checkout surface (order created there, not in this TX)
+              //     and the gateway webhook transitions it → CHARGED.
+              //   - BLOCK behavior: never reaches here (helper already threw).
+              //     The circuit-breaker veto is the only BLOCK decision here.
+              if (utilizationResult.wasOverage) {
+                // #778 elegance — extracted to recordOverageAtCheckout (resolves
+                // the behaviour via computeOverage, enforces the circuit breaker,
+                // persists the OverageEvent + CHARGE_MEMBER side-Payment /
+                // CHARGE_ORG accrual leg). Throws PROGRAM_CAP_EXHAUSTED (402) on
+                // the breaker veto.
+                overageBell = await recordOverageAtCheckout({
+                  tx,
+                  programAssignmentId,
+                  utilization: {
+                    programType: utilizationResult.programType,
+                    engagementsConsumedDelta:
+                      utilizationResult.engagementsConsumedDelta,
+                    engagementsUsedAfter:
+                      utilizationResult.engagementsUsedAfter,
+                    consumedPaiseAfter: utilizationResult.consumedPaiseAfter,
+                    creditBudgetPaise: utilizationResult.creditBudgetPaise,
+                  },
+                  bookingPricePaise: amount,
+                  currency,
+                  paymentId: payment.id,
+                  userId,
+                  organizationId,
+                  paymentGateway: validatedData.paymentGateway,
+                });
+              }
+            }
+
+            // Enterprise: every successful Payment must have at least one
+            // PaymentLeg (`docs/enterprise/10-money-and-ledger/09-payment-legs.md`). For non-
+            // org-sponsored learner-pays-via-gateway flows that's the CARD
+            // leg, written here so the invariant holds whether or not the
+            // payment ever transitions to SUCCEEDED. We record the gateway
+            // payment-intent id in `sourceRef` so refund / reconciliation
+            // jobs can join back to the gateway txn without scanning the
+            // Payment table. `amount` is the post-credit gateway charge,
+            // mirroring the field-level comment on `Payment.amount`, so this
+            // one leg alone carries the funding identity: the REFERRAL_CREDIT
+            // leg `applyCreditsToPayment` writes further down in this same TX
+            // is excluded from the sum rather than added to it (#1347).
+            if (!isOrgSponsoredPayment && amount > 0) {
+              await tx.paymentLeg.create({
+                data: {
+                  paymentId: payment.id,
+                  source: "CARD",
+                  amountPaise: amount,
+                  sourceRef: paymentResponse!.id,
+                },
+              });
+            }
+
+            // Increment discount code usage count atomically (only after payment is created)
+            // This ensures count only increases when payment is successfully created.
+            // Re-validate maxUses inside the Serializable TX: two concurrent checkouts could
+            // both pass the check in calculateAmountAndValidate (non-Serializable TX) and
+            // both reach here. The Serializable re-read ensures only one succeeds.
+            if (discountCodeId) {
+              const discountForIncrement = await tx.discountCode.findUnique({
+                where: { id: discountCodeId },
+                select: { maxUses: true, currentUses: true },
+              });
+
+              if (!discountForIncrement) {
+                throw new Error(
+                  "Discount code is no longer available. Please remove the code and try again.",
+                );
+              }
+
+              if (
+                discountForIncrement.maxUses !== null &&
+                discountForIncrement.currentUses >= discountForIncrement.maxUses
+              ) {
+                throw new Error(
+                  "Discount code has reached maximum uses — please remove the code and try again.",
+                );
+              }
+              await tx.discountCode.update({
+                where: { id: discountCodeId },
+                data: { currentUses: { increment: 1 } },
+              });
+            }
+
+            // FIX A3: Re-read credits inside the main transaction to prevent stale reads.
+            // creditsApplied was calculated in TX1 (calculateAmountAndValidate), but between
+            // TX1 and TX2, concurrent checkouts may have consumed the credits.
+            let actualCreditsApplied = 0;
+            if (creditsApplied > 0) {
+              const { totalAvailable } = await getUserCredits(userId, tx);
+              // Both creditsApplied and totalAvailable are in paise — direct comparison
+              const actualCredits = Math.min(totalAvailable, creditsApplied);
+
+              if (actualCredits > 0) {
+                await applyCreditsToPayment(
+                  userId,
+                  actualCredits,
+                  tx,
+                  payment.id,
+                );
+                console.log(
+                  `🎁 Applied ${actualCredits} paise referral credits for user ${userId}` +
+                    (actualCredits !== creditsApplied
+                      ? ` (requested ${creditsApplied} paise, available ${totalAvailable} paise)`
+                      : ""),
+                );
+              }
+
+              // FIX #2: If fewer credits were available than expected (due to concurrent
+              // checkout consuming them between TX1 and TX2), abort the transaction.
+              // The payment intent was created with a reduced amount based on TX1's
+              // credit calculation, so proceeding would undercharge the user.
+              if (actualCredits < creditsApplied) {
+                throw new Error(
+                  `CREDIT_SHORTFALL: expected ${creditsApplied} paise credits but only ${actualCredits} available. ` +
+                    `Payment ${payment.id} amount is stale. Aborting for retry.`,
+                );
+              }
+              actualCreditsApplied = creditsApplied; // In paise
+            }
+
+            // Invariant sweep: every Payment should have legs that sum to
+            // `Payment.amount`, excluding REFERRAL_CREDIT, which is already
+            // netted out of it (#1347) —
+            // `docs/enterprise/10-money-and-ledger/09-payment-legs.md`. We
+            // log-only here rather than throw because the hot checkout
+            // path is the worst place to discover a leg-accounting drift
+            // — a surprise 500 blocks real bookings. A mismatch signals
+            // either (a) an org branch above wrote the wrong amount, or
+            // (b) a future PaymentLegSource was added without updating
+            // its write site. Reconciliation jobs + tests call the
+            // hard-throwing `assertPaymentLegsSumToAmount` instead.
+            if (!isMockPayment) {
+              const writtenLegs = await tx.paymentLeg.findMany({
+                where: { paymentId: payment.id },
+                select: { source: true, amountPaise: true },
+              });
+              const legMismatch = checkPaymentLegsSumToAmount({
+                paymentAmountPaise: payment.amount,
+                legs: writtenLegs,
+              });
+              if (legMismatch) {
+                console.warn(
+                  JSON.stringify({
+                    event: "payment_leg_sum_mismatch",
+                    paymentId: payment.id,
+                    organizationId: validatedData.organizationId ?? null,
+                    appointmentType: validatedData.appointmentType,
+                    ...legMismatch,
+                  }),
+                );
+              }
+            }
+
+            return {
+              appointmentId: createdAppointment?.id,
+              creditsApplied: actualCreditsApplied,
+              capNearBell,
+              overageBell,
+            };
+          },
+          {
+            timeout: checkoutTxTimeoutMs,
+            // H6 FIX: Use Serializable isolation for booking transactions to prevent
+            // phantom reads on capacity-limited events (webinars, classes). The
+            // distributed lock serializes per-event, but Serializable adds DB-level
+            // safety for edge cases like lock expiry under high load.
+            isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          },
+        );
+      }).catch((err) => {
+        // #1435 — post-rollback delivery for the one bell whose news IS the
+        // refusal. Nothing else below is reached when the transaction fails.
+        if (exhaustedBell.programAssignmentId) {
+          dispatchProgramBell(exhaustedBell.programAssignmentId, {
+            kind: "EXHAUSTED",
+          });
+        }
+        throw err;
+      });
+
+      // #1435 — post-COMMIT delivery for the bells that describe a booking that
+      // actually happened. See dispatchProgramBell for why neither lookup can
+      // run inside the transaction.
+      if (result.capNearBell) {
+        dispatchProgramBell(result.capNearBell.programAssignmentId, {
+          kind: "CAP_NEAR",
+          engagementsUsed: result.capNearBell.engagementsUsed,
+          cap: result.capNearBell.cap,
+          usedPct: result.capNearBell.usedPct,
+        });
+      }
+      if (result.overageBell) {
+        notifyOverageDueAfterCommit(result.overageBell);
+      }
 
       const logMessage = isZeroAmountPayment
         ? `🎁 Zero-amount payment (credits covered full cost) + appointment created: ${paymentResponse.id}`
@@ -3365,103 +4077,20 @@ export async function handleCheckout(
 
         // Create consultant earnings (mock payments bypass webhooks, so earnings must be created here)
         try {
-          const paymentWithAppointment = await prisma.payment.findUnique({
-            where: { paymentIntent: paymentResponse!.id },
-            include: {
-              appointment: {
-                include: {
-                  consultation: {
-                    include: {
-                      consultationPlan: {
-                        include: { consultantProfile: true },
-                      },
-                    },
-                  },
-                  subscription: {
-                    include: {
-                      subscriptionPlan: {
-                        include: { consultantProfile: true },
-                      },
-                    },
-                  },
-                  webinar: {
-                    select: {
-                      id: true,
-                      webinarPlanId: true,
-                      webinarPlan: {
-                        include: { consultantProfile: true },
-                      },
-                    },
-                  },
-                  class: {
-                    select: {
-                      id: true,
-                      classPlanId: true,
-                      classPlan: {
-                        include: { consultantProfile: true },
-                      },
-                    },
-                  },
-                },
-              },
-            },
-          });
+          const resolved = await resolvePaymentForEarnings(
+            { paymentIntent: paymentResponse!.id },
+            validatedData.appointmentType,
+          );
 
-          if (paymentWithAppointment?.appointment) {
-            const consultantProfile =
-              paymentWithAppointment.appointment.consultation?.consultationPlan
-                ?.consultantProfile ||
-              paymentWithAppointment.appointment.subscription?.subscriptionPlan
-                ?.consultantProfile ||
-              paymentWithAppointment.appointment.webinar?.webinarPlan
-                ?.consultantProfile ||
-              paymentWithAppointment.appointment.class?.classPlan
-                ?.consultantProfile;
+          if (resolved) {
+            await createEarningsFromPayment({
+              payment: resolved.paymentForEarnings,
+              appointmentType: resolved.earningsAppointmentType,
+            });
 
-            if (consultantProfile) {
-              const appointmentTypeMap: Record<string, AppointmentType> = {
-                CONSULTATION: "CONSULTATION",
-                SUBSCRIPTION: "SUBSCRIPTION",
-                WEBINAR: "WEBINAR",
-                CLASS: "CLASS",
-              };
-
-              const earningsAppointmentType =
-                appointmentTypeMap[validatedData.appointmentType] ||
-                "CONSULTATION";
-
-              const paymentForEarnings = {
-                ...paymentWithAppointment,
-                appointment: {
-                  ...paymentWithAppointment.appointment,
-                  consultantProfile: { id: consultantProfile.id },
-                  webinar: paymentWithAppointment.appointment.webinar
-                    ? {
-                        webinarPlanId:
-                          paymentWithAppointment.appointment.webinar
-                            .webinarPlanId,
-                      }
-                    : null,
-                  class: paymentWithAppointment.appointment.class
-                    ? {
-                        classPlanId:
-                          paymentWithAppointment.appointment.class.classPlanId,
-                      }
-                    : null,
-                },
-              };
-
-              await createEarningsFromPayment({
-                payment: paymentForEarnings as Parameters<
-                  typeof createEarningsFromPayment
-                >[0]["payment"],
-                appointmentType: earningsAppointmentType,
-              });
-
-              console.log(
-                `💰 Mock payment earnings created for consultant ${consultantProfile.id}`,
-              );
-            }
+            console.log(
+              `💰 Mock payment earnings created for consultant ${resolved.consultantProfileId}`,
+            );
           }
         } catch (earningsError) {
           // C-01 #837 — payment + booking are committed but earnings + the
@@ -3489,6 +4118,13 @@ export async function handleCheckout(
           );
         }
 
+        // #1365 — these payments never see a capture webhook, so the tax
+        // invoice has to be minted here too. Org-sponsored payments no-op
+        // inside the minter by design; they are invoiced on the org series.
+        await mintConsumerInvoiceBestEffort({
+          paymentIntent: paymentResponse!.id,
+        });
+
         // FIX #437: Consultant qualifying action (receiving first paid booking)
         try {
           await processConsultantBookingReferral(
@@ -3514,11 +4150,20 @@ export async function handleCheckout(
           ? "Payment completed via referral credits. Appointment booked successfully."
           : isMockPayment
             ? "Mock payment completed and appointment created successfully"
-            : "Payment intent created. Complete payment to book appointment.",
+            : isOrgSponsoredPayment
+              ? "Payment completed via organization funding. Appointment booked successfully."
+              : "Payment intent created. Complete payment to book appointment.",
         amount,
         currency,
         isMockPayment: isMockPayment || isZeroAmountPayment,
         isZeroAmountPayment,
+        // #1437 — WALLET/INVOICE/LICENSE org funding also confirms
+        // synchronously with a synthetic org_* id and no gateway order;
+        // isMockPayment/isZeroAmountPayment don't cover it, so the client
+        // was opening Razorpay on an id the gateway had never heard of.
+        // Matches checkout-replay.ts's SUCCEEDED-branch field name.
+        skipPayment:
+          isMockPayment || isZeroAmountPayment || isOrgSponsoredPayment,
       };
     } catch (dbError) {
       console.error("Failed to create payment record:", dbError);
@@ -3556,6 +4201,16 @@ export async function handleCheckout(
         dbError instanceof WalletFrozenError ||
         dbError instanceof ProgramAssignmentLimitError ||
         dbErrorCode === "PROGRAM_CAP_EXHAUSTED" ||
+        // #1458 — the per-assignment session cap is the same class of modelled
+        // refusal as the per-cycle overage ceiling above. The overage funding
+        // codes are deliberately NOT here: they mean a programme was configured
+        // in a shape we cannot collect on, which has to keep paging.
+        dbErrorCode === "PROGRAM_SESSION_CAP_REACHED" ||
+        // #1477 — an org that has spent its wallet down is refusing the
+        // booking, not faulting on it. The rethrow below already lets it
+        // through on its registered code; tagging is a separate list by
+        // design, so without this line the routine refusal kept paging.
+        dbErrorCode === "WALLET_INSUFFICIENT_FUNDS" ||
         (dbError instanceof Error &&
           modelledOutcomePatterns.some((msg) =>
             // Word-bounded: bare `includes` let "full" match "successful" and
@@ -3580,6 +4235,16 @@ export async function handleCheckout(
       // don't let it collapse into the generic "Failed to record payment
       // information" below. Rethrow so the route surfaces the 409.
       if (dbError instanceof WalletFrozenError) {
+        throw dbError;
+      }
+
+      // #1458 — an error carrying a registered business code already resolves
+      // to its own status and toast in the classifier, so rewriting it to the
+      // generic message below is pure loss: PROGRAM_CAP_EXHAUSTED was thrown as
+      // a 402 with actionable copy and reached the buyer as a 500
+      // "Something Went Wrong". Codes are checked before messages because a
+      // code survives a reworded sentence and a substring does not.
+      if (dbError instanceof Error && isBusinessErrorCode(dbErrorCode)) {
         throw dbError;
       }
 
@@ -3642,9 +4307,17 @@ export async function handleCheckout(
     const isConsulteeDoubleBook =
       error instanceof Error &&
       error.message.toLowerCase().includes("already have a session booked");
+    // #1477 — the inner catch rethrows anything carrying a registered business
+    // code, so every one of those refusals arrives here too and was re-reported
+    // as a fault, undoing the `expected: true` it had just been given. Asking
+    // the classifier the same question it will answer for the response keeps
+    // the two verdicts from disagreeing.
+    const isBusinessRefusal = isBusinessErrorCode(
+      (error as { code?: unknown } | null)?.code,
+    );
     reportSentryError(error, {
       subsystem: "payments",
-      expected: isModeledLockRace || isConsulteeDoubleBook,
+      expected: isModeledLockRace || isConsulteeDoubleBook || isBusinessRefusal,
     });
     // Enhanced error handling with lock-specific errors
     if (isLockContention) {

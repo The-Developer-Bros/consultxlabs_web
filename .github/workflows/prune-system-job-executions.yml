@@ -1,0 +1,51 @@
+name: Prune System Job Executions
+
+on:
+  schedule:
+    # 03:26 UTC daily. Staggered after prune-audit-logs (03:15).
+    - cron: "26 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+# The job reads the repository and nothing else; the credentials it needs are
+# the database and Redis ones below, not the Actions token.
+permissions:
+  contents: read
+
+jobs:
+  prune-system-job-executions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # #476 cron locks load lib/redis at import — every job entry needs these
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+      - name: Install dependencies without lifecycle scripts
+        # S6505 — no arbitrary lifecycle scripts during install; Prisma
+        # client generation is invoked explicitly below.
+        run: npm ci --ignore-scripts
+      - run: npx --no-install prisma generate
+      - run: node_modules/.bin/tsx jobs/cleanup/prune-system-job-executions.ts
+      - name: Notify on failure
+        if: failure()
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "prune-system-job-executions"

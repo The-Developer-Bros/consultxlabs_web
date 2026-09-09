@@ -29,25 +29,31 @@ jest.mock("../../lib/payments/operations/booking-refund", () => ({
     refundBookingPayment(...(a as [never])),
 }));
 
-jest.mock("../../lib/prisma", () => ({
-  __esModule: true,
-  default: {
+jest.mock("../../lib/prisma", () => {
+  const db: Record<string, unknown> = {
     consultation: {
       findMany: jest.fn(),
+      findUnique: jest.fn().mockResolvedValue(null),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     subscription: {
       findMany: jest.fn(),
+      findUnique: jest.fn().mockResolvedValue(null),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     slotOfAppointment: {
-      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+      findMany: jest.fn().mockResolvedValue([]),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      updateManyAndReturn: jest.fn().mockResolvedValue([]),
     },
+    bookingStatusHistory: { create: jest.fn().mockResolvedValue({}) },
     appointment: { findMany: jest.fn() },
     $disconnect: jest.fn(),
-  },
-}));
+  };
+  // The payment-pending arm now expires each request in its own transaction.
+  db.$transaction = jest.fn(async (fn: (tx: unknown) => unknown) => fn(db));
+  return { __esModule: true, default: db };
+});
 
 jest.mock("../../lib/cron/with-cron-lock", () => ({
   __esModule: true,
@@ -122,7 +128,10 @@ describe("expiry sweep × live reschedule proposals", () => {
       expect(terminalWrite.where.appointment).toEqual({
         rescheduleRequests: { none: openStatusFilter },
       });
-      expect(terminalWrite.where.status).toBe(AppointmentStatus.PENDING);
+      // Through the CAS helper now: the from-set rides the WHERE as a list.
+      expect(terminalWrite.where.status).toEqual({
+        in: [AppointmentStatus.PENDING],
+      });
     });
   });
 
@@ -187,7 +196,10 @@ describe("expiry sweep × live reschedule proposals", () => {
       count: 1,
     });
     (prisma.appointment.findMany as jest.Mock).mockResolvedValue([
-      { id: "apt-stale", payment: [{ id: "pay-1", paymentStatus: "SUCCEEDED" }] },
+      {
+        id: "apt-stale",
+        payment: [{ id: "pay-1", paymentStatus: "SUCCEEDED" }],
+      },
     ]);
     refundBookingPayment.mockResolvedValue({ status: "SUCCEEDED" });
 

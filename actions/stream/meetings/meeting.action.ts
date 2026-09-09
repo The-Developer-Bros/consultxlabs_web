@@ -5,6 +5,8 @@ import { z } from "zod";
 import { Prisma } from "@prisma/client";
 import prisma from "@/lib/prisma";
 import { findSessionRun } from "@/lib/appointments/slots";
+import { ConsentRequiredError } from "@/lib/compliance/dpdp";
+import { resolveMaxCallDurationSeconds } from "@/lib/meetings/duration-cap";
 import { resolvePlanOwnerIds } from "@/lib/booking/plan-owners";
 import { getMaintenanceState } from "@/lib/maintenance";
 import { getSession } from "@/lib/auth-server";
@@ -459,7 +461,36 @@ export async function resolveSessionCallProfile(
     // call"), and it never auto-creates one from a reference. 29% of
     // consultants were missing because only the chat paths upsert. Every chat
     // channel create already does this; the video mint never did.
-    await upsertUsersToStream([...hostUserIds, ...guestUserIds]);
+    //
+    // #1269 — a withdrawn consent must not take the appointments page down.
+    //
+    // `upsertUserToStream` throws `ConsentRequiredError` when
+    // STREAM_DATA_PROCESSING is absent, which is correct: failing closed is the
+    // whole point of the gate. But this function is called from the RENDER path,
+    // so the throw propagated out of a React Server Component and the consultee
+    // lost access to their own bookings. Withdrawal is a right DPDP explicitly
+    // grants; the first person to exercise it should not be locked out of the
+    // list of things they have paid for.
+    //
+    // Returning `null` degrades to the outcome this function already has three
+    // other ways of reaching, and every caller handles it — the page renders
+    // without call metadata. The refusal still bites where it should: the JOIN
+    // path (`provisionAppointmentMeeting`, and `POST /api/meetings/[id]/join`)
+    // upserts separately and is left to throw, because "you cannot join a video
+    // call without consenting to the video processor" is the correct answer to
+    // a join and the wrong answer to a page load.
+    try {
+      await upsertUsersToStream([...hostUserIds, ...guestUserIds]);
+    } catch (err) {
+      if (err instanceof ConsentRequiredError) {
+        streamLogger.info(
+          "No call profile — Stream consent absent for a participant",
+          { anchorSlotId: validatedSlotId, purposeCode: err.purposeCode },
+        );
+        return null;
+      }
+      throw err;
+    }
 
     return {
       startsAt: run.startsAt,
@@ -1000,6 +1031,7 @@ export type ProvisionedMeeting =
  *
  * @param slot Any row of the session. The anchor is resolved here.
  */
+
 export async function provisionAppointmentMeeting(
   slot: MeetingSlot,
 ): Promise<ProvisionedMeeting> {
@@ -1076,6 +1108,39 @@ export async function provisionAppointmentMeeting(
   // auth carries no user context, so Stream requires SOME author and refuses
   // the whole GetOrCreateCall without one (#1270).
   const authorUserId = callProfile?.hostUserIds[0] ?? authorized.userId;
+
+  // #1280 — a server-side duration cap, as a BILLING and data-integrity
+  // backstop. Free: `limits.max_duration_seconds` is a call-type/per-call
+  // setting, not a metered service, and it reads `null` on the live type today.
+  //
+  // #1144 recorded this as the highest-value unbuilt item on the grounds that
+  // the SFU would end calls "at the slot boundary". #1160 corrected that, and
+  // the correction is the whole design: **the timer counts from the moment the
+  // FIRST PARTICIPANT JOINS, not from `starts_at`.** Set to the booked length,
+  // a consultant joining fifteen minutes early to check their camera would have
+  // Stream hard-terminate the session before the booked end, ejecting both
+  // parties mid-sentence. `lib/meeting.ts` declined to send this field for
+  // exactly that reason, and on that point it was right rather than cautious.
+  //
+  // So it is set GENEROUSLY: the booked run, plus the earliest anyone can join,
+  // plus a grace window. It is not slot enforcement and must never be mistaken
+  // for it — #472 owns overrun handling, and the application still decides when
+  // a session is over.
+  //
+  // What it buys, which nothing else in the stack provides:
+  //   1. Stream stamps `ended_at` whether or not our webhook pipeline works.
+  //      #1134 found 1,417 sessions with no `endedAt` and a pipeline that had
+  //      never processed one event; this is the only control that degrades
+  //      gracefully through that, because it does not run on our infrastructure.
+  //   2. It bounds the worst-case bill. A forgotten tab or a client that fails
+  //      to tear down media bills participant minutes indefinitely, and the only
+  //      thing standing between us and an unbounded meter is
+  //      `inactivity_timeout_seconds` — which requires everyone to actually
+  //      disconnect.
+  const maxDurationSeconds = resolveMaxCallDurationSeconds(
+    callProfile,
+    startsAt,
+  );
   if (!callProfile?.hostUserIds.length) {
     streamLogger.warn("Minting a call without a resolvable host", {
       slotId: anchorSlot.id,
@@ -1099,6 +1164,17 @@ export async function provisionAppointmentMeeting(
         data: {
           created_by_id: authorUserId,
           starts_at: startsAt,
+          // Omitted entirely when the run could not be resolved — see
+          // `resolveMaxCallDurationSeconds`. A guessed cap is worse than none:
+          // the call type carries no limit of its own, so leaving it out is
+          // exactly the behaviour before this backstop existed.
+          ...(maxDurationSeconds !== null
+            ? {
+                settings_override: {
+                  limits: { max_duration_seconds: maxDurationSeconds },
+                },
+              }
+            : {}),
           custom: buildCallCustom({
             anchorSlotId: anchorSlot.id,
             appointmentId: anchorSlot.appointmentId,

@@ -33,6 +33,7 @@ import {
 import { reportSentryMessage } from "@/lib/observability/report";
 import { reportClientFailure } from "@/lib/errors/classification/client-failure";
 import { failureToast } from "@/components/ui/failure-toast";
+import { useInFlightGuard } from "@/hooks/scheduling/useInFlightGuard";
 import { useToast } from "@/hooks/use-toast";
 import type { TConsulteeEventsResponse } from "@/types/consultee-events";
 import {
@@ -497,7 +498,7 @@ function MonthlyEventItem({
               <div className="space-y-2 bg-muted rounded-lg p-3">
                 {sessions.slice(0, 10).map((session) => (
                   <div
-                    key={session.appointmentId}
+                    key={session.id}
                     className="flex items-center gap-4 text-sm text-muted-foreground"
                   >
                     <span
@@ -650,10 +651,17 @@ export default function HomeTab({
   const [expandedEvents, setExpandedEvents] = useState<Set<string>>(new Set());
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [joiningEventId, setJoiningEventId] = useState<string | null>(null);
+  const guardJoin = useInFlightGuard();
   const { toast } = useToast();
 
   // Handle joining a meeting
-  const handleJoinMeeting = async (event: ProcessedEvent) => {
+  // #1280 2.7 — `setJoiningEventId` is state and is written before the first
+  // await, but state writes are asynchronous: a second click still reads the
+  // stale value and runs the chain again. The ref closes that window.
+  const handleJoinMeeting = (event: ProcessedEvent) =>
+    guardJoin(`join:${event.id}`, () => joinMeetingForEvent(event));
+
+  const joinMeetingForEvent = async (event: ProcessedEvent) => {
     if (!event.joinableAppointment || !event.joinableSlot) {
       toast({
         title: "Unable to join",

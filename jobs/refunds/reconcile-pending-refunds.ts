@@ -31,6 +31,9 @@ function outputToGitHubActions(result: RefundReconciliationResult): void {
       `reconciled_count=${result.reconciledCount}`,
       `failed_count=${result.failedCount}`,
       `skipped_count=${result.skippedCount}`,
+      // #1458 — surfaced as its own output so a workflow can alert on refunds
+      // stranded behind a gateway fence without parsing the log.
+      `skipped_fenced=${result.skippedFenced}`,
       `success=${result.success}`,
     ].join("\n");
 

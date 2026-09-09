@@ -16,11 +16,13 @@ import {
   isFreeCreditIntent,
   isInternalFundedIntent,
   refundBookingPayment,
+  type FundingRail,
 } from "./booking-refund";
+import { computeRefundPct } from "./cancellation-policy";
 import {
-  computeRefundPct,
-  parsePolicySnapshot,
-} from "./cancellation-policy";
+  POLICY_TERMS_INCLUDE,
+  termsFromPolicyRow,
+} from "./cancellation-policy-store";
 import { findLiveEventSlot } from "@/lib/appointments/live-event-slot";
 
 /**
@@ -132,7 +134,11 @@ export async function refundWholeEventPayments(
   // handles any CHARGE_MEMBER overage credit-back internally).
   for (const p of gateway) {
     try {
-      const r = await refundPayment({ paymentId: p.id, reason, initiatedByUserId });
+      const r = await refundPayment({
+        paymentId: p.id,
+        reason,
+        initiatedByUserId,
+      });
       summary.refundsIssued += 1;
       summary.refundedPaise += r.amountRefundedPaise;
       summary.childRefundIds.push(r.refundId);
@@ -176,7 +182,11 @@ export async function refundWholeEventPayments(
               refundId: `event:${kind}:${eventId}`,
               initiatedByUserId,
             }),
-          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, maxWait: 10_000, timeout: 15_000 },
+          {
+            isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+            maxWait: 10_000,
+            timeout: 15_000,
+          },
         ),
       );
       summary.refundsIssued += result.childRefundIds.length;
@@ -184,7 +194,9 @@ export async function refundWholeEventPayments(
       summary.childRefundIds.push(...result.childRefundIds);
       for (const c of result.cascades) {
         if (c.memberOverageRefundDue) {
-          memberOverageFollowUps.push(c.memberOverageRefundDue.overagePaymentId);
+          memberOverageFollowUps.push(
+            c.memberOverageRefundDue.overagePaymentId,
+          );
         }
       }
     } catch (err) {
@@ -217,7 +229,10 @@ export async function refundWholeEventPayments(
         (err.code === "ALREADY_FULLY_REFUNDED" ||
           err.code === "PAYMENT_NOT_SUCCEEDED");
       if (!benign) {
-        summary.failures.push({ paymentId: overagePaymentId, error: errMsg(err) });
+        summary.failures.push({
+          paymentId: overagePaymentId,
+          error: errMsg(err),
+        });
         void recordSystemError({
           organizationId: null,
           category: "PAYMENT",
@@ -269,13 +284,24 @@ export async function refundRemovedAttendeeSeat(args: {
    * self-leave so notice-window tiers apply.
    */
   initiatedBy?: "organiser" | "attendee";
-}): Promise<{ amountRefundedPaise: number; refundPct: number } | null> {
+}): Promise<{
+  amountRefundedPaise: number;
+  refundPct: number;
+  /**
+   * Which rail returned the seat fee, or null when nothing moved. The
+   * organiser's toast has to say where the money went, and only the gateway
+   * rail reaches the attendee — an org-funded seat returns to the sponsor's
+   * wallet, accrual or licence, which the attendee never held.
+   */
+  rail: FundingRail | null;
+} | null> {
   const eventFilter =
     args.kind === "webinar"
       ? { webinarId: args.eventId }
       : { classId: args.eventId };
   // Missing flag = legacy organiser path; do not flip the money default.
-  const isOrganiserInitiated = (args.initiatedBy ?? "organiser") === "organiser";
+  const isOrganiserInitiated =
+    (args.initiatedBy ?? "organiser") === "organiser";
 
   // Hoisted so the catch can scope its ops event to the funding organisation;
   // a failure reported against `null` never reaches the org that is owed it.
@@ -302,7 +328,7 @@ export async function refundRemovedAttendeeSeat(args: {
         currency: true,
         organizationId: true,
         ...REFUNDABLE_BALANCE_SELECT,
-        appointment: { select: { cancellationPolicySnapshot: true } },
+        appointment: { select: { cancellationPolicy: POLICY_TERMS_INCLUDE } },
       },
     });
     if (!payment) return null;
@@ -329,19 +355,31 @@ export async function refundRemovedAttendeeSeat(args: {
     }
 
     const refundPct = computeRefundPct(
-      parsePolicySnapshot(payment.appointment?.cancellationPolicySnapshot),
+      termsFromPolicyRow(payment.appointment?.cancellationPolicy),
       hoursUntilStart,
       isOrganiserInitiated,
+    );
+    // #1396 — `refundPct` may carry two decimals (a policy can say 12.5%), so
+    // multiplying paise by the float first put a binary rounding error inside a
+    // money amount before the floor ever ran. Scale to integer basis points and
+    // divide once, exactly as `computeBookingRefundQuote` in cancellation-policy
+    // does; BigInt because the intermediate product leaves the safe-integer
+    // range long before the amounts stop being real money.
+    const grossPaise = Number(payment.amount);
+    const policyRefundPaise = Number(
+      (BigInt(grossPaise) * BigInt(Math.round(refundPct * 100))) /
+        BigInt(10_000),
     );
     // Clamp to the remaining balance, exactly as the cancel route does. A seat
     // carrying an earlier partial refund would otherwise ask for more than is
     // left, `refundPayment` would reject the whole request, and the attendee
     // would receive nothing of the remainder they are owed.
     const amountPaise = Math.min(
-      Math.floor((Number(payment.amount) * refundPct) / 100),
-      refundableBalancePaise(Number(payment.amount), payment),
+      policyRefundPaise,
+      refundableBalancePaise(grossPaise, payment),
     );
-    if (amountPaise <= 0) return { amountRefundedPaise: 0, refundPct };
+    if (amountPaise <= 0)
+      return { amountRefundedPaise: 0, refundPct, rail: null };
 
     const actorLabel = isOrganiserInitiated ? "organiser" : "attendee";
     const result = await refundBookingPayment({
@@ -367,7 +405,11 @@ export async function refundRemovedAttendeeSeat(args: {
       }).catch(() => {});
     }
 
-    return { amountRefundedPaise: result.amountRefundedPaise, refundPct };
+    return {
+      amountRefundedPaise: result.amountRefundedPaise,
+      refundPct,
+      rail: result.rail,
+    };
   } catch (err) {
     // Benign idempotent re-drives — a seat already refunded, or a payment that
     // never captured. Paging ops for these turns every repeat click into an
@@ -380,7 +422,7 @@ export async function refundRemovedAttendeeSeat(args: {
       (err.code === "ALREADY_FULLY_REFUNDED" ||
         err.code === "PAYMENT_NOT_SUCCEEDED" ||
         err.code === "AMOUNT_EXCEEDS_REFUNDABLE");
-    if (benign) return { amountRefundedPaise: 0, refundPct: 0 };
+    if (benign) return { amountRefundedPaise: 0, refundPct: 0, rail: null };
 
     reportSentryError(err, {
       subsystem: "payments",
@@ -394,6 +436,6 @@ export async function refundRemovedAttendeeSeat(args: {
       err,
       context: { ...args },
     }).catch(() => {});
-    return { amountRefundedPaise: 0, refundPct: 0 };
+    return { amountRefundedPaise: 0, refundPct: 0, rail: null };
   }
 }

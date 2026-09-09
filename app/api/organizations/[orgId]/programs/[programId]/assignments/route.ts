@@ -128,24 +128,36 @@ export async function POST(
     );
   }
 
-  const membership = await prisma.membership.findFirst({
-    where: { id: body.membershipId, organizationId: orgId },
-    select: { id: true, role: true },
-  });
-  if (!membership) {
-    return NextResponse.json(
-      { error: "Membership does not belong to this organization" },
-      { status: 400 },
-    );
-  }
-
   // CR #1234 r5 — Serializable shares the conflict boundary with the PATCH
   // money-config tx (which re-checks configLockedAt in-scope): the stamp and
   // the lock check can no longer interleave under READ COMMITTED. Conflicts
   // retry via the house helper.
-  const assignment = await withSerializableRetry(() =>
+  const outcome = await withSerializableRetry(() =>
     prisma.$transaction(
       async (tx) => {
+    // B2B gap 10 — belonging to the org is not the same as being IN it. A
+    // PENDING member has not accepted the invite yet and a SUSPENDED/REMOVED/
+    // ERASED one is gone, so assigning either seats a program against somebody
+    // who cannot consume it: activeSeatCount goes up, the seat is billed, and
+    // nobody can use it.
+    //
+    // Read INSIDE the transaction. Checking first and claiming after left a
+    // window where a membership suspended in between still took a billed seat;
+    // Serializable puts this row in the transaction's read set, so the
+    // suspension and the claim can no longer interleave.
+    const membership = await tx.membership.findFirst({
+      where: { id: body.membershipId, organizationId: orgId },
+      select: { id: true, status: true },
+    });
+    if (!membership) return { ok: false as const, code: "FOREIGN" as const };
+    if (membership.status !== "ACTIVE") {
+      return {
+        ok: false as const,
+        code: "INACTIVE" as const,
+        status: membership.status,
+      };
+    }
+
     // claimProgramAssignment reports whether THIS call created the row (atomic
     // INSERT … ON CONFLICT DO NOTHING). Seat-count only on a genuine create, so
     // a re-claim or two concurrent identical POSTs increment activeSeatCount
@@ -186,11 +198,29 @@ export async function POST(
         },
       },
     });
-    return created;
+    return { ok: true as const, assignment: created };
         },
         { isolationLevel: "Serializable" },
       ),
     );
 
-    return NextResponse.json({ assignment }, { status: 201 });
+  if (!outcome.ok) {
+    // 400 for a membership that is not this org's (malformed request), 409 for
+    // one that is but is in the wrong state (well formed, currently refused).
+    if (outcome.code === "FOREIGN") {
+      return NextResponse.json(
+        { error: "Membership does not belong to this organization" },
+        { status: 400 },
+      );
+    }
+    return NextResponse.json(
+      {
+        error: `Cannot assign a ${outcome.status} membership to a program`,
+        code: "MEMBERSHIP_NOT_ACTIVE",
+      },
+      { status: 409 },
+    );
+  }
+
+  return NextResponse.json({ assignment: outcome.assignment }, { status: 201 });
 }

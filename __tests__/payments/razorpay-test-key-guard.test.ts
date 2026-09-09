@@ -34,7 +34,8 @@ type EnvKey =
   | "RAZORPAYX_KEY_ID"
   | "RAZORPAYX_KEY_SECRET"
   | "RAZORPAYX_ACCOUNT_NUMBER"
-  | "ENABLE_LIVE_PAYOUTS";
+  | "ENABLE_LIVE_PAYOUTS"
+  | "RAZORPAY_ALLOW_TEST_KEYS_IN_PRODUCTION";
 
 const ENV_KEYS: EnvKey[] = [
   "NODE_ENV",
@@ -45,6 +46,7 @@ const ENV_KEYS: EnvKey[] = [
   "RAZORPAYX_KEY_SECRET",
   "RAZORPAYX_ACCOUNT_NUMBER",
   "ENABLE_LIVE_PAYOUTS",
+  "RAZORPAY_ALLOW_TEST_KEYS_IN_PRODUCTION",
 ];
 
 const savedEnv: Partial<Record<EnvKey, string | undefined>> = {};
@@ -103,6 +105,36 @@ describe("core checkout/refund client (lib/payments/core/razorpay.ts)", () => {
     expect(thrown.code).toBe("RAZORPAY_TEST_KEY_IN_PRODUCTION");
   });
 
+  it("prod posture + rzp_test_ key + RAZORPAY_ALLOW_TEST_KEYS_IN_PRODUCTION=true → boots with a loud error log (pre-launch opt-out)", () => {
+    setNodeEnvForGuard("production");
+    process.env.RAZORPAY_KEY_ID = "rzp_test_optout";
+    process.env.RAZORPAY_SECRET = "some_secret";
+    process.env.RAZORPAY_ALLOW_TEST_KEYS_IN_PRODUCTION = "true";
+    const spy = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(() => requireCoreModule()).not.toThrow();
+      expect(spy).toHaveBeenCalledWith(
+        expect.stringMatching(/RAZORPAY_ALLOW_TEST_KEYS_IN_PRODUCTION=true/),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("prod posture + rzp_test_ key → the refund modules still load; only the gateway core throws (cancel preview must not die at import)", async () => {
+    setNodeEnvForGuard("production");
+    process.env.RAZORPAY_KEY_ID = "rzp_test_wrongposture";
+    process.env.RAZORPAY_SECRET = "some_secret";
+    jest.doMock("../../lib/prisma", () => ({ __esModule: true, default: {} }));
+    await expect(
+      import("../../lib/payments/operations/refund"),
+    ).resolves.toBeDefined();
+    await expect(
+      import("../../lib/payments/operations/booking-refund"),
+    ).resolves.toBeDefined();
+    expect(() => requireCoreModule()).toThrow();
+  });
+
   it("dev posture + rzp_test_ key → initializes fine (test keys are legitimate there)", () => {
     setNodeEnvForGuard("development");
     process.env.RAZORPAY_KEY_ID = "rzp_test_legit_in_dev";
@@ -146,7 +178,9 @@ describe("RazorpayX payouts client (lib/payments/payouts/razorpay-payouts.ts)", 
     process.env.ENABLE_LIVE_PAYOUTS = "true";
     seedPayoutCreds("rzp_test_xdirect");
 
-    const thrown = captureThrow(() => requirePayoutsFactory().getRazorpayPayoutsService());
+    const thrown = captureThrow(() =>
+      requirePayoutsFactory().getRazorpayPayoutsService(),
+    );
 
     expect(thrown.message).toMatch(/RAZORPAYX_KEY_ID/);
     expect(thrown.message).toMatch(/rzp_test_xdirect/);
@@ -157,7 +191,9 @@ describe("RazorpayX payouts client (lib/payments/payouts/razorpay-payouts.ts)", 
     process.env.ENABLE_LIVE_PAYOUTS = "true";
     seedPayoutCreds("fallback");
 
-    const thrown = captureThrow(() => requirePayoutsFactory().getRazorpayPayoutsService());
+    const thrown = captureThrow(() =>
+      requirePayoutsFactory().getRazorpayPayoutsService(),
+    );
 
     expect(thrown.message).toMatch(/falling back to RAZORPAY_KEY_ID/);
     expect(thrown.message).toMatch(/rzp_test_via_fallback/);

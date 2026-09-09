@@ -113,7 +113,7 @@ After signup, run:
 
 ```sql
 UPDATE "ConsulteeProfile"
-SET occupation = 'Product Manager',
+SET goals = 'Transition from engineering into product management.',
     "aboutMe"  = 'Transitioning from engineering to product management.'
 FROM users u
 WHERE "ConsulteeProfile"."userId" = u.id
@@ -188,7 +188,7 @@ ON CONFLICT (id) DO NOTHING;
 
 -- Subscription Plan: 2 calls/week, 6 sessions, 1 month, 1h each, INR 6000
 INSERT INTO "SubscriptionPlan" (
-  id, title, "callsPerWeek", "durationInMonths",
+  id, title, "sessionsPerWeek", "durationInMonths",
   "sessionDurationInHours", "totalSessions",
   price, "priceCurrency",
   "consultantProfileId", "createdAt", "updatedAt"
@@ -348,20 +348,34 @@ As CONSULTANT:
 
 As CONSULTEE, use `evaluate_script` to POST:
 
+`checkoutSchema` names the plan `planId`, takes the window as `startsAt` /
+`endsAt`, and for a CONSULTATION additionally **requires** exactly one of
+`slotOfAvailabilityWeeklyId` / `slotOfAvailabilityCustomId`. There is no `slots`
+array on this endpoint and no `consultationPlanId` field.
+
 ```javascript
-fetch("/api/checkout", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    appointmentType: "CONSULTATION",
-    consultationPlanId: "test-consultation-plan-002",
-    slots: [
-      // next Tuesday 10:00–11:30 IST = 04:30–06:00 UTC
-      // compute exact UTC date dynamically
-    ],
-    isMockPayment: true,
-  }),
-});
+async () => {
+  // next Tuesday 10:00–11:30 IST = 04:30–06:00 UTC
+  const nextTue = new Date();
+  nextTue.setDate(nextTue.getDate() + ((2 + 7 - nextTue.getDay()) % 7 || 7));
+  nextTue.setUTCHours(4, 30, 0, 0);
+  const slotEnd = new Date(nextTue);
+  slotEnd.setUTCHours(6, 0, 0, 0);
+
+  const response = await fetch("/api/checkout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      appointmentType: "CONSULTATION",
+      planId: "test-consultation-plan-002",
+      startsAt: nextTue.toISOString(),
+      endsAt: slotEnd.toISOString(),
+      slotOfAvailabilityWeeklyId: "test-w002-tue-am",
+      isMockPayment: true,
+    }),
+  });
+  return { status: response.status, body: await response.json() };
+};
 ```
 
 DB verify:
@@ -467,7 +481,7 @@ DB verify: ALL slots across ALL appointments in the subscription → `isTentativ
 As CONSULTANT, use `evaluate_script` to PATCH:
 
 ```javascript
-fetch("/api/events/webinars/test-webinar-002/allocate", {
+fetch("/api/bookings/webinars/test-webinar-002/allocate", {
   method: "PATCH",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
@@ -676,7 +690,7 @@ POST /api/appointments/test-24h-apt-002/reschedule?type=CONSULTATION
 Expected: 400 "Cannot reschedule within 24 hours... starts in 9 hours" (approx)
 ```
 
-### 6.6 — Cancellation + DB Cleanup Verification
+### 6.6 — Cancellation Soft-Cancels; Nothing Is Deleted
 
 ```
 POST /api/appointments/test-24h-apt-002/cancel
@@ -684,16 +698,29 @@ Body: { "reason": "CONSULTANT_UNAVAILABLE" }
 Expected: 200 { success: true, cancellationReason: "CONSULTANT_UNAVAILABLE" }
 ```
 
-DB verify:
+DB verify. Cancelling **never** deletes a row: `Payment.appointment` cascades on
+delete, so removing the Appointment would take the payment, refund and dispute
+trail with it (the #1074 class). The cancel route moves
+`SlotOfAppointment.completionStatus` from `SLOT_RESCHEDULABLE_FROM`
+(`SCHEDULED`, `RESCHEDULED`) to `CANCELLED` and leaves the rows in place.
 
 ```sql
 SELECT c."requestStatus", c."cancellationReason",
-       (SELECT COUNT(*) FROM "SlotOfAppointment" WHERE "appointmentId" = 'test-24h-apt-002') as slots,
-       (SELECT COUNT(*) FROM "Appointment" WHERE id = 'test-24h-apt-002') as apts
+       (SELECT COUNT(*) FROM "SlotOfAppointment"
+         WHERE "appointmentId" = 'test-24h-apt-002') AS slots,
+       (SELECT COUNT(*) FROM "SlotOfAppointment"
+         WHERE "appointmentId" = 'test-24h-apt-002'
+           AND "completionStatus" = 'CANCELLED') AS cancelled_slots,
+       (SELECT COUNT(*) FROM "Appointment" WHERE id = 'test-24h-apt-002') AS apts
 FROM "Consultation" c WHERE id = 'test-24h-cons-002';
 ```
 
-Expected: `CANCELLED`, `CONSULTANT_UNAVAILABLE`, `slots=0`, `apts=0`
+Expected: `CANCELLED`, `CONSULTANT_UNAVAILABLE`, `slots=1`, `cancelled_slots=1`,
+`apts=1`. A `slots=0` or `apts=0` here means someone reintroduced the delete.
+This fixture is seeded straight through SQL and carries no `Payment` row of its
+own, so it proves the rows survive but not that the money trail does; the
+payment-preservation assertion for a cancel lives in Agent 001 Test 5.7, against
+an appointment that came from a real checkout.
 
 ### 6.7 — 403 Cancel as Non-Participant
 
@@ -842,8 +869,9 @@ async () => {
     appointmentType: "CONSULTATION",
     planId: "test-consultation-plan-002",
     paymentGateway: "STRIPE",
-    slotStartTimeInUTC: nextThu.toISOString(),
-    slotEndTimeInUTC: slotEnd.toISOString(),
+    startsAt: nextThu.toISOString(),
+    endsAt: slotEnd.toISOString(),
+    slotOfAvailabilityWeeklyId: "test-w002-thu-am",
     isMockPayment: true,
   });
 
@@ -926,7 +954,7 @@ Verify: `totalUnallocated < totalConfigured` after some slots are occupied.
 After allocating a subscription, POST:
 
 ```javascript
-fetch("/api/events/subscriptions/<sub_id>/validate", {
+fetch("/api/bookings/subscriptions/<sub_id>/validate", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({

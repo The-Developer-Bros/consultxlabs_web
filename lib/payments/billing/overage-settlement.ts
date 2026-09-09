@@ -15,6 +15,7 @@ import {
 } from "@prisma/client";
 import { computeOverageForBooking } from "@/lib/payments/billing/overage";
 import { notifyOrgProgramOverageDue } from "@/lib/novu/org-workflows";
+import { PaymentError } from "@/lib/payments/core/types";
 import type { Tx } from "@/lib/prisma";
 import { sumPaise } from "@/lib/payments/utils/money";
 
@@ -37,6 +38,14 @@ export interface RecordOverageInput {
   paymentGateway: PaymentGateway;
 }
 
+/** The member-due bell, deferred until the caller's transaction has committed. */
+export interface PendingOverageNotification {
+  userId: string;
+  programAssignmentId: string;
+  marginalPaise: number;
+  overageEventId: string;
+}
+
 /**
  * Record one over-cap booking. Assumes the caller already metered the booking
  * and saw `wasOverage = true` (BLOCK behaviour throws inside the metering
@@ -47,10 +56,14 @@ export interface RecordOverageInput {
  * Throws `PROGRAM_CAP_EXHAUSTED` (httpStatus 402) when the circuit breaker
  * vetoes — same shape as the BLOCK path so the dashboard can explain the
  * cycle ceiling vs the per-member allocation.
+ *
+ * Returns the member-due bell to ring, or null when there is nothing to tell
+ * anyone. The caller rings it AFTER its transaction commits — see
+ * `notifyOverageDueAfterCommit`.
  */
 export async function recordOverageAtCheckout(
   input: RecordOverageInput,
-): Promise<void> {
+): Promise<PendingOverageNotification | null> {
   const {
     tx,
     programAssignmentId,
@@ -146,17 +159,20 @@ export async function recordOverageAtCheckout(
     );
     // Modelled outcome (the circuit breaker working as designed), not a
     // fault — captured for volume/pattern visibility only.
-    reportSentryError(capExhaustedErr, { subsystem: "payments", expected: true });
+    reportSentryError(capExhaustedErr, {
+      subsystem: "payments",
+      expected: true,
+    });
     throw capExhaustedErr;
   }
 
-  if (marginalPaise <= 0) return;
+  if (marginalPaise <= 0) return null;
 
   const bu = await tx.bookingUtilization.findUnique({
     where: { paymentId },
     select: { id: true },
   });
-  if (!bu) return;
+  if (!bu) return null;
 
   if (overage.chargeTo === "MEMBER") {
     // Instant member charge. The booking proceeds; create a parent-linked
@@ -202,8 +218,11 @@ export async function recordOverageAtCheckout(
     // (marginalPaise) covers the over-cap portion. Without this, basePaise is
     // collected TWICE — once in the parent's base leg, once in the member charge
     // (coveredPaise + basePaise == price). INVOICE accrual carves cleanly; a
-    // WALLET-funded parent would also need a balance credit-back (not reachable
-    // with current configs — no WALLET program charges overage).
+    // WALLET-funded parent would also need a balance credit-back, which is not
+    // built (#715) — so #1458 added a config-time guard
+    // (overageBehaviorUnsupportedReason) that refuses CHARGE_MEMBER on a WALLET
+    // account, and the throw below is the fail-closed backstop for a programme
+    // configured before that guard existed.
     if (basePaise > 0) {
       const parentBase = await tx.paymentLeg.findUnique({
         where: { paymentId_source: { paymentId, source: "INVOICE_ACCRUAL" } },
@@ -213,19 +232,30 @@ export async function recordOverageAtCheckout(
       // (e.g. a WALLET/LICENSE-funded parent), basePaise was already collected via
       // that funding source and the member side-charge above bills it AGAIN. The
       // credit-back path for non-invoice parents isn't built (#715), so abort the
-      // tx rather than silently double-collect basePaise. Reachable today because
-      // isReachableOrgFundingPath doesn't constrain overageBehavior by funding.
+      // tx rather than silently double-collect basePaise. Only reachable for a
+      // programme saved before #1458's config guard, which now refuses the
+      // combination at create and patch time.
       if (!parentBase || parentBase.amountPaise < basePaise) {
-        const carveErr = new Error(
-          `CHARGE_MEMBER overage on payment ${paymentId}: cannot carve basePaise=${basePaise} ` +
-            `from parent INVOICE_ACCRUAL leg (${parentBase ? parentBase.amountPaise : "absent"}); ` +
-            `non-invoice-funded member-overage credit-back not implemented (#715) — refusing to double-collect`,
+        // #1458 — a stable code and a 409 so the route answers the buyer with
+        // the admin action instead of a generic 500; the operator detail stays
+        // in the Sentry context below, not in the message the page renders.
+        const carveErr = new PaymentError(
+          "This programme charges members for bookings past its cap, which is not supported on this organisation's funding source. Ask your billing admin to switch the programme to charge the organisation, or to block over-cap bookings.",
+          "OVERAGE_CHARGE_MEMBER_UNSUPPORTED",
         );
         // A genuine coverage gap (#715), not a modelled outcome — this aborts
         // a booking with real money on the line.
         reportSentryError(carveErr, {
           subsystem: "payments",
-          contexts: { overage: { paymentId, basePaise } },
+          contexts: {
+            overage: {
+              paymentId,
+              basePaise,
+              parentInvoiceAccrualPaise: parentBase
+                ? parentBase.amountPaise
+                : null,
+            },
+          },
         });
         throw carveErr;
       }
@@ -239,37 +269,18 @@ export async function recordOverageAtCheckout(
       });
     }
 
-    // Tell the member they owe the marginal + deep-link to the pay surface.
-    // Fire-and-forget on the outer prisma (committed-state lookup; not part of
-    // this rolling-back-able tx).
-    void prisma.programAssignment
-      .findUnique({
-        where: { id: programAssignmentId },
-        select: {
-          program: {
-            select: {
-              name: true,
-              contract: {
-                select: { organization: { select: { name: true } } },
-              },
-            },
-          },
-        },
-      })
-      .then((ctx) => {
-        if (!ctx) return;
-        return notifyOrgProgramOverageDue(userId, {
-          orgName: ctx.program.contract.organization.name,
-          programName: ctx.program.name,
-          amountPaise: marginalPaise,
-          payUrl: `/dashboard/overage?charge=${memberOverageEvent.id}`,
-        });
-      })
-      .catch((notifyErr) => {
-        console.error("[notifyOrgProgramOverageDue] failed:", notifyErr);
-        reportSentryError(notifyErr, { subsystem: "payments", level: "warning" });
-      });
-    return;
+    // Tell the member they owe the marginal + deep-link to the pay surface —
+    // handed back for the caller to ring post-commit rather than rung here.
+    // #1435 — the lookup this bell needs runs on the global client, and under
+    // PG_POOL_MAX=1 a global-client query issued inside the transaction queues
+    // behind the transaction's own connection and dies at the 3 s pg connect
+    // timeout, which the .catch swallowed: the bell was lost silently.
+    return {
+      userId,
+      programAssignmentId,
+      marginalPaise,
+      overageEventId: memberOverageEvent.id,
+    };
   }
 
   if (overage.chargeTo === "ORG") {
@@ -279,14 +290,56 @@ export async function recordOverageAtCheckout(
     // double-bills the org by basePaise (and breaks Σlegs == amount). Carve
     // basePaise OUT of the base leg into the explicit OVERAGE_INVOICE_ACCRUAL
     // leg; only the surcharge is genuinely-additional money (marginal == base +
-    // surcharge). When no base INVOICE_ACCRUAL leg exists (wallet/license-funded)
-    // nothing is carved and the overage is fully additive — `marginal − carved`
-    // yields the right `amount` bump either way.
+    // surcharge).
+    //
+    // #1458 — which funding rail paid the parent decides whether the marginal is
+    // new money at all, so the WALLET rail is resolved FIRST and never reaches
+    // the additive branch below.
+    const walletLeg = await tx.paymentLeg.findUnique({
+      where: { paymentId_source: { paymentId, source: "WALLET" } },
+      select: { amountPaise: true },
+    });
+    if (walletLeg) {
+      return recordWalletCollectedOrgOverage(tx, {
+        paymentId,
+        programAssignmentId,
+        bookingUtilizationId: bu.id,
+        basePaise,
+        surchargePaise,
+        marginalPaise,
+        currency,
+      });
+    }
+
     const baseLeg = await tx.paymentLeg.findUnique({
       where: { paymentId_source: { paymentId, source: "INVOICE_ACCRUAL" } },
       select: { amountPaise: true },
     });
-    const carved = baseLeg && baseLeg.amountPaise >= basePaise ? basePaise : 0;
+    if (!baseLeg) {
+      // #1458 — the old fallback treated "no base leg" as licence-funded and
+      // made the overage fully additive, which cannot work on either remaining
+      // rail. A LICENSE parent keeps `Payment.amount` at the full price behind a
+      // deliberately ₹0 licence leg, and the leg-sum guard only excuses that
+      // while the licence leg is the ONLY funding leg: adding an
+      // OVERAGE_INVOICE_ACCRUAL leg re-arms the comparison and
+      // `assert_payment_legs_ok` then raises at COMMIT, so the booking already
+      // died with an opaque Postgres check_violation. A parent with no funding
+      // leg at all means the funding seam itself drifted. Neither is fixable by
+      // inflating the amount, so both refuse the booking with an error the buyer
+      // can take to their admin.
+      const fundingErr = new PaymentError(
+        "This booking is past your programme's cap and the programme's funding source cannot be charged for the difference. Ask your billing admin to switch the programme to block over-cap bookings, or to fund it from the organisation's wallet or invoice account.",
+        "OVERAGE_UNSUPPORTED_FUNDING",
+      );
+      // A coverage gap, not a modelled outcome: it means an operator saved a
+      // programme whose overage can never be collected.
+      reportSentryError(fundingErr, {
+        subsystem: "payments",
+        contexts: { overage: { paymentId, marginalPaise } },
+      });
+      throw fundingErr;
+    }
+    const carved = baseLeg.amountPaise >= basePaise ? basePaise : 0;
     if (carved > 0) {
       await tx.paymentLeg.update({
         where: { paymentId_source: { paymentId, source: "INVOICE_ACCRUAL" } },
@@ -325,4 +378,117 @@ export async function recordOverageAtCheckout(
       },
     });
   }
+
+  // CHARGE_ORG bills through the monthly rollup; nobody is told anything now.
+  return null;
+}
+
+/**
+ * Record a CHARGE_ORG overage on a WALLET-funded parent (#1458).
+ *
+ * On the wallet rail the debit taken when the booking committed is the whole
+ * nominal price, so the over-cap pass-through (`basePaise`) is already in the
+ * platform's hands the moment the transaction commits. There is nothing left to
+ * bill: the event is born CHARGED and settled, pointing at the payment whose
+ * WALLET leg collected it. Writing an OVERAGE_INVOICE_ACCRUAL leg here instead
+ * would break the `Σ non-credit legs == Payment.amount` identity the DB trigger
+ * enforces, and incrementing `Payment.amount` on top of it made a later
+ * cancellation refund the organisation more than its wallet was ever debited.
+ *
+ * The surcharge is the one part the wallet debit did NOT collect, because it is
+ * a markup on top of the price rather than a slice of it. No rail collects it
+ * after the fact without inflating the amount again, so the booking is refused
+ * rather than quietly under-collected; the config-time guard in
+ * `lib/enterprise/reachable-paths.ts` is what keeps operators out of this state.
+ */
+async function recordWalletCollectedOrgOverage(
+  tx: Tx,
+  args: {
+    paymentId: string;
+    programAssignmentId: string;
+    bookingUtilizationId: string;
+    basePaise: number;
+    surchargePaise: number;
+    marginalPaise: number;
+    currency: Currency;
+  },
+): Promise<null> {
+  if (args.surchargePaise > 0) {
+    const surchargeErr = new PaymentError(
+      "This programme adds a surcharge to bookings past its cap, which a wallet-funded organisation cannot be charged for. Ask your billing admin to remove the overage surcharge or to block over-cap bookings.",
+      "OVERAGE_UNSUPPORTED_FUNDING",
+    );
+    reportSentryError(surchargeErr, {
+      subsystem: "payments",
+      contexts: {
+        overage: {
+          paymentId: args.paymentId,
+          surchargePaise: args.surchargePaise,
+        },
+      },
+    });
+    throw surchargeErr;
+  }
+
+  await tx.overageEvent.create({
+    data: {
+      programAssignmentId: args.programAssignmentId,
+      bookingUtilizationId: args.bookingUtilizationId,
+      overageBehavior: "CHARGE_ORG",
+      basePaise: args.basePaise,
+      surchargePaise: args.surchargePaise,
+      marginalPaise: args.marginalPaise,
+      currency: args.currency,
+      // CHARGED is the enum's "money collected" state and the wallet debit is
+      // that collection, so the event is settled at birth. It carries no
+      // invoiceLineItemId because it never reaches an invoice — `paymentId` is
+      // the proof of collection instead, and the reconciler's (G2) link
+      // invariant accepts either.
+      chargeStatus: "CHARGED",
+      settledAt: new Date(),
+      paymentId: args.paymentId,
+    },
+  });
+
+  // Nothing is owed by anyone, so there is no bell to ring.
+  return null;
+}
+
+/**
+ * Ring the member-due bell for a committed overage. Fire-and-forget: a booking
+ * that is already paid for must not fail because a notification did not go out.
+ */
+export function notifyOverageDueAfterCommit(
+  pending: PendingOverageNotification,
+): void {
+  void prisma.programAssignment
+    .findUnique({
+      where: { id: pending.programAssignmentId },
+      select: {
+        program: {
+          select: {
+            name: true,
+            contract: {
+              select: { organization: { select: { name: true } } },
+            },
+          },
+        },
+      },
+    })
+    .then((ctx) => {
+      if (!ctx) return;
+      return notifyOrgProgramOverageDue(pending.userId, {
+        orgName: ctx.program.contract.organization.name,
+        programName: ctx.program.name,
+        amountPaise: pending.marginalPaise,
+        payUrl: `/dashboard/overage?charge=${pending.overageEventId}`,
+      });
+    })
+    .catch((notifyErr) => {
+      console.error("[notifyOrgProgramOverageDue] failed:", notifyErr);
+      reportSentryError(notifyErr, {
+        subsystem: "payments",
+        level: "warning",
+      });
+    });
 }

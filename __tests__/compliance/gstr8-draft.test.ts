@@ -5,6 +5,12 @@
 /**
  * #1230 — GSTR-8 draft builder invariants: integer-paise clamping, supplier
  * annex aggregation, IST period labelling, and the honest-empty warning.
+ *
+ * #1370 — and the reporting window those labels describe. Every statutory
+ * period here is an IST calendar month, so both of its boundaries are IST
+ * midnights expressed as instants. Computing them from UTC components dropped
+ * the first five and a half hours of the month and swallowed the same span of
+ * the next one, which no label would ever have shown.
  */
 
 import {
@@ -12,6 +18,11 @@ import {
   gstr8PeriodLabel,
   type Gstr8SourceRow,
 } from "@/lib/compliance/gstr8";
+import {
+  previousIstCalendarMonthStart,
+  nextMonthStart,
+} from "@/lib/compliance/ist-period";
+import { buildOutwardRegister } from "@/lib/compliance/gst-outward-register";
 
 const AUG_2026_UTC = new Date("2026-08-01T00:00:00Z");
 
@@ -26,6 +37,53 @@ describe("gstr8PeriodLabel", () => {
     expect(gstr8PeriodLabel(new Date("2026-07-01T20:00:00Z"))).toBe("2026-07");
     expect(gstr8PeriodLabel(new Date("2026-06-30T18:00:00Z"))).toBe("2026-06");
     expect(gstr8PeriodLabel(new Date("2026-06-30T19:00:00Z"))).toBe("2026-07");
+  });
+});
+
+describe("IST calendar-month boundaries", () => {
+  // The 3rd-of-the-month run, exporting August.
+  const NOW = new Date("2026-09-04T00:00:00Z");
+  const START = previousIstCalendarMonthStart(NOW);
+
+  it("opens and closes at IST midnight, not UTC midnight", () => {
+    expect(START.toISOString()).toBe("2026-07-31T18:30:00.000Z");
+    expect(nextMonthStart(START).toISOString()).toBe(
+      "2026-08-31T18:30:00.000Z",
+    );
+  });
+
+  it("covers the opening hours a UTC-midnight window filed against July", () => {
+    // 2026-08-01T00:15 IST is 2026-07-31T18:45Z, which sits before the old
+    // 2026-08-01T00:00Z boundary.
+    const justAfterMidnightIst = new Date("2026-07-31T18:45:00Z");
+    expect(justAfterMidnightIst.getTime()).toBeGreaterThanOrEqual(
+      START.getTime(),
+    );
+    expect(justAfterMidnightIst.getTime()).toBeLessThan(
+      nextMonthStart(START).getTime(),
+    );
+  });
+
+  it("still names the IST month in the GSTR-8 label", () => {
+    expect(gstr8PeriodLabel(START)).toBe("2026-08");
+  });
+
+  it("labels the register for exactly the IST days it covers", () => {
+    expect(
+      buildOutwardRegister([], START, nextMonthStart(START)).periodLabel,
+    ).toBe("2026-08-01 to 2026-08-31");
+  });
+
+  it("labels an operator's UTC-midnight override honestly too", () => {
+    // GST_REGISTER_PERIOD_START/END parse to UTC midnights, which is why the
+    // exclusive end is stepped back a whole day rather than a millisecond.
+    expect(
+      buildOutwardRegister(
+        [],
+        new Date("2026-08-01T00:00:00Z"),
+        new Date("2026-09-01T00:00:00Z"),
+      ).periodLabel,
+    ).toBe("2026-08-01 to 2026-08-31");
   });
 });
 

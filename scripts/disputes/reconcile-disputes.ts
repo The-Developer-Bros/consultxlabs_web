@@ -30,6 +30,8 @@ export interface DisputeReconciliationResult {
   reconciledCount: number;
   urgentCount: number;
   razorpayManualReviewCount: number;
+  /** #1459 — Stripe disputes left untouched because the gateway fence is shut. */
+  skippedFenced: number;
   errors: string[];
   timestamp: string;
 }
@@ -69,8 +71,10 @@ function mapGatewayDisputeStatus(status: string): DisputeStatus {
 // #476 — locked at the core so every entry (GH Actions / HTTP) shares one
 // mutual exclusion; fail-closed: money state must not double-run unlocked.
 export async function reconcileDisputes(): Promise<DisputeReconciliationResult> {
-  return withCronLock("reconcile-disputes", { failMode: "closed", ttlMs: LONG_JOB_TTL_MS }, () =>
-    reconcileDisputesUnlocked(),
+  return withCronLock(
+    "reconcile-disputes",
+    { failMode: "closed", ttlMs: LONG_JOB_TTL_MS },
+    () => reconcileDisputesUnlocked(),
   );
 }
 
@@ -83,6 +87,11 @@ async function reconcileDisputesUnlocked(): Promise<DisputeReconciliationResult>
   let reconciledCount = 0;
   let urgentCount = 0;
   let razorpayManualReviewCount = 0;
+  let skippedFenced = 0;
+  // #1351 — Stripe is a contingency rail that is off in production, so the
+  // client has no usable credentials. Read once: the fence cannot change
+  // mid-run, and a per-dispute read would suggest it could.
+  const stripeEnabled = process.env.STRIPE_ENABLED === "true";
 
   // Find disputes needing reconciliation
   const disputesToReconcile = await prisma.dispute.findMany({
@@ -140,6 +149,18 @@ async function reconcileDisputesUnlocked(): Promise<DisputeReconciliationResult>
       if (dispute.paymentGateway !== PaymentGateway.STRIPE) {
         console.log(
           `⏭️ Skipping dispute ${dispute.disputeId} - unsupported gateway: ${dispute.paymentGateway}`,
+        );
+        continue;
+      }
+
+      // #1459 — with the fence shut every getDispute call throws, so the run
+      // reported success:false and the sweep looked broken when it was simply
+      // asked to reconcile a gateway we deliberately turned off. Count the skip
+      // instead: these disputes are still visible to an operator in the result.
+      if (!stripeEnabled) {
+        skippedFenced++;
+        console.log(
+          `⏭️ Skipping Stripe dispute ${dispute.disputeId} — STRIPE_ENABLED is not "true"`,
         );
         continue;
       }
@@ -229,6 +250,7 @@ async function reconcileDisputesUnlocked(): Promise<DisputeReconciliationResult>
     reconciledCount,
     urgentCount,
     razorpayManualReviewCount,
+    skippedFenced,
     errors,
     timestamp: new Date().toISOString(),
   };

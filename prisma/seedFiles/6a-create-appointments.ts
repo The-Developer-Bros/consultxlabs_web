@@ -186,6 +186,26 @@ const createConsultationAppointment = (
 ): Prisma.AppointmentCreateInput => {
   return {
     appointmentType: AppointmentsType.CONSULTATION,
+    // #1319 A9 — participant rows mirror the slot connects below.
+    participants: {
+      create: [
+        {
+          userId: consultee.id,
+          role: "CONSULTEE",
+          status:
+            defaultStatus === AppointmentStatus.PENDING ? "HELD" : "CONFIRMED",
+        },
+        ...(consultantUserId
+          ? [
+              {
+                userId: consultantUserId,
+                role: "CONSULTANT" as const,
+                status: "CONFIRMED" as const,
+              },
+            ]
+          : []),
+      ],
+    },
     slotsOfAppointment: {
       create: {
         user: {
@@ -365,6 +385,25 @@ const createSubscriptionAppointment = (
 
   return {
     appointmentType: AppointmentsType.SUBSCRIPTION,
+    participants: {
+      create: [
+        {
+          userId: consultee.id,
+          role: "CONSULTEE",
+          status:
+            defaultStatus === AppointmentStatus.PENDING ? "HELD" : "CONFIRMED",
+        },
+        ...(consultantUserId
+          ? [
+              {
+                userId: consultantUserId,
+                role: "CONSULTANT" as const,
+                status: "CONFIRMED" as const,
+              },
+            ]
+          : []),
+      ],
+    },
     slotsOfAppointment: {
       create: slots,
     },
@@ -421,6 +460,25 @@ const createWebinarAppointment = async (
 
   return {
     appointmentType: AppointmentsType.WEBINAR,
+    participants: {
+      create: [
+        ...(consultantUserId
+          ? [
+              {
+                userId: consultantUserId,
+                role: "CONSULTANT" as const,
+                status: "CONFIRMED" as const,
+              },
+            ]
+          : []),
+        { userId: consultee.id, role: "CONSULTEE", status: "CONFIRMED" },
+        ...additionalParticipants.map((c) => ({
+          userId: c.id,
+          role: "CONSULTEE" as const,
+          status: "CONFIRMED" as const,
+        })),
+      ],
+    },
     slotsOfAppointment: {
       create: {
         user: {
@@ -475,6 +533,25 @@ const createClassAppointment = async (
 
   return {
     appointmentType: AppointmentsType.CLASS,
+    participants: {
+      create: [
+        ...(consultantUserId
+          ? [
+              {
+                userId: consultantUserId,
+                role: "CONSULTANT" as const,
+                status: "CONFIRMED" as const,
+              },
+            ]
+          : []),
+        { userId: consultee.id, role: "CONSULTEE", status: "CONFIRMED" },
+        ...additionalParticipants.map((c) => ({
+          userId: c.id,
+          role: "CONSULTEE" as const,
+          status: "CONFIRMED" as const,
+        })),
+      ],
+    },
     slotsOfAppointment: {
       create: Array.from({ length: limitedSlots }, (_, index) => {
         const slotStart = new Date(

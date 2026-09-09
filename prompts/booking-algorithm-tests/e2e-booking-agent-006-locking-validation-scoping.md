@@ -30,14 +30,28 @@ All test data uses the `-006` suffix to avoid collisions with existing seed data
 
 **Distributed locking** (`utils/appointmentlock.ts`):
 
-- `lockAutoAllocate(consultantProfileId)` — consultant-level lock for auto-allocation
-- `lockSlotBooking(consultantProfileId, slotStartTime)` — per-slot lock for checkout
-- `lockEventCheckout(appointmentType, eventOrPlanId)` — event-level lock for webinar/class checkout
-- Lock contention throws errors that should be caught and returned as 409
+- `lockAutoAllocate(consultantProfileId, ttl?, scope?)` — consultant-level lock
+  for auto-allocation, key `auto-allocate:<consultantProfileId>[:<scope>]`
+- `lockSlotBooking(consultantProfileId, startsAt, endsAt, ttl?)` — the booking
+  lock, **interval-granular** since #1169: it delegates to `lockSlotInterval`,
+  which floors the window onto the 30-minute grid and takes one
+  `slot-booking:<consultantProfileId>:<atomStartISO>` key per atom, in ascending
+  order, all-or-nothing. There is no single per-slot key and the retired
+  `trial-slot-booking:` namespace must not come back — trials take these same
+  atoms.
+- `lockEventCheckout(appointmentType, eventOrPlanId)` — event-level lock for
+  webinar/class checkout, key `event-checkout:<appointmentType>:<eventOrPlanId>`
 
 **Error classification:**
 
-- Lock contention -> 409
+- Lock contention -> 409 in most places (`EventCheckoutBusyError`
+  `EVENT_CHECKOUT_BUSY`, `ConsulteeBookingBusyError` `CONSULTEE_BOOKING_BUSY`),
+  but the appointment lock answers **423** (`AppointmentBusyError`,
+  `APPOINTMENT_BUSY`). Assert the code, not just "4xx".
+- Redis unreachable or the circuit breaker open -> **503**
+  `BOOKING_LOCK_UNAVAILABLE`. Acquisition fails closed by design; a 409 here
+  would be a bug, because an unlocked booking must never proceed.
+- Sold out is terminal, not contention: **409** `EVENT_SOLD_OUT`, no retry.
 - Validation errors (bad data) -> 400
 - Not-found errors -> 400 (not 500)
 
@@ -45,8 +59,8 @@ All test data uses the `-006` suffix to avoid collisions with existing seed data
 
 - `utils/appointmentlock.ts` — all lock functions
 - `utils/errors/SlotLockError.ts` — custom error class
-- `app/api/events/webinars/[webinarId]/allocate/route.ts`
-- `app/api/events/classes/[classId]/allocate/route.ts`
+- `app/api/bookings/webinars/[webinarId]/allocate/route.ts`
+- `app/api/bookings/classes/[classId]/allocate/route.ts`
 - `app/api/checkout/route.ts`
 
 ---
@@ -176,7 +190,7 @@ After signup, run:
 
 ```sql
 UPDATE "ConsulteeProfile"
-SET occupation = 'Concurrency Tester',
+SET goals = 'Race the booking write path and survive it.',
     "aboutMe"  = 'Testing locking and validation flows.'
 FROM users u
 WHERE "ConsulteeProfile"."userId" = u.id
@@ -258,7 +272,7 @@ ON CONFLICT (id) DO NOTHING;
 -- Class Plan: 2 sessions, 1/week, 1h each, 3 max
 INSERT INTO "ClassPlan" (
   id, title, "sessionDurationInHours", "totalSessions",
-  "meetingsPerWeek", "maxParticipants",
+  "sessionsPerWeek", "maxParticipants",
   price, "priceCurrency",
   "consultantProfileId", "createdAt", "updatedAt"
 )
@@ -346,7 +360,7 @@ Login as CONSULTANT A. Allocate the webinar:
 ```javascript
 async () => {
   const response = await fetch(
-    "/api/events/webinars/test-webinar-006a/allocate",
+    "/api/bookings/webinars/test-webinar-006a/allocate",
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -366,7 +380,7 @@ Fire two simultaneous auto-allocate requests:
 ```javascript
 async () => {
   const makeRequest = () =>
-    fetch("/api/events/webinars/test-webinar-006a/allocate", {
+    fetch("/api/bookings/webinars/test-webinar-006a/allocate", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ isAuto: true }),
@@ -395,11 +409,14 @@ First allocate the class:
 
 ```javascript
 async () => {
-  const response = await fetch("/api/events/classes/test-class-006a/allocate", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ isAuto: true }),
-  });
+  const response = await fetch(
+    "/api/bookings/classes/test-class-006a/allocate",
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isAuto: true }),
+    },
+  );
   return { status: response.status, body: await response.json() };
 };
 ```
@@ -409,7 +426,7 @@ Then fire two concurrent requests:
 ```javascript
 async () => {
   const makeRequest = () =>
-    fetch("/api/events/classes/test-class-006a/allocate", {
+    fetch("/api/bookings/classes/test-class-006a/allocate", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ isAuto: true }),
@@ -438,7 +455,7 @@ After lock is released from Test 2.1, a sequential call should succeed:
 ```javascript
 async () => {
   const response = await fetch(
-    "/api/events/webinars/test-webinar-006a/allocate",
+    "/api/bookings/webinars/test-webinar-006a/allocate",
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -462,7 +479,7 @@ As CONSULTANT A, send invalid data to allocate:
 ```javascript
 async () => {
   const response = await fetch(
-    "/api/events/webinars/test-webinar-006a/allocate",
+    "/api/bookings/webinars/test-webinar-006a/allocate",
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -482,7 +499,7 @@ async () => {
 ```javascript
 async () => {
   const response = await fetch(
-    "/api/events/webinars/nonexistent-webinar-xyz/allocate",
+    "/api/bookings/webinars/nonexistent-webinar-xyz/allocate",
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -493,7 +510,9 @@ async () => {
 };
 ```
 
-**Expected:** 400 or 404 (not 500)
+**Expected:** **400** — not 404, and not 500. `AllocationNotFoundError` fixes
+`httpStatus = 400` (`utils/slotAllocation/errors.ts`) and the allocate routes
+mint no 404 of their own, so a 404 here is a contract change, not a pass.
 
 ---
 
@@ -750,7 +769,8 @@ async () => {
 
 ### Test 6.1 — Book a Slot for Consultant A
 
-Login as CONSULTEE. Book a consultation with consultant A on Monday 10:00 UTC:
+Login as CONSULTEE. Book a consultation with consultant A on Monday 10:00 IST
+(04:30 UTC — the payload below is written in UTC, so read the two together):
 
 ```javascript
 async () => {
@@ -770,8 +790,9 @@ async () => {
       appointmentType: "CONSULTATION",
       planId: "test-consultation-plan-006a",
       paymentGateway: "STRIPE",
-      slotStartTimeInUTC: nextMon.toISOString(),
-      slotEndTimeInUTC: slotEnd.toISOString(),
+      startsAt: nextMon.toISOString(),
+      endsAt: slotEnd.toISOString(),
+      slotOfAvailabilityWeeklyId: "test-w006a-mon",
       isMockPayment: true,
     }),
   });
@@ -872,7 +893,7 @@ Login as CONSULTANT A. Allocate the 1-participant webinar:
 ```javascript
 async () => {
   const response = await fetch(
-    "/api/events/webinars/test-webinar-006a-wl/allocate",
+    "/api/bookings/webinars/test-webinar-006a-wl/allocate",
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -1050,29 +1071,29 @@ SELECT
 
 ## Verification Checklist (End-to-End)
 
-| #   | Check                                                     | Expected             |
-| --- | --------------------------------------------------------- | -------------------- |
-| 1   | Concurrent webinar auto-allocate -> one 200, one 409      | Exactly one succeeds |
-| 2   | Concurrent class auto-allocate -> one 200, one 409        | Exactly one succeeds |
-| 3   | Sequential auto-allocate after lock release -> 200        | 200                  |
-| 4   | No double-booking in DB after concurrent requests         | Verified via COUNT   |
-| 5   | Validation error -> 400 (not 500)                         | 400                  |
-| 6   | Not-found event -> 400 or 404 (not 500)                   | non-500              |
-| 7   | startTimeUtc > 1439 -> 400                                | 400                  |
-| 8   | startTimeUtc = -1 -> 400                                  | 400                  |
-| 9   | startTimeUtc = 10.5 -> 400                                | 400                  |
-| 10  | startTimeUtc = "abc" via PATCH -> 400                     | 400                  |
-| 11  | Boundary values (0, 1439) -> 201                          | 201                  |
-| 12  | Custom slot "not-a-date" -> 400                           | 400                  |
-| 13  | Custom slot invalid ISO -> 400                            | 400                  |
-| 14  | Custom slot valid ISO -> 200                              | 200                  |
-| 15  | Consultant A booking does NOT affect B's availability     | B's slots all free   |
-| 16  | Consultant A's booked slot excluded from own availability | Slot not in response |
-| 17  | Unscheduled classes NOT in scheduled section              | UI verified          |
-| 18  | Session counter uses totalSessions                        | Correct count        |
-| 19  | Webinar fills to capacity -> first checkout succeeds      | 200                  |
+| #   | Check                                                     | Expected              |
+| --- | --------------------------------------------------------- | --------------------- |
+| 1   | Concurrent webinar auto-allocate -> one 200, one 409      | Exactly one succeeds  |
+| 2   | Concurrent class auto-allocate -> one 200, one 409        | Exactly one succeeds  |
+| 3   | Sequential auto-allocate after lock release -> 200        | 200                   |
+| 4   | No double-booking in DB after concurrent requests         | Verified via COUNT    |
+| 5   | Validation error -> 400 (not 500)                         | 400                   |
+| 6   | Not-found event -> 400 (not 404, not 500)                 | 400                   |
+| 7   | startTimeUtc > 1439 -> 400                                | 400                   |
+| 8   | startTimeUtc = -1 -> 400                                  | 400                   |
+| 9   | startTimeUtc = 10.5 -> 400                                | 400                   |
+| 10  | startTimeUtc = "abc" via PATCH -> 400                     | 400                   |
+| 11  | Boundary values (0, 1439) -> 201                          | 201                   |
+| 12  | Custom slot "not-a-date" -> 400                           | 400                   |
+| 13  | Custom slot invalid ISO -> 400                            | 400                   |
+| 14  | Custom slot valid ISO -> 200                              | 200                   |
+| 15  | Consultant A booking does NOT affect B's availability     | B's slots all free    |
+| 16  | Consultant A's booked slot excluded from own availability | Slot not in response  |
+| 17  | Unscheduled classes NOT in scheduled section              | UI verified           |
+| 18  | Session counter uses totalSessions                        | Correct count         |
+| 19  | Webinar fills to capacity -> first checkout succeeds      | 200                   |
 | 20  | Next checkout -> rejected as full (not 500)               | 4xx "Webinar is full" |
-| 21  | Cleanup complete                                          | All counts = 0       |
+| 21  | Cleanup complete                                          | All counts = 0        |
 
 ---
 

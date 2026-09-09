@@ -6,7 +6,7 @@
 import * as Sentry from "@sentry/nextjs";
 import { StreamChat } from "stream-chat";
 import { StreamClient } from "@stream-io/node-sdk";
-import { withCircuitBreaker } from "@/lib/redis";
+import { createCircuitBreaker } from "@/lib/redis";
 
 // Environment validation
 const STREAM_API_KEY = process.env.NEXT_PUBLIC_STREAM_API_KEY;
@@ -201,7 +201,70 @@ export function isRateLimitError(error: unknown): boolean {
 }
 
 /**
- * #473 — wrap a hot-path Stream network call in the shared circuit breaker so a
+ * A Stream refusal to serve because the APP IS SUSPENDED is not an outage, and
+ * treating it as one is how the most likely real incident at a pre-revenue
+ * company presents as an unreadable flap.
+ *
+ * #1280 2.2 — only 404 and 429 were classified, so a suspended account fell
+ * into the generic branch: Sentry error, breaker trips, 30-second reset,
+ * half-open probe, trips again, forever. Nothing in that loop says "we owe
+ * Stream money", which is the only fact a human can act on.
+ *
+ * ## Exactly one code, checked against Stream's published table
+ *
+ * Read from <https://getstream.io/chat/docs/node/api_errors_response/>:
+ *
+ *   | code | HTTP | meaning              |
+ *   |------|------|----------------------|
+ *   |   99 |  403 | App suspended        |
+ *   |    2 |  401 | Access Key invalid   |
+ *   |   17 |  403 | Insufficient perms   |
+ *   |   70 |  403 | No channel access    |
+ *
+ * An earlier revision of this matched `402 || 403 || code 99 || code 2`, and
+ * three quarters of that was wrong in a way that mattered:
+ *
+ *   - **code 2 is authentication, not billing.** A rotated-away or mistyped
+ *     API key would have been excluded from the breaker and reported as "we owe
+ *     Stream money" — the single most misleading diagnosis available for a
+ *     misconfiguration, because it sends someone to the billing page instead of
+ *     the env vars.
+ *   - **a bare 403 is not billing either.** Codes 17 and 70 share it, so an
+ *     ordinary permission refusal would have been laundered into a billing
+ *     alert.
+ *   - **Stream documents no 402 at all.** Keeping it implied knowledge of a
+ *     contract that does not exist.
+ *
+ * So: code 99, and nothing else. Narrow and cited beats broad and guessed —
+ * anything this does not catch still reaches the generic branch, which pages.
+ *
+ * Treated like 429 for the breaker: it does NOT trip, because retrying cannot
+ * fix it and opening the breaker only hides the cause. Unlike 429 it does not
+ * self-resolve, so it escalates to its own alert.
+ */
+export function isStreamBillingError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const e = error as { code?: number | null };
+  return e.code === 99;
+}
+
+/**
+ * #1280 2.1 — Stream's OWN breaker, not Redis's.
+ *
+ * These used to be the same object. Five Stream failures opened it and booking
+ * locks went through it too, so a video-vendor outage stopped checkout; in the
+ * other direction a Redis outage told users "Video is temporarily unavailable"
+ * and pointed `/api/health` at the wrong vendor.
+ */
+const streamCircuitBreaker = createCircuitBreaker("stream");
+
+/** Exposed so /api/health can report Stream's breaker rather than Redis's. */
+export function getStreamCircuitStatus() {
+  return streamCircuitBreaker.status();
+}
+
+/**
+ * #473 — wrap a hot-path Stream network call in Stream's circuit breaker so a
  * Stream outage fast-fails (sub-ms) instead of every dashboard load eating the
  * full 30s client timeout and cascading.
  *
@@ -221,10 +284,15 @@ export async function withStreamCircuitBreaker<T>(
   try {
     // #899 — expected "channel not found" misses must not trip the breaker;
     // neither do 429s (quota ≠ outage, see isRateLimitError).
-    return await withCircuitBreaker(
+    return await streamCircuitBreaker.run(
       operation,
       undefined,
-      (e) => !(isExpectedStreamError(e) || isRateLimitError(e)),
+      (e) =>
+        !(
+          isExpectedStreamError(e) ||
+          isRateLimitError(e) ||
+          isStreamBillingError(e)
+        ),
     );
   } catch (error) {
     // Distinguish "breaker is OPEN, we never tried" from a real Stream error.
@@ -239,6 +307,16 @@ export async function withStreamCircuitBreaker<T>(
         level: "warning",
       });
       throw unavailable;
+    }
+    // A billing refusal is the one class here that needs a HUMAN, not a retry.
+    // It is reported before the generic branch and with its own tag, so it does
+    // not read as one more Stream error in a flap.
+    if (isStreamBillingError(error)) {
+      Sentry.captureException(error, {
+        tags: { subsystem: "stream", reason: "stream.billing" },
+        level: "error",
+      });
+      throw error;
     }
     // #899 — an expected miss (channel not found) is normal on the lazy
     // create-or-join path: rethrow for the caller's create/fallback branch

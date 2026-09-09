@@ -32,6 +32,7 @@ import prisma from "@/lib/prisma";
 import { AUDIT_ACTIONS } from "@/lib/enterprise/audit-actions";
 import { Prisma } from "@prisma/client";
 import { withCronLock } from "@/lib/cron/with-cron-lock";
+import { abortIfMaintenance } from "@/lib/maintenance-cron";
 import * as Sentry from "@sentry/nextjs";
 import { runJob } from "@/lib/observability/job-sentry";
 import { withSerializableRetry } from "@/lib/db/serializable-retry";
@@ -84,93 +85,93 @@ export async function runAutoRenewContracts(): Promise<RenewStats> {
       // keep the outer catch's skip semantics (next-day recovery).
       const result = await withSerializableRetry(() =>
         prisma.$transaction(
-        async (tx) => {
-          // Claim: stamp autoRenewedAt only while still ACTIVE + unstamped.
-          const claim = await tx.contract.updateMany({
-            where: { id: c.id, status: "ACTIVE", autoRenewedAt: null },
-            data: { autoRenewedAt: now },
-          });
-          if (claim.count === 0) return { renewed: false as const };
+          async (tx) => {
+            // Claim: stamp autoRenewedAt only while still ACTIVE + unstamped.
+            const claim = await tx.contract.updateMany({
+              where: { id: c.id, status: "ACTIVE", autoRenewedAt: null },
+              data: { autoRenewedAt: now },
+            });
+            if (claim.count === 0) return { renewed: false as const };
 
-          const successor = await tx.contract.create({
-            data: {
-              organizationId: c.organizationId,
-              billingAccountId: c.billingAccountId,
-              purchaseOrderId: c.purchaseOrderId,
-              status: "ACTIVE",
-              effectiveFrom: oldTo,
-              effectiveTo: newTo,
-              paymentTermsDays: c.paymentTermsDays,
-              autoRenew: c.autoRenew,
-              rateCardId: c.rateCardId,
-            },
-          });
-
-          // Re-point the old contract's programs to the successor — without
-          // this, the cycle engine sees their contract as non-ACTIVE at the
-          // next periodEnd and CLOSEs every assignment instead of rolling,
-          // which would defeat the renewal. Invoices keep their old
-          // contractId (the money trail stays on the term that billed them).
-          await tx.program.updateMany({
-            where: { contractId: c.id },
-            data: { contractId: successor.id },
-          });
-
-          // E2E-audit P0 fix — LICENSE CONTINUITY on renewal. Carry the
-          // BillingSubscription onto the renewed term (same re-pointing the
-          // manual supersede route does); leaving it stranded froze seat
-          // counts and left the renewed term unlicensed. The billing clock
-          // restarts at the new term start; no row is deleted.
-          const oldSubscription = await tx.billingSubscription.findUnique({
-            where: { contractId: c.id },
-          });
-          if (oldSubscription) {
-            const subCycleEnd = nextPeriodEnd(oldTo, oldSubscription.cycle);
-            await tx.billingSubscription.update({
-              where: { id: oldSubscription.id },
+            const successor = await tx.contract.create({
               data: {
-                contractId: successor.id,
-                currentCycleStart: oldTo,
-                currentCycleEnd: subCycleEnd,
-                nextInvoiceDate: subCycleEnd,
-                startsAt: oldTo,
-                endsAt: newTo,
-                renewalReminderSentAt: null,
+                organizationId: c.organizationId,
+                billingAccountId: c.billingAccountId,
+                purchaseOrderId: c.purchaseOrderId,
+                status: "ACTIVE",
+                effectiveFrom: oldTo,
+                effectiveTo: newTo,
+                paymentTermsDays: c.paymentTermsDays,
+                autoRenew: c.autoRenew,
+                rateCardId: c.rateCardId,
               },
             });
-          }
 
-          // Link supersession chain + retire the old contract. EXPIRED here
-          // (not left ACTIVE) so expire-contracts has nothing to do.
-          await tx.contract.update({
-            where: { id: c.id },
-            data: {
-              status: "EXPIRED",
-              supersededByContractId: successor.id,
-              supersededAt: now,
-              supersessionReason: "RENEWAL",
-            },
-          });
+            // Re-point the old contract's programs to the successor — without
+            // this, the cycle engine sees their contract as non-ACTIVE at the
+            // next periodEnd and CLOSEs every assignment instead of rolling,
+            // which would defeat the renewal. Invoices keep their old
+            // contractId (the money trail stays on the term that billed them).
+            await tx.program.updateMany({
+              where: { contractId: c.id },
+              data: { contractId: successor.id },
+            });
 
-          await tx.orgAuditLog.create({
-            data: {
-              organizationId: c.organizationId,
-              actorMembershipId: null,
-              targetMembershipId: null,
-              category: "CONTRACT",
-              action: AUDIT_ACTIONS.CONTRACT.CONTRACT_AUTO_RENEWED,
-              description: `Contract ${c.id} auto-renewed to ${successor.id} (${oldTo.toISOString()} → ${newTo.toISOString()})`,
-              details: {
-                contractId: c.id,
-                successorContractId: successor.id,
-                effectiveFrom: oldTo.toISOString(),
-                effectiveTo: newTo.toISOString(),
+            // E2E-audit P0 fix — LICENSE CONTINUITY on renewal. Carry the
+            // BillingSubscription onto the renewed term (same re-pointing the
+            // manual supersede route does); leaving it stranded froze seat
+            // counts and left the renewed term unlicensed. The billing clock
+            // restarts at the new term start; no row is deleted.
+            const oldSubscription = await tx.billingSubscription.findUnique({
+              where: { contractId: c.id },
+            });
+            if (oldSubscription) {
+              const subCycleEnd = nextPeriodEnd(oldTo, oldSubscription.cycle);
+              await tx.billingSubscription.update({
+                where: { id: oldSubscription.id },
+                data: {
+                  contractId: successor.id,
+                  currentCycleStart: oldTo,
+                  currentCycleEnd: subCycleEnd,
+                  nextInvoiceDate: subCycleEnd,
+                  startsAt: oldTo,
+                  endsAt: newTo,
+                  renewalReminderSentAt: null,
+                },
+              });
+            }
+
+            // Link supersession chain + retire the old contract. EXPIRED here
+            // (not left ACTIVE) so expire-contracts has nothing to do.
+            await tx.contract.update({
+              where: { id: c.id },
+              data: {
+                status: "EXPIRED",
+                supersededByContractId: successor.id,
+                supersededAt: now,
+                supersessionReason: "RENEWAL",
               },
-            },
-          });
-          return { renewed: true as const, successorId: successor.id };
-        },
-        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+            });
+
+            await tx.orgAuditLog.create({
+              data: {
+                organizationId: c.organizationId,
+                actorMembershipId: null,
+                targetMembershipId: null,
+                category: "CONTRACT",
+                action: AUDIT_ACTIONS.CONTRACT.CONTRACT_AUTO_RENEWED,
+                description: `Contract ${c.id} auto-renewed to ${successor.id} (${oldTo.toISOString()} → ${newTo.toISOString()})`,
+                details: {
+                  contractId: c.id,
+                  successorContractId: successor.id,
+                  effectiveFrom: oldTo.toISOString(),
+                  effectiveTo: newTo.toISOString(),
+                },
+              },
+            });
+            return { renewed: true as const, successorId: successor.id };
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
         ),
       );
 
@@ -186,7 +187,9 @@ export async function runAutoRenewContracts(): Promise<RenewStats> {
         stats.skipped += 1;
         continue;
       }
-      Sentry.captureException(err, { tags: { subsystem: "jobs", job: "auto-renew-contracts" } });
+      Sentry.captureException(err, {
+        tags: { subsystem: "jobs", job: "auto-renew-contracts" },
+      });
       console.error(`[auto-renew-contracts] Failed for contract ${c.id}:`, err);
       stats.skipped += 1;
     }
@@ -196,20 +199,29 @@ export async function runAutoRenewContracts(): Promise<RenewStats> {
 }
 
 async function main() {
+  await abortIfMaintenance("auto-renew-contracts");
   Sentry.logger.info("job:auto-renew-contracts started");
   console.log(`[auto-renew-contracts] Starting at ${new Date().toISOString()}`);
+  // fail-closed since #1169 lists it as financial: renewal mints the next
+  // contract period the checkout sponsorship resolver reads.
   const stats = await withCronLock(
     "auto-renew-contracts",
-    { failMode: "open" },
+    { failMode: "closed" },
     () => runAutoRenewContracts(),
   );
   console.log(
     `[auto-renew-contracts] Done. scanned=${stats.scanned} renewed=${stats.renewed} skipped=${stats.skipped}`,
   );
-  Sentry.logger.info("job:auto-renew-contracts finished", { scanned: stats.scanned, renewed: stats.renewed, skipped: stats.skipped });
+  Sentry.logger.info("job:auto-renew-contracts finished", {
+    scanned: stats.scanned,
+    renewed: stats.renewed,
+    skipped: stats.skipped,
+  });
 }
 
 // Self-execute only when invoked directly (importable for unit tests).
 if (require.main === module) {
-  runJob("auto-renew-contracts", () => main().finally(() => prisma.$disconnect()));
+  runJob("auto-renew-contracts", () =>
+    main().finally(() => prisma.$disconnect()),
+  );
 }

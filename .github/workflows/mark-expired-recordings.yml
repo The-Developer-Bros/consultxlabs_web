@@ -6,6 +6,10 @@ on:
     - cron: "20 3 * * *"
   workflow_dispatch: # Allow manual triggering
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   mark-expired-recordings:
     runs-on: ubuntu-latest

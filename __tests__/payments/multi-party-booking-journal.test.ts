@@ -38,6 +38,9 @@ jest.mock("../../lib/collaborators/service", () => ({
 
 jest.mock("../../lib/api/organizations/rate-card", () => ({
   resolveEffectiveRateCard: jest.fn(),
+  // #1335 — settlement destructures this from the same module; a partial mock
+  // leaves it undefined and every split throws before it resolves a card.
+  isScopedRateCardResolutionEnabled: () => false,
 }));
 
 type CapturedLedgerCreate = {
@@ -78,10 +81,12 @@ jest.mock("../../lib/prisma", () => {
       findUnique: jest.fn().mockResolvedValue(null),
       create: jest
         .fn()
-        .mockImplementation(async ({ data }: { data: CapturedLedgerCreate }) => {
-          capturedLedgerTxns.push(data);
-          return { id: "ltxn-" + capturedLedgerTxns.length };
-        }),
+        .mockImplementation(
+          async ({ data }: { data: CapturedLedgerCreate }) => {
+            capturedLedgerTxns.push(data);
+            return { id: "ltxn-" + capturedLedgerTxns.length };
+          },
+        ),
     },
     ledgerAccount: {
       upsert: jest
@@ -92,6 +97,8 @@ jest.mock("../../lib/prisma", () => {
     },
     ledgerAccountBalance: { upsert: jest.fn().mockResolvedValue({}) },
     paymentLeg: { findMany: jest.fn().mockResolvedValue([]) },
+    // #1458 — only read when an OVERAGE_INVOICE_ACCRUAL leg funded the payment.
+    overageEvent: { findFirst: jest.fn().mockResolvedValue(null) },
     consultantEarnings: {
       findFirst: jest.fn().mockResolvedValue(null),
       create: jest
@@ -153,6 +160,8 @@ const mockedTx = (
       membership: { findFirst: jest.Mock };
       consultantEarnings: { findFirst: jest.Mock; create: jest.Mock };
       ledgerTransaction: { findUnique: jest.Mock; create: jest.Mock };
+      paymentLeg: { findMany: jest.Mock };
+      overageEvent: { findFirst: jest.Mock };
     };
   }
 ).__mockTx;
@@ -242,6 +251,8 @@ beforeEach(() => {
   capturedOrgEarnings = [];
   mockedTx.consultantEarnings.findFirst.mockResolvedValue(null);
   mockedTx.ledgerTransaction.findUnique.mockResolvedValue(null);
+  mockedTx.paymentLeg.findMany.mockResolvedValue([]);
+  mockedTx.overageEvent.findFirst.mockResolvedValue(null);
   setStandardRateCard();
 });
 
@@ -261,8 +272,16 @@ describe("#773 multi-party booking journal", () => {
     // fee 2_549, net 21_674, org absorbs the remainder 1_276.
     mockedCalculateSplit.mockResolvedValue([
       { consultantProfileId: PRIMARY_PROFILE, share: 42_501, role: "OWNER" },
-      { consultantProfileId: COLLAB_HOST_PROFILE, share: 25_499, role: "CO_HOST" },
-      { consultantProfileId: COLLAB_INDEP_PROFILE, share: 17_000, role: "CO_HOST" },
+      {
+        consultantProfileId: COLLAB_HOST_PROFILE,
+        share: 25_499,
+        role: "CO_HOST",
+      },
+      {
+        consultantProfileId: COLLAB_INDEP_PROFILE,
+        share: 17_000,
+        role: "CO_HOST",
+      },
     ]);
 
     await createEarningsFromPayment({
@@ -300,11 +319,19 @@ describe("#773 multi-party booking journal", () => {
     ).toBe(42_501);
     // Hosted collaborator: NET of ORG_ANOTHER's cut.
     expect(
-      legAmount(txn, "CREDIT", `CONSULTANT_PAYABLE|_|${COLLAB_HOST_PROFILE}|INR`),
+      legAmount(
+        txn,
+        "CREDIT",
+        `CONSULTANT_PAYABLE|_|${COLLAB_HOST_PROFILE}|INR`,
+      ),
     ).toBe(21_674);
     // Independent collaborator: full share.
     expect(
-      legAmount(txn, "CREDIT", `CONSULTANT_PAYABLE|_|${COLLAB_INDEP_PROFILE}|INR`),
+      legAmount(
+        txn,
+        "CREDIT",
+        `CONSULTANT_PAYABLE|_|${COLLAB_INDEP_PROFILE}|INR`,
+      ),
     ).toBe(17_000);
     expect(legAmount(txn, "CREDIT", `ORG_PAYABLE|${ORG_LEARNPRO}|_|INR`)).toBe(
       5_000,
@@ -352,7 +379,11 @@ describe("#773 multi-party booking journal", () => {
     // shave the pool); pool = 80_000, split 60_000 owner + 20_000 collab.
     mockedCalculateSplit.mockResolvedValue([
       { consultantProfileId: PRIMARY_PROFILE, share: 60_000, role: "OWNER" },
-      { consultantProfileId: COLLAB_INDEP_PROFILE, share: 20_000, role: "CO_HOST" },
+      {
+        consultantProfileId: COLLAB_INDEP_PROFILE,
+        share: 20_000,
+        role: "CO_HOST",
+      },
     ]);
 
     await createEarningsFromPayment({
@@ -371,7 +402,11 @@ describe("#773 multi-party booking journal", () => {
       legAmount(txn, "CREDIT", `CONSULTANT_PAYABLE|_|${PRIMARY_PROFILE}|INR`),
     ).toBe(60_000);
     expect(
-      legAmount(txn, "CREDIT", `CONSULTANT_PAYABLE|_|${COLLAB_INDEP_PROFILE}|INR`),
+      legAmount(
+        txn,
+        "CREDIT",
+        `CONSULTANT_PAYABLE|_|${COLLAB_INDEP_PROFILE}|INR`,
+      ),
     ).toBe(20_000);
     const legs = legsOf(txn);
     const debit = legs
@@ -391,7 +426,11 @@ describe("#773 multi-party booking journal", () => {
     });
     mockedCalculateSplit.mockResolvedValue([
       { consultantProfileId: PRIMARY_PROFILE, share: 59_501, role: "OWNER" },
-      { consultantProfileId: COLLAB_HOST_PROFILE, share: 25_499, role: "CO_HOST" },
+      {
+        consultantProfileId: COLLAB_HOST_PROFILE,
+        share: 25_499,
+        role: "CO_HOST",
+      },
     ]);
     // Crash-recovery shape: the journal txn survived but the earnings tx is
     // being replayed — postLedgerTxn's fast-path must dedupe on the key.
@@ -424,5 +463,94 @@ describe("#773 multi-party booking journal", () => {
     expect(result).toBe("earn-existing");
     expect(mockedTx.consultantEarnings.create).not.toHaveBeenCalled();
     expect(mockedTx.ledgerTransaction.create).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #1458 / Sentry FAMILIARISE_WEB-28 — the BOOKING posting's credits are all
+ * derived from `payment.originalAmount` (+ tax), while its debits are the
+ * funding legs plus a DISCOUNT plug clamped at >= 0. The posting therefore
+ * balances only while Σ(funding legs) <= originalAmount + tax; anything that
+ * pushes a funding leg above the nominal price throws LedgerImbalanceError and
+ * the booking commits with no journal entry at all.
+ */
+describe("#1458 org-overage rails keep the booking journal balanced", () => {
+  it("WALLET + CHARGE_ORG: the wallet leg alone funds the price and the posting balances", async () => {
+    // The exact #1458 payment: a 258,326-paise wallet debit on a 218,920 +
+    // 39,406 booking. Before the fix an OVERAGE_INVOICE_ACCRUAL leg of 248,326
+    // was added and Payment.amount became 506,652, so debits overshot the
+    // credits by the marginal and the journal was dropped.
+    setMembershipMap({ [PRIMARY_PROFILE]: null });
+    mockedCalculateSplit.mockResolvedValue([]);
+    mockedTx.paymentLeg.findMany.mockResolvedValue([
+      { source: "WALLET", amountPaise: 258_326 },
+    ]);
+
+    await createEarningsFromPayment({
+      payment: makePayment({
+        amount: 258_326,
+        originalAmount: 218_920,
+        taxAmount: 39_406,
+      }),
+      appointmentType: "CONSULTATION",
+    });
+
+    const txn = capturedLedgerTxns[0];
+    const legs = legsOf(txn);
+    const debit = legs
+      .filter((l) => l.direction === "DEBIT")
+      .reduce((s, l) => s + l.paise, 0);
+    const credit = legs
+      .filter((l) => l.direction === "CREDIT")
+      .reduce((s, l) => s + l.paise, 0);
+    expect(debit).toBe(258_326);
+    expect(credit).toBe(258_326);
+    // No leg was added and no amount bumped, so the wallet debit is the whole
+    // funding side and the platform absorbs nothing as DISCOUNT.
+    expect(legAmount(txn, "DEBIT", "WALLET|_|_|INR")).toBe(258_326);
+    expect(legAmount(txn, "DEBIT", "DISCOUNT|_|_|INR")).toBe(0);
+    expect(mockedTx.overageEvent.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("INVOICE + CHARGE_ORG with a surcharge: the surcharge is credited to PLATFORM_FEE", async () => {
+    // #785's carve leaves INVOICE_ACCRUAL at 0 and OVERAGE_INVOICE_ACCRUAL at
+    // base + surcharge, and bumps Payment.amount by the surcharge — which is
+    // real funding that sits OUTSIDE originalAmount. The surcharge is platform
+    // revenue for exceeding the cap, so it credits PLATFORM_FEE.
+    setMembershipMap({ [PRIMARY_PROFILE]: null });
+    mockedCalculateSplit.mockResolvedValue([]);
+    mockedTx.paymentLeg.findMany.mockResolvedValue([
+      { source: "INVOICE_ACCRUAL", amountPaise: 0 },
+      { source: "OVERAGE_INVOICE_ACCRUAL", amountPaise: 125_000 },
+    ]);
+    mockedTx.overageEvent.findFirst.mockResolvedValue({
+      surchargePaise: BigInt(25_000),
+    });
+
+    await createEarningsFromPayment({
+      payment: makePayment({
+        amount: 125_000,
+        originalAmount: 100_000,
+        taxAmount: 0,
+      }),
+      appointmentType: "CONSULTATION",
+    });
+
+    const txn = capturedLedgerTxns[0];
+    const legs = legsOf(txn);
+    const debit = legs
+      .filter((l) => l.direction === "DEBIT")
+      .reduce((s, l) => s + l.paise, 0);
+    const credit = legs
+      .filter((l) => l.direction === "CREDIT")
+      .reduce((s, l) => s + l.paise, 0);
+    expect(debit).toBe(125_000);
+    expect(credit).toBe(125_000);
+    // 20% of the nominal 100_000 plus the whole 25_000 surcharge; the
+    // consultant pool stays on the nominal price alone.
+    expect(legAmount(txn, "CREDIT", "PLATFORM_FEE|_|_|INR")).toBe(45_000);
+    expect(
+      legAmount(txn, "CREDIT", `CONSULTANT_PAYABLE|_|${PRIMARY_PROFILE}|INR`),
+    ).toBe(80_000);
   });
 });

@@ -72,6 +72,7 @@ import "dotenv/config";
 import { writeFileSync, mkdirSync } from "node:fs";
 import type { CallSettingsResponse } from "@stream-io/node-sdk";
 import { getStreamVideoClient } from "@/lib/stream-client";
+import { canonical } from "@/lib/stream/config-fingerprint";
 // The same constant the app itself resolves calls against, not an env var —
 // `ensure-call-type-grants.ts` imports it from here too. Reading a separate
 // env var would let the grants script and this one harden DIFFERENT call
@@ -96,25 +97,6 @@ interface Options {
 
 function parseArgs(argv: string[]): Options {
   return { apply: argv.includes("--apply") };
-}
-
-/**
- * Stable stringify so two independent reads of an unchanged document compare
- * equal. Key insertion order differs between responses, and a false positive
- * here is expensive — this is the check that says whether a config wipe just
- * happened. Code-unit ordering, never `localeCompare`.
- */
-function byCodeUnit([a]: [string, unknown], [b]: [string, unknown]): number {
-  if (a < b) return -1;
-  return a > b ? 1 : 0;
-}
-
-function canonical(value: unknown): string {
-  return JSON.stringify(value, (_key, val) => {
-    if (!val || typeof val !== "object" || Array.isArray(val)) return val;
-    const entries = Object.entries(val as Record<string, unknown>);
-    return Object.fromEntries(entries.toSorted(byCodeUnit));
-  });
 }
 
 function describe(settings: CallSettingsResponse): string[] {

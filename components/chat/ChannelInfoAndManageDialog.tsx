@@ -42,10 +42,12 @@ import {
 import { useState } from "react";
 import { Channel } from "stream-chat";
 import { useChatContext } from "stream-chat-react";
-import { getChannelDisplayInfo } from "./utils/channelUtils";
+import { getChannelDisplayInfo, viewerOwnsChannel } from "./utils/channelUtils";
 import { AddMembersDialog } from "./AddMembersDialog";
 import { isEventChannel } from "@/lib/stream-channel-ids";
 import { addMemberToChannel } from "@/actions/stream/chat/member.action";
+import { useSession } from "@/lib/auth-client";
+import { useServerSessionFacts } from "@/components/dashboard/ServerUserId";
 
 interface ChannelMember {
   id: string;
@@ -90,6 +92,12 @@ export const ChannelInfoAndManageDialog = ({
 
   const displayName = displayInfo.displayName;
 
+  // The APP role, never `client.user.role` — same source and same reason as
+  // ChatSidebar, which carries the warning comment about this trap.
+  const { data: session } = useSession();
+  const serverFacts = useServerSessionFacts();
+  const appRole = session?.user?.role ?? serverFacts.role;
+
   // Check if current user is the event owner consultant.
   //
   // The `client.user.role === "CONSULTANT"` conjunct that used to be here could
@@ -107,9 +115,9 @@ export const ChannelInfoAndManageDialog = ({
   // Queried channels expose the creator as `created_by` (object);
   // `created_by_id` survives only on channels created in THIS session. Read
   // both, prefer the reliable one.
-  const creatorId =
-    channel.data?.created_by?.id ?? channel.data?.created_by_id;
-  const isEventOwner = isEvent && creatorId === client?.userID;
+  const creatorId = channel.data?.created_by?.id ?? channel.data?.created_by_id;
+
+  const isEventOwner = isEvent && viewerOwnsChannel(creatorId, client?.userID);
 
   // Get the other user's ID for 1-on-1 DMs (for block/report)
   const otherUserId =
@@ -288,14 +296,31 @@ export const ChannelInfoAndManageDialog = ({
   const canTruncateChannel = (() => {
     // In 1-on-1 DMs, both users can clear their view
     if (isDirectMessage && !displayInfo.isGroupDM) return true;
-    // In group DMs and channels, only creator or privileged roles
-    const isCreator = creatorId === client?.userID;
-    const userRole = client?.user?.role;
-    const isPrivileged =
-      userRole === "CONSULTANT" ||
-      userRole === "ADMIN" ||
-      userRole === "STAFF";
-    return isCreator || isPrivileged;
+    // In group DMs and channels, only the creator or a platform operator.
+    //
+    // #1280 — the SECOND instance of the dead-role bug in this file, missed
+    // when `isEventOwner` was fixed a few lines above. `client.user.role` is the
+    // STREAM role, and `mapRoleToStream` (lib/user.ts:82) collapses every
+    // non-staff account to `"user"`, so `userRole === "CONSULTANT"` was false by
+    // construction and `isPrivileged` was permanently false. #1144 asked for a
+    // grep of this pattern; this is what it found.
+    //
+    // CONSULTANT is deliberately NOT in the privileged set, and that is the
+    // correction to the first pass at this fix. `handleClearChat` calls
+    // `channel.truncate()` from the CLIENT, so Stream's permission system
+    // decides, not ours:
+    //
+    //   ADMIN / STAFF   → mapRoleToStream gives them Stream `admin`   → allowed
+    //   creator         → channel-scoped `channel_moderator` at create → allowed
+    //   other consultant→ plain Stream `user`, no moderator grant      → REFUSED
+    //
+    // Granting the app role alone would have shown the button to every
+    // consultant and handed the non-owners a Stream authorization failure —
+    // trading a dead button for one that visibly errors, which is worse. A
+    // consultant qualifies here only by owning the channel.
+    const isCreator = viewerOwnsChannel(creatorId, client?.userID);
+    const isOperator = appRole === "ADMIN" || appRole === "STAFF";
+    return isCreator || isOperator;
   })();
 
   // Report the other user in a 1-on-1 DM (flags in Stream + persists to DB)
@@ -314,8 +339,7 @@ export const ChannelInfoAndManageDialog = ({
         body: JSON.stringify({
           type: "PROFILE",
           reason: "User reported via chat",
-          description:
-            "User was reported from a direct message conversation",
+          description: "User was reported from a direct message conversation",
           targetUserId: otherUserId,
         }),
       });
@@ -750,7 +774,10 @@ export const ChannelInfoAndManageDialog = ({
       </ResponsiveModal>
 
       {/* Clear Chat Confirmation Dialog */}
-      <ResponsiveModal open={showClearConfirm} onOpenChange={setShowClearConfirm}>
+      <ResponsiveModal
+        open={showClearConfirm}
+        onOpenChange={setShowClearConfirm}
+      >
         <ResponsiveModalContent className="sm:max-w-[400px]">
           <ResponsiveModalHeader>
             <ResponsiveModalTitle>Clear chat history?</ResponsiveModalTitle>

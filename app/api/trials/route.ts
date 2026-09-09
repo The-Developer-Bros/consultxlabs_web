@@ -7,7 +7,8 @@ import { notifyTrialSessionRequested } from "@/lib/novu";
 import { CreateTrialSchema } from "@/schemas/trials";
 import { getSession } from "@/lib/auth-server";
 import { trialRequestLimiter, applyRateLimit } from "@/lib/rate-limit";
-import { resolveOrgScope } from "@/lib/api/scope/parse";
+import { resolveOrgScope, scopeToWhereOrgId } from "@/lib/api/scope/parse";
+import { isUniqueViolation } from "@/lib/db/pg-errors";
 import { consultantPublicScalars } from "@/lib/data/consultant-public";
 
 /**
@@ -44,7 +45,10 @@ export async function GET(request: NextRequest) {
     // whichever profiles the caller holds (built below as an OR).
     let applyOwnershipOr = false;
     if (!isPrivileged) {
-      if (!session.user.consultantProfileId && !session.user.consulteeProfileId) {
+      if (
+        !session.user.consultantProfileId &&
+        !session.user.consulteeProfileId
+      ) {
         return NextResponse.json(
           {
             error:
@@ -94,12 +98,14 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const whereClause: Prisma.TrialSessionWhereInput =
-      scopeResolution.scope.kind === "personal"
-        ? { organizationId: null }
-        : scopeResolution.scope.kind === "org"
-          ? { organizationId: scopeResolution.scope.orgId }
-          : {};
+    // #674 B2B gap 9 — `orgMember` pins an org too: it is what an active
+    // member below `operations.read` resolves to. Testing `kind === "org"`
+    // alone dropped them into the unfiltered arm, so asking for one org's
+    // trials returned every org's plus the personal ones. scopeToWhereOrgId is
+    // the single place that knows which kinds pin.
+    const whereClause: Prisma.TrialSessionWhereInput = scopeToWhereOrgId(
+      scopeResolution.scope,
+    );
 
     if (applyOwnershipOr) {
       // #org-appts — dual-identity union; AND-nested so it composes with the
@@ -287,11 +293,20 @@ export async function POST(request: NextRequest) {
     if (existingTrial) {
       if (blocksNewTrialRequest(existingTrial.status)) {
         return NextResponse.json(
-          { error: "You have already requested a trial with this consultant" },
+          {
+            error: "You have already requested a trial with this consultant",
+            code: "TRIAL_ALREADY_REQUESTED",
+          },
           { status: 409 },
         );
       }
-      await prisma.trialSession.delete({ where: { id: existingTrial.id } });
+      // deleteMany, not delete: two requests can both read the same freed row
+      // and both try to clear it, and the loser of that race gets P2025 — which
+      // escapes to the generic catch as a 500, before the create-side unique
+      // violation below can turn it into the calm 409 this pair already has an
+      // answer for. A count of 0 means somebody else freed it; either way the
+      // slot is clear and the insert decides who gets it.
+      await prisma.trialSession.deleteMany({ where: { id: existingTrial.id } });
     }
 
     // Verify the subscription plan exists and has trials enabled
@@ -381,45 +396,64 @@ export async function POST(request: NextRequest) {
       resolvedOrgId = organizationId;
     }
 
-    // Create the trial session
-    const trialSession = await prisma.trialSession.create({
-      data: {
-        consulteeProfileId,
-        consultantProfileId,
-        subscriptionPlanId,
-        notes,
-        status: TrialSessionStatus.PENDING,
-        organizationId: resolvedOrgId,
-      },
-      include: {
-        consulteeProfile: {
-          include: {
-            user: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                image: true,
+    // Create the trial session. The pair is @@unique, and the free-the-slot
+    // delete above is a separate statement, so two concurrent requests for the
+    // same pair both pass the eligibility read and race into the insert — the
+    // loser used to surface as a 500. It is the same "already requested"
+    // answer the sequential path gives, so say so.
+    const trialSession = await prisma.trialSession
+      .create({
+        data: {
+          consulteeProfileId,
+          consultantProfileId,
+          subscriptionPlanId,
+          notes,
+          status: TrialSessionStatus.PENDING,
+          organizationId: resolvedOrgId,
+        },
+        include: {
+          consulteeProfile: {
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                  image: true,
+                },
               },
             },
           },
-        },
-        consultantProfile: {
-          select: {
-            ...consultantPublicScalars,
-            user: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                image: true,
+          consultantProfile: {
+            select: {
+              ...consultantPublicScalars,
+              user: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
+                  image: true,
+                },
               },
             },
           },
+          subscriptionPlan: true,
         },
-        subscriptionPlan: true,
-      },
-    });
+      })
+      .catch((error: unknown) => {
+        if (isUniqueViolation(error)) return null;
+        throw error;
+      });
+
+    if (!trialSession) {
+      return NextResponse.json(
+        {
+          error: "You have already requested a trial with this consultant",
+          code: "TRIAL_ALREADY_REQUESTED",
+        },
+        { status: 409 },
+      );
+    }
 
     // Log the activity
     await logTrialRequested(

@@ -39,9 +39,12 @@ export default [
     },
   },
 
-  // Base config for all JavaScript/TypeScript files
+  // Base config for all JavaScript/TypeScript files. `mts`/`cts` included so
+  // netlify/functions/*.mts (#1356 — the scheduled ticker) is linted rather
+  // than silently skipped; it was previously the only extension this repo
+  // ships that fell through every `files` glob below.
   {
-    files: ["**/*.{js,mjs,cjs,ts,jsx,tsx}"],
+    files: ["**/*.{js,mjs,cjs,ts,mts,cts,jsx,tsx}"],
     languageOptions: {
       globals: {
         ...globals.browser,
@@ -130,6 +133,22 @@ export default [
     files: ["prisma/seedFiles/**/*.ts"],
     rules: {
       "no-control-regex": "off",
+    },
+  },
+
+  // k6 load scripts. These never run under Node or in a browser — the k6
+  // runtime injects `__ENV`, `__VU` and `__ITER` as globals and resolves the
+  // `k6/*` module specifiers itself. Without this block every script reports
+  // `no-undef` on those three names, which is how `load-tests/smoke.js` came
+  // to carry four standing ESLint errors.
+  {
+    files: ["load-tests/**/*.js"],
+    languageOptions: {
+      globals: {
+        __ENV: "readonly",
+        __VU: "readonly",
+        __ITER: "readonly",
+      },
     },
   },
 

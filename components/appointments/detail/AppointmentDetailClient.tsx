@@ -26,6 +26,7 @@ import type { AppointmentActionAdapter } from "@/lib/appointments/adapter";
 import { mapAppointmentDetail } from "@/lib/appointments/map-detail";
 import { eventUnionStatusBadge } from "@/lib/appointments/status";
 import type { AppointmentVM } from "@/lib/appointments/view-model";
+import { trialCheckoutHref } from "@/lib/appointments/trial-checkout-href";
 import type { TAppointmentDetail } from "@/lib/data/appointment-detail";
 import {
   paymentStatusBadge,
@@ -34,6 +35,7 @@ import {
   type PaymentDisplayStatus,
 } from "@/lib/labels/session-labels";
 import { useSession } from "@/lib/auth-client";
+import { useHoldCountdown } from "@/hooks/useHoldCountdown";
 import { formatCurrencyAmount } from "@/utils/formatting";
 import { CountdownBadge } from "../CountdownBadge";
 import { KIND_LABEL } from "../AppointmentRow";
@@ -47,6 +49,35 @@ import { SessionRatingRow } from "@/components/reviews/SessionRatingRow";
 import { useSessionFeedback } from "@/hooks/useSessionFeedback";
 
 const PARTICIPANTS_PREVIEW = 5;
+
+/**
+ * #1428 — the single answer to "what may the payer do about this tentative
+ * hold right now", so the timeline row and the payment card cannot drift.
+ *
+ * Past `Payment.expiresAt` the hold is already DEAD for availability
+ * (`buildDeadHoldFilter`, utils/slotAllocation/occupancyPolicy.ts counts a
+ * PENDING payment with a lapsed window as free), so another buyer can take
+ * the slot before any sweep runs. Checkout also refuses to resume a stale
+ * order (`findReusablePendingOrderPayment` matches only `expiresAt > now`)
+ * and mints a fresh one instead. Paying the old link would therefore capture
+ * onto a released slot and land in the #1439 terminal-race refund — so the
+ * lapsed state offers a new checkout, not the dead "Pay now".
+ */
+type TentativeHoldCta = "PAY" | "REBOOK" | "NONE";
+
+function tentativeHoldCta(args: {
+  isConsultee: boolean;
+  holdDeadline: Date | null;
+  holdExpired: boolean;
+  pendingPaymentUrl: string | null;
+}): TentativeHoldCta {
+  // The consultant sees held slots read-only; only the payer gets an action.
+  if (!args.isConsultee) return "NONE";
+  // No deadline at all is not a lapse — useHoldCountdown reports a null
+  // deadline as expired, which would otherwise mis-read as "released".
+  if (args.holdDeadline !== null && args.holdExpired) return "REBOOK";
+  return args.pendingPaymentUrl ? "PAY" : "NONE";
+}
 
 function initials(name: string): string {
   return name
@@ -144,6 +175,24 @@ export function AppointmentDetailClient({
   const sessionFeedback = useSessionFeedback(feedbackScopes);
   useSetBreadcrumbLabel(mapped?.vm.title);
 
+  const payments = detail?.appointment.payment ?? [];
+  // #1428 — the tentative-hold deadline: the soonest still-pending payment
+  // guarding a held slot on this booking. Derived ABOVE the loading/error
+  // returns because useHoldCountdown below it is a hook and may not sit
+  // behind a conditional return.
+  const holdDeadline =
+    payments
+      .filter((p) => p.paymentStatus === "PENDING" && p.expiresAt)
+      .map((p) => new Date(p.expiresAt!))
+      .sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
+  const { isExpired: holdExpired } = useHoldCountdown(holdDeadline);
+  const tentativeCta = tentativeHoldCta({
+    isConsultee: role === "consultee",
+    holdDeadline,
+    holdExpired,
+    pendingPaymentUrl: mapped?.vm.pendingPaymentUrl ?? null,
+  });
+
   if (isLoading && !detail) {
     return (
       <div className="space-y-4">
@@ -179,7 +228,6 @@ export function AppointmentDetailClient({
     .overflowItems(vm)
     .filter((item) => item.key !== "reschedule-proposal");
   const badge = eventUnionStatusBadge(vm.status);
-  const payments = detail.appointment.payment ?? [];
   const orgName =
     detail.appointment.organization?.name ??
     resolveSponsoringOrgName(
@@ -203,6 +251,21 @@ export function AppointmentDetailClient({
     ? vm.sessions.find((s) => s.startsAt.getTime() === vm.nextAt?.getTime())
     : undefined;
   const hasConfirmedSessions = vm.sessions.some((s) => !s.isTentative);
+  const hasTentativeSessions = vm.sessions.some((s) => s.isTentative);
+  // #1429 F2 — a trial's Pay Now lands on our branded trial checkout, which
+  // names the amount and the hold deadline; only a non-trial booking falls
+  // through to the raw gateway link. #1428 added a second Pay Now here without
+  // the branch, so both entry points now ask the one shared helper.
+  const trialHref = trialCheckoutHref(vm);
+  const openPendingPayment = () => {
+    if (trialHref) {
+      window.location.href = trialHref;
+      return;
+    }
+    if (vm.pendingPaymentUrl && /^https?:\/\//.test(vm.pendingPaymentUrl)) {
+      window.open(vm.pendingPaymentUrl, "_blank", "noopener,noreferrer");
+    }
+  };
   // #1163 — the read narrows to open statuses and takes one, so [0] is THE
   // live proposal; the card is the answer surface "Awaiting schedule
   // confirmation" never offered.
@@ -358,7 +421,7 @@ export function AppointmentDetailClient({
               <SessionReviewCard appointmentId={appointmentId} />
             )}
             <Section title="Sessions">
-              {hasConfirmedSessions ? (
+              {hasConfirmedSessions || hasTentativeSessions ? (
                 <SessionTimeline
                   // #705 — the private per-call rating sits on the session it
                   // rates. Attendees only: the API authorizes any participant,
@@ -397,12 +460,18 @@ export function AppointmentDetailClient({
                       ? () => action.onClick!()
                       : undefined
                   }
+                  showHeld
+                  holdDeadline={holdDeadline}
+                  // #1428 — consultee sees the CTA while the window is live;
+                  // the consultant, and anyone once the hold has lapsed, sees
+                  // the same held row read-only ("awaiting payment").
+                  onCompletePayment={
+                    tentativeCta === "PAY" ? openPendingPayment : undefined
+                  }
                 />
               ) : (
                 <p className="text-xs text-muted-foreground">
-                  {vm.sessions.length > 0
-                    ? "Awaiting schedule confirmation."
-                    : "No sessions scheduled yet."}
+                  No sessions scheduled yet.
                 </p>
               )}
             </Section>
@@ -444,24 +513,52 @@ export function AppointmentDetailClient({
                       This booking is sponsored by <strong>{orgName}</strong>.
                     </p>
                   )}
-                  {vm.needsActionReason === "PAY_NOW" &&
-                    vm.pendingPaymentUrl && (
-                      <Button
-                        size="sm"
-                        className="w-full bg-amber-500 hover:bg-amber-600 text-white dark:bg-amber-600 dark:hover:bg-amber-500"
-                        onClick={() => {
-                          if (/^https?:\/\//.test(vm.pendingPaymentUrl!)) {
-                            window.open(
-                              vm.pendingPaymentUrl!,
-                              "_blank",
-                              "noopener,noreferrer",
-                            );
-                          }
-                        }}
-                      >
-                        <CreditCard className="h-4 w-4 mr-2" />
-                        Pay Now to Confirm
-                      </Button>
+                  {/* #1428 — TENTATIVE (held pending payment) reaches this
+                      branch too now, gated by the same `tentativeHoldCta`
+                      the timeline row uses; PAY_NOW's existing (role-agnostic)
+                      behaviour is unchanged. */}
+                  {((vm.needsActionReason === "PAY_NOW" &&
+                    vm.pendingPaymentUrl) ||
+                    (vm.needsActionReason === "TENTATIVE" &&
+                      tentativeCta === "PAY")) && (
+                    <Button
+                      size="sm"
+                      className="w-full bg-amber-500 hover:bg-amber-600 text-white dark:bg-amber-600 dark:hover:bg-amber-500"
+                      onClick={openPendingPayment}
+                    >
+                      <CreditCard className="h-4 w-4 mr-2" />
+                      Pay Now to Confirm
+                    </Button>
+                  )}
+                  {vm.needsActionReason === "TENTATIVE" &&
+                    tentativeCta === "REBOOK" && (
+                      <div className="space-y-2 rounded-lg border border-border bg-muted px-3 py-2">
+                        <p className="text-xs text-muted-foreground">
+                          The payment window for this hold closed, so the slot
+                          is released unless you book it again.
+                        </p>
+                        {/* Back to the consultant's profile rather than a
+                            deep link to the old slot: that time may already
+                            be taken, and the picker is where a live one is
+                            chosen. */}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="w-full"
+                          asChild
+                        >
+                          <Link
+                            href={
+                              vm.consultantProfileId
+                                ? `/explore/experts/${vm.consultantProfileId}`
+                                : "/explore/experts"
+                            }
+                          >
+                            <CreditCard className="h-4 w-4 mr-2" />
+                            Start a new checkout
+                          </Link>
+                        </Button>
+                      </div>
                     )}
                 </div>
               )}

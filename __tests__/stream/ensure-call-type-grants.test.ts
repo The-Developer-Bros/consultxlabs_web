@@ -73,6 +73,29 @@ const LIVE_GRANTS = (): Record<string, string[]> => ({
   ],
 });
 
+/**
+ * What the grants map should look like after a successful apply.
+ *
+ * The two settings-drift cases below need a verify-read that represents a write
+ * that WORKED, so that they isolate the branch they are actually about. Feeding
+ * them `LIVE_GRANTS()` would trip the post-write grants assertions first and
+ * make them pass — or fail — for the wrong reason.
+ */
+const EXPECTED_GRANTS_AFTER = (): Record<string, string[]> => ({
+  admin: [
+    "join-call",
+    "end-call",
+    "start-recording",
+    "stop-recording",
+    "mute-users",
+  ],
+  call_member: ["join-call", "send-audio"],
+  global_admin: ["read-call"],
+  global_read_only: ["read-call"],
+  guest: ["send-audio"],
+  user: ["send-audio"],
+});
+
 const LIVE_SETTINGS = { recording: { mode: "available", quality: "720p" } };
 const LIVE_NOTIFICATIONS = { enabled: true };
 
@@ -187,20 +210,40 @@ describe("ensure-call-type-grants", () => {
     }
   });
 
-  it("leaves end-call on call_member, because EndCallButton needs it", async () => {
+  it("revokes end-call from call_member, now that the end route exists", async () => {
     await ensureCallTypeGrants({
       apply: true,
       restore: false,
       deployConfirmed: true,
     });
 
-    // EndCallButton.tsx calls call.endCall() client-side and the Stream role no
-    // longer separates host from participant, so revoking this would take the
-    // host's End Call button down with it. Tracked separately; deliberately not
-    // half-fixed here.
-    expect(applied().call_member).toContain("end-call");
-    // Still revoked from user/guest as defence in depth.
+    // The join route assigns `call_member` to EVERY participant, and Stream's
+    // roles do not separate host from participant here — host-ness is
+    // `custom.consultantUserId`, which Stream knows nothing about. So this grant
+    // let any attendee end a paid consultation for both sides from devtools;
+    // `EndCallButton`'s `isHost` only decides what renders.
+    //
+    // It could not be revoked until the client stopped needing it. #1270 moved
+    // the button onto POST /api/meetings/[meetingId]/end, so it can now go.
+    expect(applied().call_member).not.toContain("end-call");
     expect(applied().user).not.toContain("end-call");
+    expect(applied().guest).not.toContain("end-call");
+
+    // The one thing that must survive: call_member is what admits anyone at all.
+    expect(applied().call_member).toContain("join-call");
+  });
+
+  it("leaves end-call on admin", async () => {
+    await ensureCallTypeGrants({
+      apply: true,
+      restore: false,
+      deployConfirmed: true,
+    });
+
+    // `admin` is not a role any participant is assigned by the join route, and
+    // the server client acts outside the permission system anyway. Stripping it
+    // would buy nothing and break operator tooling.
+    expect(applied().admin).toContain("end-call");
   });
 
   it("does not touch admin", async () => {
@@ -293,7 +336,7 @@ describe("ensure-call-type-grants", () => {
       .mockResolvedValueOnce(mockCallType(LIVE_GRANTS()))
       .mockResolvedValueOnce({
         name: "default",
-        grants: LIVE_GRANTS(),
+        grants: EXPECTED_GRANTS_AFTER(),
         settings: {},
         notification_settings: LIVE_NOTIFICATIONS,
       });
@@ -326,7 +369,7 @@ describe("ensure-call-type-grants", () => {
       .mockResolvedValueOnce(mockCallType(LIVE_GRANTS()))
       .mockResolvedValueOnce({
         name: "default",
-        grants: LIVE_GRANTS(),
+        grants: EXPECTED_GRANTS_AFTER(),
         // Same content, keys reversed.
         settings: { recording: { quality: "720p", mode: "available" } },
         notification_settings: LIVE_NOTIFICATIONS,
@@ -475,5 +518,81 @@ describe("ensure-call-type-grants", () => {
     expect(applied().user).toContain("join-call");
     expect(applied().user).not.toContain("start-recording");
     expect(applied().user).not.toContain("end-call");
+  });
+
+  it("restores end-call to call_member on a rollback, but only to call_member", async () => {
+    await ensureCallTypeGrants({
+      apply: true,
+      restore: false,
+      deployConfirmed: true,
+    });
+    mockUpdateCallType.mockClear();
+
+    const code = await ensureCallTypeGrants({
+      apply: true,
+      restore: true,
+      deployConfirmed: false,
+    });
+
+    expect(code).toBe(0);
+    // This rollback exists for exactly one situation: the end route is not
+    // actually serving traffic. In that situation a host has no way to close a
+    // room at all, so restoring join without end-call would fix the lockout and
+    // strand every host inside a call they cannot end.
+    expect(applied().call_member).toContain("end-call");
+    expect(applied().call_member).toContain("join-call");
+
+    // Ordinary roles get join-call back and nothing else. Their end-call
+    // revocation carried no availability risk, so undoing it would only re-open
+    // the hole.
+    expect(applied().user).not.toContain("end-call");
+    expect(applied().guest).not.toContain("end-call");
+    expect(applied().call_member).not.toContain("start-recording");
+  });
+
+  it("fails the ROLLBACK if Stream did not restore end-call to call_member", async () => {
+    // Both post-write grant checks are gated on `!opts.restore`, so before this
+    // the rollback path reached the settings comparison, found nothing moved,
+    // and returned 0 — reporting success without asking whether the restoration
+    // landed. That is the wrong way round: the rollback is the emergency path,
+    // reached when the revocation has already locked people out.
+    await ensureCallTypeGrants({
+      apply: true,
+      restore: false,
+      deployConfirmed: true,
+    });
+    mockGetCallType.mockClear();
+
+    // A stale second read: Stream reports the post-revocation grants, i.e. the
+    // restore did not take.
+    mockGetCallType
+      .mockResolvedValueOnce(mockCallType(EXPECTED_GRANTS_AFTER()))
+      .mockResolvedValueOnce(mockCallType(EXPECTED_GRANTS_AFTER()));
+
+    const code = await ensureCallTypeGrants({
+      apply: true,
+      restore: true,
+      deployConfirmed: false,
+    });
+
+    expect(code).toBe(1);
+  });
+
+  it("fails the run if Stream reads back end-call still on call_member", async () => {
+    // The mirror of the join-call assertion. A silently-ignored revocation would
+    // leave every attendee able to end a paid consultation while this script
+    // printed a green tick — asserting the ABSENCE against returned data is the
+    // only thing that catches it.
+    mockGetCallType
+      .mockResolvedValueOnce(mockCallType(LIVE_GRANTS()))
+      .mockResolvedValueOnce(mockCallType(LIVE_GRANTS()));
+
+    const code = await ensureCallTypeGrants({
+      apply: true,
+      restore: false,
+      deployConfirmed: true,
+    });
+
+    expect(code).toBe(1);
   });
 });

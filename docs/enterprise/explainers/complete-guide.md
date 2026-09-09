@@ -1299,7 +1299,7 @@ The chain is queryable end-to-end: you can ask "where did this ₹999 come from?
 | `EARNINGS_LEDGER_DRIFT` | `OrganizationEarnings` projection == CONSULTANT/ORG payable legs |
 | `PROGRAM_ASSIGNMENT_ENGAGEMENTS_DRIFT` | Per-assignment engagement counts |
 | `ACTIVE_SEAT_COUNT_DRIFT` | `seatsUsed` == active assignments |
-| `PAYMENT_LEG_SUM_MISMATCH` | PaymentLegs sum to `Payment.amount` |
+| `PAYMENT_LEG_SUM_MISMATCH` | PaymentLegs sum to `Payment.amount`, excluding referral credits (#1347) |
 | `ORG_PAYOUT_TOTAL_MISMATCH` | Org payout legs sum to claimed earnings |
 
 The #772 cutover validated `ok: true` with **0 findings** on a full reseed.

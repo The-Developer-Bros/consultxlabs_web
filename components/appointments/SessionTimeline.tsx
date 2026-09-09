@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { format } from "date-fns";
-import { Video, Loader2, ChevronDown } from "lucide-react";
+import { Video, Loader2, ChevronDown, CreditCard } from "lucide-react";
 import { cn } from "@/utils/tailwind";
 import {
   CONSULTEE_JOIN_WINDOW_MS,
@@ -12,6 +12,7 @@ import {
 } from "@/lib/appointments/slots";
 import type { SessionVM } from "@/lib/appointments/view-model";
 import { CountdownBadge } from "./CountdownBadge";
+import { HeldSlotBadge } from "./HeldSlotBadge";
 
 /**
  * Per-session timeline for multi-session (and one-off) appointments.
@@ -49,6 +50,17 @@ interface SessionTimelineProps {
    * separate card that could only describe the whole booking.
    */
   renderSessionExtra?: (session: SessionVM) => React.ReactNode;
+  /**
+   * #1428 — opt-in: render tentative (held-pending-payment) sessions instead
+   * of silently dropping them. Off by default so AppointmentSheet and
+   * RequestSlotAllocationTab, which never learned a hold deadline, keep
+   * their existing tentative-is-invisible behaviour.
+   */
+  showHeld?: boolean;
+  /** Payment.expiresAt for the hold backing the tentative session(s). */
+  holdDeadline?: Date | null;
+  /** Absent ⇒ held rows show "awaiting payment" with no action (consultant view). */
+  onCompletePayment?: () => void;
 }
 
 interface SessionGroup {
@@ -146,6 +158,9 @@ export function SessionTimeline({
   className,
   defaultExpanded = true,
   renderSessionExtra,
+  showHeld = false,
+  holdDeadline = null,
+  onCompletePayment,
 }: SessionTimelineProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   useEffect(() => {
@@ -156,7 +171,16 @@ export function SessionTimeline({
     () => sessions.filter((s) => !s.isTentative),
     [sessions],
   );
+  // #1428 — tentative sessions used to be dropped outright here, so a
+  // consultee holding reserved slots with a live payment deadline saw
+  // nothing at all. Kept as its own list (never mixed into `groups`) so the
+  // held row's countdown/CTA styling doesn't leak into the confirmed rules.
+  const tentative = useMemo(
+    () => (showHeld ? sessions.filter((s) => s.isTentative) : []),
+    [sessions, showHeld],
+  );
   const groups = useMemo(() => toSessionGroups(nonTentative), [nonTentative]);
+  const heldGroups = useMemo(() => toSessionGroups(tentative), [tentative]);
   const showExpand = groups.length > 1;
 
   const groupStatuses = useMemo(
@@ -188,7 +212,7 @@ export function SessionTimeline({
     return upcoming ?? groups[groups.length - 1];
   }, [groups, groupStatuses]);
 
-  if (groups.length === 0) return null;
+  if (groups.length === 0 && heldGroups.length === 0) return null;
 
   const visibleGroups =
     showExpand && !expanded && focusGroup ? [focusGroup] : groups;
@@ -205,6 +229,54 @@ export function SessionTimeline({
 
   return (
     <div className={cn("space-y-1", className)}>
+      {heldGroups.map((group) => (
+        <div
+          key={group.key}
+          className={cn(
+            "flex items-center gap-2 px-2 py-1.5 rounded-md text-xs transition-colors",
+            "bg-amber-50 border border-amber-200 dark:bg-amber-900/20 dark:border-amber-900/40",
+          )}
+          // The row is not itself a control: the "Complete payment" button
+          // below is the single activation target, so screen readers get one
+          // affordance instead of a role="button" wrapper around a <button>.
+        >
+          <span className="text-sm shrink-0 w-5 text-center" aria-label="held">
+            ⏳
+          </span>
+
+          <div className="flex-1 min-w-0">
+            <span className="font-medium text-foreground">
+              {format(group.startTime, "MMM d")}
+            </span>
+            <span className="text-muted-foreground/70 ml-2">
+              {format(group.startTime, "h:mm a")}
+              {" - "}
+              {format(group.endTime, "h:mm a")}
+            </span>
+          </div>
+
+          <div className="flex shrink-0 flex-col items-end gap-0.5">
+            <HeldSlotBadge deadline={holdDeadline} />
+            {onCompletePayment ? (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCompletePayment();
+                }}
+                className="flex items-center gap-1 px-2 py-0.5 rounded bg-amber-600 text-white text-[10px] font-semibold hover:bg-amber-700 dark:bg-amber-600 dark:hover:bg-amber-500"
+              >
+                <CreditCard className="h-3 w-3" />
+                Complete payment
+              </button>
+            ) : (
+              <span className="text-[10px] font-medium uppercase text-muted-foreground/70">
+                Awaiting payment
+              </span>
+            )}
+          </div>
+        </div>
+      ))}
+
       {showExpand && !expanded && (
         <p className="px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
           {collapsedCaption}

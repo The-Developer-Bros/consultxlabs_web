@@ -63,6 +63,12 @@ interface PaymentItem {
   refundedPaise: number;
   /** Server-derived: REFUNDED | PARTIALLY_REFUNDED | PaymentStatus. */
   displayStatus: string;
+  /** #1365 — the statutory tax invoice, when one was issued for this payment. */
+  consumerInvoice: {
+    id: string;
+    invoiceNumber: string;
+    issuedAt: string;
+  } | null;
   receiptUrl: string | null;
   expiresAt: string | null;
   createdAt: string;
@@ -203,8 +209,45 @@ function getExpiryInfo(payment: PaymentItem): {
   };
 }
 
+/**
+ * #1365 — the buyer's own tax invoice for a payment. Defined at module scope
+ * rather than inside the tab so it is not re-created on every render (S6478).
+ * An empty cell means the booking was org-sponsored and is invoiced to the
+ * organization instead, which is the correct answer rather than a missing
+ * document.
+ */
+function renderInvoiceCell(payment: PaymentItem) {
+  if (!payment.consumerInvoice) {
+    return <span className="text-muted-foreground/70">&mdash;</span>;
+  }
+  return (
+    <a
+      href={`/api/payments/${payment.id}/invoice/pdf`}
+      className="whitespace-nowrap text-sm font-medium text-foreground underline underline-offset-4 hover:text-muted-foreground"
+    >
+      {/* Explicit separator: JSX strips the newline between a text node and
+          the element after it, so the words would otherwise run together. */}
+      Download{" "}
+      <span className="text-xs text-muted-foreground">
+        {payment.consumerInvoice.invoiceNumber}
+      </span>
+    </a>
+  );
+}
+
 export function PaymentsTab({ data }: { data: PaymentsData | undefined }) {
   const { formatPrice } = useCurrency();
+
+  // #1396 — `formatPrice` assumes INR paise and applies the viewer's FX rate,
+  // so a payment already denominated in another currency was converted a second
+  // time and relabelled, while its refunds and the per-currency total right
+  // below were rendered unconverted. The three disagreed on the same row. This
+  // is the guard `PendingPaymentsWidget` already uses: only INR amounts go
+  // through the converter, everything else renders in its own currency.
+  const formatPaymentAmount = (paise: number, currency: string | null | undefined) =>
+    currency && currency.toUpperCase() !== "INR"
+      ? formatAmountInCurrency(paise, currency)
+      : formatPrice(paise);
   const { data: session } = useSession();
   // Resolve a payment's `organizationId` to a displayable org name for
   // the "Sponsored · <Org>" badge — same convention as the appointments
@@ -302,11 +345,12 @@ export function PaymentsTab({ data }: { data: PaymentsData | undefined }) {
       cell: (payment) => (
         <span className="whitespace-nowrap">
           <span className="font-medium text-foreground">
-            {formatPrice(payment.amount)}
+            {formatPaymentAmount(payment.amount, payment.currency)}
           </span>
           {payment.taxAmount && payment.taxAmount > 0 && (
             <span className="block text-xs text-muted-foreground/70">
-              incl. {formatPrice(payment.taxAmount ?? 0)} GST
+              incl.{" "}
+              {formatPaymentAmount(payment.taxAmount ?? 0, payment.currency)} GST
             </span>
           )}
           {payment.discount && (
@@ -323,7 +367,7 @@ export function PaymentsTab({ data }: { data: PaymentsData | undefined }) {
                     {" — "}
                     {payment.discount.type === "PERCENTAGE"
                       ? `${payment.discount.value}% off`
-                      : `${formatPrice(payment.discount.value)} off`}
+                      : `${formatPaymentAmount(payment.discount.value, payment.currency)} off`}
                   </p>
                 </TooltipContent>
               </Tooltip>
@@ -389,6 +433,11 @@ export function PaymentsTab({ data }: { data: PaymentsData | undefined }) {
           </ul>
         );
       },
+    },
+    {
+      key: "invoice",
+      header: "Tax invoice",
+      cell: renderInvoiceCell,
     },
     {
       key: "expires",

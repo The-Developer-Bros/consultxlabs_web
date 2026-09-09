@@ -8,6 +8,7 @@
  */
 
 import * as Sentry from "@sentry/nextjs";
+import { transitionSlotCompletion } from "@/lib/booking/transitions";
 import { RecordingService } from "@/lib/stream/recording-service";
 import {
   getStreamChatClient,
@@ -24,6 +25,8 @@ import {
 } from "@/lib/stream/batch";
 import { getEventChannelIdsForAppointment } from "@/lib/stream/appointment-channels";
 import prisma from "@/lib/prisma";
+import redis, { withCircuitBreaker } from "@/lib/redis";
+import { REDIS_KEYS } from "@/lib/maintenance-keys";
 import { notifyMaintenanceStarted } from "@/lib/novu/service";
 
 /**
@@ -35,7 +38,6 @@ const LIVE_SESSION_WINDOW_MS = 6 * 60 * 60 * 1000;
 
 /** Hard cap so a backlog can never hold the maintenance transition open. */
 const MAX_DRAIN_BATCH = 200;
-
 
 interface DrainResult {
   drained: number;
@@ -177,7 +179,10 @@ export async function drainActiveSessions(): Promise<DrainResult> {
         });
         result.recordingsStopped++;
       } catch (err) {
-        Sentry.captureException(err instanceof Error ? err : new Error(String(err)), { tags: { subsystem: "maintenance" } });
+        Sentry.captureException(
+          err instanceof Error ? err : new Error(String(err)),
+          { tags: { subsystem: "maintenance" } },
+        );
         result.errors.push(
           `Stop recording ${session.streamCallId}: ${err instanceof Error ? err.message : String(err)}`,
         );
@@ -229,19 +234,40 @@ export async function drainActiveSessions(): Promise<DrainResult> {
     // consultant's earnings never became releasable. UNVERIFIED rather than
     // COMPLETED because we cut the call short — a human decides whether it
     // counts.
+    //
+    // #1146 — guarded per session. This used to be unguarded inside a plain
+    // `for`, so one rejection propagated straight out of `drainActiveSessions`
+    // and cost two things, not one: every later session in the batch kept
+    // running on Stream while the platform went OFFLINE, and — because the chat
+    // freeze happens after this loop — NO channel was frozen at all. A single
+    // failed row silently skipped the entire maintenance posture.
+    //
+    // A row left with `endedAt` null is the recoverable outcome:
+    // `reconcile-orphaned-sessions` is built to repair exactly that.
     const endedAt = new Date();
-    await prisma.$transaction([
-      prisma.meetingSession.update({
-        where: { id: session.id },
-        data: { endedAt, endedReason: "maintenance" },
-      }),
-      prisma.slotOfAppointment.update({
-        where: { id: session.slotOfAppointmentId },
-        data: { completionStatus: "UNVERIFIED", completedAt: endedAt },
-      }),
-    ]);
-
-    result.drained++;
+    try {
+      await prisma.$transaction(async (tx) => {
+        await tx.meetingSession.update({
+          where: { id: session.id },
+          data: { endedAt, endedReason: "maintenance" },
+        });
+        // CAS (#1319): SCHEDULED or COMPLETED becomes UNVERIFIED — COMPLETED
+        // because call.end() above fires the call-ended webhook, which can
+        // land before this write; a slot the customer already cancelled keeps
+        // its history.
+        await transitionSlotCompletion(tx, {
+          where: { id: session.slotOfAppointmentId },
+          to: "UNVERIFIED",
+          data: { completedAt: endedAt },
+          allowZero: true,
+        });
+      });
+      result.drained++;
+    } catch (err) {
+      result.errors.push(
+        `Record drained session ${session.id}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   // Step 3b: freeze the chat channels for the affected appointments.
@@ -267,7 +293,10 @@ export async function drainActiveSessions(): Promise<DrainResult> {
         reason: "Platform maintenance starting. Active calls have been ended.",
       });
     } catch (err) {
-      Sentry.captureException(err instanceof Error ? err : new Error(String(err)), { tags: { subsystem: "maintenance" }, level: "warning" });
+      Sentry.captureException(
+        err instanceof Error ? err : new Error(String(err)),
+        { tags: { subsystem: "maintenance" }, level: "warning" },
+      );
       result.errors.push(
         `Notification: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -324,7 +353,10 @@ async function freezeChannelsForSessions(
     // this loop under STREAM_TARGET_REQUESTS_PER_MINUTE — half the cap — so it
     // cannot jointly breach 300/min with the paced expire cron even if their
     // windows overlap (they run on different infra, so no shared limiter).
-    for (const [batchIdx, batch] of chunk(channelIds, STREAM_CONCURRENCY_LIMIT).entries()) {
+    for (const [batchIdx, batch] of chunk(
+      channelIds,
+      STREAM_CONCURRENCY_LIMIT,
+    ).entries()) {
       if (batchIdx > 0) {
         await pause(STREAM_BATCH_PAUSE_MS);
       }
@@ -337,17 +369,92 @@ async function freezeChannelsForSessions(
           ),
         ),
       );
+      const frozenInBatch: string[] = [];
       outcomes.forEach((outcome, i) => {
         if (outcome.status === "rejected") {
           result.errors.push(
             `freeze ${batch[i]}: ${outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)}`,
           );
+        } else {
+          frozenInBatch.push(batch[i]);
         }
       });
+
+      // #1146 — record what was CONFIRMED frozen, per batch, before the next
+      // one starts. Written incrementally rather than once at the end because
+      // the drain can be interrupted, and a ledger that only exists after the
+      // last batch is no ledger at all for the run that died halfway.
+      //
+      // Only successes. A channel Stream refused to freeze is not frozen, and
+      // listing it would make the unfreeze report work it never did.
+      await recordFrozenChannels(frozenInBatch, result);
     }
   } catch (err) {
     result.errors.push(
       `Freeze chat: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/**
+ * Append confirmed-frozen channel ids to the window's ledger.
+ *
+ * Best-effort by design. If Redis is unreachable the freeze itself still
+ * happened and must not be rolled back, so this degrades to the heuristic
+ * fallback in `unfreezeChannelsAfterMaintenance` rather than failing the drain.
+ * The error is recorded, because a missing ledger downgrades the unfreeze from
+ * exact to approximate and whoever reads the drain result should know.
+ */
+async function recordFrozenChannels(
+  channelIds: string[],
+  result: DrainResult,
+): Promise<void> {
+  if (channelIds.length === 0) return;
+  try {
+    // No breaker fallback, deliberately. A fallback would return its value and
+    // swallow the rejection, so a Redis outage during the drain would leave no
+    // ledger AND no error — the unfreeze would silently downgrade to the
+    // heuristic and nobody would know why. The `catch` below is the fail-open
+    // path, and it reports.
+    await withCircuitBreaker(() =>
+      redis.sadd(
+        REDIS_KEYS.FROZEN_CHANNELS,
+        // Destructured because Upstash types the first member as required —
+        // the guard above already proves there is one, but the array type
+        // cannot say so.
+        channelIds[0],
+        ...channelIds.slice(1),
+      ),
+    );
+  } catch (err) {
+    // #1302 review — a FAILED ledger write must be remembered, not just logged.
+    //
+    // Batches are recorded incrementally, so "the ledger is non-empty" and "the
+    // ledger is complete" are different claims. If batch A records, batch B
+    // freezes successfully, and B's write fails, the ledger holds only A — and
+    // the unfreeze, seeing a non-empty ledger, would reverse A, skip the
+    // derived fallback entirely, and leave every channel in B frozen after the
+    // OFF transition. Frozen means unwritable by every user AND every admin,
+    // with no error text and no visible cause.
+    //
+    // Best-effort, and its own failure is safe in the right direction: if this
+    // marker cannot be written then Redis is unwell, and the unfreeze's own
+    // `smembers` will fail too — which its catch already turns into the derived
+    // path with an error recorded.
+    //
+    // An earlier revision also kept a module-level `ledgerComplete` boolean as
+    // a belt-and-braces in-process signal. It was removed: it is redundant with
+    // the two paths above, and module state outlives a single call, so a warm
+    // instance carried one drain's failure into an unrelated later unfreeze.
+    try {
+      await withCircuitBreaker(() =>
+        redis.set(REDIS_KEYS.FROZEN_LEDGER_INCOMPLETE, "1"),
+      );
+    } catch {
+      // Nothing further to escalate to.
+    }
+    result.errors.push(
+      `Record frozen channels: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 }
@@ -368,34 +475,46 @@ async function freezeChannelsForSessions(
  * replace and would delete `organizationId`, `appointmentId` and every other
  * custom field off the channel.
  */
+/**
+ * How the unfreeze set was determined.
+ *
+ * `ledger` is the exact set the freeze confirmed; `derived` is the best-effort
+ * heuristic used when the ledger is missing. Worth reporting, because the two
+ * carry different guarantees — see `resolveChannelsToUnfreeze`.
+ */
+type UnfreezeSource = "ledger" | "derived" | "none";
+
 export async function unfreezeChannelsAfterMaintenance(): Promise<{
   unfrozen: number;
   errors: string[];
+  /** How the set was determined. "ledger" is exact; "derived" is best-effort. */
+  source: UnfreezeSource;
 }> {
-  const result = { unfrozen: 0, errors: [] as string[] };
-
-  const drained = await prisma.meetingSession.findMany({
-    where: {
-      endedReason: "maintenance",
-      endedAt: { gte: new Date(Date.now() - LIVE_SESSION_WINDOW_MS) },
-    },
-    take: MAX_DRAIN_BATCH,
-    select: { slotOfAppointment: { select: { appointmentId: true } } },
-  });
-  if (drained.length === 0) return result;
+  const result = {
+    unfrozen: 0,
+    errors: [] as string[],
+    source: "none" as UnfreezeSource,
+    // #1302 review — provenance and ledger-retirement are different questions.
+    // The union path reports "derived" (the set is only best-effort complete)
+    // while still CONTAINING ledger entries, so gating retirement on `source`
+    // left those entries in `FROZEN_CHANNELS` forever. Not merely untidy: the
+    // set is re-unfrozen on every later OFF transition, spending the 300/min
+    // budget on it and reopening channels that a different subsystem — the
+    // #1303 dormancy sweep — froze deliberately in the meantime.
+    usedLedger: false,
+  };
 
   try {
-    const channelIds = await getEventChannelIdsForAppointment(
-      Array.from(
-        new Set(drained.map((s) => s.slotOfAppointment.appointmentId)),
-      ),
-    );
+    const channelIds = await resolveChannelsToUnfreeze(result);
     if (channelIds.length === 0) return result;
 
     const chat = getStreamChatClient();
     // Chunked and paused like the freeze path above — same 300/min
     // UpdateChannelPartial budget, same reason.
-    for (const [batchIdx, batch] of chunk(channelIds, STREAM_CONCURRENCY_LIMIT).entries()) {
+    for (const [batchIdx, batch] of chunk(
+      channelIds,
+      STREAM_CONCURRENCY_LIMIT,
+    ).entries()) {
       if (batchIdx > 0) {
         await pause(STREAM_BATCH_PAUSE_MS);
       }
@@ -408,13 +527,24 @@ export async function unfreezeChannelsAfterMaintenance(): Promise<{
           ),
         ),
       );
+      const unfrozenInBatch: string[] = [];
       outcomes.forEach((outcome, i) => {
-        if (outcome.status === "fulfilled") result.unfrozen++;
-        else
+        if (outcome.status === "fulfilled") {
+          result.unfrozen++;
+          unfrozenInBatch.push(batch[i]);
+        } else
           result.errors.push(
             `unfreeze ${batch[i]}: ${outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)}`,
           );
       });
+
+      // Retire only what came back unfrozen. A channel Stream refused stays in
+      // the ledger deliberately, so the next OFF transition tries it again
+      // instead of leaving it silently frozen forever — which is the failure
+      // this whole ledger exists to make impossible.
+      if (result.usedLedger) {
+        await retireFrozenChannels(unfrozenInBatch, result);
+      }
     }
   } catch (err) {
     result.errors.push(
@@ -422,5 +552,138 @@ export async function unfreezeChannelsAfterMaintenance(): Promise<{
     );
   }
 
+  // A clean sweep retires the incompleteness marker. Only on a clean one: while
+  // any channel is still frozen the ledger remains suspect, and the next OFF
+  // transition should keep unioning rather than trusting it.
+  if (result.errors.length === 0) {
+    try {
+      await withCircuitBreaker(() =>
+        redis.del(REDIS_KEYS.FROZEN_LEDGER_INCOMPLETE),
+      );
+    } catch {
+      // Leaving the marker set costs redundant unfreeze calls next time, which
+      // is the safe direction.
+    }
+  }
+
   return result;
+}
+
+/**
+ * Which channels this OFF transition should unfreeze.
+ *
+ * The ledger first, because it is the exact set the freeze confirmed. The
+ * derived query only when the ledger is empty or unreadable — a Redis eviction,
+ * a key that predates this change, or a freeze that ran before the ledger
+ * existed. Approximate beats never: a channel left frozen is unwritable by
+ * every user AND every admin, with no error message and no visible cause.
+ */
+async function resolveChannelsToUnfreeze(result: {
+  errors: string[];
+  source: UnfreezeSource;
+  usedLedger: boolean;
+}): Promise<string[]> {
+  try {
+    // Same reasoning as the write: no fallback, because an open breaker read
+    // as "the ledger is empty" would silently take the derived path with
+    // nothing recorded. The catch below takes it explicitly, and says so.
+    const ledger = await withCircuitBreaker(() =>
+      redis.smembers(REDIS_KEYS.FROZEN_CHANNELS),
+    );
+
+    // #1302 review — only trust the ledger ALONE when it is known complete.
+    //
+    // An incremental writer means a non-empty ledger can still be missing a
+    // batch whose `sadd` failed after an earlier one succeeded. Taking it as
+    // the whole answer would skip the derived fallback and leave that batch
+    // frozen for good.
+    const incomplete = await ledgerMarkedIncomplete();
+
+    if (ledger.length > 0 && !incomplete) {
+      result.source = "ledger";
+      result.usedLedger = true;
+      return ledger;
+    }
+
+    if (ledger.length > 0) {
+      // Union, not either-or. Unfreezing a channel that was already unfrozen is
+      // an idempotent no-op costing one rate-limited call; missing one leaves a
+      // conversation permanently unwritable. The asymmetry decides it.
+      const derived = await deriveChannelsToUnfreeze();
+      result.source = "derived";
+      // Ledger ids are in the returned set, so they are still retirable — and
+      // `srem` on an id the set never held is a no-op, so passing the derived
+      // ids through with them costs nothing.
+      result.usedLedger = true;
+      return Array.from(new Set([...ledger, ...derived]));
+    }
+  } catch (err) {
+    result.errors.push(
+      `Read frozen-channel ledger: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  const channelIds = await deriveChannelsToUnfreeze();
+  if (channelIds.length > 0) result.source = "derived";
+  return channelIds;
+}
+
+/** True when a previous drain recorded that its ledger write failed. */
+async function ledgerMarkedIncomplete(): Promise<boolean> {
+  try {
+    return Boolean(
+      await withCircuitBreaker(() =>
+        redis.get<string>(REDIS_KEYS.FROZEN_LEDGER_INCOMPLETE),
+      ),
+    );
+  } catch {
+    // Unreadable is treated as suspect. The cost of being wrong here is a few
+    // redundant unfreeze calls; the cost of the other reading is a channel
+    // nobody can post in.
+    return true;
+  }
+}
+
+/**
+ * The heuristic set, used as a fallback and as the union partner.
+ *
+ * Every limitation #1146 documents still applies — the six-hour window, the
+ * uncapped 200-row take, and the session whose `call.end()` failed and was
+ * therefore never stamped. It is a floor, not the mechanism.
+ */
+async function deriveChannelsToUnfreeze(): Promise<string[]> {
+  const drained = await prisma.meetingSession.findMany({
+    where: {
+      endedReason: "maintenance",
+      endedAt: { gte: new Date(Date.now() - LIVE_SESSION_WINDOW_MS) },
+    },
+    take: MAX_DRAIN_BATCH,
+    select: { slotOfAppointment: { select: { appointmentId: true } } },
+  });
+  if (drained.length === 0) return [];
+
+  return getEventChannelIdsForAppointment(
+    Array.from(new Set(drained.map((s) => s.slotOfAppointment.appointmentId))),
+  );
+}
+
+/** Drop confirmed-unfrozen ids from the ledger. Best-effort, like the write. */
+async function retireFrozenChannels(
+  channelIds: string[],
+  result: { errors: string[] },
+): Promise<void> {
+  if (channelIds.length === 0) return;
+  try {
+    await withCircuitBreaker(() =>
+      redis.srem(
+        REDIS_KEYS.FROZEN_CHANNELS,
+        channelIds[0],
+        ...channelIds.slice(1),
+      ),
+    );
+  } catch (err) {
+    result.errors.push(
+      `Retire frozen-channel ledger: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }

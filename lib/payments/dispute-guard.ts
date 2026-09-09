@@ -17,19 +17,30 @@ import { DISPUTE_INACTIVE_FOR_GATING } from "./dispute-status";
  * what produces the readable 409 instead of a swallowed refund failure.
  *
  * Served by Dispute(paymentId,status) + Payment(appointmentId) indexes. No
- * admin bypass in v1 — TODO(#1008): allow an explicit privileged override.
+ * admin bypass in v1 — TODO(#1319): allow an explicit privileged override.
  */
 export async function hasActiveDisputeForAppointment(
   appointmentId: string,
 ): Promise<boolean> {
   const appointment = await prisma.appointment.findUnique({
     where: { id: appointmentId },
-    select: { id: true, consultationId: true, subscriptionId: true, classId: true, webinarId: true },
+    select: {
+      id: true,
+      consultationId: true,
+      subscriptionId: true,
+      classId: true,
+      webinarId: true,
+    },
   });
   const dispute = await prisma.dispute.findFirst({
     where: {
       payment: appointment
-        ? { appointment: bookingAppointmentFilter({ ...appointment, appointmentId: appointment.id }) }
+        ? {
+            appointment: bookingAppointmentFilter({
+              ...appointment,
+              appointmentId: appointment.id,
+            }),
+          }
         : { appointmentId },
       status: { notIn: DISPUTE_INACTIVE_FOR_GATING },
     },

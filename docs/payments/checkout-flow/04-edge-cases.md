@@ -1,5 +1,9 @@
 # Edge Cases, Special Flows & Issues
 
+> **Superseded (2026-09-03):** this document dates to November 2025. Its race-condition protection ("three-layer protection system") and capacity checks predate the interval-atom `slot-booking:` locks in `utils/appointmentlock.ts`, the CAS transitions in `lib/booking/transitions.ts`, and the union-coverage validation in `utils/slotAllocation/availabilityCoverage.ts`. For current concurrency and edge-case behavior, read [`docs/booking/00-architecture-decisions.md`](../../booking/00-architecture-decisions.md) (ADR B6, B7, B11), [`docs/booking/15-checklist.md`](../../booking/15-checklist.md), and the wave-5 entries in [`docs/booking/05-troubleshooting-and-changelog.md`](../../booking/05-troubleshooting-and-changelog.md). The rest of this file is kept for historical context only; do not cite its file:line references as current.
+
+---
+
 > **Navigation:** [Overview & Consultation](./01-overview-and-consultation.md) | [Webinar & Class](./02-webinar-and-class.md) | [Payment Processing](./03-payment-processing.md) | **Edge Cases** | [Status Flows](./05-status-flows.md)
 
 ## Table of Contents
@@ -10,10 +14,10 @@
 4. [Capacity Edge Cases](#4-capacity-edge-cases)
 5. [Validation Edge Cases](#5-validation-edge-cases)
 6. [Mock Payment Mode](#6-mock-payment-mode)
-8. [Multi-Session Handling](#8-multi-session-handling)
-9. [Code Locations Reference](#9-code-locations-reference)
-10. [Integration Points](#10-integration-points)
-11. [Critical Issues & Improvements](#11-critical-issues--improvements)
+7. [Multi-Session Handling](#8-multi-session-handling)
+8. [Code Locations Reference](#9-code-locations-reference)
+9. [Integration Points](#10-integration-points)
+10. [Critical Issues & Improvements](#11-critical-issues--improvements)
 
 ---
 
@@ -118,7 +122,7 @@ if (allPendingCount >= 3) {
 
 **DB backstop — `slot_no_confirmed_overlap` exclusion constraint (#440):**
 
-Even if two Serializable transactions race past all three application-layer checks, a PostgreSQL **exclusion constraint** on `SlotOfAppointment` prevents two *confirmed* (non-tentative) rows from overlapping the same `(consultantId, startsAt, endsAt)` range. This is the last-resort guarantee that concurrent webhooks cannot double-confirm a slot. The constraint fires at `COMMIT` time; the losing transaction receives a `P2002` / `UniqueConstraintError` which surfaces to the webhook handler as a 409 and triggers a gateway refund cascade.
+Even if two Serializable transactions race past all three application-layer checks, a PostgreSQL **exclusion constraint** on `SlotOfAppointment` prevents two _confirmed_ (non-tentative) rows from overlapping the same `(consultantId, startsAt, endsAt)` range. This is the last-resort guarantee that concurrent webhooks cannot double-confirm a slot. The constraint fires at `COMMIT` time; the losing transaction receives a `P2002` / `UniqueConstraintError` which surfaces to the webhook handler as a 409 and triggers a gateway refund cascade.
 
 ```sql
 -- prisma/sql/check-constraints.sql lines 56-58
@@ -204,6 +208,7 @@ if (uniqueUserIds.has(userId)) {
 **File:** `/app/api/checkout/pending/[paymentId]/route.ts` + `/lib/payments/operations/cancel-pending.ts`
 
 **Mechanics:**
+
 1. Rate-limited to **10 requests/minute** per user (`cancelPendingLimiter`).
 2. The entire body runs in a single **Serializable transaction** with a CAS write as the first step: `UPDATE payment SET status = EXPIRED WHERE id = ? AND status = PENDING`. If `count = 0`, another winner already settled the payment (webhook confirm or parallel cancel).
 3. On CAS success: referral credits are reversed, tentative slots are deleted per-type (class = caller's slots across all sessions, webinar = caller-scoped slot, consultation/subscription = all slots on the appointment), parent consultation/subscription is transitioned to `CANCELLED` from the **narrow** from-set `[PENDING, APPROVED_PENDING_PAYMENT]` — an APPROVED parent blocks the cancellation via `IllegalTransitionError`, rolling back the entire tx.
@@ -213,6 +218,7 @@ if (uniqueUserIds.has(userId)) {
 **Capacity counts:** This endpoint correctly counts tentative holds in capacity (the checkout layer already includes tentative slots in availability checks — the last-seat race is closed at checkout; `test-last-seat-storm` pins this).
 
 **Returns:**
+
 ```json
 { "success": true, "slotsReleased": 1 }
 ```
@@ -545,6 +551,8 @@ const currentParticipants = uniqueUserIds.size;
 ```
 
 **Edge Case:** User enrolled twice with different accounts → Counted as 2 participants.
+
+## 5. Validation Edge Cases
 
 ### 5.1 Slot Time Validation
 
@@ -936,25 +944,25 @@ const zonedDate = utcToZonedTime(sessionStart, subscription.timezone);
 
 **Race Condition Protection:**
 
-- Consultation: `/lib/payments/operations/checkout.ts:196-248`
+- Consultation: `/lib/payments/operations/checkout.ts`
 - Subscription: Same protection mechanism
-- Class enrollment check: `/lib/payments/operations/checkout.ts:675-678`
+- Class enrollment check: `/lib/payments/operations/checkout.ts`
 
 **Capacity Counting:**
 
-- Webinar: `/lib/payments/operations/checkout.ts:595-597`
-- Class: `/lib/payments/operations/checkout.ts:647-656` (unique user counting)
+- Webinar: `/lib/payments/operations/checkout.ts`
+- Class: `/lib/payments/operations/checkout.ts` (unique user counting)
 
 **Session Calculations:**
 
-- Subscription: `/lib/payments/operations/checkout.ts:512-514`
-- Class: `/app/api/bookings/classes/crud-with-plan/route.ts:162-164`
+- Subscription: `/lib/payments/operations/checkout.ts`
+- Class: `/app/api/bookings/classes/crud-with-plan/route.ts`
 
 **Error Handling:**
 
-- Checkout API: `/app/api/checkout/route.ts:28-83`
-- Stripe errors: `/lib/payments/core/stripe.ts:449-482`
-- Razorpay errors: `/lib/payments/core/razorpay.ts:299-336`
+- Checkout API: `/app/api/checkout/route.ts`
+- Stripe errors: `/lib/payments/core/stripe.ts`
+- Razorpay errors: `/lib/payments/core/razorpay.ts`
 
 ### 9.3 Database Schema Locations
 
@@ -994,8 +1002,8 @@ const response = await fetch("/api/checkout", {
   body: JSON.stringify({
     appointmentType: "CONSULTATION",
     planId: "plan-uuid",
-    startsAt: "2025-11-07T10:00:00Z",   // renamed from `slotStartTimeInUTC`
-    endsAt: "2025-11-07T11:00:00Z",     // renamed from `slotEndTimeInUTC`
+    startsAt: "2025-11-07T10:00:00Z", // renamed from `slotStartTimeInUTC`
+    endsAt: "2025-11-07T11:00:00Z", // renamed from `slotEndTimeInUTC`
     notes: "Follow-up consultation",
     isMockPayment: false, // Set to true for testing
   }),

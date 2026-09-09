@@ -120,6 +120,9 @@ export async function readAppointmentDetail(appointmentId: string) {
           currency: true,
           paymentStatus: true,
           createdAt: true,
+          // #1428 — the tentative-hold deadline shown on the detail page;
+          // without it a held slot has no way to say when it releases.
+          expiresAt: true,
         },
       },
       organization: { select: { id: true, name: true } },

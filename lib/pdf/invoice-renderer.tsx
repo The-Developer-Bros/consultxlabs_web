@@ -1,3 +1,4 @@
+/** @jsxImportSource @/lib/pdf/react-runtime */
 /**
  * Invoice PDF renderer — B2B (`OrganizationInvoice`) PDFs.
  *
@@ -7,20 +8,25 @@
  * window. Wired from
  * `app/api/organizations/[orgId]/billing-account/invoices/[invoiceId]/pdf/route.ts`.
  *
- * REACT VERSION
+ * REACT VERSION (#1468)
  * ─────────────────────────────────────────────────────────────────────────
- * Project React: 18.3.1 (single version in node_modules).
+ * Two React copies meet in this file and they must be the same one.
  * `@react-pdf/renderer@4.5.1` → `@react-pdf/reconciler@2.0.0` ships three
  * reconcilers (reconciler-23 for React ≤18, reconciler-31 for React 19.0/19.1,
- * reconciler-33 for React 19.2+) and dispatches by `React.version`. So the
- * renderer works whether the route-handler bundle resolves `react` to our
- * userland 18.3.1 or Next.js's vendored RSC build — a previous workaround
- * that bypassed webpack via `__non_webpack_require__("react")` was
- * load-bearing only against an older react-pdf with the single 23-reconciler
- * and is no longer needed. Plain JSX is sufficient.
+ * reconciler-33 for React 19.2+) and dispatches on `React.version`. The
+ * renderer is externalised, so that dispatch reads the userland React that
+ * Node resolves — 18.3.1 — and reconciler-23 accepts only elements stamped
+ * `Symbol.for("react.element")`. Everything else in an App Router route
+ * handler compiles against Next's vendored React 19, whose elements are
+ * stamped `Symbol.for("react.transitional.element")`, so plain JSX handed the
+ * reconciler an object it did not recognise and every statutory PDF answered
+ * 500 with React error #31 on the deployed build. The `@jsxImportSource`
+ * pragma above puts element creation back on the reconciler's React; see
+ * ./react-runtime/jsx-runtime.ts. Note the earlier note in this header — that
+ * the version dispatch makes either resolution work — was wrong: it makes
+ * either resolution work only when BOTH sides share it.
  */
 
-import React from "react";
 import {
   Document,
   Page,
@@ -29,7 +35,25 @@ import {
   StyleSheet,
   renderToBuffer,
 } from "@react-pdf/renderer";
-import type { OrgInvoiceStatus, Currency, IrpStatus } from "@prisma/client";
+import type {
+  OrgInvoiceStatus,
+  Currency,
+  IrpStatus,
+  PlaceOfSupplySource,
+} from "@prisma/client";
+import {
+  StatutoryDocumentFrame,
+  statutoryStyles,
+  formatStatutoryDate,
+  taxTotalLines,
+  type StatutorySupplier,
+  type StatutoryBuyer,
+} from "./statutory-document-frame";
+
+// The Devanagari face used by the consumer documents is registered once in
+// ./statutory-document-frame. Re-exported here because that is where callers
+// have always imported it from.
+export { BODY_FONT } from "./statutory-document-frame";
 
 // ============================================================================
 // Shared formatting helpers
@@ -63,11 +87,6 @@ function formatDateLong(d: Date | null | undefined): string {
     year: "numeric",
   });
 }
-
-// Suppress unused-import warning for React — it is needed for JSX
-// type inference in this file even when no React APIs are referenced
-// directly.
-void React;
 
 // ============================================================================
 // Org (B2B OrganizationInvoice) — types, styles, document
@@ -219,8 +238,7 @@ const orgStyles = StyleSheet.create({
 });
 
 function OrgInvoiceDocument({ data }: { data: OrgInvoicePdfData }) {
-  const hasTax =
-    data.igstPaise > 0 || data.cgstPaise > 0 || data.sgstPaise > 0;
+  const hasTax = data.igstPaise > 0 || data.cgstPaise > 0 || data.sgstPaise > 0;
   const statusColor: Record<OrgInvoiceStatus, string> = {
     DRAFT: "#999",
     ISSUED: "#2563eb",
@@ -412,5 +430,99 @@ export async function renderOrgInvoicePdf(
   data: OrgInvoicePdfData,
 ): Promise<Buffer> {
   const buffer = await renderToBuffer(<OrgInvoiceDocument data={data} />);
+  return Buffer.from(buffer);
+}
+
+// ============================================================================
+// Consumer (B2C ConsumerInvoice) — types, styles, document (#1365)
+// ============================================================================
+
+export type ConsumerInvoicePdfData = {
+  invoiceNumber: string;
+  issuedAt: Date;
+  supplyDate: Date;
+  currency: Currency;
+  sacCode: string;
+  taxRateBps: number;
+  taxableValuePaise: number;
+  cgstPaise: number;
+  sgstPaise: number;
+  igstPaise: number;
+  totalPaise: number;
+  placeOfSupply: string | null;
+  placeOfSupplySource: PlaceOfSupplySource;
+  /** What was supplied. Falls back to a generic consulting-services line when
+   *  the booking is gone. */
+  description?: string | null;
+  supplier: StatutorySupplier;
+  buyer: StatutoryBuyer;
+};
+
+/** Rule 46 requires the place of supply on the face of the invoice, and an
+ *  officer reading a defaulted one deserves to know it was defaulted. */
+const SECTION_12_2_B_FOOTNOTE =
+  "Place of supply determined under s.12(2)(b) IGST Act (no address of the recipient on record).";
+
+export function ConsumerInvoiceDocument({
+  data,
+}: {
+  readonly data: ConsumerInvoicePdfData;
+}) {
+  return (
+    <Document>
+      <Page size="A4" style={statutoryStyles.page}>
+        <StatutoryDocumentFrame
+          title="TAX INVOICE"
+          documentNumber={data.invoiceNumber}
+          currency={data.currency}
+          supplier={data.supplier}
+          buyer={data.buyer}
+          buyerHeading="Bill to"
+          details={[
+            {
+              label: "Invoice date",
+              value: formatStatutoryDate(data.issuedAt),
+            },
+            {
+              label: "Date of supply",
+              value: formatStatutoryDate(data.supplyDate),
+            },
+            { label: "Place of supply", value: data.placeOfSupply ?? "—" },
+            { label: "Reverse charge", value: "No" },
+          ]}
+          itemsHeading="Supply"
+          codeHeading="SAC"
+          items={[
+            {
+              description:
+                data.description ??
+                "Consulting services booked on the platform",
+              code: data.sacCode,
+              amountPaise: data.taxableValuePaise,
+            },
+          ]}
+          totals={[
+            { label: "Taxable value", paise: data.taxableValuePaise },
+            ...taxTotalLines(data),
+          ]}
+          grandTotalLabel="Total"
+          grandTotalPaise={data.totalPaise}
+          footnote={
+            data.placeOfSupplySource === "SUPPLIER_DEFAULT_12_2_B"
+              ? SECTION_12_2_B_FOOTNOTE
+              : null
+          }
+          footer={`System-generated tax invoice — does not require a signature per Notification No. 61/2020-Central Tax. ${data.supplier.name} · GSTIN ${data.supplier.gstin}`}
+        />
+      </Page>
+    </Document>
+  );
+}
+
+/** Render a ConsumerInvoice to a Buffer. */
+export async function renderConsumerInvoicePdf(
+  data: ConsumerInvoicePdfData,
+): Promise<Buffer> {
+  const buffer = await renderToBuffer(<ConsumerInvoiceDocument data={data} />);
   return Buffer.from(buffer);
 }

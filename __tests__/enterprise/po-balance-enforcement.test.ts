@@ -211,6 +211,10 @@ function setupActivePo(orgId = "org-1") {
   mockedPrisma.purchaseOrder.findUnique.mockResolvedValue({
     organizationId: orgId,
     status: "ACTIVE",
+    // #1396 — the route now compares the PO's currency against the invoice's
+    // before it claims any balance, and repeats the comparison in the CAS
+    // predicate, so the pre-flight read has to carry it.
+    currency: "INR",
   });
 }
 
@@ -251,6 +255,7 @@ describe("POST /api/organizations/[orgId]/billing-account/invoices — PO balanc
         id: "po-1",
         organizationId: "org-1",
         status: "ACTIVE",
+        currency: "INR",
         remainingAmountPaise: { gte: 5000 },
       },
       data: { remainingAmountPaise: { decrement: 5000 } },

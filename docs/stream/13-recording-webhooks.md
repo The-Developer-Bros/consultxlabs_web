@@ -41,7 +41,7 @@ The recording system enables consultants to record webinars and classes for late
 - **Consultant-only recording control** - Only the session host can start/stop
 - **Automatic webhook processing** - Recording lifecycle managed via webhooks
 - **Idempotent operations** - Safe to receive duplicate webhook events
-- **Automatic transfer** - The `recording_ready` webhook enqueues the permanent-storage transfer immediately (via Next.js `after()`), and a cron job runs as a backstop sweeper that picks up any recording the webhook missed before its Stream URL expires
+- **Automatic transfer** - The `recording_ready` webhook enqueues the permanent-storage transfer immediately (via Next.js `after()`), and a cron job runs as a backstop sweeper that picks up any recording the webhook missed before its Stream URL expires. **See the correction below: this describes a pipeline that has never run.**
 - **Capability-based access** - Consultants, consultees, collaborators and replay buyers each reach a recording through a distinct ownership or entitlement path, and platform operators reach it through the back-office permission matrix: staff see metadata, admin alone plays the session, and either one is audited (#1270)
 
 ---
@@ -1143,4 +1143,37 @@ streamLogger.error("Transfer failed", error, { recordingId });
 
 ---
 
-**Last Updated:** 2025-01-22
+## Correction — 2026-09-01
+
+**The transfer pipeline described above has never executed once.** Measured
+against the live database on 2026-08-30: 191 `Recording` rows, every one of them
+`READY` / `STREAM_S3`, and `transferAttempts = 0` across the board. Not "runs and
+sometimes fails" — never started.
+
+Two causes stacked. The `recording_ready` webhook could not enqueue anything
+because the whole Stream webhook endpoint 500'd on every delivery for months
+(it demanded a `STREAM_WEBHOOK_SECRET` Stream does not issue — fixed 2026-08-13
+in #1136), and the six-hourly backstop cron is one of the eight that could not
+start at all because `lib/auth-server.ts` called React 18's absent `cache()` at
+module scope (fixed in #1281).
+
+The section above is left in place rather than deleted because it still
+describes the design accurately, and because #1284 has since **decoupled new
+recordings from that pipeline entirely** in favour of Stream's external storage —
+writing straight to our own bucket, which removes the download-reupload hop, the
+fourteen-day race, the size cap and the cron together. That work is tracked in
+#1280 and is not yet shipped, so the transfer service and its workflow are still
+in the tree.
+
+Separately, #1280 catalogues four correctness defects that would have bitten had
+it ever run: a 500MB size cap below a normal 60-minute recording, a success gate
+that never verifies the uploaded bytes (a zero-byte MP4 can become the permanent
+record of a paid session), a non-CAS status write that lets two concurrent
+transfers permanently strand a recording, and a random path per retry that makes
+orphaned objects impossible to collect.
+
+**Do not read the section above as a description of production behaviour.**
+
+---
+
+**Last Updated:** 2026-09-01

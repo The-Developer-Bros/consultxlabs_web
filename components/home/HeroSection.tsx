@@ -7,14 +7,14 @@ import Link from "next/link";
 import { useRef, useState, useEffect } from "react";
 
 import { Button } from "@/components/ui/button";
-import { STATS } from "./data";
+import type { ExpertStatKey, IPublicStat } from "@/lib/data/public-stats";
 
 function AnimatedNumber({
   value,
   suffix = "",
 }: {
   value: number;
-  suffix: string;
+  suffix?: string;
 }) {
   const ref = useRef(null);
   const isInView = useInView(ref, { once: true });
@@ -56,7 +56,11 @@ function AnimatedNumber({
   );
 }
 
-export function HeroSection() {
+export function HeroSection({
+  stats,
+}: {
+  stats: IPublicStat<ExpertStatKey>[];
+}) {
   return (
     <section className="relative min-h-[95vh] flex items-center bg-black overflow-hidden">
       {/* Animated gradient orbs */}
@@ -82,7 +86,10 @@ export function HeroSection() {
             className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/5 backdrop-blur-sm border border-white/10 text-zinc-400 text-sm mb-8"
           >
             <Sparkles className="w-4 h-4 text-zinc-300" />
-            <span>Trusted by 10,000+ professionals worldwide</span>
+            {/* #1490 — was "Trusted by 10,000+ professionals worldwide", a
+                number nothing produced. What replaces it is enforced by the
+                directory reads themselves: only VERIFIED profiles are public. */}
+            <span>Every expert is verified before they are listed</span>
           </motion.div>
 
           {/* Main headline */}
@@ -145,20 +152,26 @@ export function HeroSection() {
             </Button>
           </motion.div>
 
-          {/* Stats with animated counters */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay: 0.4 }}
-            className="grid grid-cols-2 md:grid-cols-4 gap-8 md:gap-12 pt-8 border-t border-zinc-800"
-          >
-            {STATS.map((stat, i) => (
-              <div key={i} className="text-center">
-                <AnimatedNumber value={stat.value} suffix={stat.suffix} />
-                <div className="text-zinc-600 text-sm mt-1">{stat.label}</div>
-              </div>
-            ))}
-          </motion.div>
+          {/* Stats with animated counters. #1490 — every counter here is read
+              from the database now, and a figure that is still zero produces no
+              tile at all rather than a placeholder. With no data yet the whole
+              row is absent, which is why it is rendered conditionally: an empty
+              grid would leave a stray divider under the CTAs. */}
+          {stats.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.6, delay: 0.4 }}
+              className="grid grid-cols-2 md:grid-cols-3 gap-8 md:gap-12 pt-8 border-t border-zinc-800"
+            >
+              {stats.map((stat) => (
+                <div key={stat.key} className="text-center">
+                  <AnimatedNumber value={stat.value} />
+                  <div className="text-zinc-600 text-sm mt-1">{stat.label}</div>
+                </div>
+              ))}
+            </motion.div>
+          )}
         </div>
       </div>
 

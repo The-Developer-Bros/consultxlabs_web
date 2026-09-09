@@ -175,9 +175,14 @@ function loadMeetingSession(meetingId: string) {
  * the time gate rather than refused here. `meetingPolicyRefusal` already owns
  * "has this session finished", including the 30-minute reconnect grace, and it
  * is stricter than a status check everywhere except inside that grace — where a
- * status check would be WRONG. `app/api/cleanup/auto-complete-trials` marks a
- * trial COMPLETED as soon as ANY of its slot rows has ended, with no buffer, so
- * refusing on status alone could eject a live trial rather than close a hole.
+ * status check would be WRONG. #1278 deleted the bufferless
+ * `app/api/cleanup/auto-complete-trials` route this paragraph used to cite as
+ * the concrete hazard: it flipped a trial to COMPLETED the moment any one of
+ * its slots ended. Trials now complete only through the hourly
+ * `auto-complete-appointments` job, which waits a full hour past the last slot
+ * and so lands outside the grace. The delegation stands regardless, because
+ * status is a coarse eventually-consistent summary while the time gate reads
+ * the slot rows and the meeting session itself.
  *
  * @returns The refusal message, or null when the status permits a join.
  */

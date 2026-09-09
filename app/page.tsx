@@ -16,7 +16,13 @@ import { BecomeExpertSection } from "@/components/home/BecomeExpertSection";
 import { EnterpriseSection } from "@/components/home/EnterpriseSection";
 import { FAQSection } from "@/components/home/FAQSection";
 import { SatisfiedTestimonial } from "@/app/explore/experts/components/SatisfiedTestimonial";
-import { getHomeExperts, getHomeReviews, getHomeImages } from "@/lib/data/home";
+import {
+  getHomeExperts,
+  getHomeReviews,
+  getHomeImages,
+  getHomeStats,
+} from "@/lib/data/home";
+import { buildExpertHeroStats } from "@/lib/data/public-stats";
 import { withBuildTimeRetry } from "@/lib/data/fail-open";
 import {
   BenefitsSkeleton,
@@ -84,11 +90,20 @@ async function ReviewsLoader() {
   );
 }
 
-export default function Home() {
+// #1490 — the hero and the category cards render real figures now, so the page
+// component awaits them. That is affordable precisely here: `/` is prerendered
+// at build and served from the CDN, so no visitor pays for this read, and the
+// loader is cached on the same 1-hour window as the segment so a regeneration
+// reads a blob rather than the pooler. The heavy curated sections keep their
+// Suspense boundaries below; this one small read is not worth a skeleton in the
+// LCP element.
+export default async function Home() {
+  const stats = await withBuildTimeRetry(getHomeStats);
+
   return (
     <main className="flex-1 w-full overflow-hidden">
       {/* Hero - Black with animated orbs */}
-      <HeroSection />
+      <HeroSection stats={buildExpertHeroStats(stats)} />
 
       {/* Trusted By / Logo Cloud - Dark */}
       <TrustedBySection />
@@ -97,7 +112,7 @@ export default function Home() {
       <FeaturesSection />
 
       {/* Browse by Category - Light gradient */}
-      <CategoriesSection />
+      <CategoriesSection consultantsByDomain={stats.consultantsByDomain} />
 
       {/* Why Familiarise / Benefits - Light silver gradient */}
       <Suspense fallback={<BenefitsSkeleton />}>

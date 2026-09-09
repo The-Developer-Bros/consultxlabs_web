@@ -6,7 +6,10 @@
  */
 
 import * as Sentry from "@sentry/nextjs";
-import { reportSentryError, reportSentryMessage } from "@/lib/observability/report";
+import {
+  reportSentryError,
+  reportSentryMessage,
+} from "@/lib/observability/report";
 import { ENABLE_LIVE_PAYOUTS } from "@/lib/feature-flags";
 import { PaymentError } from "@/lib/payments/core/types";
 import crypto from "crypto";
@@ -146,6 +149,50 @@ export interface PayoutWebhookEvent {
 // RazorpayX Payouts Service
 // ============================================
 
+/**
+ * #1377 — ceiling on any single RazorpayX HTTP call. Sized against the payout
+ * batch: the submission loop runs under a cron lock, and a request that has
+ * not answered in half a minute is not going to answer usefully.
+ */
+const RAZORPAYX_REQUEST_TIMEOUT_MS = 30_000;
+
+// RazorpayX accepts an `X-Payout-Idempotency` value of 4-36 characters drawn
+// from letters, digits, hyphen, underscore and space, and rejects anything else
+// with a 400 — so an over-long key is not a weaker duplicate guard, it is a
+// payout that never leaves the building.
+const PAYOUT_IDEMPOTENCY_MIN_LENGTH = 4;
+const PAYOUT_IDEMPOTENCY_MAX_LENGTH = 36;
+const PAYOUT_IDEMPOTENCY_ALLOWED_CHARS = /^[A-Za-z0-9 _-]+$/;
+
+/**
+ * Fold a caller's idempotency key onto one RazorpayX will accept.
+ *
+ * #1377 — both money-out paths overshot the limit. An organization payout sends
+ * `payout_<uuid>` (43 characters) and a consultant payout prefers the
+ * `idempotencyKey` persisted on the row, `payout_<profileId>_<batchId>` (72),
+ * so every live submission would have been refused at the header rather than
+ * deduplicated. The persisted value stays as it is — it is also the row's
+ * unique key and the Stripe idempotency key, neither of which is bounded this
+ * way — and only the gateway header is narrowed here.
+ *
+ * The fold is a pure function of the key, so the one property that makes a
+ * retry safe survives: the same payout row always derives the same slot, and a
+ * request that timed out after RazorpayX accepted it returns the original
+ * payout instead of paying a second time.
+ */
+export function boundPayoutIdempotencyKey(key: string): string {
+  if (
+    key.length >= PAYOUT_IDEMPOTENCY_MIN_LENGTH &&
+    key.length <= PAYOUT_IDEMPOTENCY_MAX_LENGTH &&
+    PAYOUT_IDEMPOTENCY_ALLOWED_CHARS.test(key)
+  ) {
+    return key;
+  }
+  // 34 characters: inside the limit, inside the charset, and still readable as
+  // a payout key in the RazorpayX dashboard.
+  return `p_${crypto.createHash("sha256").update(key).digest("hex").slice(0, 32)}`;
+}
+
 export class RazorpayPayoutsService {
   private config: RazorpayXConfig;
   private baseUrl = "https://api.razorpay.com/v1";
@@ -184,24 +231,85 @@ export class RazorpayPayoutsService {
       `${this.config.keyId}:${this.config.keySecret}`,
     ).toString("base64");
 
-    const response = await fetch(`${this.baseUrl}${endpoint}`, {
-      method,
-      headers: {
-        Authorization: `Basic ${auth}`,
-        "Content-Type": "application/json",
-        ...headers,
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(
-        `RazorpayX API error: ${error.error?.description || response.statusText}`,
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}${endpoint}`, {
+        method,
+        headers: {
+          Authorization: `Basic ${auth}`,
+          "Content-Type": "application/json",
+          ...headers,
+        },
+        body: body ? JSON.stringify(body) : undefined,
+        // #1377 — bare `fetch` has no default timeout, so a hung connection to
+        // api.razorpay.com hangs the caller for as long as the socket stays
+        // open. This is the same hazard `withRazorpaySdkTimeout` exists for on
+        // the payments client, and it is worse here: the payout batch holds a
+        // cron lock while it submits, so one stalled socket can wedge an
+        // entire disbursement run. Every payout submission carries
+        // `X-Payout-Idempotency`, so a timed-out request that DID reach
+        // RazorpayX returns the original payout on retry rather than paying
+        // twice.
+        signal: AbortSignal.timeout(RAZORPAYX_REQUEST_TIMEOUT_MS),
+      });
+    } catch (cause) {
+      // AbortSignal.timeout rejects with a TimeoutError DOMException, and a
+      // DNS/socket failure rejects with a TypeError. Neither says whether the
+      // request reached RazorpayX, so both are surfaced as one retryable code
+      // rather than being flattened into an anonymous Error.
+      throw new PaymentError(
+        `RazorpayX request ${method} ${endpoint} did not complete: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+        "RAZORPAYX_REQUEST_FAILED",
+        "RAZORPAY",
+        cause,
       );
     }
 
-    return response.json();
+    if (!response.ok) {
+      // Razorpay's error envelope is `{ error: { code, description, reason } }`.
+      // The old throw kept only `description`, so callers could not tell a
+      // 401 on bad credentials from a 400 on a malformed fund account from a
+      // 502 worth retrying — every failure read as one opaque string. Carry
+      // the gateway's own code and the HTTP status through instead.
+      const parsed: unknown = await response.json().catch(() => null);
+      const gatewayError =
+        parsed &&
+        typeof parsed === "object" &&
+        "error" in parsed &&
+        typeof (parsed as { error: unknown }).error === "object"
+          ? ((parsed as { error: { code?: string; description?: string } })
+              .error ?? {})
+          : {};
+      throw new PaymentError(
+        `RazorpayX API error (HTTP ${response.status}) on ${method} ${endpoint}: ${
+          gatewayError.description || response.statusText || "no description"
+        }`,
+        gatewayError.code || `RAZORPAYX_HTTP_${response.status}`,
+        "RAZORPAY",
+        parsed,
+      );
+    }
+
+    // #1377 — the success body is read OUTSIDE the fetch() try above, so a
+    // reply whose headers arrived but whose body stalls trips the same
+    // AbortSignal here, and a non-JSON body (an edge/WAF error page) throws a
+    // SyntaxError. Either would escape as a bare exception and lose the
+    // retryable code the payout callers classify on. Neither says whether the
+    // payout was accepted, which is exactly the RAZORPAYX_REQUEST_FAILED case.
+    try {
+      return (await response.json()) as T;
+    } catch (cause) {
+      throw new PaymentError(
+        `RazorpayX response to ${method} ${endpoint} could not be read: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+        "RAZORPAYX_REQUEST_FAILED",
+        "RAZORPAY",
+        cause,
+      );
+    }
   }
 
   // ============================================
@@ -361,7 +469,9 @@ export class RazorpayPayoutsService {
         notes: request.notes,
       },
       {
-        "X-Payout-Idempotency": request.idempotencyKey,
+        "X-Payout-Idempotency": boundPayoutIdempotencyKey(
+          request.idempotencyKey,
+        ),
       },
     );
   }
@@ -473,7 +583,20 @@ export class RazorpayPayoutsService {
   }
 
   /**
-   * Map RazorpayX payout status to our internal status
+   * Map RazorpayX payout status to our internal status.
+   *
+   * The four terminal RazorpayX states are `processed`, `rejected`,
+   * `cancelled`, `reversed` and `failed`; `queued`, `pending` and `processing`
+   * are intermediate.
+   * https://razorpay.com/docs/x/payouts/status-details/
+   *
+   * #1377 — `failed` used to fall through to the `default` arm and be read as
+   * PENDING, i.e. as "still in flight". A payout that the bank refused would
+   * therefore never reach FAILED, so its earnings stayed BATCHED instead of
+   * being returned to READY and the consultant was never paid and never
+   * re-queued. The default arm is kept for genuinely unknown strings, where
+   * PENDING is the right answer because it keeps the reconciler polling
+   * instead of settling state on a guess.
    */
   mapPayoutStatus(
     status: RazorpayPayoutStatus,
@@ -488,6 +611,7 @@ export class RazorpayPayoutsService {
         return "COMPLETED";
       case "reversed":
       case "rejected":
+      case "failed":
         return "FAILED";
       case "cancelled":
         return "CANCELLED";
@@ -541,10 +665,28 @@ export class RazorpayPayoutsService {
 
 let razorpayPayoutsInstance: RazorpayPayoutsService | null = null;
 
+/**
+ * #1407 — the one place the RazorpayX API credential pair is resolved.
+ * Disbursement and the two status pollers must authenticate as the same
+ * merchant: the pollers read RAZORPAY_KEY_ID/RAZORPAY_SECRET directly, so on
+ * an account whose X keys differ from the core checkout keys every payout
+ * lookup 401s and every stuck payout is silently left stuck. Fallback order
+ * matches the documented one in `.env.sample`.
+ */
+export function resolveRazorpayXCredentials(): {
+  keyId: string;
+  keySecret: string;
+} {
+  return {
+    keyId: process.env.RAZORPAYX_KEY_ID || process.env.RAZORPAY_KEY_ID || "",
+    keySecret:
+      process.env.RAZORPAYX_KEY_SECRET || process.env.RAZORPAY_SECRET || "",
+  };
+}
+
 export function getRazorpayPayoutsService(): RazorpayPayoutsService {
   if (!razorpayPayoutsInstance) {
-    const keyId =
-      process.env.RAZORPAYX_KEY_ID || process.env.RAZORPAY_KEY_ID || "";
+    const { keyId, keySecret } = resolveRazorpayXCredentials();
 
     // PM-10 — ENABLE_LIVE_PAYOUTS, not NODE_ENV, is the posture where real
     // money leaves via RazorpayX: the consultant rail holds submissions
@@ -580,8 +722,7 @@ export function getRazorpayPayoutsService(): RazorpayPayoutsService {
 
     razorpayPayoutsInstance = new RazorpayPayoutsService({
       keyId,
-      keySecret:
-        process.env.RAZORPAYX_KEY_SECRET || process.env.RAZORPAY_SECRET || "",
+      keySecret,
       accountNumber: process.env.RAZORPAYX_ACCOUNT_NUMBER || "",
       webhookSecret: process.env.RAZORPAYX_WEBHOOK_SECRET,
     });

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import { AppointmentsType, Prisma } from "@prisma/client";
+import { AppointmentsType } from "@prisma/client";
 import { requireApiAuth, isPrivileged } from "@/lib/auth-helpers";
 import { resolveOrgScope } from "@/lib/api/scope/parse";
 import { getConsultantAppointments } from "@/lib/data/consultant-appointments";
@@ -79,13 +79,19 @@ export async function GET(request: NextRequest) {
     "COMPLETED",
     "CANCELLED",
   ];
-  if (consultationStatus && !validRequestStatuses.includes(consultationStatus)) {
+  if (
+    consultationStatus &&
+    !validRequestStatuses.includes(consultationStatus)
+  ) {
     return NextResponse.json(
       { error: "Invalid consultation status" },
       { status: 400 },
     );
   }
-  if (subscriptionStatus && !validRequestStatuses.includes(subscriptionStatus)) {
+  if (
+    subscriptionStatus &&
+    !validRequestStatuses.includes(subscriptionStatus)
+  ) {
     return NextResponse.json(
       { error: "Invalid subscription status" },
       { status: 400 },
@@ -129,13 +135,6 @@ export async function GET(request: NextRequest) {
       { status: scopeResolution.status },
     );
   }
-  const apptOrgFilter: Partial<Prisma.AppointmentWhereInput> =
-    scopeResolution.scope.kind === "personal"
-      ? { organizationId: null }
-      : scopeResolution.scope.kind === "org"
-        ? { organizationId: scopeResolution.scope.orgId }
-        : {};
-
   try {
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
@@ -159,7 +158,12 @@ export async function GET(request: NextRequest) {
         consultationId,
         subscriptionId,
       },
-      orgScopeFilter: apptOrgFilter,
+      // #674 defect 13 / B2B gap 9 — the Scope goes down whole. The
+      // hand-rolled projection this replaces tested only `kind === "org"`, so
+      // an org member below `operations.read` (resolved to `orgMember`) fell
+      // through to the empty filter and got every org's appointments plus
+      // their personal ones — the opposite of picking one org.
+      scope: scopeResolution.scope,
     });
 
     // #997 Phase 3 — opt-in aggregate, only computed when the caller scopes

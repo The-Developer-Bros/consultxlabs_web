@@ -16,8 +16,17 @@ on:
   schedule:
     # Every 30 minutes, on a minute no other job claims. Enforcement that has
     # already been reported as done should not wait an hour to become true.
+    # ADR 22 — this schedule is an upper bound on frequency, not a delivered cadence; ADR 27 — the Netlify ticker (netlify/functions/cron-tick.mts) is what actually holds the cadence for the money sweeps.
     - cron: "8-59/30 * * * *"
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+  # A second workflow_dispatch while one is already pending would replace it
+  # under the default single-pending-run policy; queue: max keeps every
+  # trigger instead of silently dropping one.
+  queue: max
 
 permissions:
   contents: read

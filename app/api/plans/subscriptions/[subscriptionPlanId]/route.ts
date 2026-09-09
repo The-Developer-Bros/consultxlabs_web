@@ -10,6 +10,12 @@ import {
 import { findOrCreateTopics, transformTopicsToStrings } from "@/lib/topics";
 import { SlotCalculationService } from "@/utils/slotAllocation/SlotCalculationService";
 import { getMinTrialPriceInPaise } from "@/lib/trials/pricing-config";
+import {
+  archivedAtForArchive,
+  parsePlanArchiveBody,
+  PLAN_ORG_GOVERNED_RESPONSE,
+  PLAN_ARCHIVE_RESPONSE_NOTE,
+} from "@/lib/api/plans/archive";
 
 import { getSession } from "@/lib/auth-server";
 export async function GET(
@@ -317,6 +323,94 @@ export async function PUT(
     }
     Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "plans" } });
     console.error("Error updating subscription plan:", error);
+    return NextResponse.json(
+      { error: "An error occurred while updating the subscription plan" },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * Sole-owner archive/restore (#1494) — a consultant stops selling a
+ * subscription offering without the org-catalog bulk-archive path.
+ */
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ subscriptionPlanId: string }> },
+) {
+  try {
+    const session = await getSession();
+    if (!session?.user?.id) {
+      return NextResponse.json(
+        { error: "Authentication required" },
+        { status: 401 },
+      );
+    }
+
+    const { subscriptionPlanId } = await params;
+
+    const parsedBody = await parsePlanArchiveBody(request);
+    if (!parsedBody.ok) {
+      return NextResponse.json(
+        { error: parsedBody.error, details: parsedBody.details },
+        { status: 400 },
+      );
+    }
+    const { archived } = parsedBody;
+
+    const existingPlan = await prisma.subscriptionPlan.findUnique({
+      where: { id: subscriptionPlanId },
+      include: { consultantProfile: true },
+    });
+
+    if (!existingPlan) {
+      return NextResponse.json(
+        { error: "Subscription plan not found" },
+        { status: 404 },
+      );
+    }
+
+    if (existingPlan.consultantProfile.userId !== session.user.id) {
+      return NextResponse.json(
+        {
+          error: "You do not have permission to update this subscription plan",
+        },
+        { status: 403 },
+      );
+    }
+
+    if (existingPlan.organizationId) {
+      return NextResponse.json(PLAN_ORG_GOVERNED_RESPONSE, { status: 403 });
+    }
+
+    const subscriptionPlan = await prisma.subscriptionPlan.update({
+      where: { id: subscriptionPlanId },
+      data: {
+        archivedAt: archived
+          ? archivedAtForArchive(existingPlan.archivedAt)
+          : null,
+      },
+    });
+
+    return NextResponse.json(
+      {
+        data: { id: subscriptionPlan.id, archivedAt: subscriptionPlan.archivedAt },
+        message: PLAN_ARCHIVE_RESPONSE_NOTE,
+      },
+      { status: 200 },
+    );
+  } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2025"
+    ) {
+      return NextResponse.json(
+        { error: "Subscription plan not found" },
+        { status: 404 },
+      );
+    }
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "plans" } });
+    console.error("Error archiving subscription plan:", error);
     return NextResponse.json(
       { error: "An error occurred while updating the subscription plan" },
       { status: 500 },

@@ -5,10 +5,11 @@
  */
 
 import prisma from "@/lib/prisma";
+import { computeRefundPct } from "@/lib/payments/operations/cancellation-policy";
 import {
-  computeRefundPct,
-  parsePolicySnapshot,
-} from "@/lib/payments/operations/cancellation-policy";
+  POLICY_TERMS_INCLUDE,
+  termsFromPolicyRow,
+} from "@/lib/payments/operations/cancellation-policy-store";
 import { hasOrgPermission } from "@/lib/auth/org-permissions";
 import type { SupportContext, SupportStage } from "./types";
 
@@ -27,7 +28,7 @@ export async function buildSupportContext(
       id: true,
       appointmentType: true,
       organizationId: true,
-      cancellationPolicySnapshot: true,
+      cancellationPolicy: POLICY_TERMS_INCLUDE,
       slotsOfAppointment: {
         // Current-or-next active slot only — a past SCHEDULED row would
         // otherwise drive stage/startsAt/endsAt stale when a rebooked slot
@@ -48,8 +49,12 @@ export async function buildSupportContext(
       subscription: {
         select: { subscriptionPlan: { select: { consultantProfileId: true } } },
       },
-      webinar: { select: { webinarPlan: { select: { consultantProfileId: true } } } },
-      class: { select: { classPlan: { select: { consultantProfileId: true } } } },
+      webinar: {
+        select: { webinarPlan: { select: { consultantProfileId: true } } },
+      },
+      class: {
+        select: { classPlan: { select: { consultantProfileId: true } } },
+      },
     },
   });
   if (!appt) return null;
@@ -106,13 +111,15 @@ export async function buildSupportContext(
   });
 
   // Policy refund % if cancelled now (consultee-initiated). Only meaningful when
-  // there's a policy snapshot + a start time; the caller re-derives the real
-  // amount at execution time (this is a preview for the flow).
+  // there is a start time to measure notice against; the caller re-derives the real
+  // amount at execution time (this is a preview for the flow). #1499 — the guard no
+  // longer requires a stored policy: a booking with none is governed by the platform
+  // ladder, so the percentage is knowable either way.
   let refundPctIfCancelledNow: number | null = null;
-  if (appt.cancellationPolicySnapshot && startsAt) {
+  if (startsAt) {
     const hoursUntilStart = (startsAt.getTime() - Date.now()) / 3_600_000;
     refundPctIfCancelledNow = computeRefundPct(
-      parsePolicySnapshot(appt.cancellationPolicySnapshot),
+      termsFromPolicyRow(appt.cancellationPolicy),
       hoursUntilStart,
       false,
     );
@@ -132,7 +139,8 @@ export async function buildSupportContext(
       },
       select: { role: true },
     });
-    isOrgOperator = !!membership && hasOrgPermission(membership.role, "operations.read");
+    isOrgOperator =
+      !!membership && hasOrgPermission(membership.role, "operations.read");
   }
 
   return {

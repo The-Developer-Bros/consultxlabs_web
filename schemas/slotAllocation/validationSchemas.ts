@@ -74,6 +74,27 @@ export const allocationRequestSchema = z
       })
       .optional(),
 
+    // #1206 — the consultant's explicit "place what fits now, the rest when
+    // availability opens". Default false: a partial schedule is never chosen
+    // on the consultee's behalf, only after the shortfall has been shown.
+    allowPartial: z
+      .boolean({
+        invalid_type_error: "'allowPartial' must be a boolean",
+      })
+      .optional()
+      .default(false),
+
+    // #1206 — "place the sessions that are still missing and leave everything
+    // already booked alone". Distinct from a plain re-allocation, which deletes
+    // the confirmed sessions and re-plans the whole event. Consultant-only for
+    // the same reason as `allowPartial`.
+    topUp: z
+      .boolean({
+        invalid_type_error: "'topUp' must be a boolean",
+      })
+      .optional()
+      .default(false),
+
     slots: z
       .array(
         z.string().datetime({

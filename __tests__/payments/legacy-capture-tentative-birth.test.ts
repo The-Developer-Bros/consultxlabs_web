@@ -3,17 +3,20 @@
  */
 
 /**
- * HOIf / #1202 — LEGACY-shape capture (no appointmentId in metadata) must
- * birth its slots TENTATIVE, so the B2 event-state guard decides what
- * happens next:
+ * HOIf / #1202 — a LEGACY-shape capture (no appointmentId on the payment) must
+ * leave the B2 event-state guard in charge of what becomes confirmed:
  *
- *   - CANCELLED/DRAFT event → guard refuses, nothing is ever confirmed; the
- *     committed ghosts are tentative (swept by #830) and Phase 2 refunds.
- *     Before this fix the legacy creators wrote CONFIRMED rows that committed
-     * even when the guard refused — refunded money + live slots on a dead
- *     calendar.
+ *   - CANCELLED/DRAFT event → the guard refuses, nothing is ever confirmed,
+ *     and Phase 2 refunds. Before #1202 the legacy creators wrote CONFIRMED
+ *     rows that committed even when the guard refused — refunded money plus
+ *     live slots on a dead calendar.
  *   - Live event → the ordinary confirm machinery flips the payer's rows,
  *     exactly like the NEW flow.
+ *
+ * #1319 changed how the seat itself is taken. `createClass` no longer births a
+ * row at all: it connects the payer to the sessions the consultant already
+ * allocated, which is what `handleClassCheckout` has always done. So the
+ * tentative-birth assertion below became an assertion that nothing is born.
  */
 
 const withSerializableRetry = jest.fn(async (fn: () => unknown) => fn());
@@ -31,6 +34,7 @@ jest.mock("@sentry/nextjs", () => ({
 
 // Phase-1 tx stub — every model the legacy CLASS flow touches.
 const slotCreate = jest.fn();
+const slotUpdate = jest.fn().mockResolvedValue({});
 const slotUpdateMany = jest.fn().mockResolvedValue({ count: 0 });
 const appointmentCreate = jest.fn();
 let appointmentFindUniqueResult: unknown = null;
@@ -39,11 +43,29 @@ const appointmentFindUnique = jest.fn(() =>
 );
 const classFindUnique = jest.fn();
 const classUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+const participantCreateMany = jest.fn().mockResolvedValue({ count: 1 });
+const participantUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
 const paymentFindUnique = jest.fn();
-const paymentUpdate = jest.fn().mockResolvedValue({});
+// #1439 — the confirmation stamp is a CAS, so the tx writer is updateMany
+// and a count of 1 means this capture won the PENDING row.
+const paymentUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
 const txStub = {
-  payment: { findUnique: paymentFindUnique, update: paymentUpdate },
-  slotOfAppointment: { create: slotCreate, updateMany: slotUpdateMany },
+  payment: {
+    findUnique: paymentFindUnique,
+    // The appointmentId link is still a plain update — only STATUS rides a CAS.
+    update: jest.fn().mockResolvedValue({}),
+    updateMany: paymentUpdateMany,
+  },
+  slotOfAppointment: {
+    create: slotCreate,
+    update: slotUpdate,
+    updateMany: slotUpdateMany,
+  },
+  // #1319 A9 — the creators shadow-write participant rows in the same tx.
+  appointmentParticipant: {
+    createMany: participantCreateMany,
+    updateMany: participantUpdateMany,
+  },
   appointment: { create: appointmentCreate, findUnique: appointmentFindUnique },
   class: { findUnique: classFindUnique, updateMany: classUpdateMany },
 };
@@ -139,11 +161,19 @@ function makeCancelledClass() {
       id: "plan-1",
       consultantProfile: { userId: "consultant-1" },
     },
+    // A class's Appointments ARE its sessions; the payer joins these.
+    appointments: [
+      {
+        id: "session-appt-1",
+        slotsOfAppointment: [{ id: "slot-1" }, { id: "slot-2" }],
+      },
+    ],
   };
 }
 
 beforeEach(() => {
   jest.clearAllMocks();
+  slotUpdate.mockResolvedValue({});
   slotUpdateMany.mockResolvedValue({ count: 0 });
   classUpdateMany.mockResolvedValue({ count: 1 });
   paymentFindUnique.mockResolvedValue({
@@ -154,19 +184,24 @@ beforeEach(() => {
     userId: "user-1",
     currency: "INR",
     appointmentId: null, // LEGACY shape
-    user: { email: "b@x.com", name: "Buyer", consulteeProfile: {} },
+    // `createAppointmentFromWebhook` reads the buyer off `payment.user.id`,
+    // not off the metadata — the mock omitted it and nothing asserted on it.
+    user: {
+      id: "user-1",
+      email: "b@x.com",
+      name: "Buyer",
+      consulteeProfile: { id: "consultee-profile-1" },
+    },
   });
   (validateWebhookMetadata as jest.Mock).mockReturnValue(VALID_METADATA);
 });
 
 describe("HOIf/#1202 — legacy capture births tentative slots, guard decides", () => {
-  it("births the payer's slot TENTATIVE (never confirmed at creation)", async () => {
-    const cancelled = makeCancelledClass();
-    classFindUnique.mockResolvedValue(cancelled);
+  it("takes the seat by joining existing sessions, minting nothing", async () => {
+    classFindUnique.mockResolvedValue(makeCancelledClass());
     classUpdateMany.mockResolvedValue({ count: 0 }); // CAS refuses CANCELLED
-    appointmentCreate.mockResolvedValue({ id: "new-appt" });
     appointmentFindUniqueResult = {
-      id: "new-appt",
+      id: "session-appt-1",
       class: { id: "class-1", status: "CANCELLED" },
       consultation: null,
       subscription: null,
@@ -180,11 +215,21 @@ describe("HOIf/#1202 — legacy capture births tentative slots, guard decides", 
       10000,
     );
 
-    // createClass births the slot NESTED inside appointment.create.
-    expect(appointmentCreate).toHaveBeenCalledTimes(1);
-    const created = appointmentCreate.mock.calls[0][0].data;
-    expect(created.slotsOfAppointment.create.isTentative).toBe(true);
+    // #1319 — no phantom Appointment (which the product reads as an extra
+    // class session) and no per-buyer slot row.
+    expect(appointmentCreate).not.toHaveBeenCalled();
     expect(slotCreate).not.toHaveBeenCalled();
+
+    // The payer is connected to every slot of every existing session instead.
+    expect(slotUpdate).toHaveBeenCalledTimes(2);
+    expect(slotUpdate).toHaveBeenCalledWith({
+      where: { id: "slot-1" },
+      data: { user: { connect: { id: "user-1" } } },
+    });
+    expect(slotUpdate).toHaveBeenCalledWith({
+      where: { id: "slot-2" },
+      data: { user: { connect: { id: "user-1" } } },
+    });
   });
 
   it("refuses a CANCELLED class: no confirmed flip, refund instead", async () => {
@@ -205,6 +250,15 @@ describe("HOIf/#1202 — legacy capture births tentative slots, guard decides", 
     expect(refundPayment).toHaveBeenCalledWith(
       expect.objectContaining({ paymentId: "pay1", initiatedByUserId: null }),
     );
+    // The seat row commits with the transaction even when the guard refuses,
+    // so it must be born HELD: a CONFIRMED row would outlive the refund as a
+    // paid-looking seat on a dead class.
+    expect(participantCreateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: [expect.objectContaining({ userId: "user-1", status: "HELD" })],
+      }),
+    );
+    expect(participantUpdateMany).not.toHaveBeenCalled();
   });
 
   it("confirms the payer's rows when the class is LIVE", async () => {
@@ -219,9 +273,8 @@ describe("HOIf/#1202 — legacy capture births tentative slots, guard decides", 
       };
     });
     classUpdateMany.mockResolvedValue({ count: 1 }); // CAS succeeds
-    appointmentCreate.mockResolvedValue({ id: "new-appt" });
     appointmentFindUniqueResult = {
-      id: "new-appt",
+      id: "session-appt-1",
       class: { id: "class-1", status: "SCHEDULED" },
       consultation: null,
       subscription: null,

@@ -49,11 +49,36 @@ type StreamVideoClient = ReturnType<typeof getStreamVideoClient>;
 export const MEMBER_ROLE = "call_member";
 
 /**
- * Stream caps `queryCalls` well below any limit worth asking for, and pages
- * with an opaque `next` cursor rather than an offset. Page at a size the API
- * will actually honour so the loop's termination condition stays true.
+ * Stream's documented maximum for `queryCalls`, and the only page size that
+ * works — because its cursor pagination does not.
+ *
+ * Measured against the live app on 2026-09-01, after `--apply` refused with an
+ * API error rather than a verdict:
+ *
+ *   limit=25  -> 25 calls, next present
+ *   limit=50  -> 50 calls, next present
+ *   limit=100 -> 84 calls, NO next
+ *   limit=250 -> "limit must be 100 or less"
+ *
+ *   any request carrying `next`
+ *     -> "cannot specify sort and next/prev at the same time"
+ *
+ * That last one is unconditional. Dropping `limit`, dropping the filter, and
+ * passing `sort: []` or `sort: undefined` all fail identically — the server
+ * sees a default sort on every request the SDK builds, so the `next` cursor can
+ * never be used from here.
+ *
+ * The old size of 25 therefore guaranteed the failure: 84 open calls meant a
+ * second page, and the second page always throws. `anyOpenCallMemberHolds`
+ * fails closed, so `ensure-call-type-grants.ts --apply` was IMPOSSIBLE TO RUN —
+ * the whole call-type hardening rollout was blocked and the refusal read like a
+ * transient Stream problem.
+ *
+ * At 100 the current 84 fit in one page with no cursor. Past 100 there is no
+ * supported way to continue, so the traversal reports truncation instead of
+ * pretending, and each consumer decides what that means.
  */
-const CALL_PAGE_SIZE = 25;
+const CALL_PAGE_SIZE = 100;
 
 /** Members come back on their own cursor, for a webinar with a long roster. */
 const MEMBER_PAGE_SIZE = 100;
@@ -83,25 +108,47 @@ export interface OpenCall {
 export async function* iterateOpenCalls(
   client: StreamVideoClient,
 ): AsyncGenerator<OpenCall> {
-  let next: string | undefined;
+  const page = await client.video.queryCalls({
+    filter_conditions: { ended_at: null },
+    limit: CALL_PAGE_SIZE,
+  });
 
-  do {
-    const page = await client.video.queryCalls({
-      filter_conditions: { ended_at: null },
-      limit: CALL_PAGE_SIZE,
-      ...(next ? { next } : {}),
-    });
+  for (const entry of page.calls) {
+    yield {
+      id: entry.call.id,
+      type: entry.call.type,
+      members: await readAllMembers(client, entry.call.type, entry.call.id),
+    };
+  }
 
-    for (const entry of page.calls) {
-      yield {
-        id: entry.call.id,
-        type: entry.call.type,
-        members: await readAllMembers(client, entry.call.type, entry.call.id),
-      };
-    }
+  // One page, deliberately — see CALL_PAGE_SIZE. A `next` here means there are
+  // more than 100 open calls and no supported way to reach them, so the
+  // traversal is a PREFIX of the answer. It is announced rather than silently
+  // returned, because both consumers draw dangerous conclusions from a complete
+  // scan: one decides whether it is safe to strip `join-call` from everyone.
+  if (page.next) {
+    throw new OpenCallScanTruncatedError(page.calls.length);
+  }
+}
 
-    next = page.next;
-  } while (next);
+/**
+ * More open calls than one page can hold, and no way to page further.
+ *
+ * A distinct type so `anyOpenCallMemberHolds` can refuse specifically, instead
+ * of the caller seeing an opaque Stream error and assuming an outage. If this
+ * ever fires, the fix is upstream: reconcile the orphaned sessions so the open
+ * count comes back under 100 (most of the current 84 are unreconciled rows, not
+ * live meetings), or wait for Stream to accept `next` without a default sort.
+ */
+export class OpenCallScanTruncatedError extends Error {
+  constructor(public readonly scanned: number) {
+    super(
+      `More than ${scanned} open calls: Stream caps queryCalls at 100 and its ` +
+        `next-cursor rejects every request the SDK builds ("cannot specify sort ` +
+        `and next/prev at the same time"), so the scan cannot be completed.`,
+    );
+    this.name = "OpenCallScanTruncatedError";
+  }
 }
 
 /** Every member of one call, following the member cursor to the end. */

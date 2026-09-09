@@ -1,4 +1,7 @@
-import { reportSentryError, reportSentryMessage } from "@/lib/observability/report";
+import {
+  reportSentryError,
+  reportSentryMessage,
+} from "@/lib/observability/report";
 import prisma from "@/lib/prisma";
 import type { Tx } from "@/lib/prisma";
 import { Prisma, type PaymentGateway } from "@prisma/client";
@@ -7,6 +10,7 @@ import { reverseCreditsForPayment } from "@/lib/referrals/service";
 import { reverseBookingUtilization } from "@/lib/api/organizations/program-helpers";
 import {
   transitionConsultationRequest,
+  transitionSlotCompletion,
   transitionSubscriptionRequest,
 } from "@/lib/booking/transitions";
 import { cancelPaymentIntent } from "@/scripts/payments/cleanup-abandoned-payments";
@@ -16,7 +20,7 @@ import { cancelPaymentIntent } from "@/scripts/payments/cleanup-abandoned-paymen
  *
  * A user who abandons checkout otherwise waits for the cleanup cron's next
  * pass inside the 24h tentative window (#833). This is the self-serve path:
- * expire the caller's own PENDING payment, restore referral credits, delete
+ * expire the caller's own PENDING payment, restore referral credits, release
  * the tentative slots, and cancel the parent request.
  *
  * Race posture (#836/#838 doctrine): the whole body runs in one Serializable
@@ -70,10 +74,15 @@ async function releaseSlots(
   userId: string,
 ): Promise<number> {
   if (!appt.class && !appt.webinar) {
-    const res = await tx.slotOfAppointment.deleteMany({
-      where: { appointmentId: appt.id, isTentative: true },
+    // Doctrine rule 2: freed by status, not by DELETE. The buyer keeps a
+    // record of the hold they abandoned, and occupancy already ignores a
+    // soft-cancelled row.
+    return transitionSlotCompletion(tx, {
+      where: { appointmentId: appt.id, isTentative: true, deletedAt: null },
+      to: "CANCELLED",
+      data: { deletedAt: new Date() },
+      allowZero: true,
     });
-    return res.count;
   }
 
   const seatFilter = appt.class
@@ -126,11 +135,14 @@ export async function cancelPendingCheckout(args: {
         if (!payment || payment.userId !== args.userId) {
           // Authorization-denial-shaped outcome (or a genuinely missing
           // payment) — modelled, reported for visibility only.
-          reportSentryMessage("cancelPendingCheckout: not found / not owned by caller", {
-            subsystem: "payments",
-            expected: true,
-            extra: { paymentId: args.paymentId },
-          });
+          reportSentryMessage(
+            "cancelPendingCheckout: not found / not owned by caller",
+            {
+              subsystem: "payments",
+              expected: true,
+              extra: { paymentId: args.paymentId },
+            },
+          );
           return {
             outcome: { ok: false, code: "NOT_FOUND" },
             gatewayCancel: null,
@@ -150,11 +162,14 @@ export async function cancelPendingCheckout(args: {
         if (claimed.count === 0) {
           // Lost CAS race — the webhook/cron/a parallel cancel already won.
           // The system working as designed.
-          reportSentryMessage("cancelPendingCheckout: lost CAS race (already terminal)", {
-            subsystem: "payments",
-            expected: true,
-            extra: { paymentId: args.paymentId },
-          });
+          reportSentryMessage(
+            "cancelPendingCheckout: lost CAS race (already terminal)",
+            {
+              subsystem: "payments",
+              expected: true,
+              extra: { paymentId: args.paymentId },
+            },
+          );
           return {
             outcome: { ok: false, code: "NOT_PENDING" },
             gatewayCancel: null,
@@ -217,7 +232,11 @@ export async function cancelPendingCheckout(args: {
               },
         };
       },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, maxWait: 10_000, timeout: 15_000 },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        maxWait: 10_000,
+        timeout: 15_000,
+      },
     ),
   );
 

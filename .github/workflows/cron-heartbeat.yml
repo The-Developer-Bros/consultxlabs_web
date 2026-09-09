@@ -17,6 +17,10 @@ on:
     - cron: "40 4 * * *"
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 # Read-only access to the Actions API; no repo write is needed or wanted.
 permissions:
   contents: read

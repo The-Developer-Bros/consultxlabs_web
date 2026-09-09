@@ -16,6 +16,7 @@ import { requireOrgAccess } from "@/lib/auth-helpers";
 import { AUDIT_ACTIONS } from "@/lib/enterprise/audit-actions";
 import { transitionProgram } from "@/lib/enterprise/transitions";
 import { getProgramLockState } from "@/lib/enterprise/config-lock";
+import { overageBehaviorUnsupportedReason } from "@/lib/enterprise/reachable-paths";
 import { withSerializableRetry } from "@/lib/db/serializable-retry";
 
 const ProgramStatusSchema = z.enum([
@@ -131,7 +132,7 @@ export async function GET(
   return NextResponse.json({ program: { ...program, locked } });
 }
 
-// TODO(#777 server-actions): kept as a Route Handler + useMutation to match the
+// TODO(#1332 server-actions): kept as a Route Handler + useMutation to match the
 // rest of the dashboard. New first-party form mutations should prefer a Server
 // Action (co-located write + revalidate, progressive enhancement) per the
 // agreed direction — migrate this when the dashboard converges on that pattern.
@@ -154,7 +155,15 @@ async function applyProgramPatch(
   const touchesMoney = MONEY_FIELDS.some((f) => body[f] !== undefined);
   const current = await tx.program.findFirst({
     where: { id: programId, contract: { organizationId: orgId } },
-    include: { licensedSeatConfig: true, creditPoolConfig: true },
+    include: {
+      licensedSeatConfig: true,
+      creditPoolConfig: true,
+      // #1458 — the funding source decides which overage behaviours can
+      // actually be collected, so the merged-config check below needs it.
+      contract: {
+        select: { billingAccount: { select: { fundingSource: true } } },
+      },
+    },
   });
   if (!current) {
     throw Object.assign(new Error("Program not found"), {
@@ -185,8 +194,7 @@ async function applyProgramPatch(
   if (touchesMoney) {
     const cfg = current.licensedSeatConfig ?? current.creditPoolConfig;
     const merged = {
-      overageBehavior:
-        body.overageBehavior ?? cfg?.overageBehavior ?? "BLOCK",
+      overageBehavior: body.overageBehavior ?? cfg?.overageBehavior ?? "BLOCK",
       overageSurchargeBps:
         body.overageSurchargeBps !== undefined
           ? body.overageSurchargeBps
@@ -198,8 +206,7 @@ async function applyProgramPatch(
       coveredEngagementsPerCycle:
         body.coveredEngagementsPerCycle !== undefined
           ? body.coveredEngagementsPerCycle
-          : (current.licensedSeatConfig?.coveredEngagementsPerCycle ??
-            null),
+          : (current.licensedSeatConfig?.coveredEngagementsPerCycle ?? null),
     };
     const fail = (message: string) => {
       throw Object.assign(new Error(message), {
@@ -237,6 +244,17 @@ async function applyProgramPatch(
         "overageSurchargeBps has no effect with overageBehavior=BLOCK — remove it or pick CHARGE_MEMBER/CHARGE_ORG.",
       );
     }
+    // #1458 — same funding-source rule the create route applies, re-checked on
+    // the merged config so a patch cannot assemble a combination the create
+    // route would have refused.
+    const overageReason = overageBehaviorUnsupportedReason(
+      current.contract.billingAccount?.fundingSource ?? null,
+      merged.overageBehavior,
+      // #1458 — merged, so a patch that adds a surcharge to an already-saved
+      // wallet CHARGE_ORG programme is refused as readily as one that sets both.
+      merged.overageSurchargeBps,
+    );
+    if (overageReason) fail(overageReason);
   }
 
   // #777 §B — archiving guard: an archived program is skipped by the cycle
@@ -403,7 +421,6 @@ async function applyProgramPatch(
       },
     });
   }
-
 }
 
 export async function PATCH(
@@ -457,12 +474,13 @@ export async function PATCH(
     // retried by the house helper.
     const updated = await withSerializableRetry(() =>
       prisma.$transaction(
-        (tx) => applyProgramPatch(tx, {
-          orgId,
-          programId,
-          actorMembershipId: access.member.id,
-          body,
-        }),
+        (tx) =>
+          applyProgramPatch(tx, {
+            orgId,
+            programId,
+            actorMembershipId: access.member.id,
+            body,
+          }),
         { isolationLevel: "Serializable" },
       ),
     );
@@ -472,7 +490,10 @@ export async function PATCH(
       const status = typeof err.httpStatus === "number" ? err.httpStatus : 500;
       return NextResponse.json({ error: err.message }, { status });
     }
-    Sentry.captureException(err instanceof Error ? err : new Error(String(err)), { tags: { subsystem: "enterprise" } });
+    Sentry.captureException(
+      err instanceof Error ? err : new Error(String(err)),
+      { tags: { subsystem: "enterprise" } },
+    );
     throw err;
   }
 }
@@ -505,56 +526,58 @@ export async function DELETE(
     // 500ing the DELETE.
     await withSerializableRetry(() =>
       prisma.$transaction(
-      async (tx) => {
-        const current = await tx.program.findFirst({
-          where: { id: programId, contract: { organizationId: orgId } },
-          include: { _count: { select: { assignments: true } } },
-        });
-        if (!current) {
-          throw Object.assign(new Error("Program not found"), {
-            httpStatus: 404,
+        async (tx) => {
+          const current = await tx.program.findFirst({
+            where: { id: programId, contract: { organizationId: orgId } },
+            include: { _count: { select: { assignments: true } } },
           });
-        }
-        if (current._count.assignments > 0) {
-          throw Object.assign(
-            new Error(
-              "Cannot delete a program with active assignments. Pause it instead (PATCH status=PAUSED).",
-            ),
-            { httpStatus: 409 },
-          );
-        }
+          if (!current) {
+            throw Object.assign(new Error("Program not found"), {
+              httpStatus: 404,
+            });
+          }
+          if (current._count.assignments > 0) {
+            throw Object.assign(
+              new Error(
+                "Cannot delete a program with active assignments. Pause it instead (PATCH status=PAUSED).",
+              ),
+              { httpStatus: 409 },
+            );
+          }
 
-        // Even when assignments=0, a current-cycle BookingUtilization
-        // can exist via a reversed-but-not-removed history row. Refuse
-        // the hard delete if any utilization in the current period is
-        // still queryable — the audit trail would otherwise lose its
-        // foreign-key target.
-        const utilizationStillPresent = await tx.bookingUtilization.findFirst({
-          where: { programAssignment: { programId } },
-          select: { id: true },
-        });
-        if (utilizationStillPresent) {
-          throw Object.assign(
-            new Error(
-              "Program has historical utilization rows. Pause via PATCH status=CANCELLED instead of deleting.",
-            ),
-            { httpStatus: 409 },
+          // Even when assignments=0, a current-cycle BookingUtilization
+          // can exist via a reversed-but-not-removed history row. Refuse
+          // the hard delete if any utilization in the current period is
+          // still queryable — the audit trail would otherwise lose its
+          // foreign-key target.
+          const utilizationStillPresent = await tx.bookingUtilization.findFirst(
+            {
+              where: { programAssignment: { programId } },
+              select: { id: true },
+            },
           );
-        }
+          if (utilizationStillPresent) {
+            throw Object.assign(
+              new Error(
+                "Program has historical utilization rows. Pause via PATCH status=CANCELLED instead of deleting.",
+              ),
+              { httpStatus: 409 },
+            );
+          }
 
-        await tx.program.delete({ where: { id: programId } });
-        await tx.orgAuditLog.create({
-          data: {
-            organizationId: orgId,
-            actorMembershipId: access.member.id,
-            category: "PROGRAM",
-            action: AUDIT_ACTIONS.PROGRAM.PROGRAM_DELETED,
-            description: `Program ${programId} deleted (no assignments)`,
-            details: { programId },
-          },
-        });
-      },
-      { isolationLevel: "Serializable" },
+          await tx.program.delete({ where: { id: programId } });
+          await tx.orgAuditLog.create({
+            data: {
+              organizationId: orgId,
+              actorMembershipId: access.member.id,
+              category: "PROGRAM",
+              action: AUDIT_ACTIONS.PROGRAM.PROGRAM_DELETED,
+              description: `Program ${programId} deleted (no assignments)`,
+              details: { programId },
+            },
+          });
+        },
+        { isolationLevel: "Serializable" },
       ),
     );
     return new NextResponse(null, { status: 204 });
@@ -563,7 +586,10 @@ export async function DELETE(
       const status = typeof err.httpStatus === "number" ? err.httpStatus : 500;
       return NextResponse.json({ error: err.message }, { status });
     }
-    Sentry.captureException(err instanceof Error ? err : new Error(String(err)), { tags: { subsystem: "enterprise" } });
+    Sentry.captureException(
+      err instanceof Error ? err : new Error(String(err)),
+      { tags: { subsystem: "enterprise" } },
+    );
     throw err;
   }
 }

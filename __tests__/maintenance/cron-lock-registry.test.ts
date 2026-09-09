@@ -222,4 +222,63 @@ describe("cron lock registry (#1169)", () => {
     );
     expect(orphaned).toEqual([]);
   });
+
+  it("gates every refund front-door caller behind FINANCIAL_JOB_NAMES (#1506)", () => {
+    // A refunding sweep that is not in the set runs straight through DEGRADED
+    // maintenance, which is the exact bug #1506 fixed for the no-show and
+    // expiry sweeps. Grep scripts/** for callers rather than trusting a
+    // hand-maintained list, so a new refunding script fails this test instead
+    // of shipping unguarded.
+    const REFUND_FRONT_DOORS = [
+      "refundBookingPayment(",
+      "refundWholeEventPayments(",
+      "refundRemovedAttendeeSeat(",
+      "refundPaymentsForExpired(",
+    ];
+    const SCRIPTS_DIR = path.join(ROOT, "scripts");
+
+    function walk(dir: string): string[] {
+      const out: string[] = [];
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) out.push(...walk(full));
+        else if (entry.name.endsWith(".ts")) out.push(full);
+      }
+      return out;
+    }
+
+    const callers = walk(SCRIPTS_DIR).filter((file) => {
+      const src = read(file);
+      return !!src && REFUND_FRONT_DOORS.some((fn) => src.includes(fn));
+    });
+
+    expect(callers.length).toBeGreaterThan(0);
+
+    const ungated = callers
+      .map((file) => {
+        const lock = findLock(read(file));
+        return { file: path.relative(ROOT, file), jobName: lock?.jobName };
+      })
+      .filter((r) => !r.jobName || !FINANCIAL_JOB_NAMES.has(r.jobName))
+      .map((r) => `${r.file} → withCronLock("${r.jobName ?? "none"}")`);
+
+    expect(ungated).toEqual([]);
+  });
+
+  it("gives every scheduled workflow a queueing concurrency group", () => {
+    // #1413 — a second, redundant guard alongside withCronLock: an overlap
+    // should queue behind the in-flight run at the Actions layer too, not
+    // just at the Redis layer. cancel-in-progress must stay false, since
+    // killing a mid-flight money job is the one thing worse than a double run.
+    const missing = registry
+      .map((r) => r.workflow)
+      .filter((workflow) => {
+        const src = read(path.join(WORKFLOW_DIR, workflow));
+        if (!src) return true;
+        const hasGroup = /^concurrency:\s*\n\s*group:\s*\S+/m.test(src);
+        const hasNoCancel = /cancel-in-progress:\s*false/.test(src);
+        return !(hasGroup && hasNoCancel);
+      });
+    expect(missing).toEqual([]);
+  });
 });

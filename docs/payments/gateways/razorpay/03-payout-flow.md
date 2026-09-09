@@ -208,15 +208,20 @@ Webhook confirms status
 
 ### RazorpayX Payout Status Mapping
 
-| RazorpayX Status | Internal Status | Description                  |
-| ---------------- | --------------- | ---------------------------- |
-| `queued`         | PENDING         | Queued due to low balance    |
-| `pending`        | PENDING         | Awaiting processing          |
-| `processing`     | PROCESSING      | Being processed by RazorpayX |
-| `processed`      | COMPLETED       | Funds transferred to bank    |
-| `reversed`       | FAILED          | Bank returned the funds      |
-| `rejected`       | FAILED          | Payout rejected by RazorpayX |
-| `cancelled`      | CANCELLED       | Payout cancelled             |
+RazorpayX has three intermediate payout states and five terminal ones, and every terminal state must map to a terminal internal state. If a terminal gateway state is read as an intermediate one, the payout never leaves PROCESSING, its earnings stay BATCHED, and the consultant is neither paid nor re-queued. The mapping below is the full set as documented at [RazorpayX Payout Status](https://razorpay.com/docs/x/payouts/status-details/).
+
+| RazorpayX Status | Internal Status | Description                                               |
+| ---------------- | --------------- | --------------------------------------------------------- |
+| `queued`         | PENDING         | Queued due to low balance                                 |
+| `pending`        | PENDING         | Awaiting approval in the RazorpayX approval workflow      |
+| `processing`     | PROCESSING      | Being processed by RazorpayX                              |
+| `processed`      | COMPLETED       | Funds transferred to bank                                 |
+| `reversed`       | FAILED          | Bank returned the funds; RazorpayX credited us back       |
+| `rejected`       | FAILED          | Approval was refused or lapsed                            |
+| `failed`         | FAILED          | The transfer failed at RazorpayX, the bank, or in transit |
+| `cancelled`      | CANCELLED       | A queued payout was cancelled manually                    |
+
+An unrecognised status deliberately maps to PENDING rather than to a terminal state, because "we do not know yet" must keep the reconciler polling instead of settling a payout on a guess.
 
 ---
 
@@ -227,6 +232,7 @@ Webhook confirms status
 | `payout.processed` | Funds transferred successfully | Mark payout COMPLETED, earnings as PAID       |
 | `payout.reversed`  | Bank returned funds            | Mark payout FAILED, restore available balance |
 | `payout.rejected`  | RazorpayX rejected payout      | Mark payout FAILED, alert admin               |
+| `payout.failed`    | Transfer failed at the bank    | Mark payout FAILED, return earnings to READY  |
 | `payout.queued`    | Insufficient balance, queued   | Update payout status to PENDING               |
 | `payout.pending`   | Payout pending processing      | Update payout status                          |
 | `payout.cancelled` | Payout cancelled               | Mark payout CANCELLED                         |
@@ -250,9 +256,11 @@ Webhook confirms status
 
 Since March 2025, RazorpayX **requires** an idempotency key on every payout request. This prevents duplicate payouts if a request is retried.
 
-The system generates idempotency keys using the payout ID and timestamp: `payout_{payoutId}_{timestamp}`
+The key must be deterministic for a given payout, because that is the only property that makes a retry safe. `generateIdempotencyKey` in `lib/payments/payouts/razorpay-payouts.ts` therefore returns `payout_{payoutId}` and nothing else. An earlier version appended a timestamp, which produced a fresh key on every attempt and so defeated the mechanism entirely: a retry after a timeout would have submitted a second payout for the same earnings. Do not reintroduce a clock, a random suffix or an attempt counter into this key.
 
-The key is sent via the `X-Payout-Idempotency` header.
+The key is sent via the `X-Payout-Idempotency` header. When the payout row already carries an `idempotencyKey`, that value is used ahead of the generated one, so every attempt on a given row lands on the same RazorpayX idempotency slot.
+
+RazorpayX bounds that header at 4 to 36 characters drawn from letters, digits, hyphens, underscores and spaces, and answers anything else with a 400. Two of our keys overshoot it: an organization payout derives `payout_<uuid>`, which is 43 characters, and a consultant payout persists `payout_<consultantProfileId>_<batchId>`, which is 72. `boundPayoutIdempotencyKey` therefore folds any key the gateway would refuse onto a 34-character digest of itself at the point the header is written. The fold is a pure function of the key, so determinism is preserved and a retry still returns the original payout rather than creating a second one. The persisted `idempotencyKey` is left alone, because it is also the row's unique constraint and the Stripe transfer key, and neither of those is bounded the way this header is.
 
 ---
 

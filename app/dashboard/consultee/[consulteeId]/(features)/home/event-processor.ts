@@ -17,6 +17,7 @@ import type {
 import type { MeetingAppointment, MeetingSlot } from "@/lib/meeting";
 import {
   getCurrentOrNextSession,
+  groupSlotsIntoRuns,
   type SessionRun,
 } from "@/lib/appointments/slots";
 
@@ -42,7 +43,7 @@ export interface ProcessedEvent {
   startsAt: Date;
   endsAt: Date;
   status: string;
-  slots: Array<{ startsAt: Date; endsAt: Date; appointmentId: string }>;
+  slots: ProcessedEventSlot[];
   appointmentId?: string;
   // Data needed for joining meetings
   joinableAppointment?: MeetingAppointment;
@@ -86,6 +87,34 @@ interface SlotWithContext {
   endsAt: Date;
   rawSlot: ProcessedSlot;
   appointmentId: string;
+}
+
+/**
+ * A slot as the card's session list carries it.
+ *
+ * #1199 — this used to be `{ startsAt, endsAt, appointmentId }` and nothing
+ * more, which is exactly the shape that cannot answer "is this one session or
+ * two". The identity, the tentative flag and the completion status ride along
+ * now so the month view can group on runs like every other surface does.
+ */
+export type ProcessedEventSlot = {
+  id: string;
+  startsAt: Date;
+  endsAt: Date;
+  appointmentId: string;
+  isTentative: boolean;
+  completionStatus: string | null;
+};
+
+function toEventSlot(slot: SlotWithContext): ProcessedEventSlot {
+  return {
+    id: slot.rawSlot.id,
+    startsAt: slot.startsAt,
+    endsAt: slot.endsAt,
+    appointmentId: slot.appointmentId,
+    isTentative: Boolean(slot.rawSlot.isTentative),
+    completionStatus: slot.rawSlot.completionStatus ?? null,
+  };
 }
 
 /** A picked session: the run, plus its anchor row in list-item shape. */
@@ -176,9 +205,10 @@ function processConsultation(
   if (!slots || slots.length === 0) return null;
 
   const appointmentId = consultation.appointment?.id ?? "";
+  const slotContexts = toSlotContexts(slots, appointmentId);
   // #1061 — the card's time range and its Join target are the whole session,
   // not the first 30-minute row of it.
-  const session = findNextSlot(toSlotContexts(slots, appointmentId));
+  const session = findNextSlot(slotContexts);
   if (!session) return null;
 
   // Build meeting appointment
@@ -217,11 +247,7 @@ function processConsultation(
     startsAt: session.startsAt,
     endsAt: session.endsAt,
     status: consultation.status ?? "PENDING",
-    slots: slots.map((s) => ({
-      startsAt: new Date(s.startsAt),
-      endsAt: new Date(s.endsAt ?? s.startsAt),
-      appointmentId,
-    })),
+    slots: slotContexts.map(toEventSlot),
     appointmentId,
     joinableAppointment,
     joinableSlot,
@@ -289,11 +315,7 @@ function processSubscription(
     startsAt: nextSlot.startsAt,
     endsAt: nextSlot.endsAt,
     status: subscription.status ?? "PENDING",
-    slots: allSlots.map((s) => ({
-      startsAt: s.startsAt,
-      endsAt: s.endsAt,
-      appointmentId: s.appointmentId,
-    })),
+    slots: allSlots.map(toEventSlot),
     appointmentId: nextSlot.appointmentId,
     joinableAppointment,
     joinableSlot: nextSlot.rawSlot,
@@ -366,11 +388,7 @@ function processWebinar(webinar: TConsulteeWebinar): ProcessedEvent | null {
     startsAt: nextSlot.startsAt,
     endsAt: nextSlot.endsAt,
     status: webinar.status ?? "APPROVED",
-    slots: allSlots.map((s) => ({
-      startsAt: s.startsAt,
-      endsAt: s.endsAt,
-      appointmentId: s.appointmentId,
-    })),
+    slots: allSlots.map(toEventSlot),
     appointmentId,
     joinableAppointment,
     joinableSlot: nextSlot.rawSlot,
@@ -448,11 +466,7 @@ function processClass(classEvent: TConsulteeClass): ProcessedEvent | null {
     startsAt: nextSlot.startsAt,
     endsAt: nextSlot.endsAt,
     status: classEvent.status ?? "APPROVED",
-    slots: allSlots.map((s) => ({
-      startsAt: s.startsAt,
-      endsAt: s.endsAt,
-      appointmentId: s.appointmentId,
-    })),
+    slots: allSlots.map(toEventSlot),
     appointmentId: nextSlot.appointmentId,
     joinableAppointment,
     joinableSlot: nextSlot.rawSlot,
@@ -467,41 +481,40 @@ function processClass(classEvent: TConsulteeClass): ProcessedEvent | null {
  * A session is a group of contiguous slots belonging to the same appointment.
  */
 export interface SessionGroup {
+  /** The run's anchor row. Two runs can share an appointmentId, so keys do too. */
+  id: string;
   appointmentId: string;
   startTime: Date;
   endTime: Date;
   status: "completed" | "upcoming";
 }
 
-/** Group an event's slots by appointmentId into sessions with time-based status. */
+/**
+ * Group an event's slots into sessions with a time-based status.
+ *
+ * #1199 — this grouped by appointmentId alone, which says a booking is one
+ * session no matter when its rows sit. A subscription's Tuesday 09:00 and
+ * Thursday 16:00 sittings therefore merged into a single phantom session
+ * running from Tuesday morning to Thursday afternoon, and the "Sessions
+ * Completed" stat counted the pair as one. `groupSlotsIntoRuns` is the
+ * definition every other surface uses: contiguous rows, same appointment, same
+ * tentative flag, with cancelled and rescheduled rows dropped rather than left
+ * to bridge two runs that never touched.
+ */
 export function groupSlotsIntoSessions(
   slots: ProcessedEvent["slots"],
 ): SessionGroup[] {
   const now = new Date();
-  const groups = new Map<string, ProcessedEvent["slots"]>();
-
-  for (const slot of slots) {
-    const key = slot.appointmentId;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(slot);
-  }
-
-  return Array.from(groups.entries())
-    .map(([appointmentId, sessionSlots]) => {
-      const sorted = sessionSlots.sort(
-        (a, b) => a.startsAt.getTime() - b.startsAt.getTime(),
-      );
-      const endTime = sorted[sorted.length - 1].endsAt;
-      return {
-        appointmentId,
-        startTime: sorted[0].startsAt,
-        endTime,
-        status: (endTime < now ? "completed" : "upcoming") as
-          | "completed"
-          | "upcoming",
-      };
-    })
-    .sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
+  // Already sorted by start time by groupSlotsIntoRuns.
+  return groupSlotsIntoRuns(slots).map((run) => ({
+    id: run.anchor.id,
+    appointmentId: run.anchor.appointmentId,
+    startTime: run.startsAt,
+    endTime: run.endsAt,
+    status: (run.endsAt < now ? "completed" : "upcoming") as
+      | "completed"
+      | "upcoming",
+  }));
 }
 
 /**

@@ -198,6 +198,7 @@ describe("checkSlotAvailability", () => {
         },
         payment: [
           {
+            paymentStatus: "PENDING",
             expiresAt: new Date("2024-01-01"), // expired
           },
         ],
@@ -224,6 +225,7 @@ describe("checkSlotAvailability", () => {
         },
         payment: [
           {
+            paymentStatus: "PENDING",
             expiresAt: new Date("2024-01-01"), // expired
           },
         ],
@@ -251,6 +253,7 @@ describe("checkSlotAvailability", () => {
         },
         payment: [
           {
+            paymentStatus: "PENDING",
             expiresAt: new Date("2026-12-31"), // not expired
           },
         ],
@@ -275,7 +278,12 @@ describe("RV-2: isOccupiedByLiveAppointment (shared by validate + allocator)", (
           consultation: {
             status: AppointmentStatus.APPROVED_PENDING_PAYMENT,
           },
-          payment: [{ expiresAt: new Date("2024-01-01T00:00:00Z") }],
+          payment: [
+            {
+              paymentStatus: "PENDING",
+              expiresAt: new Date("2024-01-01T00:00:00Z"),
+            },
+          ],
         },
         NOW,
       ),
@@ -289,7 +297,12 @@ describe("RV-2: isOccupiedByLiveAppointment (shared by validate + allocator)", (
           subscription: {
             status: AppointmentStatus.APPROVED_PENDING_PAYMENT,
           },
-          payment: [{ expiresAt: new Date("2026-12-31T00:00:00Z") }],
+          payment: [
+            {
+              paymentStatus: "PENDING",
+              expiresAt: new Date("2026-12-31T00:00:00Z"),
+            },
+          ],
         },
         NOW,
       ),

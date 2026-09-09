@@ -49,7 +49,9 @@ function makeDb(opts: {
           c.webinar?.webinarPlan?.collaborators?.some?.consultantProfileId ??
           c.class?.classPlan?.consultantProfileId ??
           c.class?.classPlan?.collaborators?.some?.consultantProfileId;
-        const orClauses: Clause[] = where.appointment.OR;
+        // #1319 — the commitment clauses moved under `appointment.AND[0]` so
+        // the occupancy predicate can own `appointment.OR`.
+        const orClauses: Clause[] = where.appointment.AND[0].OR;
         const clash = orClauses.some((clause) =>
           opts.conflictForProfileIds?.includes(profileIdOf(clause) ?? ""),
         );
@@ -109,7 +111,71 @@ describe("assertCollaboratorsAvailable", () => {
       excludeAppointmentId: "appt-self",
     });
     const where = db.slotOfAppointment.findFirst.mock.calls[0][0].where;
-    expect(where.appointmentId).toEqual({ not: "appt-self" });
-    expect(where.isTentative).toBe(false);
+    // #1319 — the guard now excludes a set (a class allocation carries every
+    // session of the event), so a single exclusion is a one-element notIn.
+    expect(where.appointmentId).toEqual({ notIn: ["appt-self"] });
+    // #1319 — no tentative filter: a live hold occupies a co-host's calendar.
+    expect(where.isTentative).toBeUndefined();
+  });
+
+  /**
+   * #1319 — the guard used to scan `isTentative: false` only, so a co-host
+   * mid-checkout was invisible and an allocation could be committed onto a
+   * minute checkout would then refuse. Occupancy is now the same predicate the
+   * allocator and checkout use, so a LIVE hold blocks and a DEAD one does not.
+   */
+  it("counts a live tentative hold and ignores a dead one", async () => {
+    const db = makeDb({
+      collaborators: [{ name: "Alice", consultantProfileId: "p1" }],
+    });
+    await assertCollaboratorsAvailable(db as never, base);
+    const where = db.slotOfAppointment.findFirst.mock.calls[0][0].where;
+
+    // A PENDING direct-checkout request: live while its payment window is open,
+    // dead once its only PENDING payment is past expiresAt.
+    const hold = (expiresAt: Date) => ({
+      status: "PENDING",
+      bookingSource: "DIRECT_CHECKOUT",
+      payments: [{ paymentStatus: "PENDING", expiresAt }],
+    });
+    type Hold = ReturnType<typeof hold>;
+
+    // Occupying-state arm: PENDING is in the occupied set, whatever the slot's
+    // tentative flag says.
+    type OccupiedTerm = { consultation?: { status?: { in?: string[] } } };
+    const occupies = (row: Hold) =>
+      (where.appointment.OR as OccupiedTerm[]).some((t) =>
+        t.consultation?.status?.in?.includes(row.status),
+      );
+
+    // Dead-hold arm: subtracted only when EVERY payment matches one of the dead
+    // shapes, clock bound included — read off the emitted predicate, not retyped.
+    type DeadTerm = {
+      consultation?: { status?: string; bookingSource?: string };
+      payment: {
+        every: {
+          OR: Array<{ paymentStatus: string; expiresAt?: { lt: Date } }>;
+        };
+      };
+    };
+    const isDead = (row: Hold) =>
+      (where.appointment.NOT.OR as DeadTerm[]).some(
+        (t) =>
+          t.consultation?.status === row.status &&
+          t.consultation?.bookingSource === row.bookingSource &&
+          row.payments.length > 0 &&
+          row.payments.every((p) =>
+            t.payment.every.OR.some(
+              (d) =>
+                d.paymentStatus === p.paymentStatus &&
+                (!d.expiresAt || p.expiresAt < d.expiresAt.lt),
+            ),
+          ),
+      );
+
+    const live = hold(new Date(Date.now() + 10 * 60_000));
+    const dead = hold(new Date(Date.now() - 10 * 60_000));
+    expect(occupies(live) && !isDead(live)).toBe(true);
+    expect(occupies(dead) && !isDead(dead)).toBe(false);
   });
 });

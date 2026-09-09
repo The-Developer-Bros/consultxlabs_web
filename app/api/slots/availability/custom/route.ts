@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as Sentry from "@sentry/nextjs";
+import { coalesceAndResolveCustom } from "@/utils/slotAllocation/mergeAdjacentWeeklyRows";
 import prisma from "@/lib/prisma";
+import { withSerializableRetry } from "@/lib/db/serializable-retry";
 import { Prisma } from "@prisma/client";
 import { getSession } from "@/lib/auth-server";
 
@@ -76,7 +78,10 @@ export async function GET(req: NextRequest) {
       { status: 200 },
     );
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "scheduling" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "scheduling" } },
+    );
     console.error("Error fetching custom slots:", error);
     return NextResponse.json(
       { error: "An error occurred while fetching custom availability slots" },
@@ -135,58 +140,74 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Check for overlapping slots
-    const overlappingSlot = await prisma.slotOfAvailabilityCustom.findFirst({
-      where: {
-        consultantProfileId,
-        OR: [
-          {
-            startsAt: { lte: startTime },
-            endsAt: { gt: startTime },
-          },
-          {
-            startsAt: { lt: endTime },
-            endsAt: { gte: endTime },
-          },
-          {
-            startsAt: { gte: startTime },
-            endsAt: { lte: endTime },
-          },
-        ],
-      },
-    });
-
-    if (overlappingSlot) {
-      return NextResponse.json(
-        { error: "This slot overlaps with an existing slot" },
-        { status: 409 },
-      );
-    }
-
-    const newCustomSlot = await prisma.slotOfAvailabilityCustom.create({
-      data: {
-        consultantProfileId,
-        startsAt: startTime,
-        endsAt: endTime,
-      },
-      include: {
-        consultantProfile: {
-          select: {
-            id: true,
-            user: {
-              select: {
-                name: true,
-                email: true,
-              },
+    // Overlap check, write and coalescing share one Serializable transaction:
+    // coalescing deletes the folded rows and extends the survivor, so on the
+    // bare client a failure between those writes destroys availability (#1320).
+    return await withSerializableRetry(() =>
+      prisma.$transaction(
+        async (tx) => {
+          // Check for overlapping slots
+          const overlappingSlot = await tx.slotOfAvailabilityCustom.findFirst({
+            where: {
+              consultantProfileId,
+              OR: [
+                {
+                  startsAt: { lte: startTime },
+                  endsAt: { gt: startTime },
+                },
+                {
+                  startsAt: { lt: endTime },
+                  endsAt: { gte: endTime },
+                },
+                {
+                  startsAt: { gte: startTime },
+                  endsAt: { lte: endTime },
+                },
+              ],
             },
-          },
-        },
-      },
-    });
+          });
 
-    return NextResponse.json({ data: newCustomSlot }, { status: 201 });
+          if (overlappingSlot) {
+            return NextResponse.json(
+              { error: "This slot overlaps with an existing slot" },
+              { status: 409 },
+            );
+          }
+
+          // Not the response payload: the coalesce below can fold this row
+          // away, so the covering row is what the client is answered with.
+          await tx.slotOfAvailabilityCustom.create({
+            data: {
+              consultantProfileId,
+              startsAt: startTime,
+              endsAt: endTime,
+            },
+          });
+
+          // #1320 — the overlap guard above still rejects an overlap but permits
+          // exact adjacency, which is how the fragmented rows got there. Fold what
+          // now touches and answer with the row that covers what was asked for.
+          const covering = await coalesceAndResolveCustom(
+            tx,
+            consultantProfileId,
+            { startsAt: startTime, endsAt: endTime },
+          );
+          return NextResponse.json({ data: covering }, { status: 201 });
+        },
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          // The defaults are sized for one statement; this body is a read, a
+          // write and a whole-set rewrite behind PG_POOL_MAX=1.
+          maxWait: 10_000,
+          timeout: 15_000,
+        },
+      ),
+    );
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "scheduling" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "scheduling" } },
+    );
     console.error("Error creating custom slot:", error);
     return NextResponse.json(
       {

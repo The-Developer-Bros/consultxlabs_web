@@ -4,6 +4,24 @@
 
 This document explains how to set up automated cleanup of abandoned payments in the system.
 
+## Running the Netlify scheduled ticker locally
+
+`netlify/functions/cron-tick.mts` is the scheduled function that drives the ten latency-sensitive `/api/cleanup/*` sweeps every five minutes in production, because GitHub Actions was measured delivering a sub-hourly schedule roughly once every hundred minutes rather than on its declared cadence (ADR 22, ADR 27). It needs two environment variables to do anything: `CRON_SECRET`, the same bearer token every `/api/cleanup/*` route already requires, and either `URL` (which Netlify sets automatically in every deployed context) or its local override, `CRON_TICK_BASE_URL`, pointed at wherever the Next app is actually listening.
+
+Netlify never fires a scheduled function on its declared cadence in local development, and a scheduled function cannot be invoked directly by URL either, so `netlify dev` alone will not produce a tick. Start `next dev` (or `netlify dev`, which manages one for you) with `CRON_TICK_BASE_URL` pointed at wherever it is listening, then invoke the function once through the CLI and read the same `{ event: "cron-tick", ok, lockHeld, failed, durationMs }` body it logs in production:
+
+```bash
+CRON_SECRET=your-local-secret \
+CRON_TICK_BASE_URL=http://localhost:8888 \
+netlify dev
+```
+
+```bash
+netlify functions:invoke cron-tick
+```
+
+A `lockHeld` entry for a target means `withCronLock` is already held by another run of that job — expected under a concurrent GitHub Actions run, and not a failure. A `failed` entry means the route answered something other than `200`, `207` or `409`, which is worth investigating the same way any other cleanup-route failure is.
+
 ## Cleanup Endpoint
 
 **URL**: `/api/cleanup/abandoned-payments`  

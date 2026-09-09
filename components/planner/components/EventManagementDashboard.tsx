@@ -16,6 +16,7 @@ import {
 import { reportSentryMessage } from "@/lib/observability/report";
 import { reportClientFailure } from "@/lib/errors/classification/client-failure";
 import { failureToast } from "@/components/ui/failure-toast";
+import { useInFlightGuard } from "@/hooks/scheduling/useInFlightGuard";
 import type { MeetingSlot } from "@/lib/meeting";
 import {
   CONSULTANT_JOIN_WINDOW_MS,
@@ -38,6 +39,8 @@ import {
   useConsultationPlanMutations,
   useSubscriptionPlans,
   useSubscriptionPlanMutations,
+  useWebinarPlanMutations,
+  useClassPlanMutations,
 } from "../hooks/usePlanner";
 import {
   LayoutTemplate,
@@ -85,14 +88,22 @@ export function EventManagementDashboard({
   // React Query mutations
   const { deleteWebinar } = useWebinarMutations(consultantId);
   const { deleteClass } = useClassMutations(consultantId);
+  const { archiveWebinarPlan } = useWebinarPlanMutations(consultantId);
+  const { archiveClassPlan } = useClassPlanMutations(consultantId);
   // Create/update moved to the offering editor, which owns its own save; the
   // planner only deletes now.
-  const { deleteConsultationPlan } =
+  const { deleteConsultationPlan, archiveConsultationPlan } =
     useConsultationPlanMutations(consultantId);
-  const { deleteSubscriptionPlan } =
+  const { deleteSubscriptionPlan, archiveSubscriptionPlan } =
     useSubscriptionPlanMutations(consultantId);
   const router = useRouter();
   const [joiningEventId, setJoiningEventId] = useState<string | null>(null);
+  // #1280 2.7 — `joiningEventId` is state, and it is set AFTER the first await
+  // (`waitForGlobalVideoClient`, which can take a second on a cold provider),
+  // so a second click reads a stale `null` and runs the whole chain again.
+  // A ref is written synchronously and is what actually closes the window;
+  // the state stays because it is what renders the spinner.
+  const guardJoin = useInFlightGuard();
 
   // The join window closes with the clock, not with a re-render. Without a
   // tick the memo below keeps whatever answer it computed when the planner
@@ -138,7 +149,10 @@ export function EventManagementDashboard({
   // Handle joining a meeting from the planner. Reads the connected video
   // client singleton at click time (HomeTab idiom, #248) so the Stream SDK
   // stays off the planner bundle.
-  const handleJoinWebinarMeeting = async (webinar: PlannerWebinarEvent) => {
+  const handleJoinWebinarMeeting = (webinar: PlannerWebinarEvent) =>
+    guardJoin(`webinar:${webinar.id}`, () => joinWebinarMeeting(webinar));
+
+  const joinWebinarMeeting = async (webinar: PlannerWebinarEvent) => {
     const waitStartedAt = Date.now();
     const streamClient = await waitForGlobalVideoClient();
     if (!streamClient) {
@@ -226,7 +240,10 @@ export function EventManagementDashboard({
     }
   };
 
-  const handleJoinClassMeeting = async (classEvent: PlannerClassEvent) => {
+  const handleJoinClassMeeting = (classEvent: PlannerClassEvent) =>
+    guardJoin(`class:${classEvent.id}`, () => joinClassMeeting(classEvent));
+
+  const joinClassMeeting = async (classEvent: PlannerClassEvent) => {
     const waitStartedAt = Date.now();
     const streamClient = await waitForGlobalVideoClient();
     if (!streamClient) {
@@ -337,7 +354,10 @@ export function EventManagementDashboard({
       );
       setPendingTrialCounts(counts);
     } catch (error) {
-      Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "client" } });
+      Sentry.captureException(
+        error instanceof Error ? error : new Error(String(error)),
+        { tags: { subsystem: "client" } },
+      );
       console.error("Error fetching trial counts:", error);
     }
   }, [consultantId]);
@@ -431,6 +451,24 @@ export function EventManagementDashboard({
     );
     deleteSubscriptionPlan.mutate(planId);
   };
+
+  // Archive/restore toggles (#1494) — one handler per plan family, each
+  // wired to the matching PATCH mutation.
+  const handleConsultationPlanArchiveToggle = (
+    planId: string,
+    archived: boolean,
+  ) => archiveConsultationPlan.mutate({ id: planId, archived });
+
+  const handleSubscriptionPlanArchiveToggle = (
+    planId: string,
+    archived: boolean,
+  ) => archiveSubscriptionPlan.mutate({ id: planId, archived });
+
+  const handleWebinarPlanArchiveToggle = (planId: string, archived: boolean) =>
+    archiveWebinarPlan.mutate({ id: planId, archived });
+
+  const handleClassPlanArchiveToggle = (planId: string, archived: boolean) =>
+    archiveClassPlan.mutate({ id: planId, archived });
 
   // Calculate stats
   const totalPlans =
@@ -535,6 +573,12 @@ export function EventManagementDashboard({
                 onDelete={handleConsultationPlanDelete}
                 eventType="consultation"
                 participantCounts={{}}
+                onArchiveToggle={handleConsultationPlanArchiveToggle}
+                archivingPlanId={
+                  archiveConsultationPlan.isPending
+                    ? (archiveConsultationPlan.variables?.id ?? null)
+                    : null
+                }
               />
             )}
           </div>
@@ -594,6 +638,12 @@ export function EventManagementDashboard({
                 participantCounts={{}}
                 pendingTrialCounts={pendingTrialCounts}
                 onTrialsClick={handleTrialsClick}
+                onArchiveToggle={handleSubscriptionPlanArchiveToggle}
+                archivingPlanId={
+                  archiveSubscriptionPlan.isPending
+                    ? (archiveSubscriptionPlan.variables?.id ?? null)
+                    : null
+                }
               />
             )}
           </div>
@@ -653,6 +703,12 @@ export function EventManagementDashboard({
               onJoinMeeting={handleJoinWebinarMeeting}
               joinableEventIds={joinableEventIds}
               joiningEventId={joiningEventId}
+              onArchiveToggle={handleWebinarPlanArchiveToggle}
+              archivingPlanId={
+                archiveWebinarPlan.isPending
+                  ? (archiveWebinarPlan.variables?.id ?? null)
+                  : null
+              }
             />
           </div>
 
@@ -694,11 +750,16 @@ export function EventManagementDashboard({
               onJoinMeeting={handleJoinClassMeeting}
               joinableEventIds={joinableEventIds}
               joiningEventId={joiningEventId}
+              onArchiveToggle={handleClassPlanArchiveToggle}
+              archivingPlanId={
+                archiveClassPlan.isPending
+                  ? (archiveClassPlan.variables?.id ?? null)
+                  : null
+              }
             />
           </div>
         </motion.section>
       </div>
-
     </div>
   );
 }

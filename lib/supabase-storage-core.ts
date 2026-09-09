@@ -135,6 +135,76 @@ export interface BucketOptions {
 // Buckets proven to exist this process — skip the existence round-trip once seen.
 const knownBuckets = new Set<string>();
 
+/** Set equality for a small allow-list, without sorting. */
+function sameMembers(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const seen = new Set(b);
+  return a.every((item) => seen.has(item));
+}
+
+/**
+ * Bring an EXISTING bucket's settings up to the ones the caller asked for.
+ *
+ * `createBucket` only runs the first time, so before this the options argument
+ * was silently ignored for every bucket that already existed — a bucket kept
+ * whatever limits it was born with, and raising a caller's `fileSizeLimit` did
+ * nothing at all. The recordings bucket sat at 500MB that way while the code
+ * around it was changed to expect more (#1314).
+ *
+ * Best-effort on purpose: a bucket whose settings cannot be widened is still a
+ * usable bucket, and failing the caller here would turn a config nicety into an
+ * outage. Notably the Supabase FREE plan clamps every object to 50MB no matter
+ * what the bucket says, so this call can legitimately succeed and change
+ * nothing.
+ */
+async function reconcileBucketOptions(
+  bucketName: string,
+  options?: BucketOptions,
+): Promise<void> {
+  if (!options || !supabaseAdmin) return;
+
+  const { data: bucket } = await supabaseAdmin.storage.getBucket(bucketName);
+  if (!bucket) return;
+
+  const wantsSize =
+    options.fileSizeLimit !== undefined &&
+    Number(bucket.file_size_limit ?? 0) !== options.fileSizeLimit;
+  const wantsPublic =
+    options.public !== undefined && bucket.public !== options.public;
+  // A MIME-only drift is the one that actually bites: Stream's storage probe
+  // uploads `text/plain`, and a bucket still carrying a video-only allow-list
+  // rejects it with a 415 that reads like a credentials failure.
+  //
+  // Compared as sets rather than sorted lists. Order carries no meaning in an
+  // allow-list, and sorting would invite Sonar's S2871 fix of `localeCompare` —
+  // ICU collation is locale-dependent, so that can answer differently on CI
+  // than on a laptop, which is exactly the bug class this repo bans it for.
+  const wantsMime =
+    options.allowedMimeTypes !== undefined &&
+    !sameMembers(options.allowedMimeTypes, bucket.allowed_mime_types ?? []);
+  if (!wantsSize && !wantsPublic && !wantsMime) return;
+
+  // `public` is required by updateBucket, so carry the bucket's own value
+  // through rather than flipping visibility as a side effect of a size change.
+  const { error } = await supabaseAdmin.storage.updateBucket(bucketName, {
+    public: options.public ?? bucket.public,
+    ...(options.fileSizeLimit !== undefined
+      ? { fileSizeLimit: options.fileSizeLimit }
+      : {}),
+    ...(options.allowedMimeTypes
+      ? { allowedMimeTypes: options.allowedMimeTypes }
+      : {}),
+  });
+
+  if (error) {
+    console.warn(
+      `Could not update bucket ${bucketName} settings: ${error.message}`,
+    );
+    return;
+  }
+  console.log(`Updated bucket ${bucketName} settings to match caller options`);
+}
+
 /**
  * Ensure a storage bucket exists, create it if it doesn't.
  * Pass options to customize bucket settings per use case.
@@ -144,7 +214,11 @@ export const ensureBucketExists = async (
   bucketName: string,
   options?: BucketOptions,
 ): Promise<boolean> => {
+  // Memoization skips the existence probe, not the settings. A later caller
+  // passing options to a bucket already seen without them would otherwise be
+  // silently ignored for the rest of the process.
   if (knownBuckets.has(bucketName)) {
+    if (options) await reconcileBucketOptions(bucketName, options);
     return true;
   }
   try {
@@ -155,6 +229,7 @@ export const ensureBucketExists = async (
 
     // If no error, bucket exists
     if (!listError) {
+      await reconcileBucketOptions(bucketName, options);
       knownBuckets.add(bucketName);
       return true;
     }

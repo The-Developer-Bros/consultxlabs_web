@@ -1,0 +1,348 @@
+# The #874 load gate — the exit gate for the #837 and #1169 hardening trains.
+#
+# workflow_dispatch ONLY. There is no schedule and no pull-request trigger, for
+# two reasons. Actions minutes are tight (#866), and — the one that matters —
+# ONE Supabase project serves both dev and production, so every run of this
+# workflow writes production rows: real appointments on real calendars, real
+# seats on real events, and real earnings lines. A gate that fired on its own
+# would be a recurring production incident.
+#
+# Read docs/enterprise/50-operations/08-load-gate-runbook.md before dispatching.
+# The cleanup job runs after every scenario and its failure fails the workflow.
+
+name: Load Gate (chaos 6 / 14c / 17)
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Target base URL — a Netlify deploy preview, never the production hostname"
+        required: true
+        type: string
+      peak_vus:
+        description: "EXPECTED peak concurrency. Scenario 6 ramps to twice this."
+        required: true
+        default: "25"
+        type: string
+      duration:
+        description: "Time held at each plateau (k6 duration, e.g. 3m)"
+        required: true
+        default: "3m"
+        type: string
+      scenario:
+        description: "Which chaos scenario to run"
+        required: true
+        default: "17"
+        type: choice
+        options:
+          - "6"
+          - "14c"
+          - "17"
+          - "all"
+      skip_cleanup:
+        description: "Leave the created rows in place (debugging only — the workflow then FAILS on purpose)"
+        required: false
+        default: false
+        type: boolean
+      fixture_overrides:
+        description: "Extra KEY=VALUE lines, one per line, layered over the repository variables"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  # Two simultaneous runs would contend for the same fixtures and make every
+  # over-booking count unreadable.
+  group: load-gate
+  cancel-in-progress: false
+
+jobs:
+  load-gate:
+    name: "Scenario ${{ inputs.scenario }} against ${{ inputs.base_url }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      BASE_URL: ${{ inputs.base_url }}
+      PEAK_VUS: ${{ inputs.peak_vus }}
+      DURATION: ${{ inputs.duration }}
+      SCENARIO: ${{ inputs.scenario }}
+
+      # --- credentials (repository SECRETS) ---------------------------------
+      # Pre-minted Better Auth session cookies, `|`-separated. Preferred over
+      # e-mail and password: the sign-in limiter is 10 per 15 minutes per IP and
+      # the whole run comes from one runner address, so minting in-run caps the
+      # account pool at a handful and cannot be retried after a failure.
+      BUYER_COOKIES: ${{ secrets.LOAD_GATE_AUTH_TOKEN }}
+      ORG_ADMIN_COOKIES: ${{ secrets.LOAD_GATE_ORG_ADMIN_TOKEN }}
+      VERIFY_COOKIE: ${{ secrets.LOAD_GATE_VERIFY_TOKEN }}
+      # The consultant is the COUNTERPARTY on a reschedule the buyer opened, so
+      # the respond leg needs its own credential; a buyer answering their own
+      # proposal is refused 404 by design.
+      CONSULTANT_COOKIES: ${{ secrets.LOAD_GATE_CONSULTANT_TOKEN }}
+      # Fallback when no cookies are supplied. `SeedPass123!` is the seed
+      # suite's password; the harness signs in at most four of each pool.
+      BUYER_EMAILS: ${{ secrets.LOAD_GATE_BUYER_EMAILS }}
+      ORG_ADMIN_EMAILS: ${{ secrets.LOAD_GATE_ORG_ADMIN_EMAILS }}
+      BUYER_PASSWORD: ${{ secrets.LOAD_GATE_BUYER_PASSWORD }}
+      # BETTER_AUTH_TRUSTED_ORIGINS holds the production URL in every Netlify
+      # context, so a sign-in that sends a preview's own origin answers 403
+      # INVALID_ORIGIN. This is the origin the requests claim.
+      AUTH_ORIGIN: ${{ secrets.LOAD_GATE_AUTH_ORIGIN }}
+
+      # --- fixtures (repository VARIABLES — identifiers, not secrets) -------
+      CONSULTANT_IDS: ${{ vars.LOAD_GATE_CONSULTANT_IDS }}
+      CONSULTANT_PROFILE_IDS: ${{ vars.LOAD_GATE_CONSULTANT_PROFILE_IDS }}
+      PLAN_IDS: ${{ vars.LOAD_GATE_PLAN_IDS }}
+      SLOT_AVAILABILITY_WEEKLY_ID: ${{ vars.LOAD_GATE_SLOT_AVAILABILITY_WEEKLY_ID }}
+      SLOT_AVAILABILITY_CUSTOM_ID: ${{ vars.LOAD_GATE_SLOT_AVAILABILITY_CUSTOM_ID }}
+      EVENT_ID: ${{ vars.LOAD_GATE_EVENT_ID }}
+      EVENT_PLAN_ID: ${{ vars.LOAD_GATE_EVENT_PLAN_ID }}
+      EVENT_TYPE: ${{ vars.LOAD_GATE_EVENT_TYPE }}
+      EVENT_CAPACITY: ${{ vars.LOAD_GATE_EVENT_CAPACITY }}
+      EVENT_EXCLUDE_USER_IDS: ${{ vars.LOAD_GATE_EVENT_EXCLUDE_USER_IDS }}
+      HOT_CONSULTANT_ID: ${{ vars.LOAD_GATE_HOT_CONSULTANT_ID }}
+      HOT_PLAN_ID: ${{ vars.LOAD_GATE_HOT_PLAN_ID }}
+      HOT_SLOT_STARTS_AT: ${{ vars.LOAD_GATE_HOT_SLOT_STARTS_AT }}
+      HOT_SLOT_ENDS_AT: ${{ vars.LOAD_GATE_HOT_SLOT_ENDS_AT }}
+      ALLOCATE_EVENT_IDS: ${{ vars.LOAD_GATE_ALLOCATE_EVENT_IDS }}
+      ALLOCATE_EVENT_KIND: ${{ vars.LOAD_GATE_ALLOCATE_EVENT_KIND }}
+      CANCEL_APPOINTMENT_IDS: ${{ vars.LOAD_GATE_CANCEL_APPOINTMENT_IDS }}
+      RESCHEDULE_APPOINTMENT_IDS: ${{ vars.LOAD_GATE_RESCHEDULE_APPOINTMENT_IDS }}
+      CONSULTEE_PROFILE_IDS: ${{ vars.LOAD_GATE_CONSULTEE_PROFILE_IDS }}
+      WINDOW_START: ${{ vars.LOAD_GATE_WINDOW_START }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Validate the dispatch inputs
+        # Two inputs are typed by hand at dispatch time and both are dangerous
+        # if taken on trust.
+        #
+        # base_url receives pre-minted PRODUCTION session cookies on every
+        # request, so any host it names can harvest them. A denylist on the
+        # production hostname is not enough: it leaves every other host in the
+        # world allowed, and `case` matches case-sensitively, so an uppercase
+        # spelling walks straight past a literal pattern. The target is
+        # allow-listed to a Netlify preview or branch deploy instead — those
+        # always carry the `<context>--<site>.netlify.app` double dash, which
+        # the bare `<site>.netlify.app` production alias does not.
+        #
+        # peak_vus is evaluated arithmetically further down, and bash arithmetic
+        # re-expands its operands, so a crafted array-index expression in a
+        # non-numeric value executes a command substitution.
+        run: |
+          url=$(printf '%s' "${BASE_URL}" | tr '[:upper:]' '[:lower:]')
+          case "$url" in
+            https://*) ;;
+            *)
+              echo "::error::base_url must be an https:// URL; got '${BASE_URL}'."
+              exit 1
+              ;;
+          esac
+          host=${url#https://}
+          host=${host%%/*}
+          host=${host%%:*}
+          case "$host" in
+            *familiarisenow.com)
+              echo "::error::base_url points at the production hostname. Use a deploy preview."
+              exit 1
+              ;;
+          esac
+          case "$host" in
+            *--*.netlify.app) ;;
+            *)
+              echo "::error::base_url must be a Netlify deploy-preview or branch-deploy host (<context>--<site>.netlify.app); got '${host}'. Editing this allowlist is a deliberate act: the run replays production session cookies against whatever it names."
+              exit 1
+              ;;
+          esac
+          case "${PEAK_VUS}" in
+            '' | *[!0-9]*)
+              echo "::error::peak_vus must be digits only; got '${PEAK_VUS}'."
+              exit 1
+              ;;
+          esac
+          echo "Target: ${BASE_URL}"
+
+      - name: Apply fixture overrides
+        if: inputs.fixture_overrides != ''
+        # Read through an env var, never interpolated into the script: the
+        # input is typed by whoever dispatches the run (S7630). The lines go to
+        # a file that each fixture-reading step sources, NOT to $GITHUB_ENV: a
+        # job-level `env:` entry beats $GITHUB_ENV for the same name, so an
+        # override of any fixture declared above was silently ignored.
+        env:
+          FIXTURE_OVERRIDES: ${{ inputs.fixture_overrides }}
+        run: |
+          : > "${RUNNER_TEMP}/load-gate-overrides.env"
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            case "$line" in \#*) continue ;; esac
+            if [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+              echo "$line" >> "${RUNNER_TEMP}/load-gate-overrides.env"
+              echo "override applied: ${line%%=*}"
+            else
+              echo "::warning::ignoring malformed override: $line"
+            fi
+          done <<< "$FIXTURE_OVERRIDES"
+
+      - name: Pin the booking window for the whole run
+        id: window
+        # The storm, the integrity check and the cleanup are three separate k6
+        # processes, and each would otherwise derive "04:00 UTC tomorrow" for
+        # itself. A run that crosses midnight UTC therefore books into one day's
+        # window and cleans the next one, leaving production rows behind. The
+        # window is resolved ONCE here and handed to all three as a step-level
+        # env var, which beats the job-level default.
+        run: |
+          . load-tests/booking/apply-overrides.sh
+          if [ -n "${WINDOW_START}" ]; then
+            resolved="${WINDOW_START}"
+          else
+            resolved="$(date -u -d "$(date -u -d tomorrow +%Y-%m-%d) 04:00:00" +%Y-%m-%dT%H:%M:%SZ)"
+          fi
+          echo "value=${resolved}" >> "$GITHUB_OUTPUT"
+          echo "Marked booking window starts at ${resolved}"
+
+      - name: Install k6
+        uses: grafana/setup-k6-action@db07bd9765aac508ef18982e52ab937fe633a065 # v1.2.1
+
+      # handleSummary writes load-gate-summary.json and .html into the working
+      # directory. The raw per-request JSON stream is deliberately NOT captured:
+      # at two hundred virtual users it runs to gigabytes and the summary is the
+      # record that #874 wants.
+      - name: Run scenario ${{ inputs.scenario }}
+        id: run
+        env:
+          WINDOW_START: ${{ steps.window.outputs.value }}
+        run: |
+          . load-tests/booking/apply-overrides.sh
+          k6 run \
+            --summary-trend-stats "avg,med,p(95),p(99),max" \
+            load-tests/booking/scenarios.js
+        continue-on-error: true
+
+      - name: Verify booking integrity
+        id: verify
+        # Runs even when the storm failed its thresholds: a failed run that
+        # ALSO double-booked is a different incident from one that merely
+        # missed a latency budget, and the difference must be recorded.
+        if: always()
+        env:
+          WINDOW_START: ${{ steps.window.outputs.value }}
+        run: |
+          . load-tests/booking/apply-overrides.sh
+          k6 run load-tests/booking/verify-integrity.js
+        continue-on-error: true
+
+      - name: Clean up what the run created
+        id: cleanup
+        if: always() && !inputs.skip_cleanup
+        # The target shares the production database. This is not optional.
+        env:
+          WINDOW_START: ${{ steps.window.outputs.value }}
+        run: |
+          . load-tests/booking/apply-overrides.sh
+          k6 run load-tests/booking/cleanup.js
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Load gate — scenario ${SCENARIO}"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Target | \`${BASE_URL}\` |"
+            echo "| Expected peak | ${PEAK_VUS} VUs (scenario 6 ramps to $((PEAK_VUS * 2))) |"
+            echo "| Plateau | ${DURATION} |"
+            echo "| Storm | ${{ steps.run.outcome }} |"
+            echo "| Integrity | ${{ steps.verify.outcome }} |"
+            echo "| Cleanup | ${{ steps.cleanup.outcome }} |"
+            echo ""
+
+            if [ -f load-gate-summary.json ]; then
+              echo "### Latency by write path"
+              echo ""
+              echo "| Path | n | p50 | p95 | p99 | max |"
+              echo "|---|---:|---:|---:|---:|---:|"
+              jq -r '.latency | to_entries[] | select(.value != null) |
+                "| \(.key) | \(.value.count) | \(.value.p50 | floor) ms | \(.value.p95 | floor) ms | \(.value.p99 | floor) ms | \(.value.max | floor) ms |"' \
+                load-gate-summary.json
+              echo ""
+              echo "### Outcomes"
+              echo ""
+              echo "| Outcome | Count |"
+              echo "|---|---:|"
+              jq -r '.outcomes | to_entries[] | "| \(.key) | \(.value) |"' load-gate-summary.json
+              echo ""
+              echo "Thresholds breached: $(jq -r '.thresholdsBreached | if length == 0 then "none" else join(", ") end' load-gate-summary.json)"
+            else
+              echo "No summary artifact — the run failed before handleSummary."
+            fi
+
+            if [ -f integrity-result.json ]; then
+              echo ""
+              echo "### Integrity"
+              echo ""
+              echo "\`\`\`json"
+              cat integrity-result.json
+              echo "\`\`\`"
+            fi
+
+            if [ -f cleanup-result.json ]; then
+              echo ""
+              echo "### Cleanup"
+              echo ""
+              echo "\`\`\`json"
+              cat cleanup-result.json
+              echo "\`\`\`"
+            fi
+
+            echo ""
+            echo "Record these numbers on #874 using the table in"
+            echo "\`docs/enterprise/50-operations/08-load-gate-runbook.md\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-gate-${{ inputs.scenario }}-${{ github.run_id }}
+          path: |
+            load-gate-summary.json
+            load-gate-summary.html
+            integrity-result.json
+            cleanup-result.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Fail the workflow if the gate did not pass
+        if: always()
+        env:
+          RUN_OUTCOME: ${{ steps.run.outcome }}
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
+          CLEANUP_OUTCOME: ${{ steps.cleanup.outcome }}
+        run: |
+          fail=0
+          if [ "${RUN_OUTCOME}" = "failure" ]; then
+            echo "::error::storm thresholds breached"
+            fail=1
+          fi
+          if [ "${VERIFY_OUTCOME}" = "failure" ]; then
+            echo "::error::booking integrity violated — a consultant-minute or an event is over-subscribed"
+            fail=1
+          fi
+          if [ "${CLEANUP_OUTCOME}" = "failure" ]; then
+            echo "::error::cleanup left rows behind — the shared production database needs manual attention"
+            fail=1
+          fi
+          # A skipped cleanup is a green run with production rows still in the
+          # database, which is the one outcome this workflow must never report
+          # as success. skip_cleanup stays available for debugging a broken
+          # cleanup — it just costs a red X until a human unwinds the rows.
+          if [ "${CLEANUP_OUTCOME}" = "skipped" ]; then
+            echo "::error::cleanup was skipped (skip_cleanup=true) — the appointments, seats and earnings this run created are still in the shared production database. Run load-tests/booking/cleanup.js by hand."
+            fail=1
+          fi
+          exit $fail

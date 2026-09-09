@@ -1,10 +1,23 @@
 "use client";
 
+import * as Sentry from "@sentry/nextjs";
 import { useToast } from "@/hooks/use-toast";
 import { getErrorToast } from "@/lib/errors/mapping/payment-error-toast-map";
 import { ErrorTypes } from "@/lib/errors/classification/payment-error-classification";
 import { CheckoutInput, checkoutResponseSchema } from "@/schemas/checkout";
 import { PaymentGateway } from "@prisma/client";
+
+// #1396 — every checkout page and both gateway components caught an
+// unexpected error the same way; centralising it removed the repeated
+// three-line block flagged as duplication rather than leaving the copies.
+export function reportPaymentsError(error: unknown): void {
+  Sentry.captureException(
+    error instanceof Error ? error : new Error(String(error)),
+    {
+      tags: { subsystem: "payments" },
+    },
+  );
+}
 
 export function loadScript(src: string): Promise<boolean> {
   return new Promise((resolve, reject) => {
@@ -39,7 +52,6 @@ export function createHandleApiError(
     });
   };
 }
-
 
 // #828 — one key per logical checkout attempt (stable across double-clicks
 // and network retries within a mount; a fresh mount = a fresh attempt). The
@@ -81,7 +93,10 @@ export async function makeCheckoutRequest(
  * commits or releases within seconds — yet they used to dead-end as terminal
  * error toasts while the buyer watched a hot slot slip away.
  */
-const BUSY_ERROR_TYPES = new Set(["EVENT_CHECKOUT_BUSY", "CONSULTEE_BOOKING_BUSY"]);
+const BUSY_ERROR_TYPES = new Set([
+  "EVENT_CHECKOUT_BUSY",
+  "CONSULTEE_BOOKING_BUSY",
+]);
 
 /** Never wait longer than this server-advised pause (function-ceiling friendly). */
 const MAX_BUSY_WAIT_SECONDS = 20;
@@ -114,11 +129,18 @@ export async function fetchCheckoutWithBusyRetry(
     return response;
   }
   const retryAfter = Number(body?.retryAfter);
-  if (!body?.errorType || !BUSY_ERROR_TYPES.has(body.errorType) || !Number.isFinite(retryAfter)) {
+  if (
+    !body?.errorType ||
+    !BUSY_ERROR_TYPES.has(body.errorType) ||
+    !Number.isFinite(retryAfter)
+  ) {
     return response;
   }
 
-  const waitSeconds = Math.min(Math.max(1, Math.round(retryAfter)), MAX_BUSY_WAIT_SECONDS);
+  const waitSeconds = Math.min(
+    Math.max(1, Math.round(retryAfter)),
+    MAX_BUSY_WAIT_SECONDS,
+  );
   notifyBusy(waitSeconds);
   await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000));
 
@@ -127,20 +149,25 @@ export async function fetchCheckoutWithBusyRetry(
 }
 
 /** Shared copy for the during-wait notice so all four surfaces sound alike. */
-export function busyRetryToast(
-  waitSeconds: number,
-): { title: string; description: string } {
+export function busyRetryToast(waitSeconds: number): {
+  title: string;
+  description: string;
+} {
   return {
     title: "Almost got it — someone is one step ahead",
     description: `Your card has not been charged. Retrying automatically in ${waitSeconds}s…`,
   };
 }
 
-
 // Common success handling logic for different appointment types
 export function createHandleCheckoutSuccess(
   toast: ReturnType<typeof useToast>["toast"],
-  appointmentType: "CONSULTATION" | "WEBINAR" | "CLASS" | "SUBSCRIPTION",
+  appointmentType:
+    | "CONSULTATION"
+    | "WEBINAR"
+    | "CLASS"
+    | "SUBSCRIPTION"
+    | "TRIAL",
 ) {
   return (
     data: { skipPayment?: boolean; [key: string]: unknown },
@@ -171,6 +198,16 @@ export function createHandleCheckoutSuccess(
         mock: "Mock payment processed. Your subscription has been activated. Check your dashboard for details.",
         prod: "Redirecting to secure payment gateway. Complete your payment to activate the subscription.",
         successTitle: "✅ Subscription Activated Successfully!",
+      },
+      // #1429 — TRIAL is the fifth AppointmentsType and now reaches the
+      // branded checkout like the other four, so the lookup below must resolve
+      // for it; an absent arm would read `undefined.successTitle` the moment
+      // the trial page mints its own order instead of handing off a pay-link.
+      TRIAL: {
+        dev: "Your trial session is confirmed. Check your dashboard for details.",
+        mock: "Mock payment processed. Your trial session is confirmed. Check your dashboard for details.",
+        prod: "Redirecting to secure payment gateway. Complete your payment to confirm the trial session.",
+        successTitle: "✅ Trial Session Booked Successfully!",
       },
     };
 
@@ -243,17 +280,41 @@ export async function handleUnifiedCheckout(
   }
 }
 
-// Gateway configuration for UI rendering
+// #1437 — WALLET/INVOICE/LICENSE org funding, zero-amount (credits) and mock
+// payments all confirm synchronously server-side with a synthetic id and no
+// gateway order/client secret. Opening Razorpay/Stripe on that id 400s and
+// shows a false "Payment Failed" alert over a booking that already
+// succeeded, so every gateway component must check this before opening.
+export function checkoutNeedsGateway(data: {
+  skipPayment?: boolean;
+  isZeroAmountPayment?: boolean;
+  [key: string]: unknown;
+}): boolean {
+  return !(data.skipPayment || data.isZeroAmountPayment);
+}
+
+// Gateway configuration for UI rendering. The four checkout pages each carried
+// their own copy of this array with `isActive: true` hardcoded on both entries,
+// so the fence had to be applied in four places to hold. One list now.
+//
+// #1351 — Stripe is a contingency rail kept in the tree in case RBI rules
+// change, not a live payment method: without NEXT_PUBLIC_STRIPE_ENABLED=true
+// the card renders the disabled "Coming Soon" button and no StripeCheckout
+// mounts. The server-side fence (STRIPE_ENABLED, assertGatewayUsable) is the
+// one that actually protects money; this only keeps the UI honest, because a
+// NEXT_PUBLIC_ value is inlined into the client bundle and a buyer can edit it.
 export const paymentGateways = [
   {
     name: "Stripe",
     description: "Card payments (international)",
     gateway: "STRIPE" as const,
+    isActive: process.env.NEXT_PUBLIC_STRIPE_ENABLED === "true",
   },
   {
     name: "Razorpay",
     description: "UPI, cards & bank transfer",
     gateway: "RAZORPAY" as const,
+    isActive: true,
   },
 ];
 
@@ -270,7 +331,12 @@ export function createStripeCheckoutHandlers(
       });
       window.location.href = "/checkout/checkout-success";
     },
-    onPaymentError: (error: { message?: string; code?: string; errorType?: string; error?: string }) => {
+    onPaymentError: (error: {
+      message?: string;
+      code?: string;
+      errorType?: string;
+      error?: string;
+    }) => {
       // Booking-conflict errors from /api/checkout (slot taken/relinquished,
       // event expired) carry our own errorType — route them through the precise
       // toast map instead of the gateway card-decline heuristics.

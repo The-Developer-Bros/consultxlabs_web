@@ -22,6 +22,7 @@ export {
 export {
   // Appointments
   notifyAppointmentBooked,
+  notifyAppointmentPartiallyScheduled,
   notifyAppointmentCancelled,
   notifyAppointmentRescheduled,
   notifyAppointmentReminder,

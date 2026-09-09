@@ -59,7 +59,19 @@ export async function GET(req: NextRequest) {
         where: { financialYear: fy, reportedInForm26Q: false },
         include: {
           consultantProfile: {
-            include: { taxInfo: true },
+            include: { taxInfo: true, user: { select: { name: true } } },
+          },
+          // #1354 — org-rail rows share this table, and a filing view that
+          // resolved only one rail's identity would hand finance a deduction
+          // with no deductee to file it against.
+          organization: {
+            select: {
+              id: true,
+              name: true,
+              taxInfo: {
+                select: { legalName: true, panEncrypted: true },
+              },
+            },
           },
         },
       });
@@ -67,7 +79,19 @@ export async function GET(req: NextRequest) {
       const { decryptPAN } = await import("@/lib/payments/tax/pan-crypto");
       const form26qData = records.map((r) => ({
         id: r.id,
+        // CR #1354 r1 — the deductee is a consultant XOR an organisation, so
+        // the row names which rail it is on rather than leaving the caller to
+        // infer it from a null id.
+        deducteeType: r.consultantProfileId ? "CONSULTANT" : "ORGANIZATION",
         consultantProfileId: r.consultantProfileId,
+        organizationId: r.organizationId,
+        // The return needs the name on the PAN; `name` is the editable trade
+        // name and is only the fallback.
+        deducteeName:
+          r.consultantProfile?.user?.name ??
+          r.organization?.taxInfo?.legalName ??
+          r.organization?.name ??
+          null,
         financialYear: r.financialYear,
         quarter: r.quarter,
         tdsDeducted: r.tdsDeducted,
@@ -75,8 +99,13 @@ export async function GET(req: NextRequest) {
         tdsRatePercent: r.tdsRateBps / 100,
         cumulativeAmountCredited: r.cumulativeAmountCredited,
         isReversal: r.isReversal,
-        consultantPAN: r.consultantProfile.taxInfo?.panEncrypted
+        // #1354 — `consultantProfile` is now nullable because org-rail rows
+        // share this table, so each rail decrypts from its own tax satellite.
+        consultantPAN: r.consultantProfile?.taxInfo?.panEncrypted
           ? decryptPAN(Buffer.from(r.consultantProfile.taxInfo.panEncrypted))
+          : null,
+        organizationPAN: r.organization?.taxInfo?.panEncrypted
+          ? decryptPAN(Buffer.from(r.organization.taxInfo.panEncrypted))
           : null,
         createdAt: r.createdAt,
       }));
@@ -87,7 +116,10 @@ export async function GET(req: NextRequest) {
     const summary = await getTDSSummary(fy);
     return NextResponse.json(summary);
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "admin" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "admin" } },
+    );
     console.error("Admin TDS API error:", error);
     return NextResponse.json(
       { error: "Failed to fetch TDS data" },
@@ -143,7 +175,10 @@ export async function POST(req: NextRequest) {
       recordsUpdated: result.count,
     });
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "admin" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "admin" } },
+    );
     console.error("Admin TDS filing error:", error);
     return NextResponse.json(
       { error: "Failed to update TDS filing status" },

@@ -18,6 +18,7 @@ import { reportSentryError } from "@/lib/observability/report";
 import prisma from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 import type { Scope } from "@/lib/api/scope/parse";
+import { scopeToWhereOrgId } from "@/lib/api/scope/parse";
 import { toPlain } from "@/lib/data/serialize";
 import { consultantPublicScalars } from "@/lib/data/consultant-public";
 import type { TConsulteeEventsResponse } from "@/types/consultee-events";
@@ -93,20 +94,18 @@ export async function readConsulteeEvents(
   //     `appointments.some.organizationId` so the parent surfaces if
   //     ANY child appointment matches the scope
   //   - TrialSession: filter directly via `organizationId`
+  //
+  // #674 B2B gap 9 — `orgMember` pins an org too: it is what an active member
+  // below `operations.read` resolves to. Branching on `kind === "org"` alone
+  // left them with NO org filter at all, so asking for one org's events
+  // returned every org's plus the personal ones. Only `all` is genuinely
+  // unfiltered, so that is the only kind that yields `undefined` here.
   const oneApptOrgWhere: Prisma.AppointmentWhereInput | undefined =
-    scope.kind === "personal"
-      ? { organizationId: null }
-      : scope.kind === "org"
-        ? { organizationId: scope.orgId }
-        : undefined;
+    scope.kind === "all" ? undefined : scopeToWhereOrgId(scope);
   const manyApptOrgWhere: Prisma.AppointmentWhereInput | undefined =
     oneApptOrgWhere;
   const trialOrgWhere: Prisma.TrialSessionWhereInput | undefined =
-    scope.kind === "personal"
-      ? { organizationId: null }
-      : scope.kind === "org"
-        ? { organizationId: scope.orgId }
-        : undefined;
+    scope.kind === "all" ? undefined : scopeToWhereOrgId(scope);
 
   // TTFB bound: cap each booking query to recent-or-future rows. The
   // consultee Home calendar lets users page backward month-by-month, so

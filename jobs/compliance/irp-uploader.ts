@@ -33,6 +33,7 @@ import prisma from "@/lib/prisma";
 import { generateIrn } from "@/lib/compliance/irp";
 import { buildIrpPayload } from "@/lib/compliance/irp-payload";
 import { withCronLock } from "@/lib/cron/with-cron-lock";
+import { abortIfMaintenance } from "@/lib/maintenance-cron";
 import * as Sentry from "@sentry/nextjs";
 import { runJob } from "@/lib/observability/job-sentry";
 import { isValidGstin } from "@/lib/compliance/gst";
@@ -59,13 +60,16 @@ const SELLER = (() => {
   };
 })();
 
-// #476 — entry-level cron lock; fail-open (repeat-safe side effects).
+// #476 — entry-level cron lock, fail-closed: an IRN is a statutory object
+// registered with the government and cancellable only inside a 24-hour window,
+// so two runners both believing they hold the lock while Redis is unreachable
+// is the one outcome this job may never risk.
 export async function runIrpUploader(): Promise<{
   processed: number;
   failed: number;
   skipped: number;
 }> {
-  return withCronLock("irp-uploader", { failMode: "open" }, () =>
+  return withCronLock("irp-uploader", { failMode: "closed" }, () =>
     runIrpUploaderUnlocked(),
   );
 }
@@ -148,7 +152,6 @@ async function fetchIrpCandidates(thirtyDaysAgo: Date) {
     },
     take: 50, // batch size
   });
-
 }
 
 /**
@@ -259,7 +262,6 @@ async function runIrpUploaderUnlocked(): Promise<{
 
   const candidates = await fetchIrpCandidates(thirtyDaysAgo);
 
-
   let processed = 0;
   let failed = 0;
   let skipped = 0;
@@ -276,7 +278,11 @@ async function runIrpUploaderUnlocked(): Promise<{
   console.log(
     `[IRP] uploader finished — processed=${processed} failed=${failed} skipped=${skipped}`,
   );
-  Sentry.logger.info("job:irp-uploader finished", { processed, failed, skipped });
+  Sentry.logger.info("job:irp-uploader finished", {
+    processed,
+    failed,
+    skipped,
+  });
   return { processed, failed, skipped };
 }
 
@@ -285,6 +291,7 @@ async function runIrpUploaderUnlocked(): Promise<{
 // jobs/contracts/expire-contracts.ts.
 if (require.main === module) {
   runJob("irp-uploader", async () => {
+    await abortIfMaintenance("irp-uploader");
     await runIrpUploader().finally(() => prisma.$disconnect());
   });
 }

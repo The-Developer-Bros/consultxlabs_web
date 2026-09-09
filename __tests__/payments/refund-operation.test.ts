@@ -250,6 +250,10 @@ function txStub() {
         return inv;
       }),
     },
+    // #1365 — the B2C credit-note mint probes both and no-ops when the payment
+    // has no consumer invoice, which is true of every fixture in this suite.
+    consumerCreditNote: { findUnique: jest.fn().mockResolvedValue(null) },
+    consumerInvoice: { findUnique: jest.fn().mockResolvedValue(null) },
     orgAuditLog: {
       create: jest.fn(async ({ data }: any) => {
         const created = { id: stableUuid(), createdAt: new Date(), ...data };

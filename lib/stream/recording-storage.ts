@@ -19,6 +19,55 @@ import { supabase, supabaseAdmin } from "@/lib/supabase-storage-core";
 
 export const RECORDINGS_BUCKET = "recordings";
 
+/**
+ * The one ceiling for a recording object, in bytes.
+ *
+ * This number used to exist three times — `MAX_TRANSFER_SIZE` in the transfer
+ * service, the `fileSizeLimit` it passed to `ensureBucketExists`, and the value
+ * actually provisioned on the live bucket. Nothing tied them together, so
+ * raising one just moved the failure: the pre-flight reject exists precisely to
+ * fail fast instead of burning a full upload into a server 413, and it can only
+ * do that if it matches what the bucket will accept.
+ *
+ * 500MB was below a real recording. Sessions here run long, so budget ~1GB per
+ * file and leave headroom: 5GiB clears that comfortably, sits far under
+ * Supabase Pro's 500GB per-object cap and R2's 5TiB, and stays under the 5GiB
+ * single-part S3 limit so a non-multipart uploader cannot silently truncate.
+ *
+ * ⚠️ Inert on the Supabase FREE plan, which clamps every object to 50MB
+ * globally regardless of the bucket setting (#1314). Raising this is necessary
+ * but not sufficient — the plan has to move, or the bucket has to.
+ */
+const DEFAULT_MAX_OBJECT_BYTES = 5 * 1024 * 1024 * 1024;
+
+/**
+ * `??` does not catch an empty string, and `.env.sample` ships this key blank —
+ * so copying the sample would have made `Number("")` a ceiling of 0 and every
+ * recording with a positive Content-Length would be rejected before upload.
+ * Anything that is not a positive finite number means "unset".
+ */
+function parseMaxObjectBytes(raw: string | undefined): number {
+  const parsed = Number(raw?.trim());
+  if (!raw?.trim() || !Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_MAX_OBJECT_BYTES;
+  }
+  return parsed;
+}
+
+export const RECORDING_MAX_OBJECT_BYTES = parseMaxObjectBytes(
+  process.env.RECORDING_MAX_OBJECT_BYTES,
+);
+
+/** Content types Stream is expected to hand us, and the bucket will accept. */
+export const RECORDING_MIME_TYPES = [
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
+  "video/x-msvideo",
+  // Stream sometimes serves recordings without a specific video content type.
+  "application/octet-stream",
+];
+
 /** Admin client bypasses RLS; the bucket is private so playback needs signing. */
 export const storageClient = supabaseAdmin || supabase;
 

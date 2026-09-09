@@ -28,6 +28,7 @@ import crypto from "crypto";
 import { gunzip as gunzipCb } from "node:zlib";
 import { promisify } from "node:util";
 import { z } from "zod";
+import { verifySignature } from "stream-chat";
 import { streamLogger } from "@/lib/stream-logger";
 import {
   HANDLED_EVENT_TYPES,
@@ -77,13 +78,40 @@ async function readSignedBody(req: NextRequest): Promise<string> {
 }
 
 /**
- * Verify Stream webhook signature using HMAC SHA256
+ * Verify the Stream webhook signature.
+ *
+ * #1280 — the HMAC is the SDK's `verifySignature` rather than a hand-rolled
+ * `createHmac` + `timingSafeEqual`. It is the same algorithm, constant-time the
+ * same way, and maintained against the cross-SDK contract instead of by us. The
+ * hand-rolled version also compared `Buffer.from(signature)` against the
+ * expected hex without validating that the input was hex at all, so a
+ * same-length non-hex header reached `timingSafeEqual` on a byte comparison
+ * that could never match but did not say why.
+ *
+ * ## Why NOT `verifyAndParseWebhook`
+ *
+ * `stream-chat@9.52.0` ships `verifyAndParseWebhook(rawBody, signature, secret)`
+ * which decompresses, verifies and parses in one call — strictly more than this
+ * does. It is deliberately not used, and the reason is worth writing down so it
+ * is not "fixed" later.
+ *
+ * It returns only the parsed `Event`. It does not hand back the uncompressed
+ * bytes. Our dedup key is `sha256` OF THOSE BYTES (see below), chosen because it
+ * is the only material Stream actually signs — so adopting the helper would
+ * force the key to be re-derived by re-serialising the parsed object, and
+ * `JSON.stringify` is not byte-stable across key order or number formatting.
+ * Two retries of one delivery could then hash differently and dispatch twice.
+ *
+ * So: the SDK verifies, `readSignedBody` keeps the bytes, and the two
+ * responsibilities stay separate. `parseSqs`/`parseSns` are likewise not used —
+ * Stream attaches no application-level HMAC to those transports and we are on
+ * HTTP.
  */
-async function verifyStreamSignature(
+function verifyStreamSignature(
   req: NextRequest,
   body: string,
   secret: string,
-): Promise<boolean> {
+): boolean {
   const signature = req.headers.get("x-signature");
 
   if (!signature) {
@@ -92,19 +120,7 @@ async function verifyStreamSignature(
   }
 
   try {
-    // Stream uses HMAC SHA256 for signature verification
-    const expectedSignature = crypto
-      .createHmac("sha256", secret)
-      .update(body)
-      .digest("hex");
-
-    // Constant-time comparison to prevent timing attacks
-    const sigBuffer = Buffer.from(signature);
-    const expectedBuffer = Buffer.from(expectedSignature);
-    if (sigBuffer.byteLength !== expectedBuffer.byteLength) {
-      return false;
-    }
-    return crypto.timingSafeEqual(sigBuffer, expectedBuffer);
+    return verifySignature(body, signature, secret);
   } catch (error) {
     streamLogger.error("Error verifying Stream webhook signature", error);
     return false;
@@ -148,7 +164,7 @@ export async function POST(req: NextRequest) {
   const body = await readSignedBody(req);
 
   // Verify signature
-  const isValid = await verifyStreamSignature(req, body, secret);
+  const isValid = verifyStreamSignature(req, body, secret);
 
   if (!isValid) {
     streamLogger.warn("Invalid Stream webhook signature");

@@ -38,7 +38,12 @@ const FundingSourceSchema = z.enum([
   "INVOICE",
 ]);
 
-const CurrencySchema = z.enum(["INR", "USD", "EUR", "GBP"]);
+// #1396 — the `Currency` enum stays on the column (ADR 15 keeps the type), but
+// this API refuses to write anything except INR. `BillingAccount.currency` is
+// forwarded verbatim into `createRazorpayOrder` by the wallet top-up route, and
+// every amount the platform stores is INR paise, so a USD account priced a
+// ₹1,000 top-up as a $1,000 order.
+const CurrencySchema = z.literal("INR");
 
 // #777 §C — wallet minimum-balance + auto-top-up config. NOTIFY-ONLY floor for
 // now (cron emails finance below the minimum); the mandate charge lands later.

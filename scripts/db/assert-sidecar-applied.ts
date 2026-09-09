@@ -15,18 +15,25 @@
  * so it guards this script rather than a copy of it.
  */
 
-import fs from "fs";
 import path from "path";
 import prisma from "../../lib/prisma";
-import { parseSidecarObjects } from "./sidecar-objects";
+import { parseSidecarDirectory } from "./sidecar-objects";
 
 async function main() {
-  const sql = fs.readFileSync(
-    path.join(process.cwd(), "prisma/sql/check-constraints.sql"),
-    "utf8",
+  // #1319 — all three sidecar files, constraints + indexes + triggers, through
+  // the same parser CI uses, so the local assertion and the CI gate agree.
+  const expected = parseSidecarDirectory(
+    path.join(process.cwd(), "prisma/sql"),
   );
-  const { constraints: constraintNames, indexes: indexNames } =
-    parseSidecarObjects(sql);
+  const constraintNames = expected
+    .filter((o) => o.kind === "constraint")
+    .map((o) => o.name);
+  const indexNames = expected
+    .filter((o) => o.kind === "index")
+    .map((o) => o.name);
+  const triggerNames = expected
+    .filter((o) => o.kind === "trigger")
+    .map((o) => o.name);
 
   const presentConstraints = new Set(
     (
@@ -42,10 +49,21 @@ async function main() {
       `
     ).map((r) => r.indexname),
   );
+  const presentTriggers = new Set(
+    (
+      await prisma.$queryRaw<{ tgname: string }[]>`
+        SELECT t.tgname FROM pg_trigger t
+        JOIN pg_class cl ON cl.oid = t.tgrelid
+        JOIN pg_namespace n ON n.oid = cl.relnamespace AND n.nspname = 'public'
+        WHERE NOT t.tgisinternal
+      `
+    ).map((r) => r.tgname),
+  );
 
   const missing = [
     ...constraintNames.filter((n) => !presentConstraints.has(n)),
     ...indexNames.filter((n) => !presentIndexes.has(n)),
+    ...triggerNames.filter((n) => !presentTriggers.has(n)),
   ];
 
   if (missing.length > 0) {
@@ -63,7 +81,8 @@ async function main() {
     JSON.stringify({
       event: "sidecar_verified",
       constraints: constraintNames.length,
-      uniqueIndexes: indexNames.length,
+      indexes: indexNames.length,
+      triggers: triggerNames.length,
       timestamp: new Date().toISOString(),
     }),
   );

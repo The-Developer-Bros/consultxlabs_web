@@ -59,7 +59,11 @@ import { processApprovedPayouts } from "../../lib/payments/payouts/payout-servic
 
 /** The Prisma surface processApprovedPayouts touches in these tests. */
 interface PayoutPrismaMock {
-  consultantPayout: { findMany: jest.Mock; updateMany: jest.Mock; update: jest.Mock };
+  consultantPayout: {
+    findMany: jest.Mock;
+    updateMany: jest.Mock;
+    update: jest.Mock;
+  };
   consultantEarnings: { updateMany: jest.Mock; findFirst: jest.Mock };
   consultantTaxInfo: { findUnique: jest.Mock };
 }
@@ -161,9 +165,7 @@ describe("payment-legs sum trigger — sidecar wiring (source contract)", () => 
 
   it("the trigger exists, is deferred, and guards all three write shapes", () => {
     const sql = readFileSync(sqlPath, "utf8");
-    expect(sql).toMatch(
-      /CREATE CONSTRAINT TRIGGER payment_legs_sum_to_amount/,
-    );
+    expect(sql).toMatch(/CREATE CONSTRAINT TRIGGER payment_legs_sum_to_amount/);
     expect(sql).toMatch(/DEFERRABLE INITIALLY DEFERRED/);
     expect(sql).toMatch(/AFTER INSERT OR UPDATE OR DELETE ON "PaymentLeg"/);
     // Funding-sum semantics mirror checkPaymentLegsSumToAmount: non-reversal
@@ -175,7 +177,12 @@ describe("payment-legs sum trigger — sidecar wiring (source contract)", () => 
 
   it("the apply script targets this file and is chained into db:sidecars", () => {
     const script = readFileSync(
-      path.join(process.cwd(), "scripts", "db", "apply-payment-legs-triggers.ts"),
+      path.join(
+        process.cwd(),
+        "scripts",
+        "db",
+        "apply-payment-legs-triggers.ts",
+      ),
       "utf8",
     );
     expect(script).toContain("payment-legs-triggers.sql");
@@ -193,7 +200,8 @@ describe("payment-legs sum trigger — sidecar wiring (source contract)", () => 
     // live-catalog objects (line 57). The contract is canonical formatting —
     // verify ours matches the exact shape that regex is built for.
     const checker = readFileSync(
-      path.join(process.cwd(), "scripts", "ci", "check-db-sidecars.ts"),
+      // #1319 — the parser moved to the shared module both entry points use.
+      path.join(process.cwd(), "scripts", "db", "sidecar-objects.ts"),
       "utf8",
     );
     expect(checker).toContain("TRIGGER\\s+(\\w+)"); // parser exists

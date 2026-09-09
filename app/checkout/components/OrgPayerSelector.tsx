@@ -3,7 +3,7 @@
 import { useSession } from "@/lib/auth-client";
 import { useQuery } from "@tanstack/react-query";
 import Image from "next/image";
-import { Building2, CreditCard, AlertTriangle, Ban } from "lucide-react";
+import { Building2, CreditCard, AlertTriangle, Ban, Info } from "lucide-react";
 import type { CoveredPlanType } from "@prisma/client";
 
 interface OveragePreview {
@@ -88,6 +88,44 @@ function OverageWarning({
 }
 
 /**
+ * #1430 — non-blocking consent pre-flight. `handleCheckout` already fails
+ * closed on a missing SESSION_BOOKING consent artifact for the booking
+ * member, so this is a heads-up, not a gate: the server stays the
+ * authoritative check, this just stops the surprise at pay time.
+ */
+function ConsentPreflightNotice({
+  organizationId,
+}: {
+  organizationId: string;
+}) {
+  const { data } = useQuery<{ hasConsent: boolean }>({
+    queryKey: ["checkout-consent-preview", organizationId],
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/organizations/${organizationId}/checkout/consent-preview`,
+      );
+      if (!res.ok) throw new Error("consent preview failed");
+      return res.json();
+    },
+    staleTime: 30_000,
+    retry: false,
+  });
+
+  if (!data || data.hasConsent) return null;
+
+  return (
+    <div className="flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm">
+      <Info className="mt-0.5 h-4 w-4 shrink-0 text-blue-600" />
+      <span className="text-blue-900">
+        You have not granted session-booking consent yet. Your organization
+        cannot book or pay for a session on your behalf until you grant it in
+        your privacy settings.
+      </span>
+    </div>
+  );
+}
+
+/**
  * Payer selector for checkout pages. Shows "Pay personally" vs "Bill to
  * [org name]" when the user has org memberships. Self-hides for users
  * with no org affiliations (B2C users).
@@ -126,7 +164,9 @@ export function OrgPayerSelector({
 
   return (
     <div className="space-y-3">
-      <p className="text-sm font-medium text-muted-foreground">Who is paying?</p>
+      <p className="text-sm font-medium text-muted-foreground">
+        Who is paying?
+      </p>
 
       {/* Personal payment option */}
       <button
@@ -188,17 +228,19 @@ export function OrgPayerSelector({
       })}
 
       {/* #777 §C — pre-checkout overage warning for the selected org. */}
-      {selectedOrganizationId &&
-        selectedMembership &&
-        planType &&
-        planId && (
-          <OverageWarning
-            organizationId={selectedOrganizationId}
-            organizationName={selectedMembership.organizationName}
-            planType={planType}
-            planId={planId}
-          />
-        )}
+      {selectedOrganizationId && selectedMembership && planType && planId && (
+        <OverageWarning
+          organizationId={selectedOrganizationId}
+          organizationName={selectedMembership.organizationName}
+          planType={planType}
+          planId={planId}
+        />
+      )}
+
+      {/* #1430 — consent pre-flight, non-blocking. */}
+      {selectedOrganizationId && (
+        <ConsentPreflightNotice organizationId={selectedOrganizationId} />
+      )}
 
       {selectedOrganizationId && (
         <p className="text-xs text-amber-600">
@@ -222,7 +264,9 @@ function renderSubtitle(m: {
     case "WALLET": {
       const paise = m.walletBalance ?? 0;
       return (
-        <span className={paise === 0 ? "text-red-500" : "text-muted-foreground"}>
+        <span
+          className={paise === 0 ? "text-red-500" : "text-muted-foreground"}
+        >
           Wallet: ₹{(paise / 100).toLocaleString("en-IN")} remaining
         </span>
       );
@@ -249,6 +293,8 @@ function renderSubtitle(m: {
       // No billing account attached — org was set up without one, or it
       // was deleted. Default to a neutral label; server-side will reject
       // the org-funded checkout on validation.
-      return <span className="text-muted-foreground">Organization billing</span>;
+      return (
+        <span className="text-muted-foreground">Organization billing</span>
+      );
   }
 }

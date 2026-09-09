@@ -5,7 +5,6 @@
  * consistency and reduce duplication.
  */
 
-
 /**
  * Allocation modes supported by the system
  */
@@ -71,6 +70,39 @@ export interface AllocationRequest {
    * caller — a consultee cannot wave away the consultant's schedule.
    */
   override?: boolean;
+  /**
+   * #1206 — place every session that FITS instead of refusing the whole
+   * allocation when the window cannot hold them all. Off by default: a partial
+   * schedule is the consultant's explicit decision, taken after the shortfall
+   * has been shown to them. Only recurring events (subscription, class) can be
+   * partial — a consultation or webinar is one session, so it either fits or
+   * it does not.
+   */
+  allowPartial?: boolean;
+  /**
+   * #1206 — place ONLY the sessions an earlier partial allocation left
+   * unplaced, treating every confirmed appointment as fixed. Off by default
+   * because the ordinary auto path is a re-plan: it deletes what exists and
+   * lays the whole schedule out again. That is right for a reschedule and
+   * catastrophic for an event whose earlier sessions are already booked and
+   * paid. Honoured only for a recurring event that already has confirmed
+   * sessions and no reschedule in flight; every other shape falls through to
+   * today's behaviour unchanged.
+   */
+  topUp?: boolean;
+  /**
+   * #1340 — the reschedule proposal this allocation IS the confirmation of.
+   *
+   * Placing replacement times supersedes every OTHER open proposal on the same
+   * released slots, so the allocator closes those as DECLINED. The confirming
+   * caller's own proposal used to be in that set: it was DECLINED inside the
+   * allocator's transaction, and the caller's following
+   * `PENDING_REVIEW → AUTO_ACCEPTED/ACCEPTED` CAS then matched zero rows. The
+   * booking had moved while its audit trail read "declined", auto-confirm
+   * reported `autoConfirmed: false`, and the explicit accept answered 409 with
+   * no MOVED notification. Set only by the two confirmation callers.
+   */
+  excludeRescheduleRequestId?: string;
 }
 
 /**
@@ -117,6 +149,7 @@ export type AllocationErrorCode =
   | "NO_AVAILABILITY" // consultant has no published availability — 400
   | "PERIOD_ENDED" // scheduling period is in the past — 400
   | "SLOT_SHORTAGE" // not enough free slots in the window — 400
+  | "COLLABORATOR_UNAVAILABLE" // AE-2 (#784) — a co-host is already committed — 409
   | "UNKNOWN_ERROR"; // infra / unexpected — 500
 
 /**
@@ -132,6 +165,28 @@ export interface AllocationResult {
   // AE-4 — appointment ids whose tentative slots were freed during a partial
   // reschedule, so callers (calendar refresh, notifications) know what to drop.
   deletedAppointmentIds?: string[];
+  /**
+   * #1206 — fewer sessions than the plan requires were placed, at the
+   * consultant's explicit request. Derived at read time from confirmed
+   * sessions vs the plan's total; nothing is persisted.
+   */
+  partial?: boolean;
+  placedSessions?: number;
+  requiredSessions?: number;
+  unplacedSessions?: number;
+  /**
+   * #1206 — a top-up run that wrote nothing: either the plan is already fully
+   * scheduled or the consultant's availability still has no room. Success, not
+   * a failure, and the one signal the notification suppressor reads — the
+   * hourly sweep re-attempts every incomplete event, so a notice on a run that
+   * changed nothing would page the consultee every hour forever.
+   */
+  noChange?: boolean;
+  /**
+   * #1206 — on a SLOT_SHORTAGE refusal: how many whole sessions the search
+   * COULD have placed. Zero means offering a partial allocation is pointless.
+   */
+  placeableSessions?: number;
 }
 
 /**

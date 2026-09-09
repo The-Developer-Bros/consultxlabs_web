@@ -56,3 +56,109 @@ export function shouldRefetchOnReturn(msSinceLastFetch: number): boolean {
     msSinceLastFetch >= RETURN_REFETCH_MIN_STALENESS_MS
   );
 }
+
+/** Everything the scheduler asks the hook, so none of it is captured stale. */
+export interface AvailabilityPollerDeps {
+  /** `autoLoad && consultantId` — the same gate the fetch effects use. */
+  isEnabled: () => boolean;
+  visibilityState: () => DocumentVisibilityState;
+  /** Milliseconds since the last availability fetch stamped its time. */
+  msSinceLastFetch: () => number;
+  /** A navigation/allocation fetch already running, or null. */
+  inFlight: () => Promise<unknown> | null;
+  /** Runs one background availability fetch. */
+  fetch: () => Promise<unknown>;
+}
+
+export interface AvailabilityPoller {
+  /** Schedule the next poll from the current staleness. */
+  arm(): void;
+  /** focus / visibilitychange→visible. */
+  onReturn(): void;
+  /** visibilitychange, either direction. */
+  onVisibilityChange(): void;
+  dispose(): void;
+}
+
+/**
+ * The timer half of the poll loop, lifted out of `useCalendarData` so it can
+ * be driven by fake timers instead of only by a browser (#1164 R17).
+ *
+ * Two defects came out with it. The hook passed a literal `enabled: true` into
+ * `shouldPoll`, so the gate that decides whether polling should happen at all
+ * could only ever answer "yes" — a dead branch wearing the shape of a
+ * decision. And `onReturn` called `tick()` on a stale return WITHOUT clearing
+ * the timer it had already armed, so the pending timeout fired behind the
+ * fetch the return had just started: two ticks, two requests, and the second
+ * one bumping the request id out from under the first.
+ */
+export function createAvailabilityPoller(
+  deps: AvailabilityPollerDeps,
+): AvailabilityPoller {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let disposed = false;
+
+  const clearPending = () => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+
+  const mayPoll = (): boolean =>
+    !disposed &&
+    shouldPoll({
+      enabled: deps.isEnabled(),
+      visibilityState: deps.visibilityState(),
+    });
+
+  const arm = () => {
+    if (!mayPoll()) return;
+    clearPending();
+    timer = setTimeout(tick, nextPollDelay(deps.msSinceLastFetch()));
+  };
+
+  const tick = () => {
+    timer = null;
+    if (!mayPoll()) return;
+    // A navigation (or post-allocation) fetch is still running. Starting a
+    // poll now would bump the request id out from under it and strand its
+    // id-guarded `setLoading(false)` — the grid would sit on the skeleton
+    // until the next navigation. Wait for that answer, which is the fresher
+    // one anyway, and re-arm behind it.
+    const inFlight = deps.inFlight();
+    if (inFlight) {
+      void inFlight.then(arm, arm);
+      return;
+    }
+    // Serialized: the next tick is armed only once this fetch settles, so a
+    // slow response never stacks polls behind it.
+    void deps.fetch().then(arm, arm);
+  };
+
+  const onReturn = () => {
+    // Drop whatever was armed BEFORE deciding. A return either refetches now
+    // or re-arms from the new staleness; either way the old timeout is stale,
+    // and leaving it pending is what let a second tick fire behind the first.
+    clearPending();
+    if (!mayPoll()) return;
+    if (shouldRefetchOnReturn(deps.msSinceLastFetch())) tick();
+    else arm();
+  };
+
+  const onVisibilityChange = () => {
+    // Paused: nothing polls a hidden tab; the return re-arms it.
+    if (deps.visibilityState() === "hidden") clearPending();
+    else onReturn();
+  };
+
+  return {
+    arm,
+    onReturn,
+    onVisibilityChange,
+    dispose: () => {
+      disposed = true;
+      clearPending();
+    },
+  };
+}

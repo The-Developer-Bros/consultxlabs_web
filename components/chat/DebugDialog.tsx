@@ -166,8 +166,11 @@ export const DebugDialog = ({
       }
     };
 
-    chatClient.on("*.**", handleEvent);
-    return () => chatClient.off("*.**", handleEvent);
+    // #1280 2.6 — single-argument form. `on("*.**", h)` registers under the
+    // literal string, which no event ever matches, so every counter in this
+    // panel read zero for as long as it has existed.
+    chatClient.on(handleEvent);
+    return () => chatClient.off(handleEvent);
   }, [chatClient]);
 
   // Enhanced debug components
