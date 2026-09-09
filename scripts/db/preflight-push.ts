@@ -59,11 +59,26 @@ type AllowedEntry = {
  *  line breaking, which changes between versions. */
 const normalise = (s: string) => s.replace(/\s+/g, " ").trim();
 
-export const DESTRUCTIVE: { label: string; re: RegExp }[] = [
+export const DESTRUCTIVE: {
+  label: string;
+  re?: RegExp;
+  /** Matched against Prisma's own `-- Xxx` operation marker, for statements whose
+   *  text is not reliably recognisable. */
+  marker?: RegExp;
+}[] = [
   { label: "DROP COLUMN", re: /\bDROP\s+COLUMN\b/i },
   { label: "DROP TABLE", re: /\bDROP\s+TABLE\b/i },
   { label: "index rename", re: /\bALTER\s+INDEX\b[\s\S]*\bRENAME\s+TO\b/i },
-  { label: "DROP a foreign key", re: /\bDROP\s+CONSTRAINT\b[^;]*_fkey/i },
+  {
+    // Keyed off the OPERATION, not off the name. `_fkey` is only Prisma's default
+    // convention: `@relation(map: "…")` names the constraint whatever it likes, and
+    // a suffix match waved those drops through — on a gate whose entire job is
+    // catching a re-pointed relation. The suffix test stays as a fallback for a
+    // plan that arrives without markers.
+    label: "DROP a foreign key",
+    re: /\bDROP\s+CONSTRAINT\b[^;]*_fkey/i,
+    marker: /^DropForeignKey$/i,
+  },
   // Dropping a type takes every column typed by it with it.
   { label: "DROP TYPE", re: /\bDROP\s+TYPE\b/i },
   // Only UNIQUE index drops. Prisma names those `*_key` and plain indexes
@@ -79,19 +94,36 @@ export function findDestructive(
   plan: string,
 ): { statement: string; label: string }[] {
   const out: { statement: string; label: string }[] = [];
-  for (const statement of planStatements(plan)) {
-    const hit = DESTRUCTIVE.find((d) => d.re.test(statement));
+  for (const { marker, statement } of planEntries(plan)) {
+    const hit = DESTRUCTIVE.find(
+      (d) =>
+        (d.re?.test(statement) ?? false) ||
+        (d.marker !== undefined && marker !== null && d.marker.test(marker)),
+    );
     if (hit) out.push({ statement: normalise(statement), label: hit.label });
   }
   return out;
 }
 
+/** One planned statement, with the `-- Xxx` operation marker Prisma writes above
+ *  it. The marker is the only part of the plan that names the OPERATION rather
+ *  than describing the object, so anything the object's name cannot be trusted for
+ *  is decided from here. */
+export type PlanEntry = { marker: string | null; statement: string };
+
 /** Prisma emits one statement per `;`, each preceded by a `-- comment` line. */
-export function planStatements(plan: string): string[] {
+export function planEntries(plan: string): PlanEntry[] {
   return plan
     .split(";")
-    .map((s) => s.replace(/^\s*(--[^\n]*\n)+/gm, "").trim())
-    .filter((s) => s.length > 0 && !s.startsWith("--"));
+    .map((chunk) => ({
+      marker: /^[ \t]*--[ \t]*(.+)$/m.exec(chunk)?.[1]?.trim() ?? null,
+      statement: chunk.replace(/^\s*(--[^\n]*\n)+/gm, "").trim(),
+    }))
+    .filter((e) => e.statement.length > 0 && !e.statement.startsWith("--"));
+}
+
+export function planStatements(plan: string): string[] {
+  return planEntries(plan).map((e) => e.statement);
 }
 
 function allowlist(): AllowedEntry[] {
@@ -181,6 +213,16 @@ function main(): void {
 
   console.log(`db:preflight: ${statements.length} statement(s) planned:`);
   for (const s of statements) console.log(`  ${normalise(s)}`);
+
+  // The docblock had promised `--print` since this file was written and `main()`
+  // never read `process.argv`, so the one way to see a plan was to run the gate
+  // and have it exit 1 at you. Reading a destructive plan is exactly when you most
+  // want to look without failing.
+  if (process.argv.includes("--print")) {
+    for (const o of offences) console.log(`  (destructive) ${o.label}`);
+    console.log("db:preflight: --print — plan only, nothing gated.");
+    return;
+  }
 
   if (offences.length === 0) {
     console.log("db:preflight: additive — safe to push.");

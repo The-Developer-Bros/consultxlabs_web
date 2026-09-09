@@ -95,6 +95,33 @@ describe("db:push preflight", () => {
     expect(found[0].label).toBe("index rename");
   });
 
+  it("catches a foreign-key drop whose constraint has a custom name", () => {
+    // `@relation(map: "…")` names the constraint whatever the schema says, so the
+    // `_fkey` suffix is a convention and not a rule. The operation marker Prisma
+    // writes above the statement is the part that names what is happening.
+    const found = findDestructive(
+      `-- DropForeignKey\nALTER TABLE "ConsultantReviewRevision" DROP CONSTRAINT "revision_editor_ref";`,
+    );
+    expect(found).toHaveLength(1);
+    expect(found[0].label).toBe("DROP a foreign key");
+  });
+
+  it("keeps the suffix fallback for a plan that arrives without markers", () => {
+    const found = findDestructive(
+      `ALTER TABLE "ConsultantReview" DROP CONSTRAINT "ConsultantReview_excludedByUserId_fkey";`,
+    );
+    expect(found.map((f) => f.label)).toEqual(["DROP a foreign key"]);
+  });
+
+  it("does not read a DropForeignKey marker onto the next statement", () => {
+    // The marker is per-chunk, and chunks are split on `;`. A CreateIndex following
+    // a DropForeignKey must not inherit its label.
+    const labels = findDestructive(
+      `-- DropForeignKey\nALTER TABLE "A" DROP CONSTRAINT "a_ref";\n\n-- CreateIndex\nCREATE INDEX "A_b_idx" ON "A"("b");`,
+    ).map((f) => f.label);
+    expect(labels).toEqual(["DROP a foreign key"]);
+  });
+
   it("reads an empty plan as nothing to do, not as a pass on garbage", () => {
     expect(planStatements("-- This is an empty migration.")).toEqual([]);
   });

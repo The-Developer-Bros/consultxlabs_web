@@ -39,7 +39,22 @@ import {
 } from "../../lib/reviews";
 import { withSerializableRetry } from "../../lib/db/serializable-retry";
 
-/** The columns a run writes, so the dry run can diff them against what is stored. */
+/**
+ * The columns a run writes that are FUNCTIONS OF THE DATA, so the dry run can diff
+ * them against what is stored.
+ *
+ * `recomputeConsultantRating` writes fourteen columns; these are the twelve whose
+ * value is determined by the reviews. The two omitted ones are omitted on purpose:
+ * `ratingAggregatedAt` is `now` on every run and `scoringSnapshotId` is the id of
+ * the snapshot this run minted (null in a dry run), so either would report every
+ * profile as changed and `wouldChange` would degrade to the profile count.
+ *
+ * `effectiveSampleOneToOne` and `effectiveSampleGroup` were the ones missing by
+ * accident, and they were the ones that mattered: on the first run after these
+ * columns ship every profile moves them from NULL to a number, so a dry run could
+ * print `wouldChange: 0` for a run that would write every row — the wrong direction
+ * for the pre-flight check on a manual step against production data.
+ */
 const SCORE_COLUMNS = {
   publishedRatingOneToOne: true,
   publishedRatingGroup: true,
@@ -47,6 +62,8 @@ const SCORE_COLUMNS = {
   ratedEventsGroup: true,
   rawRatingOneToOne: true,
   rawRatingGroup: true,
+  effectiveSampleOneToOne: true,
+  effectiveSampleGroup: true,
   rating: true,
   publishedRating: true,
   ratingUnitCount: true,
