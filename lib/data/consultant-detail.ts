@@ -33,6 +33,14 @@ export const getConsultantDetail = cache(async (consultantId: string) => {
       // the RAW mean and stays internal; the profile shows this one.
       publishedRating: true,
       reviewCount: true,
+      // #1300 (ADR 29) — the two tracks the profile shows side by side. A
+      // twelve-session 1:1 engagement and a 200-seat webinar are different
+      // products, and one blended number tells a buyer of either one nothing.
+      // NULL on either means SUPPRESSED, never zero.
+      publishedRatingOneToOne: true,
+      publishedRatingGroup: true,
+      ratedClientsOneToOne: true,
+      ratedEventsGroup: true,
       headline: true,
       websiteUrl: true,
       twitterUrl: true,

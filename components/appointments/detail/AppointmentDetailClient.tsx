@@ -44,7 +44,6 @@ import { SessionTimeline } from "../SessionTimeline";
 import { RescheduleProposalCard } from "./RescheduleProposalCard";
 import { SupportThreadSheet } from "@/components/support/SupportThreadSheet";
 import { AppointmentSupportStatusCard } from "@/components/support/AppointmentSupportStatusCard";
-import { SessionReviewCard } from "@/components/reviews/SessionReviewCard";
 import { SessionRatingRow } from "@/components/reviews/SessionRatingRow";
 import { useSessionFeedback } from "@/hooks/useSessionFeedback";
 
@@ -409,17 +408,23 @@ export function AppointmentDetailClient({
                 the public review is a card of its own, so the page no longer
                 asks the same-looking question twice.
 
-                Deliberately NOT gated on `vm.bucket === "past"`. That gate
-                required EVERY session of the booking to be finished, so on a
-                subscription holding up to twenty-four meetings — the most
-                common shape here — nobody could review until the whole
-                programme was over, months after the session that earned the
-                review. It was also a second, stricter copy of a rule the server
-                already owns: `resolveReviewableSession` needs one attended
-                session, and `SessionReviewCard` renders nothing when it says
-                no. One source of truth, and it is the API's. */}
-            {role === "consultee" && (
-              <SessionReviewCard appointmentId={appointmentId} />
+                #1300 — the public review has MOVED to the expert's profile,
+                which is where it lives and where you read the others. Keeping a
+                composer here as well is how the same five-star widget ended up
+                on screen twice: a private per-call rating on each session row
+                and a public review card above them, neither anchored to what
+                the user thought they were rating. What stays here is a link. */}
+            {role === "consultee" && vm.consultantProfileId && (
+              <p className="text-sm text-muted-foreground">
+                Reviewed this expert?{" "}
+                <Link
+                  href={`/explore/experts/${vm.consultantProfileId}#reviews`}
+                  className="font-medium text-foreground underline underline-offset-4"
+                >
+                  Write or update your review on their profile
+                </Link>
+                .
+              </p>
             )}
             <Section title="Sessions">
               {/* A failed ratings read must not render as "unrated". Without
