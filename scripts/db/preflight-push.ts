@@ -107,12 +107,27 @@ function main(): void {
     return;
   }
 
+  // The project's OWN Prisma binary, by absolute path — not `npx prisma`.
+  //
+  // Two reasons, and they point the same way. Resolving a bare command name goes
+  // through `PATH`, so what runs depends on the environment rather than on the
+  // repository, which is what Sonar's S4036 is about. And this guard exists to
+  // decide whether a DDL plan is safe to apply, so it had better be computed by
+  // the same Prisma version the push will use, not by whichever one is first on
+  // the path.
+  const PRISMA_BIN = path.join(ROOT, "node_modules", ".bin", "prisma");
+  if (!fs.existsSync(PRISMA_BIN)) {
+    console.error(
+      `db:preflight: cannot find ${PRISMA_BIN}. Run \`npm ci\` before pushing.`,
+    );
+    process.exit(1);
+  }
+
   let plan: string;
   try {
     plan = execFileSync(
-      "npx",
+      PRISMA_BIN,
       [
-        "prisma",
         "migrate",
         "diff",
         "--from-config-datasource",
