@@ -620,7 +620,14 @@ model AppointmentFeedback {
   // matters for the org aggregate, which windows on `createdAt` — a rating
   // created inside the window and rewritten from 5 to 1 six months later still
   // reports in that window, and until now nothing could tell that it had moved.
-  updatedAt DateTime? @updatedAt @db.Timestamptz
+  //
+  // Deliberately NOT `@updatedAt`, which would make every word above false:
+  // Prisma stamps that attribute on CREATE as well as on update, so the column
+  // could never be NULL, and re-submitting an identical rating would move it too.
+  // The feedback route sets it explicitly, and only when the rating or the comment
+  // actually changed — the same "only a changed opinion counts" rule
+  // `ConsultantReview.editedAt` is written by.
+  updatedAt DateTime? @db.Timestamptz
 
   // NULL = live. Moderation soft-delete, the same semantics and the same reason
   // as ConsultantReview.deletedAt: the org aggregate and the author's own read
@@ -3401,6 +3408,13 @@ model ConsultantReview {
   // (The @@unique above already prefixes consultantProfileId, so no separate
   // single-column index is needed for it.)
   @@index([consulteeProfileId])
+  // #1300 — Postgres does not index a foreign key for you, and both of these are
+  // `SetNull`. `prisma.user.delete` — which the account-deletion route takes when
+  // no money history has to be retained — makes Postgres find every referencing
+  // row, so without these it sequential-scans this table twice per removed staff
+  // account.
+  @@index([excludedByUserId])
+  @@index([deletedByUserId])
 }
 
 /// #1300 — which reputation a review contributes to.
@@ -3482,6 +3496,9 @@ model ConsultantReviewRevision {
   /// moderation surface. Its leftmost prefix also serves the Restrict check on
   /// review delete, which Postgres does not index for you.
   @@index([reviewId, supersededAt])
+  /// Same reason as ConsultantReview's two: `editorUserId` is a `SetNull` foreign
+  /// key, so a user delete scans this table without it.
+  @@index([editorUserId])
 }
 
 /// #1300 — one immutable row per scoring run: the platform priors it used and

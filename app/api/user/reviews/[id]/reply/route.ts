@@ -105,26 +105,39 @@ export async function PUT(
       );
     }
 
-    const updated = await prisma.consultantReview.update({
-      where: { id },
+    // The liveness predicate goes in the WRITE, not only in the authorization
+    // read. `authorizeReply` checked `deletedAt` a moment ago and the `update`
+    // keyed on the id alone, so a review soft-deleted in between still got its
+    // reply saved and a 200 — answering success for a reply that publishes
+    // nothing, on a review the reader is being told is still there. `updateMany`
+    // so the check and the write are one statement; the same shape DELETE below
+    // already uses.
+    const repliedAt = new Date();
+    const written = await prisma.consultantReview.updateMany({
+      where: { id, deletedAt: null },
       data: {
         replyBody: parsed.data.body,
-        repliedAt: new Date(),
+        repliedAt,
         // Replacing a reply staff had removed un-removes it, which is correct:
         // the takedown was of the previous text. Their next removal is one call
         // away, and the alternative — a permanent ban on replying — is a
         // punishment nobody chose.
         replyDeletedAt: null,
       },
-      select: { replyBody: true, repliedAt: true, consultantProfileId: true },
     });
+    // Zero rows means the review stopped being live between the two statements.
+    // 404 and not 409, matching what `authorizeReply` would have answered a
+    // moment earlier: there is nothing to retry against.
+    if (written.count === 0) {
+      return NextResponse.json({ error: "Review not found" }, { status: 404 });
+    }
 
     // The reply renders inside the review card on the profile and the landing
     // page, both cached — an unpurged reply is invisible for up to an hour.
-    purgeReviewSurfaces(updated.consultantProfileId);
+    purgeReviewSurfaces(auth.review.consultantProfileId);
 
     return NextResponse.json(
-      { data: { replyBody: updated.replyBody, repliedAt: updated.repliedAt } },
+      { data: { replyBody: parsed.data.body, repliedAt } },
       { status: 200 },
     );
   } catch (error) {

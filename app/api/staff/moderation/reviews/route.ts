@@ -92,12 +92,16 @@ export async function GET(req: NextRequest) {
     }));
 
     // Get rating distribution.
-    // #1300 — scoped to LIVE rows. It had no `where` at all while the list above
-    // it does, so the histogram counted moderation-removed reviews and the two
-    // numbers on the same screen described different populations.
+    // #1300 — the SAME population as the list, from the same `where`. It had no
+    // `where` at all, and scoping it to live rows only half-fixed that: the list
+    // applies `consultantProfileId` and the rating bounds and deliberately does not
+    // filter `deletedAt`, so a filtered queue still showed a histogram of a
+    // different population. Two numbers on one screen have to count the same rows,
+    // and on this screen that includes the removed ones — telling them apart is
+    // what the queue is for.
     const ratingDistribution = await prisma.consultantReview.groupBy({
       by: ["rating"],
-      where: { deletedAt: null },
+      where,
       _count: { id: true },
     });
 

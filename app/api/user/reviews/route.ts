@@ -252,6 +252,19 @@ export async function POST(req: NextRequest) {
                 rating: validatedData.rating,
                 reviewDescription: validatedData.reviewDescription,
                 appointmentId: reviewable.appointmentId,
+                // The session clock moves WITH `appointmentId`, because they are one
+                // fact: the row would otherwise claim provenance from this session
+                // while its recency weight measured a different one, or none at all
+                // — a legacy row adopted here ended up with a real appointment and a
+                // NULL clock, silently falling back to `createdAt` in
+                // `oneToOnePoints`. Stamping it always is safe because `heldAt` is a
+                // slot's `endsAt`, not `now()`: re-saving cannot refresh anybody's
+                // own recency weight, and a genuinely newer session is a newer
+                // conversation. Skipped when unknown, so an offline session with no
+                // bounds does not erase a clock we already had.
+                ...(reviewable.heldAt
+                  ? { ratedSessionAt: reviewable.heldAt }
+                  : {}),
                 // Adopt the track when the row predates it. Never MOVE a track
                 // that is already set: the unique keys on it, so a move would
                 // collide with the reviewer's other review of the same person.

@@ -85,12 +85,29 @@ const create = jest.fn(async ({ data }: CreateArgs) => {
 
 const mockGetMessage = jest.fn();
 
-/** The reviewed row a REVIEW report is checked against. Default: review-1 exists,
- *  is live, and was written by target-1 — the happy path every other case here
- *  needs so it can get past the new gate to the dedup lookup being asserted. */
-const reviewFindFirst = jest.fn(async ({ where }: FindFirstArgs) =>
-  where.id === "review-1" ? { consulteeProfile: { userId: "target-1" } } : null,
-);
+/** The reviewed rows a REVIEW report is checked against. `review-1` is live and was
+ *  written by target-1 — the happy path every other case here needs so it can get
+ *  past the gate to the dedup lookup being asserted. `review-removed` is the same
+ *  review after moderation took it down.
+ *
+ *  The store HONOURS `deletedAt`, rather than matching on the id alone. A mock that
+ *  ignores the predicate cannot tell a route that filters `deletedAt: null` from one
+ *  that forgot to, so the regression guard guarded nothing. */
+const reviewRows = [
+  { id: "review-1", deletedAt: null as Date | null, authorUserId: "target-1" },
+  {
+    id: "review-removed",
+    deletedAt: new Date("2026-09-01T00:00:00Z") as Date | null,
+    authorUserId: "target-1",
+  },
+];
+
+const reviewFindFirst = jest.fn(async ({ where }: FindFirstArgs) => {
+  const row = reviewRows.find((r) => r.id === where.id);
+  if (!row) return null;
+  if ("deletedAt" in where && row.deletedAt !== where.deletedAt) return null;
+  return { consulteeProfile: { userId: row.authorUserId } };
+});
 
 jest.mock("@sentry/nextjs", () => ({ captureException: jest.fn() }));
 
@@ -333,6 +350,24 @@ describe("POST /api/report — message reports aggregate per message", () => {
     });
     expect(res.status).toBe(400);
     expect(create).not.toHaveBeenCalled();
+  });
+
+  it("refuses a review report that names a review moderation removed", async () => {
+    // The row still exists, so an id check alone finds it. Reporting it would file
+    // a report whose CONTENT_REMOVED action has nothing left to remove, and would
+    // let a removed review keep accruing reports against its author.
+    const res = await post({
+      type: "REVIEW",
+      reason: "Fake review",
+      targetUserId: "target-1",
+      reviewId: "review-removed",
+    });
+    expect(res.status).toBe(404);
+    expect(create).not.toHaveBeenCalled();
+    // The predicate, not just the outcome: this is what the mock now enforces.
+    expect(reviewFindFirst.mock.calls[0][0].where).toMatchObject({
+      deletedAt: null,
+    });
   });
 
   it("requires a review report to name a review at all", async () => {

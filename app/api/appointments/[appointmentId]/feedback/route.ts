@@ -23,6 +23,12 @@ import {
 
 const FEEDBACK_ROUTE = "appointments.feedback";
 
+/** How much of the booking the GET answers for. Parsed rather than compared: an
+ *  unrecognised value used to fall through to the single-appointment answer, so a
+ *  typo'd or renamed scope returned a NARROWER result than the caller asked for and
+ *  said 200 about it. */
+const scopeSchema = z.enum(["appointment", "booking"]).default("appointment");
+
 const feedbackSchema = z.object({
   rating: z.number().int().min(1).max(5),
   comment: z.string().trim().max(2000).optional(),
@@ -68,9 +74,19 @@ export async function GET(
     //
     // `authorizeAppointment` already loaded the siblings to decide the answer, so
     // widening the scope costs NO extra query — the ids are in hand.
-    const scope = new URL(req.url).searchParams.get("scope");
+    const scope = scopeSchema.safeParse(
+      new URL(req.url).searchParams.get("scope") ?? undefined,
+    );
+    if (!scope.success) {
+      return supportError({
+        status: 400,
+        code: "VALIDATION_FAILED",
+        detail: scope.error.flatten(),
+        context: { route: FEEDBACK_ROUTE, action: "get", appointmentId },
+      });
+    }
     const scopeIds =
-      scope === "booking"
+      scope.data === "booking"
         ? [auth.detail.appointment.id, ...auth.detail.siblings.map((s) => s.id)]
         : [appointmentId];
 
@@ -222,6 +238,29 @@ export async function POST(
         run.slots.some((row) => row.id === slot.id),
       )?.anchor.id ?? slot.id;
 
+    // `updatedAt` is stamped HERE, not by `@updatedAt`. Prisma populates that
+    // attribute on create as well as on update, so the column could never be NULL
+    // — and NULL is the meaning the schema documents: never edited since it was
+    // written. Only a changed OPINION counts, the same rule the review upsert
+    // applies to `editedAt`: re-submitting identical stars is idempotent and must
+    // not read to a moderator as somebody who keeps changing their mind.
+    const previous = await prisma.appointmentFeedback.findUnique({
+      where: {
+        slotOfAppointmentId_userId: {
+          slotOfAppointmentId: ratedSlotId,
+          userId: auth.userId,
+        },
+      },
+      select: { rating: true, comment: true },
+    });
+    const opinionChanged =
+      previous !== null &&
+      (previous.rating !== body.data.rating ||
+        // An absent `comment` is "not supplied", which the upsert already treats
+        // as leaving the stored note alone — so it is not an edit either.
+        (body.data.comment !== undefined &&
+          (previous.comment ?? "") !== body.data.comment));
+
     const feedback = await prisma.appointmentFeedback.upsert({
       where: {
         slotOfAppointmentId_userId: {
@@ -242,6 +281,7 @@ export async function POST(
         rating: body.data.rating,
         comment: body.data.comment,
         raterRole,
+        ...(opinionChanged ? { updatedAt: new Date() } : {}),
       },
     });
     return NextResponse.json({ data: feedback });
