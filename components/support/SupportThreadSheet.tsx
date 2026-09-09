@@ -220,6 +220,35 @@ export function SupportThreadSheet({
     }
   };
 
+  // Undo the optimistic bubble. Restoring the pre-turn snapshot is the normal
+  // path, but a turn sent before the first GET resolves has NO snapshot to
+  // restore — the composer is live while the thread is still loading. Skipping
+  // the rollback there left the pending bubble in the cache and added a failed
+  // one beside it, so one failed send rendered as two messages until a refetch.
+  const rollbackOptimistic = (
+    previous: ThreadData | undefined,
+    optimisticId: string | undefined,
+  ) => {
+    if (previous) {
+      qc.setQueryData(queryKey, previous);
+      return;
+    }
+    if (!optimisticId) return;
+    qc.setQueryData<ThreadData>(queryKey, (old) =>
+      old?.thread
+        ? {
+            ...old,
+            thread: {
+              ...old.thread,
+              messages: old.thread.messages.filter(
+                (m) => m.id !== optimisticId,
+              ),
+            },
+          }
+        : old,
+    );
+  };
+
   const turn = useMutation({
     mutationFn: async ({
       chosenLabel: _chosenLabel,
@@ -259,7 +288,7 @@ export function SupportThreadSheet({
       if (result.accepted === false) {
         const id = context?.optimisticId;
         const said = vars.userMessage ?? vars.chosenLabel;
-        if (context?.previous) qc.setQueryData(queryKey, context.previous);
+        rollbackOptimistic(context?.previous, id);
         if (id && said)
           setFailedTurns((f) => ({ ...f, [id]: { body: said, vars } }));
         toast({
@@ -312,7 +341,7 @@ export function SupportThreadSheet({
       if (id && said) {
         // Roll the cache back to the server's truth and keep the failed message
         // beside it in component state, so a refetch cannot erase it.
-        if (context?.previous) qc.setQueryData(queryKey, context.previous);
+        rollbackOptimistic(context?.previous, id);
         setFailedTurns((f) => ({ ...f, [id]: { body: said, vars } }));
       } else {
         toast({
@@ -390,7 +419,11 @@ export function SupportThreadSheet({
   // up on the user.
   const retryTurn = (id: string) => {
     const failed = failedTurns[id];
-    if (!failed) return;
+    // Check the in-flight guard BEFORE dropping the entry. `submitTurn` returns
+    // silently while another turn is out, so deleting first meant a Retry
+    // pressed during an in-flight send erased the message and never resent it —
+    // losing the very text the Retry existed to protect.
+    if (!failed || inFlight.current) return;
     setFailedTurns(({ [id]: _gone, ...rest }) => rest);
     submitTurn(failed.vars);
   };
@@ -556,7 +589,7 @@ export function SupportThreadSheet({
                   {[0, 150, 300].map((delay) => (
                     <span
                       key={delay}
-                      className="h-1.5 w-1.5 animate-bounce rounded-full bg-foreground/40"
+                      className="h-1.5 w-1.5 rounded-full bg-foreground/40 motion-safe:animate-bounce"
                       style={{ animationDelay: `${delay}ms` }}
                     />
                   ))}

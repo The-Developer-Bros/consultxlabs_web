@@ -1,11 +1,11 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { TConsultantReview } from "@/types/review";
+import { TPublicConsultantReview } from "@/types/review";
 import Image from "next/image";
 
 import { StarIcon } from "lucide-react";
 import React from "react";
 
-const Review: React.FC<Readonly<TConsultantReview>> = ({
+const Review: React.FC<Readonly<TPublicConsultantReview>> = ({
   consulteeProfile,
   createdAt,
   rating,

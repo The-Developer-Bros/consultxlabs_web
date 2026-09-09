@@ -7,6 +7,7 @@
  */
 
 import { useQueries } from "@tanstack/react-query";
+import { throwSupportError } from "@/lib/support/error-copy";
 
 interface SlotFeedback {
   slotOfAppointmentId: string | null;
@@ -37,7 +38,12 @@ export function useSessionFeedback(
         rateable: string[];
       }> => {
         const res = await fetch(`/api/appointments/${appointmentId}/feedback`);
-        if (!res.ok) return { ratings: {}, rateable: [] };
+        // A failed read is NOT "you have rated nothing". Returning an empty
+        // result made React Query record success, skip its retry and cache the
+        // emptiness, so a 500 rendered as unrated stars on a call the user had
+        // already rated — indistinguishable from the truth. Throw and let the
+        // consumer decide, which is the rule SessionReviewCard already states.
+        if (!res.ok) await throwSupportError(res, "session feedback load");
         const { data, rateableSlotIds } = await res.json();
         const rows = (data ?? []) as SlotFeedback[];
         // A provider's read returns EVERY attendee's rating, so a group call

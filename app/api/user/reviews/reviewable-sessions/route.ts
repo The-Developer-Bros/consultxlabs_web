@@ -8,6 +8,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { getSession } from "@/lib/auth-server";
 import { supportError } from "@/lib/api/support-http";
 import {
@@ -16,6 +17,13 @@ import {
 } from "@/lib/reviews";
 
 const ROUTE = "user.reviews.reviewable";
+
+// #831 — every caller-supplied string is parsed and bounded before it reaches a
+// query. Both ids are cuid/uuid-shaped, so 64 characters is generous.
+const QuerySchema = z.object({
+  consultantProfileId: z.string().min(1).max(64).optional(),
+  appointmentId: z.string().min(1).max(64).optional(),
+});
 
 export async function GET(req: NextRequest) {
   try {
@@ -38,20 +46,32 @@ export async function GET(req: NextRequest) {
     // "have I earned the right to review this person, and have I already?"
     // Returns the most recent qualifying session, which is the provenance the
     // POST records.
-    const consultantProfileId = req.nextUrl.searchParams.get(
-      "consultantProfileId",
+    const query = QuerySchema.safeParse(
+      Object.fromEntries(req.nextUrl.searchParams),
     );
+    if (!query.success) {
+      return supportError({
+        status: 400,
+        code: "VALIDATION_FAILED",
+        detail: query.error.flatten(),
+        context: { route: ROUTE },
+      });
+    }
+    const { consultantProfileId, appointmentId } = query.data;
+
     if (consultantProfileId) {
-      const all = await listReviewableSessions(
-        consulteeProfileId,
-        session.user.id,
-      );
+      // Filtered in the QUERY, not after it. `loadReviewableAppointments` caps
+      // at the 50 newest bookings, so narrowing afterwards silently returned
+      // nothing to anyone whose session with this expert sat outside that page.
       return NextResponse.json({
-        data: all.filter((s) => s.consultantProfileId === consultantProfileId),
+        data: await listReviewableSessions(
+          consulteeProfileId,
+          session.user.id,
+          consultantProfileId,
+        ),
       });
     }
 
-    const appointmentId = req.nextUrl.searchParams.get("appointmentId");
     if (appointmentId) {
       const one = await resolveReviewableSession(
         consulteeProfileId,

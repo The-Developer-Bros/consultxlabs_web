@@ -385,7 +385,7 @@ export function PlatformSupportSheet({
                   {[0, 150, 300].map((delay) => (
                     <span
                       key={delay}
-                      className="h-1.5 w-1.5 animate-bounce rounded-full bg-foreground/40"
+                      className="h-1.5 w-1.5 rounded-full bg-foreground/40 motion-safe:animate-bounce"
                       style={{ animationDelay: `${delay}ms` }}
                     />
                   ))}

@@ -22,7 +22,6 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const rating = searchParams.get("rating");
     const consultantId = searchParams.get("consultantId");
-    const consulteeId = searchParams.get("consulteeId");
     const searchTerm = searchParams.get("search");
 
     const whereClause: Prisma.ConsultantReviewWhereInput = {};
@@ -37,9 +36,14 @@ export async function GET(req: NextRequest) {
       whereClause.consultantProfileId = consultantId;
     }
 
-    if (consulteeId) {
-      whereClause.consulteeProfileId = consulteeId;
-    }
+    // NO consulteeProfileId filter. This route is PUBLIC (middleware.ts) and
+    // CDN-cached, so an unauthenticated caller could pass any profile id and
+    // read back that person's reviews — including the ones they marked
+    // anonymous. Stripping `consulteeProfile` from the RESPONSE does nothing
+    // there: the caller supplied the identity, so the filter itself is the
+    // de-anonymisation. Nothing in the app ever passed this parameter.
+    // A "my reviews" surface must authenticate and derive the profile from the
+    // session, not accept it from the query string.
 
     if (searchTerm) {
       whereClause.reviewDescription = {
@@ -152,7 +156,7 @@ export async function POST(req: NextRequest) {
     // ConsultantProfile.rating (explore sort/filter) never drifts. Serializable
     // + retry so two concurrent reviews for the same consultant can't lose-update
     // the recomputed average (P2034 aborts one, retry then sees the committed row).
-    const newReview = await withSerializableRetry(() =>
+    const writeResult = await withSerializableRetry(() =>
       prisma.$transaction(
         async (tx) => {
           // A review that moderation removed cannot be edited back into existence,
@@ -185,7 +189,14 @@ export async function POST(req: NextRequest) {
               rating: validatedData.rating,
               reviewDescription: validatedData.reviewDescription,
               appointmentId: reviewable.appointmentId,
-              ratingUnitId: reviewable.ratingUnitId,
+              // ratingUnitId deliberately NOT moved. It is the bucket the
+              // group weighting averages within, so reassigning it on an edit
+              // merges units that were separate: two 1:1 clients who both
+              // later attend the same webinar and re-post collapse from two
+              // rated units into one, and a consultant sitting on the
+              // five-unit publication threshold loses their public score
+              // because two people edited their reviews. The unit belongs to
+              // the session that first grounded the review.
               isAnonymous: validatedData.isAnonymous ?? undefined,
               // A moderated-away review must not be resurrected by re-submitting.
               deletedAt: undefined,
@@ -227,30 +238,45 @@ export async function POST(req: NextRequest) {
 
           await recomputeConsultantRating(tx, created.consultantProfileId);
 
-          return created;
+          // The write is an upsert, so the caller cannot tell a create from an
+          // edit by looking at the row. `existing` is the answer and the
+          // transaction already has it.
+          return { review: created, isNew: !existing };
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
       ),
     );
 
-    // Notify the consultant about the new review
-    void notifyNewReview(newReview.consultantProfile.userId, {
-      reviewerName: newReview.consulteeProfile?.user?.name || "User",
-      rating: newReview.rating,
-      comment: newReview.reviewDescription || undefined,
-      planTitle: reviewable.title,
-      // `/dashboard/consultant/reviews` never existed — the link 404'd for
-      // every review ever notified. The capability router picks the viewer's
-      // tree from a bare /dashboard.
-      dashboardUrl: "/dashboard",
-    });
+    const { review: newReview, isNew } = writeResult;
+
+    // Only a genuinely NEW review is news. Under the upsert every edit pinged
+    // the consultant again as though a fresh review had landed, so a consultee
+    // refining their wording could notify them repeatedly for one opinion.
+    if (isNew) {
+      void notifyNewReview(newReview.consultantProfile.userId, {
+        // The reviewer withheld their name from the public page; sending it to
+        // the consultant in a notification would hand back exactly what the
+        // flag exists to withhold, and to the one person it is kept from.
+        reviewerName: newReview.isAnonymous
+          ? "A verified client"
+          : newReview.consulteeProfile?.user?.name || "User",
+        rating: newReview.rating,
+        comment: newReview.reviewDescription || undefined,
+        planTitle: reviewable.title,
+        // `/dashboard/consultant/reviews` never existed — the link 404'd for
+        // every review ever notified. The capability router picks the viewer's
+        // tree from a bare /dashboard.
+        dashboardUrl: "/dashboard",
+      });
+    }
 
     // Reviews are the landing page's testimonials and they move the expert's
     // denormalized rating, which orders the directory — both surfaces are stale
     // until purged, and the landing page's window is an hour.
     purgeReviewSurfaces(newReview.consultantProfileId);
 
-    return NextResponse.json(newReview, { status: 201 });
+    // 201 only when something was created; an edit is a 200.
+    return NextResponse.json(newReview, { status: isNew ? 201 : 200 });
   } catch (error) {
     if (error instanceof ModeratedReviewError) {
       return NextResponse.json(
@@ -266,8 +292,15 @@ export async function POST(req: NextRequest) {
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2002"
     ) {
+      // Reachable only as a race: the upsert's own read-then-write can lose to
+      // a concurrent insert of the same pair. Not "this session" any more —
+      // the unique is per CONSULTANT, and the copy has to say so or the reader
+      // goes looking for a session they never double-reviewed.
       return NextResponse.json(
-        { error: "You have already reviewed this session" },
+        {
+          error:
+            "You already have a review for this expert. Reload to edit the one you have.",
+        },
         { status: 409 },
       );
     }

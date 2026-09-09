@@ -335,10 +335,16 @@ export function SessionTimeline({
               </span>
             </div>
 
-            {/* Nothing to rate on a call that never happened. */}
+            {/* Nothing to rate on a call that never happened, or on one still
+                running. Gate on the STATUS, not on `joinable` — that is only
+                set when `onJoinSession` was also supplied, so a read-only
+                timeline (AppointmentDetailClient whenever its action is not
+                "join") left it undefined while the call was live and offered
+                stars mid-session. The route accepts such a rating, because
+                attendance is recorded the moment the user joins. */}
             {renderSessionExtra &&
             status !== "upcoming" &&
-            !joinable &&
+            status !== "joinable" &&
             !DEAD_SESSION.has(
               group.slots[group.slots.length - 1].completionStatus ?? "",
             )

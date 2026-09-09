@@ -442,10 +442,27 @@ async function resumeTicketClock(ticketId: string): Promise<void> {
     select: { awaitingUserSince: true, pausedSeconds: true },
   });
   if (!ticket) return;
-  await prisma.supportTicket.update({
-    where: { id: ticketId },
+  // CAS on the two fields the patch is computed FROM. `userRepliedPatch` banks
+  // an absolute `pausedSeconds` derived from the read above, so an
+  // unconditional update let two concurrent user replies — or a staff reply
+  // landing in between — overwrite each other's increment and leave the SLA
+  // clock reporting a pause that never happened. Losing the race is not a
+  // failure: the other writer has already banked the same interval, so we keep
+  // the activity stamp and leave the clock exactly as they set it.
+  const claimed = await prisma.supportTicket.updateMany({
+    where: {
+      id: ticketId,
+      awaitingUserSince: ticket.awaitingUserSince,
+      pausedSeconds: ticket.pausedSeconds,
+    },
     data: { lastMessageAt: new Date(), ...userRepliedPatch(ticket) },
   });
+  if (claimed.count === 0) {
+    await prisma.supportTicket.update({
+      where: { id: ticketId },
+      data: { lastMessageAt: new Date() },
+    });
+  }
 }
 
 /** Hand the thread to a human: persist the exchange, create/link a SupportTicket

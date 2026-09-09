@@ -50,8 +50,9 @@ export async function GET(
     // A deliberate product call: at this volume an aggregate over two ratings
     // tells nobody anything, so the detail is what makes it actionable. The
     // copy the rater sees says so plainly — nothing here is promised private.
-    // On a 1:1 booking this identifies the rater, which is exactly why it is
-    // disclosed rather than quietly enabled.
+    // On a 1:1 booking this identifies the rater, which is exactly why
+    // SessionRatingRow states it on the control itself rather than leaving it
+    // quietly enabled.
     const asProvider =
       appointmentRaterRole(auth.userId, auth.detail) === "PROVIDER";
 
@@ -76,7 +77,13 @@ export async function GET(
         id: true,
         slotOfAppointmentId: true,
         rating: true,
-        comment: true,
+        // The SCORE is disclosed to the provider; the free-text note is not.
+        // Every comment in this table was typed into AppointmentCsatCard, whose
+        // own header called it "private per-participant CSAT" — and the row that
+        // replaced it takes stars only, so it cannot re-ask for consent that was
+        // never given. Nothing renders this field for a provider today, so
+        // withholding it costs no feature.
+        comment: !asProvider,
         createdAt: true,
       },
       // A provider could otherwise infer a rater from ordering on a group call.

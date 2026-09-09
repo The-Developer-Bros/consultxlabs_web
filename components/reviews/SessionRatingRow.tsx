@@ -56,12 +56,13 @@ export function SessionRatingRow({
         queryKey: ["appointment-feedback", appointmentId],
       });
     },
-    onError: (e: unknown, _value, previous) => {
+    onError: (e: unknown) => {
       // Put the stars back where they were: leaving the new value on screen
-      // claims a rating we did not store.
-      setRating(
-        typeof previous === "number" ? previous : (existingRating ?? 0),
-      );
+      // claims a rating we did not store. The third mutation argument is the
+      // `onMutate` context, not the previous value — this mutation has no
+      // `onMutate`, so it was always undefined and the branch that read it was
+      // dead. The call site captures the pre-click rating.
+      setRating(existingRating ?? 0);
       toast({
         title: "Rating",
         description: e instanceof Error ? e.message : "Please try again.",
@@ -76,33 +77,52 @@ export function SessionRatingRow({
 
   if (readOnly) {
     return (
-      <div className="flex items-center gap-0.5" title="Rated by the attendee">
+      <div
+        className="flex items-center gap-0.5"
+        title={`Rated ${existingRating} out of 5 by the attendee`}
+      >
         {[1, 2, 3, 4, 5].map((n) => (
           <Star
             key={n}
             className={
               "h-3.5 w-3.5 " +
-              ((existingRating ?? 0) >= n
+              // ROUNDED, then named. A group call averages its attendees, so
+              // this arrives as 3.5 and a bare `>= n` filled three stars — the
+              // consultant read the session as scoring worse than it did.
+              // Rounding fixes the direction; printing the number is what makes
+              // the row honest, since five stars cannot show a half.
+              (Math.round(existingRating ?? 0) >= n
                 ? "fill-foreground text-foreground"
                 : "text-muted-foreground/30")
             }
           />
         ))}
+        <span className="ml-1 text-[10px] tabular-nums text-muted-foreground">
+          {existingRating}
+        </span>
       </div>
     );
   }
+
+  // The score IS shown to the consultant, so the rater has to be told before
+  // they give it. The API comment justifying that disclosure asserted this copy
+  // already existed; it did not, and a rating collected as private and handed
+  // to the rated party is exactly the CSAT/consumer-review mixing #705 set out
+  // to avoid. The free-text note stays withheld from them either way.
+  const DISCLOSURE = "Your rating of this call is shared with the expert.";
 
   return (
     // No handler on the wrapper: a div with onClick is unreachable by keyboard
     // and announces nothing. Each star is a real button and stops propagation
     // itself, which is what keeps the session row from also firing.
-    <div className="flex items-center gap-0.5">
+    <div className="flex items-center gap-0.5" title={DISCLOSURE}>
+      <span className="sr-only">{DISCLOSURE}</span>
       {[1, 2, 3, 4, 5].map((n) => (
         <button
           key={n}
           type="button"
           disabled={save.isPending}
-          aria-label={`Rate ${n} out of 5`}
+          aria-label={`Rate ${n} out of 5. ${DISCLOSURE}`}
           aria-pressed={rating === n}
           onMouseEnter={() => setHover(n)}
           onMouseLeave={() => setHover(0)}

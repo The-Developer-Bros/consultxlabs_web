@@ -10,6 +10,7 @@ import {
   forbiddenResponse,
 } from "@/lib/auth-helpers";
 import { recomputeConsultantRating, ModeratedReviewError } from "@/lib/reviews";
+import { stripAnonymousReviewer } from "@/lib/data/review-privacy";
 import { purgeReviewSurfaces } from "@/lib/data/public-cache";
 import { withSerializableRetry } from "@/lib/db/serializable-retry";
 import { UpdateReviewSchema } from "@/schemas/feedbacks";
@@ -38,17 +39,14 @@ export async function GET(
       return NextResponse.json({ error: "Review not found" }, { status: 404 });
     }
 
-    return NextResponse.json(review, { status: 200 });
+    // This route is PUBLIC (middleware.ts prefix-matches /api/user/reviews/),
+    // and review ids are enumerable from the public list endpoint. Returning
+    // `consulteeProfile` unfiltered therefore handed back the reviewer's
+    // userId for a review they marked anonymous — one GET per id and the whole
+    // feature was cosmetic. The strip belongs on every public read, not just
+    // the list.
+    return NextResponse.json(stripAnonymousReviewer(review), { status: 200 });
   } catch (error) {
-    if (error instanceof ModeratedReviewError) {
-      return NextResponse.json(
-        {
-          error:
-            "This review was removed by our moderation team and can't be edited.",
-        },
-        { status: 409 },
-      );
-    }
     Sentry.captureException(
       error instanceof Error ? error : new Error(String(error)),
       { tags: { subsystem: "auth" } },
@@ -150,6 +148,19 @@ export async function PUT(
 
     return NextResponse.json(updatedReview, { status: 200 });
   } catch (error) {
+    // The re-read inside the transaction throws this when moderation removed
+    // the row mid-edit. Without a branch here it fell through to the generic
+    // handler and the author was told "Internal Server Error" for what is a
+    // definite, explainable answer.
+    if (error instanceof ModeratedReviewError) {
+      return NextResponse.json(
+        {
+          error:
+            "This review was removed by our moderation team and can't be edited.",
+        },
+        { status: 409 },
+      );
+    }
     Sentry.captureException(
       error instanceof Error ? error : new Error(String(error)),
       { tags: { subsystem: "auth" } },
@@ -178,10 +189,20 @@ export async function DELETE(
     // Fetch the review to check ownership
     const review = await prisma.consultantReview.findUnique({
       where: { id: id },
-      select: { consulteeProfileId: true, consultantProfileId: true },
+      select: {
+        consulteeProfileId: true,
+        consultantProfileId: true,
+        deletedAt: true,
+      },
     });
 
-    if (!review) {
+    // #693 — an AUTHOR must not be able to hard-delete a review moderation has
+    // removed. The soft delete is the audit trail, and the unique on
+    // (consultantProfileId, consulteeProfileId) is deliberately not partial on
+    // deletedAt precisely so the row keeps occupying the slot: deleting it here
+    // both destroyed the record and freed the pair for the same person to
+    // re-post the text that was taken down. Staff keep the power.
+    if (!review || (review.deletedAt && !isPrivileged(session.user.role))) {
       return NextResponse.json({ error: "Review not found" }, { status: 404 });
     }
 

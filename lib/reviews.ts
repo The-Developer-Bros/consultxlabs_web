@@ -34,16 +34,42 @@ export class ModeratedReviewError extends Error {}
 export function heldSlot(userId: string) {
   return {
     deletedAt: null,
+    // A call that was called off never happened, whoever joined the room
+    // beforehand. Both callers already claim this exclusion in their comments;
+    // only the UNVERIFIED arm actually pinned a status, so an attended slot
+    // later stamped CANCELLED stayed rateable through the API.
+    completionStatus: {
+      notIn: ["CANCELLED", "RESCHEDULED"] as SlotCompletionStatus[],
+    },
     // Not "the call happened" — "YOU were at the call". A COMPLETED slot the
     // user never joined used to qualify, so a no-show could rate a session they
     // did not attend and it fed the consultant's quality signal. Two ways in:
     OR: [
-      // 1. You were demonstrably there. Also the reason this cannot key on
-      //    `completionStatus` alone: that only flips when the
+      // 1. You were demonstrably there, AND the call is over. This cannot key
+      //    on `completionStatus` alone: that only flips when the
       //    call.session_ended webhook lands, which fires after the LAST
       //    participant leaves plus an inactivity timeout — so a post-call
       //    prompt keyed on it shows nothing to whoever leaves first.
-      { meetingSession: { attendances: { some: { userId } } } },
+      //
+      //    The attendance row alone is not enough either: it is written when a
+      //    participant JOINS, so on its own this qualified a slot that was
+      //    still running, and a consultee could rate mid-call — moving the
+      //    consultant's public ranking before the session had finished, since
+      //    the review route recomputes the published score immediately.
+      //    Testing `endedAt` rather than the clock keeps the property above:
+      //    the host closing the room releases everyone, including whoever left
+      //    first. The booked window is the fallback when nothing closed it.
+      {
+        AND: [
+          { meetingSession: { attendances: { some: { userId } } } },
+          {
+            OR: [
+              { meetingSession: { endedAt: { not: null } } },
+              { endsAt: { lt: new Date() } },
+            ],
+          },
+        ],
+      },
       // 2. Nobody COULD have recorded it. UNVERIFIED means "past, with no
       //    MeetingSession", which is what an offline session looks like —
       //    excluding it would deny feedback to everyone who met in person.
@@ -148,6 +174,14 @@ function loadReviewableAppointments(
   consulteeProfileId: string,
   userId: string,
   appointmentId?: string,
+  /**
+   * Narrows the ARMS, not the page. `take: 50` applies before any caller-side
+   * filter, so selecting a consultant afterwards returned nothing whenever the
+   * qualifying session with them fell outside the consultee's 50 newest
+   * bookings — and ProfileReviewComposer reads an empty list as "not
+   * eligible", so an active client could neither post nor edit their review.
+   */
+  consultantProfileId?: string,
 ) {
   return prisma.appointment.findMany({
     where: {
@@ -156,17 +190,28 @@ function loadReviewableAppointments(
       OR: [
         // 1:1 arms — the wrapper IS the relationship, so ownership is the gate.
         {
-          consultation: { requestedById: consulteeProfileId },
+          consultation: {
+            requestedById: consulteeProfileId,
+            ...(consultantProfileId
+              ? { consultationPlan: { consultantProfileId } }
+              : {}),
+          },
           slotsOfAppointment: { some: heldSlot(userId) },
         },
         {
-          subscription: { requestedById: consulteeProfileId },
+          subscription: {
+            requestedById: consulteeProfileId,
+            ...(consultantProfileId
+              ? { subscriptionPlan: { consultantProfileId } }
+              : {}),
+          },
           slotsOfAppointment: { some: heldSlot(userId) },
         },
         {
           trialSession: {
             consulteeProfileId,
             status: { in: ["COMPLETED", "CONVERTED"] },
+            ...(consultantProfileId ? { consultantProfileId } : {}),
           },
           slotsOfAppointment: { some: heldSlot(userId) },
         },
@@ -176,6 +221,9 @@ function loadReviewableAppointments(
         // cannot buy a review.
         {
           webinarId: { not: null },
+          ...(consultantProfileId
+            ? { webinar: { webinarPlan: { consultantProfileId } } }
+            : {}),
           slotsOfAppointment: {
             some: { ...heldSlot(userId), user: { some: { id: userId } } },
           },
@@ -183,6 +231,9 @@ function loadReviewableAppointments(
         },
         {
           classId: { not: null },
+          ...(consultantProfileId
+            ? { class: { classPlan: { consultantProfileId } } }
+            : {}),
           slotsOfAppointment: {
             some: { ...heldSlot(userId), user: { some: { id: userId } } },
           },
@@ -377,8 +428,14 @@ async function describeAll(
 export async function listReviewableSessions(
   consulteeProfileId: string,
   userId: string,
+  consultantProfileId?: string,
 ): Promise<ReviewableSession[]> {
-  const rows = await loadReviewableAppointments(consulteeProfileId, userId);
+  const rows = await loadReviewableAppointments(
+    consulteeProfileId,
+    userId,
+    undefined,
+    consultantProfileId,
+  );
   return describeAll(rows, consulteeProfileId);
 }
 

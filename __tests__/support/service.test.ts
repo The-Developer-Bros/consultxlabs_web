@@ -204,6 +204,33 @@ describe("runSupportTurn", () => {
     expect(mockPrisma.supportTicket.create).not.toHaveBeenCalled();
   });
 
+  it("refuses the write when the CAS matches no row, and says so", async () => {
+    // The concurrent case: staff close the thread between the read and the
+    // write, so `persistHumanTurn`'s guarded updateMany matches nothing. The
+    // contract is `accepted: false` plus the thread's REAL status, and no
+    // message row — SupportThreadSheet keys its "your message wasn't sent"
+    // recovery on exactly `accepted === false`, so this branch silently
+    // regressing is what puts a delivered-looking bubble on a closed thread.
+    mockPrisma.appointmentSupportThread.upsert.mockResolvedValue(
+      threadRow({ activeChannel: "HUMAN", supportTicketId: "ticket-existing" }),
+    );
+    mockPrisma.appointmentSupportThread.updateMany.mockResolvedValue({
+      count: 0,
+    });
+    mockPrisma.appointmentSupportThread.findUniqueOrThrow.mockResolvedValue({
+      status: "CLOSED",
+      messageSeq: 7,
+    });
+
+    const r = await runSupportTurn("appt1", "user1", {
+      userMessage: "are you still there?",
+    });
+
+    expect(r?.accepted).toBe(false);
+    expect(r?.status).toBe("CLOSED");
+    expect(mockPrisma.supportMessage.create).not.toHaveBeenCalled();
+  });
+
   it("routes an OTHER intent (no self-serve flow) straight to a human", async () => {
     mockPrisma.appointmentSupportThread.upsert.mockResolvedValue(
       threadRow({ category: "OTHER" }),
