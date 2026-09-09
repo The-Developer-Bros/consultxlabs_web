@@ -1,9 +1,9 @@
 # Support & Feedback Hub
 
 The `#support-hub` system (PR #1195): Swiggy-style, two-scope support built on
-the channel-agnostic flowchart engine, plus the per-appointment CSAT feedback
-rail. This document is the map of what exists, where, and the contracts that
-hold it together.
+the channel-agnostic flowchart engine, plus the per-call CSAT feedback rail
+rendered inline on each session row. This document is the map of what exists,
+where, and the contracts that hold it together.
 
 Issue #705 extended it with three things the queue could not run without: a
 speakable ticket reference, an SLA model sized to Indian statute, and a
@@ -71,13 +71,13 @@ either self-serves (nothing written) or escalates — the only write, a
 Five surfaces read or write this subsystem, and the table below names each one
 with the file that owns it and the scope it is allowed to see.
 
-| Surface | File | Scope |
-|---|---|---|
-| Consultee/consultant Support tab | `components/dashboard/shared/support/SupportHub.tsx` | Sessions subtab (recent-session picker + conversation buckets) + Platform subtab |
-| Back-office inbox | `components/dashboard/shared/SupportThreadsPage.tsx` | `threads.manage` → full transcripts + reply + resolve/close |
-| Org triage | `app/dashboard/organization/[orgId]/support/OrgSupportTriage.tsx` | `operations.read` → **metadata-only** thread list + CSAT aggregates (ADR 20) |
-| CSAT card | `components/support/AppointmentCsatCard.tsx` | Private attendee rating on completed sessions; rendered for the consultee only |
-| Public review card | `components/reviews/SessionReviewCard.tsx` | The consumer review of the same session, deliberately a separate object — see [ADR 25](../enterprise/70-design-decisions/25-per-session-reviews-and-published-score.md) |
+| Surface                          | File                                                              | Scope                                                                                                                                                                                           |
+| -------------------------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Consultee/consultant Support tab | `components/dashboard/shared/support/SupportHub.tsx`              | Sessions subtab (recent-session picker + conversation buckets) + Platform subtab                                                                                                                |
+| Back-office inbox                | `components/dashboard/shared/SupportThreadsPage.tsx`              | `threads.manage` → full transcripts + reply + resolve/close                                                                                                                                     |
+| Org triage                       | `app/dashboard/organization/[orgId]/support/OrgSupportTriage.tsx` | `operations.read` → **metadata-only** thread list + CSAT aggregates (ADR 20)                                                                                                                    |
+| CSAT row                         | `components/reviews/SessionRatingRow.tsx`                         | Private attendee rating rendered inline on each session row in `SessionTimeline`, via its `renderSessionExtra` prop and the `useSessionFeedback` hook; one rating per call, not per appointment |
+| Public review card               | `components/reviews/SessionReviewCard.tsx`                        | The consumer review of the same session, deliberately a separate object — see [ADR 25](../enterprise/70-design-decisions/25-per-session-reviews-and-published-score.md)                         |
 
 ## The error envelope (the one contract)
 
@@ -168,7 +168,7 @@ detail/feedback/support routes:
     `SupportThreadStatusEnum` in `schemas/enums.ts`. Three routes previously
     transcribed the category list by hand and every copy had lost `DOCUMENTS`,
     so the `GET` offered a chip the `POST` rejected. Which intents are
-    *offered* is the flow registry's decision; these schemas only have to
+    _offered_ is the flow registry's decision; these schemas only have to
     accept whatever it can emit.
 
 ## Ticket references: `FAM-<YYYY>-<SEQ6>`
@@ -213,10 +213,10 @@ India makes a support escalation ladder a legal artifact rather than a
 nicety, and two regimes can apply. The table below states both, and the row
 the implementation is sized to.
 
-| Regime | Acknowledge within | Dispose within |
-|---|---|---|
-| Consumer Protection (E-Commerce) Rules 2020 | 48 hours | 1 month |
-| IT Rules 2021 | **24 hours** | **15 days** |
+| Regime                                      | Acknowledge within | Dispose within |
+| ------------------------------------------- | ------------------ | -------------- |
+| Consumer Protection (E-Commerce) Rules 2020 | 48 hours           | 1 month        |
+| IT Rules 2021                               | **24 hours**       | **15 days**    |
 
 `lib/support/sla.ts` is sized to the IT Rules 2021 numbers, exported as
 `STATUTORY_ACK_HOURS` and `STATUTORY_RESOLUTION_DAYS`. They are the tighter of
@@ -228,11 +228,11 @@ goal and never a relaxation of the statutory number, which is what the first
 test in `__tests__/support/sla-and-reference.test.ts` pins.
 
 | Priority | Acknowledge | Resolve |
-|---|---|---|
-| `URGENT` | 2 hours | 1 day |
-| `HIGH` | 8 hours | 3 days |
-| `MEDIUM` | 24 hours | 7 days |
-| `LOW` | 24 hours | 15 days |
+| -------- | ----------- | ------- |
+| `URGENT` | 2 hours     | 1 day   |
+| `HIGH`   | 8 hours     | 3 days  |
+| `MEDIUM` | 24 hours    | 7 days  |
+| `LOW`    | 24 hours    | 15 days |
 
 `slaDeadlinesFor(priority, from)` is called once at intake and its two
 deadlines are stored on the ticket, never re-derived on read. That is the same
@@ -314,22 +314,27 @@ The table below lists every schema change the subsystem carries, oldest
 first. All of them are additive and either nullable or defaulted, so each is
 compatible with the pre-MVP freeze and none needs a backfill.
 
-| Change | Why |
-|---|---|
-| `SupportTicket.organizationId?` + `@@index([organizationId, status])` | ops queue filterable by customer org |
-| `lastMessageAt?` on `SupportTicket` + `AppointmentSupportThread` (+ `@@index([status, lastMessageAt])` on the thread) | "latest activity first" — `updatedAt` doesn't move on message inserts; the inbox sort needs the index |
-| `SupportTicket.referenceNumber?` (`@unique`, `VarChar(20)`) + the `SupportTicketCounter` model | the speakable handle and its year-scoped allocator (#705) |
-| `SupportTicket.assignedTo` relation (`SetNull`) replacing the bare `assignedToId` string | a bare string could name a user who no longer exists, and the queue could not render a name without a second query; a staff departure must not delete tickets |
-| `SupportTicket.ackDueAt`, `acknowledgedAt`, `resolutionDueAt`, `resolvedAt`, `closedAt`, `firstAgentReplyAt`, `awaitingUserSince`, `pausedMs` + `@@index([acknowledgedAt, ackDueAt])` + `@@index([resolvedAt, resolutionDueAt])` | the SLA clocks, stored at intake so a policy change cannot re-date an open ticket's breach; the indexes turn a breach sweep into an index scan |
-| `AppointmentSupportThread.messageSeq` + `SupportMessage.seq` + `@@index([threadId, seq])` | a strict per-thread total order; `createdAt` alone cannot order rows written in one transaction |
-| `SupportMessage.authorUserId?` (`SetNull`) + `@@index([authorUserId])` | which staff member wrote an `AGENT` message; Postgres does not index a foreign key for you and the `SetNull` scans by it |
-| the `SupportFlowOutcome` model + the `SupportFlowOutcomeKind` enum | the deflection counter, in both scopes, with no message bodies |
-| `AppointmentFeedback.raterRole?` + the `AppointmentFeedbackRole` enum; `@@index([organizationId, createdAt])` becomes `@@index([organizationId, raterRole, createdAt])` | a consultant's rating of their own session used to be indistinguishable from an attendee's and fed the org quality average; the aggregate now filters `raterRole` before the date range, which leaves the old index without a usable prefix |
+| Change                                                                                                                                                                                                                           | Why                                                                                                                                                                                                                                         |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SupportTicket.organizationId?` + `@@index([organizationId, status])`                                                                                                                                                            | ops queue filterable by customer org                                                                                                                                                                                                        |
+| `lastMessageAt?` on `SupportTicket` + `AppointmentSupportThread` (+ `@@index([status, lastMessageAt])` on the thread)                                                                                                            | "latest activity first" — `updatedAt` doesn't move on message inserts; the inbox sort needs the index                                                                                                                                       |
+| `SupportTicket.referenceNumber?` (`@unique`, `VarChar(20)`) + the `SupportTicketCounter` model                                                                                                                                   | the speakable handle and its year-scoped allocator (#705)                                                                                                                                                                                   |
+| `SupportTicket.assignedTo` relation (`SetNull`) replacing the bare `assignedToId` string                                                                                                                                         | a bare string could name a user who no longer exists, and the queue could not render a name without a second query; a staff departure must not delete tickets                                                                               |
+| `SupportTicket.ackDueAt`, `acknowledgedAt`, `resolutionDueAt`, `resolvedAt`, `closedAt`, `firstAgentReplyAt`, `awaitingUserSince`, `pausedMs` + `@@index([acknowledgedAt, ackDueAt])` + `@@index([resolvedAt, resolutionDueAt])` | the SLA clocks, stored at intake so a policy change cannot re-date an open ticket's breach; the indexes turn a breach sweep into an index scan                                                                                              |
+| `AppointmentSupportThread.messageSeq` + `SupportMessage.seq` + `@@index([threadId, seq])`                                                                                                                                        | a strict per-thread total order; `createdAt` alone cannot order rows written in one transaction                                                                                                                                             |
+| `SupportMessage.authorUserId?` (`SetNull`) + `@@index([authorUserId])`                                                                                                                                                           | which staff member wrote an `AGENT` message; Postgres does not index a foreign key for you and the `SetNull` scans by it                                                                                                                    |
+| the `SupportFlowOutcome` model + the `SupportFlowOutcomeKind` enum                                                                                                                                                               | the deflection counter, in both scopes, with no message bodies                                                                                                                                                                              |
+| `AppointmentFeedback.raterRole?` + the `AppointmentFeedbackRole` enum; `@@index([organizationId, createdAt])` becomes `@@index([organizationId, raterRole, createdAt])`                                                          | a consultant's rating of their own session used to be indistinguishable from an attendee's and fed the org quality average; the aggregate now filters `raterRole` before the date range, which leaves the old index without a usable prefix |
 
 > `@@index([status, lastMessageAt])` requires `npm run db:push` (which chains
 > the sidecars) on each environment — a schema-only merge does not create it.
-> The same is true of every index in the table above, and of the
-> `consultant_review_legacy_pair_key` sidecar that the review change adds.
+> The same is true of every index in the table above. #1268 removed the
+> `consultant_review_legacy_pair_key` sidecar rather than adding it, because
+> Prisma matches an index to the schema by its columns only and ignores its
+> `WHERE` clause; left in place, `prisma db push` would have proposed renaming
+> that partial index onto the real `(consultantProfileId, consulteeProfileId)`
+> key, quietly narrowing the constraint to cover only the legacy rows it was
+> written to protect.
 
 ## Notifications (ADR 23)
 
@@ -372,13 +377,13 @@ notification title, since that is the string the user will quote back.
 ## Deliberately out of scope
 
 AI resolver, DB-stored flow editor, email intake, org admins as notification
-*recipients* for member complaints, per-org Novu inbox, and mirroring support
+_recipients_ for member complaints, per-org Novu inbox, and mirroring support
 chat into Stream (Postgres only — see the PR #1195 description for the
 reasoning).
 
 SLA timers were previously on this list and no longer are: the clocks
 described above are implemented and stored. What remains out of scope is the
-*sweep* — there is no cron that finds breached tickets and escalates or pages
+_sweep_ — there is no cron that finds breached tickets and escalates or pages
 on them, because breach state is derived on read rather than stored, and no
 surface yet renders it.
 
