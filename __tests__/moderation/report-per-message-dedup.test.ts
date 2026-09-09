@@ -85,6 +85,13 @@ const create = jest.fn(async ({ data }: CreateArgs) => {
 
 const mockGetMessage = jest.fn();
 
+/** The reviewed row a REVIEW report is checked against. Default: review-1 exists,
+ *  is live, and was written by target-1 — the happy path every other case here
+ *  needs so it can get past the new gate to the dedup lookup being asserted. */
+const reviewFindFirst = jest.fn(async ({ where }: FindFirstArgs) =>
+  where.id === "review-1" ? { consulteeProfile: { userId: "target-1" } } : null,
+);
+
 jest.mock("@sentry/nextjs", () => ({ captureException: jest.fn() }));
 
 // #1270 — the report route verifies a reported message against Stream now, so
@@ -114,6 +121,13 @@ jest.mock("../../lib/prisma", () => ({
       create: (args: CreateArgs) => create(args),
     },
     user: { findUnique: jest.fn(async () => ({ id: "target-1" })) },
+    // #1300 — a REVIEW report is now verified against the review it names: it
+    // must exist, be live, and have been written by the user being reported.
+    // Without that, a report could name one person's review while pointing
+    // moderation's enforcement at somebody else.
+    consultantReview: {
+      findFirst: (args: FindFirstArgs) => reviewFindFirst(args),
+    },
   },
 }));
 
@@ -292,5 +306,42 @@ describe("POST /api/report — message reports aggregate per message", () => {
     expect(findFirst.mock.calls[0][0].where).not.toHaveProperty(
       "streamMessageId",
     );
+  });
+
+  it("refuses a review report that names a review nobody wrote", async () => {
+    const res = await post({
+      type: "REVIEW",
+      reason: "Fake review",
+      targetUserId: "target-1",
+      reviewId: "does-not-exist",
+    });
+    expect(res.status).toBe(404);
+    // Nothing filed: a report naming content that does not exist is one
+    // CONTENT_REMOVED would later report success on while removing nothing.
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("refuses a review report pointed at the wrong person", async () => {
+    // The target of a review report is its AUTHOR. Reporting review-1 — written
+    // by target-1 — while naming somebody else as the target would aim the
+    // suspension, the ban and the bulk cancellation at the wrong user.
+    const res = await post({
+      type: "REVIEW",
+      reason: "Fake review",
+      targetUserId: "someone-else",
+      reviewId: "review-1",
+    });
+    expect(res.status).toBe(400);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("requires a review report to name a review at all", async () => {
+    const res = await post({
+      type: "REVIEW",
+      reason: "Fake review",
+      targetUserId: "target-1",
+    });
+    expect(res.status).toBe(400);
+    expect(create).not.toHaveBeenCalled();
   });
 });

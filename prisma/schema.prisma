@@ -3316,6 +3316,11 @@ model ConsultantReview {
   // #1300 — the append-only edit trail.
   revisions ConsultantReviewRevision[]
 
+  // #1300 — moderation reports naming this review. Previously an unconstrained
+  // string in the other direction, so "every report about this review" was not a
+  // query anyone could write.
+  moderationReports ModerationReport[]
+
   // #705 — the consultant's right of reply. One reply per review, so columns
   // rather than a table: every read of a review already loads this row.
   // replyDeletedAt is separate from the review's own deletedAt so staff can
@@ -6776,8 +6781,21 @@ model ModerationReport {
   targetUserId String
   targetUser   User   @relation("ReportsReceived", fields: [targetUserId], references: [id], onUpdate: Cascade, onDelete: Cascade)
 
-  // Optional entity references
-  reviewId String? // If reporting a ConsultantReview
+  // Optional entity references.
+  //
+  // #1300 — a real relation, not a bare string. It was unconstrained, unindexed
+  // and unvalidated: `POST /api/report` wrote whatever the caller sent straight
+  // through, without checking that the review existed, that it was the reported
+  // user's, or that it was not already removed. `softDeleteReview` then no-ops on
+  // a dangling id, so a report could sit in the queue naming content that does
+  // not exist and CONTENT_REMOVED would silently do nothing — the same failure
+  // #1270 fixed for MESSAGE reports.
+  //
+  // SetNull rather than Cascade: reviews are no longer hard-deleted, so this is
+  // belt-and-braces, and a report is a record of what someone objected to even if
+  // the row it named is gone. Safe to add as an FK — the table is empty.
+  review   ConsultantReview? @relation(fields: [reviewId], references: [id], onDelete: SetNull)
+  reviewId String?
 
   // #1270 — a MESSAGE report carried no pointer to the message it was about.
   // CONTENT_REMOVED therefore had nothing to delete (it fell through to the
@@ -6807,6 +6825,9 @@ model ModerationReport {
   @@index([createdAt])
   // #1270 — the per-message dedup lookup in POST /api/report.
   @@index([streamMessageId])
+  // The staff queue's "reports about this review", and the SetNull scan, which
+  // Postgres does not index for you.
+  @@index([reviewId])
 }
 
 model ModerationAction {

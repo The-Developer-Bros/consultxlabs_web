@@ -85,18 +85,24 @@ function contentScopeFor(
 async function resolveReportedMessage(
   streamMessageId: string | undefined,
   targetUserId: string,
-): Promise<{ streamMessageId: string | null; streamChannelCid: string | null }> {
+): Promise<{
+  streamMessageId: string | null;
+  streamChannelCid: string | null;
+}> {
   const none = { streamMessageId: null, streamChannelCid: null };
   if (!streamMessageId) return none;
 
   try {
     const { message } = await getStreamChatClient().getMessage(streamMessageId);
     if (!message?.user?.id || message.user.id !== targetUserId) {
-      streamLogger.warn("Report named a message the reported user did not send", {
-        streamMessageId,
-        targetUserId,
-        actualAuthor: message?.user?.id ?? null,
-      });
+      streamLogger.warn(
+        "Report named a message the reported user did not send",
+        {
+          streamMessageId,
+          targetUserId,
+          actualAuthor: message?.user?.id ?? null,
+        },
+      );
       return none;
     }
     return {
@@ -193,6 +199,40 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // #1300 — a REVIEW report has to name a review that exists, belongs to the
+    // person being reported, and is still live. None of that was checked: the
+    // caller's `reviewId` went straight into the row, so a report could sit in the
+    // queue naming content that does not exist — and `softDeleteReview` no-ops on
+    // a dangling id, so CONTENT_REMOVED would report success and remove nothing.
+    // That is the same failure #1270 fixed for MESSAGE reports.
+    if (type === "REVIEW") {
+      if (!reviewId) {
+        return NextResponse.json(
+          { error: "A review report must name the review" },
+          { status: 400 },
+        );
+      }
+      const reported = await prisma.consultantReview.findFirst({
+        where: { id: reviewId, deletedAt: null },
+        select: { consulteeProfile: { select: { userId: true } } },
+      });
+      if (!reported) {
+        return NextResponse.json(
+          { error: "Review not found" },
+          { status: 404 },
+        );
+      }
+      // The target of a review report is its AUTHOR. Without this, a report could
+      // name one person's review while pointing moderation's enforcement — the
+      // suspension, the ban, the bulk cancellation — at somebody else entirely.
+      if (reported.consulteeProfile.userId !== targetUserId) {
+        return NextResponse.json(
+          { error: "That review was not written by the reported user" },
+          { status: 400 },
+        );
+      }
+    }
+
     const contentScope = contentScopeFor(type, reviewId, streamMessageId);
 
     // Check for existing report from same user for same content
@@ -278,7 +318,10 @@ export async function POST(req: NextRequest) {
       { status: 201 },
     );
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "report" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "report" } },
+    );
     console.error("Error submitting report:", error);
     return NextResponse.json(
       { error: "Failed to submit report" },
