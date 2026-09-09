@@ -21,7 +21,20 @@ export const consultantPublicScalars = {
   domainId: true,
   description: true,
   experience: true,
-  rating: true,
+  // #1300 — the RAW mean (`rating`) is deliberately NOT here. It is the
+  // internal/staff number: unshrunk, unsuppressed, and 0 for a consultant nobody
+  // has rated. Because this allowlist was the only public projection and it
+  // carried `rating`, every surface built on it was structurally unable to read
+  // the suppressed score and could only render the raw one — which is how the
+  // public org directory came to print "5.0" for a consultant with a single
+  // review and "0.0" for one with none, the two outcomes the threshold exists to
+  // prevent. Removing it makes that a compile error rather than a rendering bug.
+  //
+  // NULL on either published column means SUPPRESSED, not "zero".
+  publishedRatingOneToOne: true,
+  publishedRatingGroup: true,
+  ratedClientsOneToOne: true,
+  ratedEventsGroup: true,
   headline: true,
   websiteUrl: true,
   twitterUrl: true,

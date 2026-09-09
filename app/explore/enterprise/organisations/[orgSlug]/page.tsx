@@ -14,6 +14,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import prisma from "@/lib/prisma";
+import { displayedScore } from "@/lib/reviews";
 import { eventPlanDiscoverableWhere } from "@/lib/api/plans/visibility";
 
 import {
@@ -33,7 +34,6 @@ const PUBLIC_PLAN_CARD_SELECT = {
   price: true,
   priceCurrency: true,
 } as const;
-
 
 // ISR per orgSlug, not force-dynamic. The cache key is the org being viewed,
 // never the viewer: no session is read here or in any layout above, and the
@@ -132,7 +132,16 @@ const fetchOrgBySlug = cache(async (slug: string) => {
             select: {
               id: true,
               headline: true,
-              rating: true,
+              // #1300 — the PUBLISHED scores, not the raw mean. This page is
+              // public and two of five organisations are `isPublic`, and it used
+              // to render `rating.toFixed(1)` with no guard at all: a consultant
+              // with one five-star review read "5.0" and one with none read
+              // "0.0", which are precisely the two outcomes the publication
+              // threshold exists to prevent.
+              publishedRatingOneToOne: true,
+              publishedRatingGroup: true,
+              ratedClientsOneToOne: true,
+              ratedEventsGroup: true,
               isVerified: true,
               experience: true,
               user: {
@@ -216,6 +225,10 @@ function ExpertMiniCard({
 }: {
   expert: NonNullable<OrgData["memberships"][number]["consultantProfile"]>;
 }) {
+  // A person card, so it prefers their 1:1 reputation and falls back to the group
+  // one — a consultant who only ever runs this org's webinars still shows what
+  // they earned.
+  const expertScore = displayedScore(expert);
   return (
     <Link
       href={`/explore/experts/${expert.id}`}
@@ -248,12 +261,16 @@ function ExpertMiniCard({
           </p>
         )}
         <div className="flex items-center gap-2 mt-0.5">
-          <div className="flex items-center gap-0.5">
-            <Star className="w-3 h-3 text-amber-400 fill-amber-400" />
-            <span className="text-xs font-medium text-muted-foreground">
-              {expert.rating.toFixed(1)}
-            </span>
-          </div>
+          {/* Suppressed below the publication threshold — say nothing rather than
+              print a number one review could define. */}
+          {expertScore.score !== null && (
+            <div className="flex items-center gap-0.5">
+              <Star className="w-3 h-3 text-amber-400 fill-amber-400" />
+              <span className="text-xs font-medium text-muted-foreground">
+                {expertScore.score.toFixed(1)}
+              </span>
+            </div>
+          )}
           {expert.domain && (
             <span className="text-xs text-muted-foreground/70">
               {expert.domain.name}

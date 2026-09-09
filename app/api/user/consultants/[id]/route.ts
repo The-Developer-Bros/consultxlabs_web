@@ -635,7 +635,14 @@ export async function PUT(
         },
         webinarPlans: true,
         classPlans: true,
-        reviews: { where: { deletedAt: null } },
+        // #1300 — `reviews` deliberately NOT included. This response is
+        // authenticated as the profile OWNER, i.e. the reviewed consultant, and a
+        // bare relation include returns every scalar: `consulteeProfileId`,
+        // `appointmentId`, `ratingUnitId` and `isAnonymous` for every row. Those
+        // are exactly the join keys `stripAnonymousReviewer` nulls, and the
+        // consultant is the one party `isAnonymous` exists to withhold them from
+        // — they know their own appointment ids. Nothing read it either: the only
+        // caller checks `response.ok` and then issues a fresh GET.
       },
     });
 

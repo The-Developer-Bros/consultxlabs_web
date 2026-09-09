@@ -1,6 +1,7 @@
 import { unstable_cache } from "next/cache";
 import prisma from "@/lib/prisma";
 import { sanitisePublicReviews } from "@/lib/data/review-public";
+import { displayedScore, displayedScoreCount } from "@/lib/reviews";
 import { toPlain } from "@/lib/data/serialize";
 import { consultantPublicScalars } from "@/lib/data/consultant-public";
 import { deriveDirectoryRating } from "@/lib/data/public-stats";
@@ -70,7 +71,21 @@ export const getHomeExperts = unstable_cache(
     // price is already number at the JS boundary (#780 result extension);
     // toPlain strips the extension's inspect symbol so the rows can cross
     // the RSC boundary.
-    return toPlain(consultants);
+    //
+    // #1300 — `rating` on a card means THE PUBLISHED SCORE, and there are now two
+    // of them. A person card prefers the 1:1 track; `displayedScore` falls back to
+    // the group one so a consultant who only runs webinars still shows what they
+    // earned. NULL stays NULL: the card renders "not enough yet", never 0.0.
+    return toPlain(
+      consultants.map((c) => {
+        const { score, track } = displayedScore(c);
+        return {
+          ...c,
+          rating: score,
+          reviewCount: displayedScoreCount(c, track),
+        };
+      }),
+    );
   },
   ["home-experts"],
   { revalidate: 3600, tags: ["experts", "home"] },

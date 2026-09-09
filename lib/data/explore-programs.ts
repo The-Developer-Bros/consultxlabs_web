@@ -31,7 +31,15 @@ import type {
  * app/explore/programs/utils.ts. */
 const planConsultantInclude = {
   select: {
-    rating: true,
+    // #1300 — the PUBLISHED scores, not the raw mean. A program card renders a
+    // star, and `rating` is unshrunk, unsuppressed and 0 for a consultant nobody
+    // has rated — so the card printed "0.0" or a single review's "5.0", the two
+    // things the publication threshold exists to prevent. A program is a group
+    // product, so `displayedScore` is asked for the GROUP track first.
+    publishedRatingOneToOne: true,
+    publishedRatingGroup: true,
+    ratedClientsOneToOne: true,
+    ratedEventsGroup: true,
     headline: true,
     user: {
       select: {
