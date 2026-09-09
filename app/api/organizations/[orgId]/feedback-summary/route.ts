@@ -79,7 +79,7 @@ export async function GET(
   // per rated call, and no page of this response is public. The realistic ceiling
   // is members × sessions-per-member, and three ints per row. A denormalised
   // `consultantProfileId` on this table is what would turn the last pass into a
-  // `groupBy`, and that is a schema change for the pre-MVP reset — #1543.
+  // `groupBy`, and that is a schema change for the pre-MVP reset — #1550.
   const rows = await prisma.appointmentFeedback.findMany({
     where: attendeeRatings,
     select: {
