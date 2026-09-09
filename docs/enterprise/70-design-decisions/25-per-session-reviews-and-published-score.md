@@ -2,11 +2,20 @@
 title: A review belongs to a session, a group session counts once, and a score below five rated sessions is not published
 band: 70-design-decisions
 audience: sde2
-status: live
+status: superseded
+superseded-by: 29-two-track-reputation-and-the-right-of-reply.md
 last-reviewed: 2026-09-10
 ---
 
 # ADR 25 — Per-session reviews and the published score
+
+> **Superseded by [ADR 29](29-two-track-reputation-and-the-right-of-reply.md).** The anchor
+> question this ADR answers was settled the other way, and the single blended score it
+> describes has been split in two. What survives unchanged is the separation between the
+> public review and the private per-call CSAT, and the principle of suppressing a score
+> below a minimum sample. Read ADR 29 for the model that is in the schema; this document is
+> kept for the reasoning behind those two surviving parts and as the record of a decision
+> that was reversed.
 
 ## Superseded in part by #1268
 

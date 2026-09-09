@@ -1,0 +1,111 @@
+---
+title: A review belongs to a relationship and a product, a group event votes once, and the reviewed expert can answer
+band: 70-design-decisions
+audience: sde2
+status: live
+last-reviewed: 2026-09-10
+---
+
+# ADR 29 — Two-track reputation, shrunk scores, and the right of reply
+
+Supersedes [ADR 25](25-per-session-reviews-and-published-score.md), which argued that a review belongs to a session. It does not. ADR 25 is kept for its reasoning on the CSAT/review separation and the publication threshold, both of which survive unchanged.
+
+## Context
+
+Three questions had been answered inconsistently, twice each.
+
+**What is a review about?** The anchor has flipped twice in three weeks. It began as the relationship, #705 moved it to the purchase, and #1268 moved it back. ADR 25 was written for the middle position and carried a "superseded in part" preamble within a month of being marked live.
+
+The argument for the purchase is volume: more rows, so the publication threshold is reachable. Measured over every currently-eligible booking, per-purchase would let **66 of 81** consultants reach five rating units against **65 of 81** for per-relationship. Repeat purchase runs at 1.16 bookings per distinct consultee. The volume argument does not survive contact with the data. Meanwhile the ceiling case is instructive: the consultant with the most purchase-units has 18 of them from only 10 distinct clients, so under per-purchase eight of their "independent" data points are repeat opinions from people already counted.
+
+The argument for the relationship is that our unit of reputation is a person, and a person does not change between a client's third and ninth session. Practo — one feedback per patient per doctor however many visits, editable — is the closest published analogue, and it is relationship-anchored for exactly our reason: a subscription holding up to 24 meetings with one expert is Practo-shaped, not Uber-shaped. Trustpilot arrives at the same place from the opposite direction by counting only a reviewer's most recent review toward the score.
+
+**How does a 200-seat webinar compare to a twelve-session engagement?** It doesn't, and that was the mistake. The blended score patched the problem arithmetically — `ratingUnitId` collapsed each event to one data point so it could not dominate — while leaving the underlying claim, that the two belong in the same average, unexamined. Weighting per attendee systematically punishes whoever fills the room; weighting per event lets a three-person class outvote a two-hundred-person one. No platform we could find publishes a method for reconciling them: Udemy sidesteps it by rating the _course_ rather than the instructor, Peloton deleted its class rating outright once it noticed the distribution had no variance, and Zoom keeps webinar surveys private to the host.
+
+**Can the reviewed expert answer?** ADR 25 listed the right of reply among #705's shipped consequences. It was not shipped: `replyBody`, `repliedAt` and `replyDeletedAt` had no writer, no reader, no route and no UI.
+
+## Decision
+
+### One review per (consultant, consultee, track)
+
+`@@unique([consultantProfileId, consulteeProfileId, track])`, editable, with `appointmentId` as provenance rather than subject.
+
+`track` is in the key because without it a consultee who attends a webinar and later books the same consultant one-to-one holds exactly **one** row for two products. The P2002 is mapped to a 409 the client renders as "update your review", so their attempt to review the 1:1 engagement would overwrite the webinar review — and `track` is pinned at first write, so a year of 1:1 work would be filed under group reputation. In a product that sells both, that is the upsell path, not an edge case.
+
+"One considered opinion per person" therefore becomes "one per person per thing they bought", which is still one card per reviewer per product, and is what Practo's own model degenerates to for a doctor who runs both consultations and group camps.
+
+`track` is **never moved** once set. Moving it would collide with the same reviewer's other review of the same person. A legacy row with a NULL track is _adopted_ by the next write for that pair — stamped with the track it belongs to — rather than being left for a second row to sit beside it, because Postgres treats NULL key columns as distinct and a plain insert would put two reviews from one person on one profile.
+
+### Two published scores, side by side
+
+`ConsultantProfile.publishedRatingOneToOne` and `publishedRatingGroup`, each with its own count, raw mean and effective sample. Airbnb shows a listing rating beside a host rating for the same reason: two numbers that describe different things are more honest than one that describes neither.
+
+The 1:1 track counts distinct **clients**, which the unique already guarantees a review row is — so that track needs no bucket key at all, and the collapse machinery that existed for it is retired. The group track counts qualifying **events**, and an event qualifies only once `MIN_GROUP_RESPONSES_PER_EVENT` attendees answered: without that floor, two replies out of two hundred buy a published score. `ratingUnitId` survives as the event key, and only as that.
+
+A single-slot surface — a card, a directory row — resolves one number through `displayedScore`, preferring the track that matches what it is selling and falling back to the other. A consultant who only ever runs webinars has a real earned score, and hiding it because the card happens to be a person card would be worse than labelling it.
+
+### Scores are shrunk toward the platform mean, and the decay term ships inert
+
+`(Σ(wᵢ·rᵢ) + m·C) / (Σwᵢ + m)`. A plain average is the wrong instrument and every mature platform has migrated off one — Amazon states outright that it "uses advanced models to calculate star ratings, not just a simple average", IMDb shrinks toward a global mean, Etsy abandoned a hard trailing window because low-volume sellers' scores flapped. Shrinkage is what stops 5.0 from five ratings outranking 4.8 from two hundred, and it is free to introduce now because `publishedRating` is NULL on all 83 profiles: nothing changes under anyone.
+
+The recency term is in the arithmetic at a **ten-year half-life**, which makes it inert for every row we hold. Decay is right in principle but it is a claim about a corpus with enough history for "old" to mean something, and this one has 62 reviews. A live half-life would move published numbers for reasons no consultant could act on, and "your score fell and nothing happened" is a support ticket we would be creating for ourselves. Keeping the term present, and recording it on every `ScoringSnapshot`, makes lowering it a constant change rather than a migration.
+
+`ScoringSnapshot` pins the priors and parameters each run used. Without it the first profile in a walk is shrunk toward the mean as it stood at the start and the last toward the mean as it stood at the end, so two consultants' scores are neither comparable nor reproducible after the constants move. One consequence is operational and new: with a recency term, recompute-on-mutation is no longer sufficient on its own, so `ratingAggregatedAt` stops being a drift audit and becomes a recurring job's work queue.
+
+### The raw mean is not a public column
+
+`consultantPublicScalars` carried `rating` and not `publishedRating`, so every surface built on the one public projection was _structurally unable_ to read the suppressed score. Two public pages consequently rendered the raw mean: a consultant with one five-star review read "5.0" and one with none read "0.0" — the two outcomes the threshold exists to prevent. The allowlist now carries the published columns and not the raw one, which makes the next occurrence a compile error.
+
+### The expert may answer, and cannot use the answer as a lever
+
+`PUT /api/user/reviews/[id]/reply` accepts a reply from the reviewed consultant and nobody else. Staff may **remove** a reply — that is what `replyDeletedAt` is for, separate from the review's own `deletedAt` so an abusive reply comes down without erasing the consumer review underneath it — but staff may not author one, because a response attributed to the reviewed expert has to have come from them.
+
+BIS IS 19000:2022, India's standard for online consumer reviews, asks that the reviewed party be able to respond. Practo, Google and Booking.com all ship a version of it. A public review of a named professional with no way to answer is the one shape every benchmarked platform has moved away from.
+
+A reply cannot change the rating, cannot hide the review, and cannot stop the author editing it.
+
+### Every edit is recorded, and every edit is marked
+
+`ConsultantReviewRevision` stores what a review **used** to say, never what it says now, so a review that has never been edited has zero rows and the "Edited" disclosure is an existence check rather than a join. Append-only is enforced by a trigger, because a trail an application bug can rewrite indicates nothing. Only a changed opinion counts: re-submitting identical stars and words is idempotent, and toggling anonymity is a display choice rather than a change to what was said.
+
+Etsy and Practo both converged independently on "editable until the provider replies, then marked". We take the marking and reject the trigger. Making the mark conditional on a reply hands the consultant a switch — reply to everything and every subsequent revision carries a badge — and BIS asks for edits to be indicated, full stop. `afterPublicReply` is still recorded, for moderation context.
+
+### Nobody hard-deletes a review, and every removal is attributed
+
+The unique is deliberately not partial on `deletedAt`, so a removed row keeps occupying the pair and the same text cannot be re-posted. A hard delete defeated that for the live case, leaving an unlimited post/delete/re-post cycle available to any author — and a privileged caller could hard-delete any review while the sibling moderation route restricts even the soft delete to ADMIN, putting the stricter gate on the safer verb.
+
+`deletedByUserId` separates two states that were previously identical. An author withdrawing their own review and moderation taking one down both set `deletedAt`, and the write path refused both with "removed by our moderation team" — so a consultee who deleted their own review was told, wrongly, that staff had removed it, and could never write another about that person. The author may revive what they withdrew; nobody may revive what moderation removed. A NULL remover on a removed row reads as moderation, which fails closed for the rows that predate the column.
+
+### A low rating we caused does not count against the consultant
+
+`ratingCause` records what the reviewer says drove a low score; `excludedFromAggregateAt` records the adjudication. They are deliberately separate: if a self-reported cause removed a rating by itself, every consultant would coach clients to tick "platform issue". An excluded row still renders with its text — a rating caused by our own video stack failing is a true statement about that session — it simply stops arithmetically punishing someone who did not cause it.
+
+Uber publishes this rule, excluding ratings attributed to traffic, navigation and co-rider behaviour. Urban Company is the counter-example: category minimums of 4.5–4.7 against a platform mean of 4.83 leave a usable range of a third of a star, and it is now a labour dispute. If a rating can end someone's livelihood, they are owed an attribution filter.
+
+## Alternatives considered
+
+**One blended score with the event-collapse key.** Least work — the arithmetic was built and tested. Rejected because it required defending a claim we could not defend: that a webinar attendee's hour and a retainer client's twelve sessions belong in one average. It also carried a live defect, since `ratingUnitId` is frozen on edit and a reviewer who first reviewed after a webinar and later updated after twelve 1:1 sessions stayed inside the webinar bucket, contributing a two-hundredth of one data point.
+
+**No public reviews from group attendees at all.** Udemy's split — rate the course, not the instructor — and it would have deleted `ratingUnitId` entirely. Rejected on cost: 203 webinars and 221 class bookings exist, and their consultants would have no public reputation from work they actually did.
+
+**Reverting to one review per purchase.** Rejected on the measurement above: one extra publishable consultant out of 81, in exchange for letting a single enthusiastic client publish a score on their own.
+
+**Live recency decay from day one.** Rejected on timing, not merit. See the decision above.
+
+## Consequences
+
+A consultant's profile can now say two different things about them, and the copy has to carry that. `MIN_RATED_CLIENTS_ONE_TO_ONE` and `MIN_RATED_EVENTS_GROUP` are separate gates, so a consultant can be published on one track and suppressed on the other, and every surface must render a suppressed track as "not enough rated sessions yet" rather than as zero.
+
+The recompute is now a recurring job as well as a mutation hook, because the scores are a function of the clock.
+
+`ratingUnitId` is load-bearing for exactly one track. Anyone tempted to delete it should read the schema comment first.
+
+What we pay is that a mixed-mode client writes two reviews of one person. That is the correct number — they bought two things — but it does mean a profile can show the same name twice, and the cards need to say which product each review is about.
+
+Revisit if group volume grows enough that the group track needs its own weighting by audience size, which is the question nobody in the market has answered yet.
+
+## Related
+
+- [ADR 25 — Per-session reviews and the published score](25-per-session-reviews-and-published-score.md) — superseded by this one on the anchor; still live on the CSAT/review separation and the threshold.
+- [ADR 20 — Organizations see session metadata, never session content](20-org-visibility-into-member-sessions.md) — why the private per-call rating and the public review are different objects with different visibility.
+- [The support hub](../../support/support-hub.md) — the object-to-anchor grid this decision is one row of.

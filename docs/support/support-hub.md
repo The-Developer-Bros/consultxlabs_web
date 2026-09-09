@@ -127,61 +127,158 @@ detail/feedback/support routes:
 - Routes without an org-party surface (detail, feedback) call it bare; the
   type system then makes `isOrgParty: false` a fact, not a check to remember.
 
-## What each object is ABOUT
+## The grid
 
-Feedback, support and reviews all hang off a booking, and they answer three
-different questions, so they anchor to three different things. Getting this
-wrong is how the same five-star widget ended up on screen twice. The vocabulary
-matters because two of these words are not interchangeable:
+Support, feedback and reviews all hang off a booking and answer three different
+questions, so they anchor to three different things. Getting that wrong is how the
+same five-star widget ended up on screen twice.
 
-- An **appointment** is the purchase. One consultation, a subscription holding
-  up to twenty-four meetings, or a webinar with two hundred attendees.
+It reads like a combinatorial problem — objects × anchors × actors × booking
+shapes × organisation relationships — and it is not. It factors into **three
+questions**, after which almost every cell is determined by a rule rather than
+chosen:
+
+1. **Anchor — what is this record _about_?** The test: _anchor to the narrowest
+   thing whose identity the user would name when describing it._ "The call on the
+   14th was terrible" → session. "This expert is excellent" → person. "I was
+   charged twice for my package" → booking. "I can't log in" → account.
+2. **Visibility — who may write and read it?** Two rules, not a table.
+   _Participation_: only a party to the anchored thing may write about it.
+   _[ADR 20](../enterprise/70-design-decisions/20-org-visibility-into-member-sessions.md)_:
+   an organisation sees metadata and aggregates, never content.
+3. **Applicability — does it exist for this booking shape?** It exists if there
+   is a counterparty and a session occurred.
+
+The vocabulary matters, because two of these words are not interchangeable:
+
+- An **appointment** is the purchase. One consultation, a subscription holding up
+  to twenty-four meetings, or a webinar with two hundred attendees.
 - A **session** is one meeting that actually took place. It is stored as a
   contiguous run of thirty-minute `SlotOfAppointment` rows and identified by the
   run's first row, its anchor (#1061). `MeetingSession` hangs off exactly that
   row, and so does a rating.
-- A **slot** is a thirty-minute storage row. It is never the unit a user sees,
-  and nothing should be keyed to one directly.
+- A **slot** is a thirty-minute storage row. It is never the unit a user sees, and
+  nothing should be keyed to one directly.
 - A **relationship** is one consultee and one consultant, across every booking
   they have ever shared.
+- A **track** is what they bought from each other — one-to-one, or a group event.
 
-| Object                                              | Anchored to                                                                     | Also carries                                                          | Why                                                                                                                                                                                                                                                                                   |
-| --------------------------------------------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AppointmentFeedback` — the private per-call rating | the **session**, via `slotOfAppointmentId` pointing at the run anchor           | `appointmentId`, denormalised                                         | You rate the conversation you had. One rating per appointment gave a three-month subscription a single score; one per slot would ask you to rate one conversation three times. The denormalised `appointmentId` exists only so the organisation aggregate can roll up without a join. |
-| `AppointmentSupportThread` — the help conversation  | the **appointment**, via `@@unique([appointmentId, userId])`                    | a single `category`                                                   | This is the one that does not yet fit. Most intents are about a specific call, and the thread cannot say which. See the gap below.                                                                                                                                                    |
-| `ConsultantReview` — the public review              | the **relationship**, via `@@unique([consultantProfileId, consulteeProfileId])` | `appointmentId` as provenance, `ratingUnitId` as the weighting bucket | A reader wants one considered opinion of a person, not four near-identical ones from the same client. The appointment proves the review is genuine; it is not its subject.                                                                                                            |
+### A · Object → anchor
 
-The rule that falls out of the table is short. A rating is about a conversation,
-a review is about a person, and a support thread is about a problem.
+| Object                                              | Anchored to                                                                                          | Also carries                                                                                                | Written by                                                       | Read by                                                                                                                                                                                         |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AppointmentFeedback` — the private per-call rating | the **session**, via `slotOfAppointmentId` pointing at the run anchor                                | `appointmentId` denormalised, `organizationId`, `raterRole`, `ratingCause`                                  | any participant, once the call is over                           | the rater (score + note), the rated party (**score only**), the organisation (aggregate above the cohort floor), staff read-only                                                                |
+| `ConsultantReview` — the public review              | the **relationship and the track**, via `@@unique([consultantProfileId, consulteeProfileId, track])` | `appointmentId` as provenance, `ratingUnitId` as the group event key, the reply columns, the revision trail | the consultee, after one attended session                        | the world                                                                                                                                                                                       |
+| `AppointmentSupportThread` — the help conversation  | the **appointment**, via `@@unique([appointmentId, userId])`                                         | a single `category`                                                                                         | the participant, or an org operator on its own org-party intents | the participant, staff in full, the organisation as metadata only                                                                                                                               |
+| `SupportTicket` — the escalated grievance           | a **bare user**, with untyped links to a consultation, subscription or payment                       | the SLA clocks, the `FAM-` reference, priority, issue type, assignee                                        | escalation, or the platform ticket form                          | the owner, staff in full                                                                                                                                                                        |
+| `SupportFlowOutcome` — the deflection counter       | **the flow run** — a user and an optional organisation, deliberately no entity anchor                | the terminal node, the reason, and the tree's own CSAT                                                      | the server, on every terminal turn                               | staff, in aggregate only                                                                                                                                                                        |
+| `Feedback` — product feedback about the platform    | **the user**                                                                                         | a rating nothing aggregates, a free-text category, a triage status                                          | any signed-in user                                               | the author, staff                                                                                                                                                                               |
+| `DpdpGrievance`                                     | the **data principal**                                                                               | —                                                                                                           | the principal                                                    | the grievance officer. Deliberately a **separate pipe** — Unacademy's terms say the same thing, that an IT-Rules grievance officer is not the contact for consumer grievances. Do not merge it. |
+
+The rule that falls out is short. **A rating is about a conversation, a review is
+about a person, a case is about a problem, and product feedback is about us.**
+
+### B · Actor × operation
+
+Derived from the two visibility rules above, not enumerated independently. `—`
+means no path should exist.
+
+| Actor                                          | Private rating                                                    | Public review                                                                      | Support                                                                        | Product feedback  |
+| ---------------------------------------------- | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ----------------- |
+| Consultee (participant)                        | write own · read own score and note                               | write one per consultant per track · edit any time · withdraw and revive their own | open, reply, read own                                                          | write, read own   |
+| Consultant (the rated party)                   | read attendee **scores only**, never the note                     | **reply** · never edit, never delete                                               | open, reply, read own                                                          | write, read own   |
+| Org LEARNER / EXPERT without `operations.read` | as a participant only                                             | as a consultee only                                                                | as a participant only                                                          | as a user         |
+| Org OWNER / MAINTAINER / MANAGER / SUPPORT     | **aggregate only**, above the cohort floor, counts suppressed too | nothing beyond what the public sees, and never attributable to a named member      | metadata-only list of members' threads · **full** on the ones it raised itself | —                 |
+| Org BILLING_ADMIN                              | — (finance-only by design)                                        | public only                                                                        | billing-subject cases only                                                     | —                 |
+| Platform STAFF                                 | read-only                                                         | read · moderate · remove a reply. **No hard delete, no unattributed edit**         | full                                                                           | triage the status |
+| Platform ADMIN                                 | read-only                                                         | as STAFF, plus the ADMIN-only soft delete, always attributed                       | full                                                                           | triage the status |
+| Anonymous public                               | —                                                                 | read, with anonymous reviewers stripped on **every** path                          | —                                                                              | —                 |
+
+Three cells are worth stating because the code has got them wrong at least once
+each:
+
+- **Read access is never write access.** Staff can read a rating and must not be
+  able to author one; the feedback route enforces this through
+  `appointmentRaterRole`.
+- **An organisation is a party, not a spectator.** It may open its own thread on a
+  member's appointment (`ORG_ADMIN_DISPUTE`, `SPONSORSHIP_BILLING`) and cannot read
+  the member's. Note this deliberately **inverts** Zendesk, whose documented rule
+  is that organisation-level sharing overrides a per-user restriction — the wrong
+  default for career and health consultations.
+- **The refund flow and the review flow must not be able to see each other.** A
+  support agent negotiating a refund must not be able to tell that the consultee
+  has an unpublished review. The FTC and Airbnb both treat review-for-value as the
+  bright line.
+
+### C · Support intent → subject scope
+
+Five of the ten appointment intents are about one particular call; the rest are
+about the booking; the platform flows are about the account. The thread is
+anchored to the booking and cannot say which — that is the gap below.
+
+| Scope       | Categories                                                                                                              |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------- |
+| **Session** | `NO_SHOW`, `RESCHEDULE`, `RECORDING_ACCESS`, `TECHNICAL`, `QUALITY_COMPLAINT`                                           |
+| **Booking** | `CANCEL_REFUND`, `PAYMENT_STATUS`, `DOCUMENTS`, `SPONSORSHIP_BILLING`, `ORG_ADMIN_DISPUTE`                              |
+| **Account** | the five platform flows — `PAYMENTS_BILLING`, `ACCOUNT_ACCESS`, `PLATFORM_TECHNICAL`, `ORG_OPERATOR_BILLING`, `GENERAL` |
+
+### D · Booking shape → what applies
+
+| Shape                                     | Private rating           | Public review                                                    | Notes                                                                                          |
+| ----------------------------------------- | ------------------------ | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Consultation (1:1)                        | per session              | → the **1:1 score**                                              |                                                                                                |
+| Subscription (up to 24 meetings)          | per session              | → the **1:1 score**, one review for the whole relationship       | the dominant shape, and the reason relationship-anchoring wins                                 |
+| Trial                                     | per session              | → the 1:1 score                                                  |                                                                                                |
+| Webinar (one appointment, many attendees) | per session per attendee | → the **group score**, once that event clears the response floor |                                                                                                |
+| Class (one appointment per enrolment)     | per session              | → the **group score**, per class run                             | grouping by session _type_ would collapse a consultant's whole teaching history into one point |
+| Offline / in person                       | per session              | → the 1:1 score                                                  | rides the `UNVERIFIED` arm of the eligibility gate                                             |
+| Group plan with **no named consultant**   | private only             | **none**                                                         | nobody to review. Needs an explicit empty state rather than silence                            |
+
+### E · Organisation-ness → treatment
+
+The attribution rule: **a case belongs to an organisation when the _thing it is
+about_ belongs to the organisation — never because the human happens to be a
+member.** The platform flow already states and enforces this; the manual ticket
+form contradicts it by stamping the caller's first ACTIVE membership onto any
+ticket, which is how "I can't log in" from a LEARNER gets attributed to their
+employer.
+
+| Relationship                                                                      | Represented by                                                                                                 | Support                                                 | Feedback                     | Review                                                                                                                                |
+| --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| B2C personal                                                                      | `organizationId` NULL throughout                                                                               | own thread                                              | own rating                   | publishes                                                                                                                             |
+| Org-sponsored — the org pays, a marketplace consultant delivers, a member attends | `Appointment.organizationId`, `AppointmentParticipant.organizationId` per seat, `BillingAccount.fundingSource` | attributed to the org by subject; the org sees metadata | rolls into the org aggregate | publishes normally, and the org can never attribute it to the named member                                                            |
+| Org-hosted — the org's own EXPERT delivers                                        | `Membership.role = EXPERT` with `payoutRecipient = ORGANIZATION`                                               | same                                                    | same                         | **no public review**: an internal engagement is not a marketplace transaction, which is why BetterUp and CoachHub publish none at all |
+| The operator's own concern                                                        | a membership holding `operations.read`                                                                         | its own thread, org-party intents only                  | n/a                          | n/a                                                                                                                                   |
 
 ### The support gap, and what is done about it for now
 
-The support thread is anchored one level too high. Of the ten appointment
-intents, five are about a particular call — `NO_SHOW`, `RESCHEDULE`,
-`RECORDING_ACCESS`, `TECHNICAL` and `QUALITY_COMPLAINT` — while the rest
-(`CANCEL_REFUND`, `PAYMENT_STATUS`, `DOCUMENTS`, `SPONSORSHIP_BILLING`,
-`ORG_ADMIN_DISPUTE`) genuinely belong to the booking. Because the unique is
-`(appointmentId, userId)`, a no-show reported in week two and a billing question
-asked in week nine share one thread, one category and one transcript, which is
-not how a ticketing system is supposed to work.
+The support thread is anchored one level too high, and grid C is the evidence: five
+of the ten appointment intents are about a particular call and the thread cannot
+say which, because the unique is `(appointmentId, userId)`. On a subscription
+holding twenty-four meetings, a no-show reported in week two and a billing question
+asked in week nine share one thread, one category and one transcript, which is not
+how a ticketing system is supposed to work. Zendesk's problem/incident model exists
+precisely to keep the issue separate from its container.
 
 Moving the anchor is a schema change that also touches the operations queue, the
-SLA clocks and the staff notifications, so it is tracked separately rather than
-bolted onto the review work. Two things were done in the meantime, and both are
-worth knowing about because they change what staff see.
+SLA clocks and the staff notifications, so it is tracked separately at #1541 rather
+than bolted onto the review work. Two things were done in the meantime, and both
+change what staff see.
 
-`buildSupportContext` now takes the thread's category and resolves the session
-from it. A retrospective intent describes the most recently finished session,
-and everything else describes the current-or-next one. Previously every intent
-was answered with the next upcoming session, so a report of a missed call came
-back describing a call that had not happened yet. The refund preview is
-deliberately exempt and always measures against the session you would actually
-be cancelling.
+`buildSupportContext` takes the thread's category and resolves the session from it.
+A retrospective intent describes the most recently finished session and everything
+else describes the current-or-next one; previously every intent was answered with
+the next upcoming session, so a report of a missed call came back describing a call
+that had not happened yet. The refund preview is deliberately exempt and always
+measures against the session you would actually be cancelling.
 
-The same function now groups slots into runs before reading the session bounds.
-Taking a single row gave a ninety-minute meeting a thirty-minute window, so
-`endsAt` fell an hour early and the stage flipped to `COMPLETED` while the call
-was still running — which is what decides the intents on offer.
+The same function groups slots into runs before reading the session bounds. Taking
+a single row gave a ninety-minute meeting a thirty-minute window, so `endsAt` fell
+an hour early and the stage flipped to `COMPLETED` while the call was still
+running — which is what decides the intents on offer. It also selects every
+non-cancelled slot rather than only `SCHEDULED` ones: a finished session is
+`COMPLETED` or `UNVERIFIED`, so the old filter removed exactly the rows a
+retrospective intent needs and `lastEndedRun` was structurally always null.
 
 ## Invariants worth knowing before you edit
 
@@ -386,17 +483,22 @@ The table below lists every schema change the subsystem carries, oldest
 first. All of them are additive and either nullable or defaulted, so each is
 compatible with the pre-MVP freeze and none needs a backfill.
 
-| Change                                                                                                                                                                                                                                | Why                                                                                                                                                                                                                                         |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SupportTicket.organizationId?` + `@@index([organizationId, status])`                                                                                                                                                                 | ops queue filterable by customer org                                                                                                                                                                                                        |
-| `lastMessageAt?` on `SupportTicket` + `AppointmentSupportThread` (+ `@@index([status, lastMessageAt])` on the thread)                                                                                                                 | "latest activity first" — `updatedAt` doesn't move on message inserts; the inbox sort needs the index                                                                                                                                       |
-| `SupportTicket.referenceNumber?` (`@unique`, `VarChar(20)`) + the `SupportTicketCounter` model                                                                                                                                        | the speakable handle and its year-scoped allocator (#705)                                                                                                                                                                                   |
-| `SupportTicket.assignedTo` relation (`SetNull`) replacing the bare `assignedToId` string                                                                                                                                              | a bare string could name a user who no longer exists, and the queue could not render a name without a second query; a staff departure must not delete tickets                                                                               |
-| `SupportTicket.ackDueAt`, `acknowledgedAt`, `resolutionDueAt`, `resolvedAt`, `closedAt`, `firstAgentReplyAt`, `awaitingUserSince`, `pausedSeconds` + `@@index([acknowledgedAt, ackDueAt])` + `@@index([resolvedAt, resolutionDueAt])` | the SLA clocks, stored at intake so a policy change cannot re-date an open ticket's breach; the indexes turn a breach sweep into an index scan                                                                                              |
-| `AppointmentSupportThread.messageSeq` + `SupportMessage.seq` + `@@index([threadId, seq])`                                                                                                                                             | a strict per-thread total order; `createdAt` alone cannot order rows written in one transaction                                                                                                                                             |
-| `SupportMessage.authorUserId?` (`SetNull`) + `@@index([authorUserId])`                                                                                                                                                                | which staff member wrote an `AGENT` message; Postgres does not index a foreign key for you and the `SetNull` scans by it                                                                                                                    |
-| the `SupportFlowOutcome` model + the `SupportFlowOutcomeKind` enum                                                                                                                                                                    | the deflection counter, in both scopes, with no message bodies                                                                                                                                                                              |
-| `AppointmentFeedback.raterRole?` + the `AppointmentFeedbackRole` enum; `@@index([organizationId, createdAt])` becomes `@@index([organizationId, raterRole, createdAt])`                                                               | a consultant's rating of their own session used to be indistinguishable from an attendee's and fed the org quality average; the aggregate now filters `raterRole` before the date range, which leaves the old index without a usable prefix |
+| Change                                                                                                                                                                                                                                | Why                                                                                                                                                                                                                                                                                                          |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `SupportTicket.organizationId?` + `@@index([organizationId, status])`                                                                                                                                                                 | ops queue filterable by customer org                                                                                                                                                                                                                                                                         |
+| `lastMessageAt?` on `SupportTicket` + `AppointmentSupportThread` (+ `@@index([status, lastMessageAt])` on the thread)                                                                                                                 | "latest activity first" — `updatedAt` doesn't move on message inserts; the inbox sort needs the index                                                                                                                                                                                                        |
+| `SupportTicket.referenceNumber?` (`@unique`, `VarChar(20)`) + the `SupportTicketCounter` model                                                                                                                                        | the speakable handle and its year-scoped allocator (#705)                                                                                                                                                                                                                                                    |
+| `SupportTicket.assignedTo` relation (`SetNull`) replacing the bare `assignedToId` string                                                                                                                                              | a bare string could name a user who no longer exists, and the queue could not render a name without a second query; a staff departure must not delete tickets                                                                                                                                                |
+| `SupportTicket.ackDueAt`, `acknowledgedAt`, `resolutionDueAt`, `resolvedAt`, `closedAt`, `firstAgentReplyAt`, `awaitingUserSince`, `pausedSeconds` + `@@index([acknowledgedAt, ackDueAt])` + `@@index([resolvedAt, resolutionDueAt])` | the SLA clocks, stored at intake so a policy change cannot re-date an open ticket's breach; the indexes turn a breach sweep into an index scan                                                                                                                                                               |
+| `AppointmentSupportThread.messageSeq` + `SupportMessage.seq` + `@@index([threadId, seq])`                                                                                                                                             | a strict per-thread total order; `createdAt` alone cannot order rows written in one transaction                                                                                                                                                                                                              |
+| `SupportMessage.authorUserId?` (`SetNull`) + `@@index([authorUserId])`                                                                                                                                                                | which staff member wrote an `AGENT` message; Postgres does not index a foreign key for you and the `SetNull` scans by it                                                                                                                                                                                     |
+| the `SupportFlowOutcome` model + the `SupportFlowOutcomeKind` enum                                                                                                                                                                    | the deflection counter, in both scopes, with no message bodies                                                                                                                                                                                                                                               |
+| `AppointmentFeedback.raterRole?` + the `AppointmentFeedbackRole` enum; `@@index([organizationId, createdAt])` becomes `@@index([organizationId, raterRole, createdAt])`                                                               | a consultant's rating of their own session used to be indistinguishable from an attendee's and fed the org quality average; the aggregate now filters `raterRole` before the date range, which leaves the old index without a usable prefix                                                                  |
+| `AppointmentFeedback.updatedAt?` + `deletedAt?` + `ratingCause?` + `excludedFromAggregateAt?`                                                                                                                                         | the table had neither an update stamp nor a tombstone, so a private comment was unreportable, unremovable and unredactable, and a rating created inside the organisation's thirty-day window and rewritten from 5 to 1 six months later still reported in that window with nothing able to tell it had moved |
+| `SupportFlowOutcome.helpfulRating?` + `helpfulRatedAt?`                                                                                                                                                                               | the tree's own CSAT, bound to the flow terminal because a RESOLVED outcome writes no ticket and there is nothing else to hang it on (Uber's pattern); the other half is whether a person fixed it                                                                                                            |
+| `ConsultantReview.track?`, `revisionNo`, `editedAt?`, `ratingCause?`, the exclusion trio, `ratedSessionAt?`, `deletedByUserId?`; the unique becomes `(consultantProfileId, consulteeProfileId, track)`                                | [ADR 29](../enterprise/70-design-decisions/29-two-track-reputation-and-the-right-of-reply.md) — two published scores, an append-only edit trail, ratings protection, and a removal that says who did it                                                                                                      |
+| the `ConsultantReviewRevision` and `ScoringSnapshot` models, and the `ReviewTrack` / `RatingCause` enums                                                                                                                              | the edit trail BIS IS 19000:2022 asks for, and the priors that make a published score reproducible after the constants move                                                                                                                                                                                  |
+| `ConsultantProfile` gains nine score columns plus `scoringSnapshotId`                                                                                                                                                                 | the two tracks, their counts, their raw means, their effective samples, and which run produced them                                                                                                                                                                                                          |
 
 > `@@index([status, lastMessageAt])` requires `npm run db:push` (which chains
 > the sidecars) on each environment — a schema-only merge does not create it.
