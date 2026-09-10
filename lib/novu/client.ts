@@ -25,7 +25,25 @@ export function getNovuClient(): Novu {
   validateNovuConfig();
 
   if (!novuInstance) {
-    novuInstance = new Novu({ secretKey: NOVU_SECRET_KEY! });
+    // #1446 — the SDK defaults to no request timeout and a backoff that keeps
+    // retrying connection errors for up to an hour, which is how two triggers
+    // ran 39 s each inside an after() callback and starved the instance's only
+    // Prisma connection. The caller's deadline stops US waiting; these stop the
+    // orphaned request from burning the instance after we have moved on.
+    novuInstance = new Novu({
+      secretKey: NOVU_SECRET_KEY!,
+      timeoutMs: 5_000,
+      retryConfig: {
+        strategy: "backoff",
+        backoff: {
+          initialInterval: 250,
+          maxInterval: 1_000,
+          exponent: 1.5,
+          maxElapsedTime: 5_000,
+        },
+        retryConnectionErrors: true,
+      },
+    });
   }
 
   return novuInstance;

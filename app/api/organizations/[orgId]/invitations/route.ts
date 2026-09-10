@@ -29,6 +29,7 @@ import {
 } from "@/lib/enterprise/governance";
 import { notifyOrgInviteSent } from "@/lib/novu/org-workflows";
 import { applyRateLimit, orgInviteLimiter } from "@/lib/rate-limit";
+import { withSerializableRetry } from "@/lib/db/serializable-retry";
 
 // #817 — the canonical invitable set lives in org-labels; a local duplicate
 // here drifted (BILLING_ADMIN went missing) so the route now imports it.
@@ -89,14 +90,35 @@ export async function POST(
   { params }: { params: Promise<{ orgId: string }> },
 ) {
   const { orgId } = await params;
-  // Invitations require an ACTIVE org. Pre-verification we return
-  // 409 ORG_NOT_VERIFIED instead of spawning orphan tokens that
-  // would never get an email sent. The UI banner explains the state.
+  // Invitations require an operable org, but NOT a verified one:
+  // #1132 follow-up — this route was hard-gated on ACTIVE, which made the
+  // UNVERIFIED_ORG_SEAT_CAP grace (enforced in-tx below) unreachable dead
+  // code. The creation wizard fires team invites seconds after creating a
+  // PENDING_VERIFICATION org and every one of them 409'd ORG_NOT_VERIFIED,
+  // poisoning the launch moment for every self-serve org. Pre-verification
+  // orgs may now invite up to the seat cap; SUSPENDED / DEACTIVATED orgs
+  // stay blocked by the explicit check here.
   const access = await requireOrgAccess(orgId, {
     minimumRole: "MAINTAINER",
-    requireActive: true,
+    // requireActive deliberately omitted: it is a `true`-literal opt-in flag,
+    // and pre-verification invites are exactly what we want here (the seat
+    // cap below owns the PENDING_VERIFICATION policy; SUSPENDED/DEACTIVATED
+    // are refused explicitly above).
   });
   if (access.error) return access.error;
+  // SUSPENDED-only: requireOrgAccess already answers 403 for DEACTIVATED
+  // before this handler ever sees `access` (CR #1234 — the deactivated arm
+  // here was unreachable dead code).
+  if (access.org.status === "SUSPENDED") {
+    return NextResponse.json(
+      {
+        error: "ORG_NOT_ACTIVE",
+        message: "Invitations are paused while the organization is suspended.",
+        status: access.org.status,
+      },
+      { status: 409 },
+    );
+  }
 
   // Per-org sliding-window cap: 20 invitations per hour. Keyed on orgId
   // (not IP) so a credential-stuffing attacker that rotates IPs still
@@ -180,7 +202,11 @@ export async function POST(
   let wasExisting = false;
   let invitation;
   try {
-    invitation = await prisma.$transaction(
+    // #1132 follow-up — the tx below assumed a retry budget that never
+    // existed; a P2034 abort surfaced as a raw 500 to the invite sender.
+    // Transient serialization failures now retry via the house helper.
+    invitation = await withSerializableRetry(() =>
+      prisma.$transaction(
       async (tx) => {
         const existing = await tx.invitation.findFirst({
           where: {
@@ -246,6 +272,7 @@ export async function POST(
         return record;
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      ),
     );
   } catch (err) {
     if (err instanceof DomainVerificationRequiredError) {

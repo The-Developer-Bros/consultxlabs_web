@@ -12,6 +12,10 @@ on:
     - cron: "0 21 * * 0"
   workflow_dispatch: # Allow manual triggering
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   consent-retention-sweeper:
     runs-on: ubuntu-latest

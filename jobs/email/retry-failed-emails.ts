@@ -203,11 +203,15 @@ function buildResendEmails(): Pick<Resend["emails"], "send"> | null {
 }
 
 // #476 — no IN_FLIGHT soft lock on FailedEmail, so the cron lock is the only
-// thing keeping two overlapping ticks from double-sending a row. Fail-open:
-// re-delivering a transactional email is annoying but not money-damaging, so a
-// missing Redis lock shouldn't block the retry sweep entirely.
+// thing keeping two overlapping ticks from double-sending a row.
+// Wave-3 (#1230): flipped from fail-open to FAIL-CLOSED. The original rationale
+// ("a missing lock shouldn't block the sweep") predates #1179's ops-paging:
+// today a held/unavailable lock now fails the tick loudly and pages, whereas
+// fail-open silently allowed two replicas to send every failed email twice.
+// Deferred retries resume next tick once Redis recovers — no message loss,
+// just delay.
 export async function retryFailedEmails(): Promise<EmailRetryRunResult> {
-  return withCronLock("retry-failed-emails", { failMode: "open" }, () =>
+  return withCronLock("retry-failed-emails", { failMode: "closed" }, () =>
     runEmailRetryTick({ prisma }),
   );
 }

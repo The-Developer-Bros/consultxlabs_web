@@ -1,14 +1,23 @@
 import * as Sentry from "@sentry/nextjs";
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import prisma from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import { getSession } from "@/lib/auth-server";
 import {
   uploadAppointmentDocument,
   getManualBucketInstructions,
+  deleteAppointmentDocument,
 } from "@/lib/supabase";
 import { applyRateLimit, documentUploadLimiter } from "@/lib/rate-limit";
 import { isBookingTerminal } from "@/lib/appointments/terminal-status";
+import {
+  MAX_DOCS_PER_APPOINTMENT,
+  validateDocumentUpload,
+  withVersionConflictRetry,
+} from "@/lib/documents/document-review";
+import { notifyDocumentUploaded } from "@/lib/novu/service";
+import { notificationScope } from "@/lib/novu/workflows";
+import { scopedHref } from "@/lib/novu/resolve-href";
 
 // GET - List documents for an appointment
 export async function GET(
@@ -185,10 +194,14 @@ export async function GET(
       documents = await prisma.appointmentDocument.findMany({
         where: {
           appointmentId,
+          // Soft-deleted rows stay in the DB for audit until the nightly purge;
+          // they never render in review threads.
+          deletedAt: null,
         },
         include: {
           // Include response documents (consultant responses to this document)
           responseDocuments: {
+            where: { deletedAt: null },
             orderBy: {
               uploadedAt: "desc",
             },
@@ -366,36 +379,15 @@ export async function POST(
       );
     }
 
-    // Enhanced file validation
-    const maxSize = 10 * 1024 * 1024; // 10MB
-    if (file.size > maxSize) {
+    // Shared size/MIME gate (same helper the consultant route uses).
+    const validation = validateDocumentUpload(file);
+    if (!validation.ok) {
       return NextResponse.json(
         {
-          error: "File too large",
-          message: `The selected file is ${Math.round(file.size / 1024 / 1024)}MB. Please select a file smaller than 10MB.`,
-          code: "FILE_TOO_LARGE",
-        },
-        { status: 400 },
-      );
-    }
-
-    const allowedTypes = [
-      "application/pdf",
-      "application/msword",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "image/jpeg",
-      "image/jpg",
-      "image/png",
-      "image/gif",
-      "text/plain",
-    ];
-
-    if (!allowedTypes.includes(file.type)) {
-      return NextResponse.json(
-        {
-          error: "Unsupported file type",
-          message: `The file type "${file.type}" is not supported. Please upload a PDF, Word document, image (JPG, PNG, GIF), or text file.`,
-          code: "UNSUPPORTED_FILE_TYPE",
+          error:
+            validation.code === "FILE_TOO_LARGE" ? "File too large" : "Unsupported file type",
+          message: validation.message,
+          code: validation.code,
         },
         { status: 400 },
       );
@@ -451,7 +443,7 @@ export async function POST(
                 consultantProfile: {
                   include: {
                     user: {
-                      select: { name: true },
+                      select: { id: true, name: true },
                     },
                   },
                 },
@@ -471,7 +463,7 @@ export async function POST(
                 consultantProfile: {
                   include: {
                     user: {
-                      select: { name: true },
+                      select: { id: true, name: true },
                     },
                   },
                 },
@@ -521,9 +513,29 @@ export async function POST(
     // deleting the object already written to storage, unlike the DB-failure
     // branch below which does clean up. Every rejected revision leaked a file.
     // The lookup needs only `appointmentId`, which is verified above.
+    //
+    // DOC quota — live (non-deleted) docs per appointment are capped; without
+    // it 10MB × unlimited rows is an unbounded storage bill at scale.
+    if (
+      (await prisma.appointmentDocument.count({
+        where: { appointmentId, deletedAt: null },
+      })) >= MAX_DOCS_PER_APPOINTMENT
+    ) {
+      return NextResponse.json(
+        {
+          error: "Document limit reached",
+          message: `This appointment already has ${MAX_DOCS_PER_APPOINTMENT} documents. Please delete an unreviewed upload or continue in a new appointment.`,
+          code: "DOCUMENT_LIMIT_REACHED",
+        },
+        { status: 400 },
+      );
+    }
+
+    // A revision must point at a document on THIS appointment — validated
+    // BEFORE the upload so a rejection can't leak the stored object.
     if (revisionOf) {
       const parent = await prisma.appointmentDocument.findFirst({
-        where: { id: revisionOf, appointmentId },
+        where: { id: revisionOf, appointmentId, deletedAt: null },
         select: { id: true },
       });
       if (!parent) {
@@ -616,34 +628,71 @@ export async function POST(
       );
     }
 
-    // Save document record to database
+    // Save document record to database. Thread context (root + versionNo) is
+    // resolved inside the same transaction as the insert so two racing
+    // revisions cannot compute the same versionNo from a stale max().
     let document;
     try {
-      document = await prisma.appointmentDocument.create({
-        data: {
-          appointmentId,
-          fileName: uploadResult.fileName!,
-          originalName: file.name,
-          fileSize: uploadResult.fileSize!,
-          mimeType: uploadResult.mimeType!,
-          fileUrl: uploadResult.fileUrl!,
-          storagePath: uploadResult.storagePath!,
-          description: description?.trim() || null,
-          reviewStatus: "PENDING",
-          responseToDocumentId: revisionOf,
-        },
-      });
+      document = await withVersionConflictRetry(() =>
+        prisma.$transaction(async (tx) => {
+        let rootDocumentId: string | null = null;
+        let versionNo = 1;
+        if (revisionOf) {
+          const parent = await tx.appointmentDocument.findFirst({
+            where: { id: revisionOf, appointmentId, deletedAt: null },
+            select: { id: true, rootDocumentId: true },
+          });
+          if (!parent) throw new Error("INVALID_REVISION_TARGET");
+          rootDocumentId = parent.rootDocumentId ?? parent.id;
+          const aggregate = await tx.appointmentDocument.aggregate({
+            where: { OR: [{ id: rootDocumentId }, { rootDocumentId }] },
+            _max: { versionNo: true },
+          });
+          versionNo = (aggregate._max.versionNo ?? 1) + 1;
+        }
+        return tx.appointmentDocument.create({
+          data: {
+            appointmentId,
+            fileName: uploadResult.fileName!,
+            originalName: file.name,
+            fileSize: uploadResult.fileSize!,
+            mimeType: uploadResult.mimeType!,
+            fileUrl: uploadResult.fileUrl!,
+            storagePath: uploadResult.storagePath!,
+            description: description?.trim() || null,
+            reviewStatus: "PENDING",
+            responseToDocumentId: revisionOf,
+            rootDocumentId,
+            versionNo,
+          },
+        });
+        }),
+      );
     } catch (dbError) {
       console.error("Database error saving document:", dbError);
       Sentry.captureException(dbError instanceof Error ? dbError : new Error(String(dbError)), { tags: { subsystem: "appointments" } });
 
       // Try to clean up uploaded file if database save failed
       try {
-        const { deleteAppointmentDocument } = await import("@/lib/supabase");
         await deleteAppointmentDocument(uploadResult.storagePath!);
       } catch (cleanupError) {
         console.error("Failed to cleanup uploaded file:", cleanupError);
         Sentry.captureException(cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError)), { tags: { subsystem: "appointments" } });
+      }
+
+      if (
+        dbError instanceof Error &&
+        dbError.message === "INVALID_REVISION_TARGET"
+      ) {
+        return NextResponse.json(
+          {
+            error: "Invalid revision target",
+            message:
+              "The document this revision replaces was not found on this appointment.",
+            code: "INVALID_REVISION_TARGET",
+          },
+          { status: 400 },
+        );
       }
 
       return NextResponse.json(
@@ -657,16 +706,56 @@ export async function POST(
       );
     }
 
-    const appointmentTitle =
-      appointment.consultation?.consultationPlan?.title ||
-      appointment.subscription?.subscriptionPlan?.title ||
-      "your appointment";
+    // Ping the reviewer. `after()` keeps the response fast and the send
+    // survives the handler; failures are logged, never surfaced as 500s.
+    const consultantUserId =
+      appointment.consultation?.consultationPlan?.consultantProfile?.user?.id ||
+      appointment.subscription?.subscriptionPlan?.consultantProfile?.user?.id;
+    const consultantProfileId =
+      appointment.consultation?.consultationPlan?.consultantProfile?.id ||
+      appointment.subscription?.subscriptionPlan?.consultantProfile?.id;
+    const consulteeName =
+      appointment.consultation?.requestedBy?.user?.name ||
+      appointment.subscription?.requestedBy?.user?.name ||
+      "The consultee";
     const consultantName =
       appointment.consultation?.consultationPlan?.consultantProfile?.user
         ?.name ||
       appointment.subscription?.subscriptionPlan?.consultantProfile?.user
         ?.name ||
       "your consultant";
+
+    if (consultantUserId) {
+      after(() =>
+        notifyDocumentUploaded(consultantUserId, {
+          ...notificationScope(appointment.organizationId),
+          appointmentId,
+          documentId: document.id,
+          uploadedByRole: "CONSULTEE",
+          fileName: file.name,
+          isThreaded: Boolean(revisionOf),
+          versionNo: document.versionNo,
+          consultantName,
+          consulteeName,
+          dashboardUrl: scopedHref({
+            organizationId: appointment.organizationId,
+            surface: "documents",
+            personal:
+              consultantProfileId
+                ? { kind: "consultant", profileId: consultantProfileId }
+                : undefined,
+          }),
+        }).catch((notifyError) => {
+          console.error("Failed to notify consultant of document", notifyError);
+          Sentry.captureException(notifyError instanceof Error ? notifyError : new Error(String(notifyError)), { tags: { subsystem: "novu" } });
+        }),
+      );
+    }
+
+    const appointmentTitle =
+      appointment.consultation?.consultationPlan?.title ||
+      appointment.subscription?.subscriptionPlan?.title ||
+      "your appointment";
 
     const devModeMessage = isDevelopment
       ? " [DEV MODE - Access control bypassed]"

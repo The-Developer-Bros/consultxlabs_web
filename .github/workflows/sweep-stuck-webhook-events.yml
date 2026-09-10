@@ -6,8 +6,13 @@ name: Sweep Stuck Webhook Events
 
 on:
   schedule:
+    # ADR 22 — this schedule is an upper bound on frequency, not a delivered cadence; ADR 27 — the Netlify ticker (netlify/functions/cron-tick.mts) is what actually holds the cadence for the money sweeps.
     - cron: "4-59/10 * * * *"
   workflow_dispatch: # Allow manual triggering
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   sweep-stuck-webhook-events:
@@ -28,6 +33,18 @@ jobs:
       # #476 — fail-closed cron lock: without these the job refuses to run.
       UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
       UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      # #1270 — this sweep replays Stream events too, so its import graph runs
+      # through the recording handlers into the Supabase client module, which
+      # throws at module scope without the first two. The service role key is
+      # what a replayed `call.recording_ready` needs to write the transferred
+      # object; without it the storage write fails RLS.
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      # The same replay path needs Stream credentials to fetch the recording.
+      STREAM_API_KEY: ${{ secrets.STREAM_API_KEY }}
+      STREAM_API_SECRET: ${{ secrets.STREAM_API_SECRET }}
+      NEXT_PUBLIC_STREAM_API_KEY: ${{ secrets.NEXT_PUBLIC_STREAM_API_KEY }}
 
     steps:
       - name: Checkout code

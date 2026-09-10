@@ -19,13 +19,11 @@ export default function HomePageClient({
   // defaultForOrgMember: "all" here papered over the missing attendee arm in
   // the orgMember scope (#1166 ORG-5); org-funded sessions now live on the
   // org dashboard, which can actually show them.
-  const eventsQuery = {
-    ...createConsulteeQueries(consulteeId).events,
-    // Keep SSR-dehydrated events warm long enough to avoid an immediate
-    // refetch waterfall on first paint (aligned with dashboard staleTimes).
-    staleTime: 60_000,
-    refetchOnWindowFocus: false,
-  };
+  //
+  // `eventsHome` is the factory's Home-tuned twin of `events` (same key base
+  // as the SSR seed, calmer refresh posture) — keep query config in the
+  // factory so both tabs stay consistent by construction.
+  const eventsQuery = createConsulteeQueries(consulteeId).eventsHome;
   const { data: eventsData, isLoading, error, refetch } = useQuery(eventsQuery);
 
   // Show skeleton only for initial load when no data exists

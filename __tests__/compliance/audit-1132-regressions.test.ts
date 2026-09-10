@@ -121,13 +121,23 @@ describe("GST place of supply (#1132)", () => {
     expect(r.reason).toBe("IGST_STATE_UNKNOWN");
   });
 
-  it("leaves exports zero-rated", () => {
+  it("leaves exports zero-rated under a valid FY LUT", () => {
+    // #1230 — zero-rating now requires the platform LUT (Rule 96A); this pin
+    // covers the compliant path. The no-LUT default is pinned in lut-gate.test.ts.
+    // Clock frozen inside the fixture window (CR #1234).
+    process.env.PLATFORM_LUT_NUMBER = "LUT/2627";
+    process.env.PLATFORM_LUT_VALID_TILL = "2027-03-31";
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date("2027-03-31T12:00:00Z"));
     const r = deriveGstBreakdown({
       subtotalPaise: 100_000,
       supplierStateCode: "KA",
       buyerStateCode: null,
       buyerCountry: "US",
     });
+    jest.useRealTimers();
+    delete process.env.PLATFORM_LUT_NUMBER;
+    delete process.env.PLATFORM_LUT_VALID_TILL;
     expect(r.reason).toBe("ZERO_RATED_EXPORT");
     expect(r.totalPaise).toBe(100_000);
   });

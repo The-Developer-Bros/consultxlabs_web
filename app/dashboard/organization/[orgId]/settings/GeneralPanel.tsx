@@ -16,10 +16,12 @@ import {
 import type {
   FundingSource,
   GstRegStatus,
+  MsmeStatus,
   OrgStatus,
 } from "@prisma/client";
 
 import { useOrgRole, useRequireOrgAccess } from "../useOrgRole";
+import { CancellationPolicyCard } from "./CancellationPolicyCard";
 import { orgDetailsQueryKey } from "@/lib/api/organizations/org-details";
 import { PanelHeader } from "@/components/dashboard/PageScaffold";
 import { Button } from "@/components/ui/button";
@@ -77,6 +79,14 @@ interface SettingsResponse {
     website: string | null;
     paymentTermsDays: number;
     isPublic: boolean;
+    // #779 §A — verification lifecycle (banner + resubmit affordance).
+    verificationReason?: string | null;
+    verificationRejectedAt?: string | null;
+    // #1230 wave-4 — MSME declaration satellite.
+    msmeInfo?: {
+      msmeStatus: MsmeStatus;
+      msmeWrittenAgreementOnFile: boolean;
+    } | null;
     billingAccount?: { fundingSource: FundingSource } | null;
     // #777 §B — OrganizationTaxInfo satellite, non-secret fields only.
     // null when the org has no taxInfo row yet.
@@ -111,6 +121,9 @@ interface PatchPayload {
   gstin?: string | null;
   gstStateCode?: string | null;
   gstRegStatus?: GstRegStatus;
+  // #1230 wave-4 — MSME declaration rides the same PATCH upsert.
+  msmeStatus?: MsmeStatus;
+  msmeWrittenAgreementOnFile?: boolean;
   expectedVersion?: number;
 }
 
@@ -134,7 +147,9 @@ async function patchSettings(orgId: string, payload: PatchPayload) {
 
 export function GeneralPanel({ orgId }: { orgId: string }) {
   const { isAtLeast } = useOrgRole(orgId);
-  const { allowed } = useRequireOrgAccess(orgId, { permission: "settings.manage" });
+  const { allowed } = useRequireOrgAccess(orgId, {
+    permission: "settings.manage",
+  });
   const queryClient = useQueryClient();
 
   const { data, isLoading } = useQuery({
@@ -152,6 +167,15 @@ export function GeneralPanel({ orgId }: { orgId: string }) {
   const [paymentTermsDays, setPaymentTermsDays] = useState("60");
   const [isPublic, setIsPublic] = useState(false);
   // #777 §B — Tax & compliance (OrganizationTaxInfo). UNREGISTERED is the
+  // #1230 wave-4 — MSME (Udyam) declaration. Drives the MSMED 15/45-day
+  // payment-terms engine on host-org payouts; NONE keeps 60-day defaults.
+  const [msmeStatus, setMsmeStatus] = useState<MsmeStatus>("NONE");
+  const [msmeAgreement, setMsmeAgreement] = useState(false);
+  const msmeDirty =
+    msmeStatus !== (data?.profile.msmeInfo?.msmeStatus ?? "NONE") ||
+    msmeAgreement !==
+      (data?.profile.msmeInfo?.msmeWrittenAgreementOnFile ?? false);
+  const [resubmitting, setResubmitting] = useState(false);
   // schema default, so an org with no taxInfo row reads as UNREGISTERED.
   const [gstin, setGstin] = useState("");
   const [gstStateCode, setGstStateCode] = useState("");
@@ -180,6 +204,10 @@ export function GeneralPanel({ orgId }: { orgId: string }) {
     setGstin(data.profile.taxInfo?.gstin ?? "");
     setGstStateCode(data.profile.taxInfo?.gstStateCode ?? "");
     setGstRegStatus(data.profile.taxInfo?.gstRegStatus ?? "UNREGISTERED");
+    setMsmeStatus(data.profile.msmeInfo?.msmeStatus ?? "NONE");
+    setMsmeAgreement(
+      data.profile.msmeInfo?.msmeWrittenAgreementOnFile ?? false,
+    );
   }, [data]);
 
   const mutation = useMutation({
@@ -231,7 +259,8 @@ export function GeneralPanel({ orgId }: { orgId: string }) {
     nextValue: boolean,
   ) => {
     if (!data) return;
-    const current = field === "canSponsor" ? data.profile.canSponsor : data.profile.canHost;
+    const current =
+      field === "canSponsor" ? data.profile.canSponsor : data.profile.canHost;
     if (nextValue === current) return;
     if (nextValue === false) {
       setPendingDisable(field);
@@ -272,6 +301,40 @@ export function GeneralPanel({ orgId }: { orgId: string }) {
     });
   };
 
+  // #1230 wave-4 — MSME declaration has its own NARROW save so a partial
+  // tax-form fill never accidentally persists unrelated unsaved profile
+  // edits through the generic mutation (CR on PR #1240).
+  const [msmeSaving, setMsmeSaving] = useState(false);
+  const saveMsme = async () => {
+    setError(null);
+    setMsmeSaving(true);
+    try {
+      await patchSettings(orgId, {
+        ...(data && { expectedVersion: data.profile.version }),
+        msmeStatus,
+        msmeWrittenAgreementOnFile: msmeAgreement,
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["org-settings", orgId],
+      });
+    } catch (err) {
+      // Stale-tab conflicts route through the same dialog as the generic
+      // mutation instead of a dead-end banner (CR #1240 r2).
+      const code = (err as { code?: string }).code;
+      if (code === "VERSION_CONFLICT") {
+        setConflictOpen(true);
+      } else {
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Failed to save MSME declaration",
+        );
+      }
+    } finally {
+      setMsmeSaving(false);
+    }
+  };
+
   if (!allowed) return null;
 
   if (isLoading || !data) {
@@ -288,8 +351,60 @@ export function GeneralPanel({ orgId }: { orgId: string }) {
   );
   const fundingSource = data.profile.billingAccount?.fundingSource;
 
+  const rejectedPending =
+    data.profile.status === ("PENDING_VERIFICATION" as OrgStatus) &&
+    !!data.profile.verificationRejectedAt;
+
+  const resubmitVerification = async () => {
+    setResubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/organizations/${orgId}/verification/resubmit`,
+        {
+          method: "POST",
+        },
+      );
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        throw new Error(b.error || "Resubmit failed");
+      }
+      await queryClient.invalidateQueries({
+        queryKey: ["org-settings", orgId],
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Resubmit failed");
+    } finally {
+      setResubmitting(false);
+    }
+  };
+
   return (
     <>
+      {/* #1230 wave-4 — self-serve resubmit: the endpoint existed with zero
+          callers, so rejected orgs deadlocked until ops intervened. */}
+      {rejectedPending && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-4 space-y-2">
+          <p className="text-sm font-semibold text-amber-900">
+            Verification was declined
+          </p>
+          {data.profile.verificationReason && (
+            <p className="text-sm text-amber-800">
+              Reason: {data.profile.verificationReason}
+            </p>
+          )}
+          <p className="text-xs text-amber-800">
+            Fix the issue and resubmit — a platform admin will re-review.
+          </p>
+          <Button
+            size="sm"
+            onClick={resubmitVerification}
+            disabled={resubmitting}
+          >
+            {resubmitting ? "Resubmitting…" : "Resubmit for verification"}
+          </Button>
+        </div>
+      )}
       {/* No "SSO settings" button any more — SSO is a sibling tab, so a
           button that navigates to it would duplicate the tab bar. */}
       <PanelHeader description="Organization profile, billing email, and limits" />
@@ -376,12 +491,10 @@ export function GeneralPanel({ orgId }: { orgId: string }) {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {/* #779 TODO: these fields are MAINTAINER-enabled in the UI but
-                the org PATCH route is requireOrgOwner — a MAINTAINER save
-                gets a silent 403. RBAC redistribution (widen the API to
-                MAINTAINER for the profile subset, or disable here for
-                non-OWNER) is deferred to v4; not broadening API auth in
-                this PR. */}
+            {/* The MAINTAINER/OWNER split below mirrors the PATCH route's
+                field-level gate (#779 §A), not a blanket owner check: name,
+                description, industry and website are MAINTAINER+, while
+                billing email, slug and payment terms stay OWNER-only. */}
             <form
               onSubmit={(e) => {
                 e.preventDefault();
@@ -438,9 +551,8 @@ export function GeneralPanel({ orgId }: { orgId: string }) {
                   />
                 </div>
                 <p className="text-xs text-zinc-500">
-                  Public discovery URL for the org. Changing the slug breaks
-                  any inbound links pointing to the old URL — only owners can
-                  edit.
+                  Public discovery URL for the org. Changing the slug breaks any
+                  inbound links pointing to the old URL — only owners can edit.
                 </p>
               </div>
 
@@ -494,8 +606,8 @@ export function GeneralPanel({ orgId }: { orgId: string }) {
                     disabled={!isAtLeast("OWNER")}
                   />
                   <p className="text-xs text-zinc-500">
-                    India default is NET-60. Only applies when funding
-                    source is INVOICE.
+                    India default is NET-60. Only applies when funding source is
+                    INVOICE.
                   </p>
                 </div>
               </div>
@@ -593,6 +705,60 @@ export function GeneralPanel({ orgId }: { orgId: string }) {
                   PAN on file ending in {data.profile.taxInfo.panLast4}.
                 </p>
               )}
+
+              {/* #1230 wave-4 — MSME (Udyam) declaration. Feeds the MSMED
+                  15/45-day payment-terms engine on host-org payouts; an
+                  accurate declaration here is what keeps the platform out of
+                  §37(2)(g)/43B(h) disallowance and §16 interest. */}
+              <div className="space-y-2 pt-2 border-t">
+                <Label htmlFor="msme-status">MSME / Udyam classification</Label>
+                <Select
+                  value={msmeStatus}
+                  onValueChange={(v) => setMsmeStatus(v as MsmeStatus)}
+                >
+                  <SelectTrigger id="msme-status" className="md:w-1/2">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="NONE">
+                      Not an MSME / prefer not to say
+                    </SelectItem>
+                    <SelectItem value="MICRO">
+                      Micro (Udyam registered)
+                    </SelectItem>
+                    <SelectItem value="SMALL">
+                      Small (Udyam registered)
+                    </SelectItem>
+                    <SelectItem value="MEDIUM">Medium</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-zinc-500">
+                  Micro &amp; Small suppliers must be paid within 15 days (45
+                  with a signed agreement) under the MSMED Act; declaring
+                  accurately lets us schedule your payouts to that clock.
+                </p>
+                {msmeStatus !== "NONE" && (
+                  <div className="flex items-center gap-2 pt-1">
+                    <Checkbox
+                      id="msme-agreement"
+                      checked={msmeAgreement}
+                      onCheckedChange={(v) => setMsmeAgreement(v === true)}
+                    />
+                    <Label htmlFor="msme-agreement" className="font-normal">
+                      A written agreement covering payment terms is on file
+                    </Label>
+                  </div>
+                )}
+                {msmeDirty && (
+                  <Button
+                    size="sm"
+                    onClick={() => void saveMsme()}
+                    disabled={msmeSaving}
+                  >
+                    {msmeSaving ? "Saving…" : "Save MSME declaration"}
+                  </Button>
+                )}
+              </div>
             </CardContent>
             <CardFooter>
               <Button
@@ -659,6 +825,11 @@ export function GeneralPanel({ orgId }: { orgId: string }) {
             )}
           </Card>
         )}
+
+        {/* #1499 — the org's refund ladder. OWNER-only, matching the free-text
+            defaultCancellationPolicy field in the org PATCH: MemberRole has no
+            ADMIN, so OWNER is the narrowest role that can already write policy. */}
+        {isAtLeast("OWNER") && <CancellationPolicyCard orgId={orgId} />}
 
         <AlertDialog
           open={pendingDisable !== null}

@@ -138,14 +138,19 @@ export async function withCronLock<T>(
 
   const token = await acquireLock(key, opts.ttlMs ?? DEFAULT_TTL_MS);
   if (!token) {
-    // acquireLock returns null for BOTH "held" and "circuit open" — the
-    // breaker's fallback short-circuits to null without touching Redis. The
-    // health check above ran BEFORE the acquire, so a breaker that tripped
-    // in between (or was already open from unrelated Redis ops on this warm
-    // instance) used to be misreported as a clean "held" skip: exit 0, no
-    // page, money job silently frozen for the breaker's reset window.
-    if (opts.failMode === "closed" && isRedisCircuitOpen()) {
-      throw new CronLockUnavailableError(jobName);
+    // acquireLock returns null for BOTH "held" and "Redis trouble": the
+    // breaker fallback short-circuits to null while OPEN, and during the
+    // FIRST FOUR consecutive failures the breaker is still CLOSED while every
+    // acquire already fails. The pre-acquire health check cannot see either
+    // window (it ran earlier, and it deliberately bypasses the breaker). So
+    // on a null token for a fail-closed job we probe Redis AGAIN, right now:
+    // unhealthy ⇒ page (CronLockUnavailableError); reachable ⇒ someone really
+    // holds the lock (clean CronLockHeldError skip).
+    if (opts.failMode === "closed") {
+      const healthyNow = await checkRedisHealth();
+      if (!healthyNow || isRedisCircuitOpen()) {
+        throw new CronLockUnavailableError(jobName);
+      }
     }
     throw new CronLockHeldError(jobName);
   }

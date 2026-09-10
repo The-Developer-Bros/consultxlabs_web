@@ -133,7 +133,7 @@ export default function EditOfferingPage() {
         title={`Edit ${OFFERING_MANIFESTS[type].noun}`}
         subtitle="Changes go live when you save."
       />
-      <DashboardContent>
+      <DashboardContent className="content-flush-bottom flex flex-1 flex-col">
         <DashboardErrorBoundary>
           <OfferingEditorContainer
             type={type}

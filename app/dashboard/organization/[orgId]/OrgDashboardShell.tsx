@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import React, { use, useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
+import { usePrefetchNavPaths } from "@/hooks/usePrefetchNavPaths";
 import {
   Home,
   Users,
@@ -28,6 +29,7 @@ import {
   ShieldCheck,
   ShieldAlert,
   Library,
+  LifeBuoy,
   type LucideIcon,
 } from "lucide-react";
 
@@ -142,7 +144,7 @@ function OrgStatusBanner({ status }: { status: OrgStatus }) {
 
 function AccessDenied({ title, message }: { title: string; message: string }) {
   return (
-    <div className="flex items-center justify-center min-h-screen bg-zinc-100">
+    <div className="flex items-center justify-center min-h-svh bg-zinc-100">
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -198,6 +200,27 @@ export default function OrgDashboardShell({
   // separate structural conditions combined per item. Five clusters
   // (People / Commerce / Resources / Insights / Configuration) plus an
   // ungrouped Overview block; groups with zero remaining items drop out.
+
+  // Idle-warm the RSC payloads for the highest-traffic tabs so the first
+  // click doesn't pay a full RSC round trip after the Router Cache's 30s
+  // dynamic window. Mirrors the MOBILE_TABS permission gates exactly — a
+  // surface the sidebar hides is also not prefetched (prefetching it would
+  // burn a full guarded render that ends in "forbidden"). Home is
+  // universal for ACTIVE members. No-op until `org` resolves.
+  const prefetchPaths = useMemo(() => {
+    if (!org?.organization || org.organization.status !== "ACTIVE") return [];
+    const base = `/dashboard/organization/${orgId}`;
+    const can = (surface: OrgSurface) =>
+      hasOrgPermission(org.membership.role, surface);
+    const paths = [`${base}/home`, `${base}/appointments`];
+    if (can("members.read")) paths.push(`${base}/members`);
+    if (can("operations.read")) paths.push(`${base}/analytics`);
+    if (can("billing.read") && org.organization.canSponsor)
+      paths.push(`${base}/billing`);
+    return paths;
+  }, [org, orgId]);
+  usePrefetchNavPaths(prefetchPaths);
+
   const sidebarGroups: CollapsibleSidebarGroup[] = useMemo(() => {
     if (!org) return [];
     const { canSponsor, canHost, fundingSource, requiresPO } = org.organization;
@@ -420,6 +443,16 @@ export default function OrgDashboardShell({
         path: "recordings",
         show: can("operations.read"),
       },
+      {
+        // #support-hub — org TRIAGE over members' support conversations:
+        // metadata only (status/category/who), never transcripts (ADR 20 —
+        // a member's support chat is content). Also carries the org CSAT
+        // aggregate and the org-party dispute entry point.
+        name: "Support",
+        icon: LifeBuoy,
+        path: "support",
+        show: can("operations.read"),
+      },
     ];
 
     // Insights — analytics + compliance + audit trail. SUPPORT
@@ -617,6 +650,7 @@ export default function OrgDashboardShell({
     "purchase-orders": "Purchase Orders",
     documents: "Documents",
     recordings: "Recordings",
+    support: "Support",
     billing: "Billing",
     payouts: "Payouts",
     reimbursements: "Reimbursements",
@@ -708,14 +742,16 @@ export default function OrgDashboardShell({
           <OrgStatusBanner status={org.organization.status} />
         )}
 
-        <main className="min-h-0 flex-1 overflow-y-auto pb-16 md:pb-0">
+        <main className="min-h-0 flex-1 overflow-y-auto">
           <div className="p-6">
             <DashboardErrorBoundary>{children}</DashboardErrorBoundary>
           </div>
         </main>
 
-        {/* Mobile bottom tab bar — only visible below md breakpoint */}
-        <nav className="md:hidden fixed bottom-0 left-0 right-0 z-20 bg-white border-t border-zinc-200 flex">
+        {/* Mobile bottom tab bar — only visible below md breakpoint. In normal
+            flow at the column's end (not fixed), so it takes real layout space
+            and <main> needs no compensating bottom padding. */}
+        <nav className="md:hidden shrink-0 bg-white border-t border-zinc-200 flex">
           {MOBILE_TABS.filter(
             ({ surface, needsSponsor }) =>
               !org ||

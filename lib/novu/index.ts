@@ -22,6 +22,7 @@ export {
 export {
   // Appointments
   notifyAppointmentBooked,
+  notifyAppointmentPartiallyScheduled,
   notifyAppointmentCancelled,
   notifyAppointmentRescheduled,
   notifyAppointmentReminder,
@@ -35,6 +36,7 @@ export {
   // Support
   notifySupportTicketCreated,
   notifySupportTicketUpdate,
+  notifySupportTicketUpdateForStaff,
   notifySupportTicketResponse,
   // Feedback & Reviews
   notifyFeedbackReceived,
@@ -64,6 +66,9 @@ export {
   notifyDisputeResolved,
   // Recordings
   notifyRecordingAvailable,
+  // Documents
+  notifyDocumentUploaded,
+  notifyDocumentReviewed,
   // Referrals
   notifyReferralBonusEarned,
   notifyRefereeWelcomeBonus,

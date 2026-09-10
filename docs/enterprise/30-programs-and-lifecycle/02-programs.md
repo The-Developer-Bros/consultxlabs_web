@@ -464,6 +464,7 @@ The program and assignment CRUD routes and their role gates are listed below.
 | `/api/organizations/[orgId]/programs/[programId]/assignments` | `POST` | MAINTAINER |
 | `/api/organizations/[orgId]/programs/[programId]/assignments/[assignmentId]` | `GET` | any active member |
 | `/api/organizations/[orgId]/programs/[programId]/assignments/[assignmentId]` | `PATCH`, `DELETE` | MAINTAINER |
+| `/api/organizations/[orgId]/programs/[programId]/auto-enroll` | `POST` | MAINTAINER + canSponsor |
 
 The POST body is a Zod `discriminatedUnion("type", [...])` so a
 `LICENSED_SEAT` body with `creditPoolConfig` fails validation at the
@@ -472,6 +473,23 @@ edge, not at the FK layer. See
 also accepts `{ cancel: true }` — early-cancel an allocation without removing
 the member (claims an `ACTIVE` row → `CANCELLED`, clamps `periodEnd`, frees the
 seat); see [cycle engine](08-cycle-engine-and-rollover.md).
+
+### Bulk auto-enrollment (#1230 wave-9)
+
+`POST .../auto-enroll` provisions a whole cohort in one call: body is
+`{ membershipIds: string[] (1..200), periodStart, periodEnd }`. Per-entry
+Serializable transactions reuse the exact single-assign composition —
+`claimProgramAssignment` → seat bump on genuine create → first-write
+`configLockedAt` stamp → `PROGRAM_ASSIGNED` audit row — so concurrent batches
+cannot double-count seats. Only ACTIVE memberships are enrollable; PENDING /
+SUSPENDED rows fail per-row without aborting the batch.
+
+Idempotency rides the caller-supplied period: re-running the SAME body is a
+no-op (every row reports `created=false`, counted as `skipped`, no seat
+bump), because the `@@unique(programId, membershipId, periodStart)` key is
+stable. Periods are deliberately never server-derived from "now" — a derived
+start would change the idempotency key across retries and silently duplicate
+coverage windows. Rate limit: 10/hour per org (`rl:org-auto-enroll`).
 
 ## Related docs
 

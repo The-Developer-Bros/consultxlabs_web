@@ -17,8 +17,9 @@
  * null → no hydration mismatch on the displayed name).
  */
 
-import { useEffect } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { useNovuSubscriberSync } from "@/hooks/useNovuSubscriberSync";
+import { usePrefetchNavPaths } from "@/hooks/usePrefetchNavPaths";
+import { usePathname } from "next/navigation";
 import { UserRound } from "lucide-react";
 
 import NovuProvider from "@/providers/NovuProvider";
@@ -26,7 +27,6 @@ import { DashboardErrorBoundary } from "@/components/DashboardErrorBoundary";
 import { DashboardContextBar } from "@/components/dashboard/DashboardContextBar";
 import { NotificationInbox } from "@/components/notifications/NotificationInbox";
 import { OrganizationSwitcher } from "@/components/dashboard/OrganizationSwitcher";
-import { useNovuSubscriberSync } from "@/hooks/useNovuSubscriberSync";
 import {
   CollapsibleSidebar,
   type CollapsibleSidebarItem,
@@ -34,7 +34,6 @@ import {
   type CollapsibleSidebarProps,
 } from "@/components/dashboard/CollapsibleSidebar";
 import { signOutEverywhere } from "@/lib/auth/sign-out";
-import { schedulePrefetch } from "@/lib/dashboard-queries";
 
 /** Title-case a path segment for the breadcrumb when it isn't a nav item
  *  (e.g. a detail sub-route like `tickets/abc123`). */
@@ -103,20 +102,12 @@ export function OperatorDashboardShell({
   children,
 }: OperatorDashboardShellProps) {
   const pathname = usePathname() ?? "";
-  const router = useRouter();
 
   // Sync user as Novu subscriber (once per session)
   useNovuSubscriberSync();
 
-  const prefetchKey = prefetchPaths?.join("|") ?? "";
-  useEffect(() => {
-    if (!prefetchKey) return;
-    const paths = prefetchKey.split("|");
-    schedulePrefetch(() => {
-      // router.prefetch warms the RSC payload; App Router dedupes.
-      paths.forEach((p) => router.prefetch(p));
-    }, 3000);
-  }, [prefetchKey, router]);
+  // Warm the RSC payloads for this operator tree's top destinations.
+  usePrefetchNavPaths(prefetchPaths ?? []);
 
   const displayName = userName || "Operator";
 

@@ -25,6 +25,7 @@ import {
   isStripeConnectConfigured,
 } from "./stripe-connect";
 import { postLedgerTxn, type Posting } from "@/lib/payments/ledger/post";
+import { DISPUTE_INACTIVE_FOR_GATING } from "@/lib/payments/dispute-status";
 import { computeMsmePaymentDeadline } from "@/lib/compliance/msme";
 import { randomUUID } from "crypto";
 import {
@@ -642,6 +643,31 @@ async function processSinglePayout(payout: {
   let tdsRateAppliedBps: number | null = null;
   const financialYear = getIndianFinancialYear();
   try {
+    // #1020 — a payout whose earnings sit on a disputed payment must not
+    // leave the building. Pre-claim reject: cheap, touches no state. The
+    // residual window between this check and the gateway submit is backstopped
+    // by the LOST-handler clawback (#1020-2), which now covers PAID earnings.
+    const disputedEarning = await prisma.consultantEarnings.findFirst({
+      where: {
+        payoutId: payout.id,
+        payment: {
+          disputes: { some: { status: { notIn: DISPUTE_INACTIVE_FOR_GATING } } },
+        },
+      },
+      select: { id: true },
+    });
+    if (disputedEarning) {
+      console.warn(
+        `[Payouts] Payout ${payout.id} blocked — an earning's payment has a live dispute`,
+      );
+      reportSentryMessage("Payout blocked by live dispute", {
+        subsystem: "payments",
+        expected: true,
+        extra: { payoutId: payout.id },
+      });
+      return { payoutId: payout.id, success: false, skipped: true };
+    }
+
     // #776 — atomic CAS claim (ported from the deleted scripts/payouts copy
     // in #850): only one runner — GH job, admin route, concurrent invocation
     // with Redis down — may move APPROVED → PROCESSING. Zero rows means a
@@ -732,13 +758,36 @@ async function processSinglePayout(payout: {
       // sums ConsultantPayout.amount, which is net of our commission. Mixing the
       // two bases would delay the threshold crossing by the commission fraction
       // and under-withhold. Aggregate prior-FY gross from the earnings instead.
+      //
+      // PR #1133 thread 3760749817 race closure (#1230): summing PAID-only let
+      // two payouts straddling an in-flight one BOTH read sub-threshold gross
+      // (the other payout's earnings sit BATCHED until its completion webhook),
+      // double-spending the ₹5L exemption. Committed-but-uncompleted earnings
+      // now count immediately, anchored by their payout's batch-creation date.
+      // Failure of the counted payout later over-counts slightly — that
+      // withholds a little too much (consultant reclaims at assessment) rather
+      // than under-withholding, which would be our s.201 liability.
       const { start, end } = getFYDateRange(financialYear);
       const priorGrossAgg = await prisma.consultantEarnings.aggregate({
         where: {
           consultantProfileId: payout.consultantProfileId,
-          status: EarningStatus.PAID,
-          paidAt: { gte: start, lte: end },
           payoutId: { not: payout.id },
+          OR: [
+            { status: EarningStatus.PAID, paidAt: { gte: start, lt: end } },
+            {
+              status: EarningStatus.BATCHED,
+              payout: {
+                createdAt: { gte: start, lt: end },
+                status: {
+                  notIn: [
+                    PayoutStatus.FAILED,
+                    PayoutStatus.CANCELLED,
+                    PayoutStatus.REVERSED,
+                  ],
+                },
+              },
+            },
+          ],
         },
         _sum: { grossAmount: true, refundedShareAmount: true },
       });
@@ -1156,7 +1205,7 @@ export async function handlePayoutWebhook(
         where: {
           consultantProfileId: payout.consultantProfileId,
           status: PayoutStatus.COMPLETED,
-          processedAt: { gte: start, lte: end },
+          processedAt: { gte: start, lt: end },
           id: { not: payout.id },
         },
         _sum: { amount: true },

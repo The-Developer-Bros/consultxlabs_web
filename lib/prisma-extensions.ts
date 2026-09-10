@@ -107,7 +107,12 @@ export const moneyResultExtensions = {
   },
   webinarPlan: { price: f("price") },
   classPlan: { price: f("price") },
-  recording: { fileSize: fn("fileSize") },
+  recording: {
+    fileSize: fn("fileSize"),
+    // #366 marketplace — nullable sale price (set only when listed).
+    listPricePaise: fn("listPricePaise"),
+  },
+  recordingPurchase: { amountPaise: f("amountPaise") },
   payment: {
     amount: f("amount"),
     originalAmount: f("originalAmount"),
@@ -143,6 +148,20 @@ export const moneyResultExtensions = {
     igstPaise: f("igstPaise"),
     cgstPaise: f("cgstPaise"),
     sgstPaise: f("sgstPaise"),
+    totalPaise: f("totalPaise"),
+  },
+  consumerInvoice: {
+    taxableValuePaise: f("taxableValuePaise"),
+    cgstPaise: f("cgstPaise"),
+    sgstPaise: f("sgstPaise"),
+    igstPaise: f("igstPaise"),
+    totalPaise: f("totalPaise"),
+  },
+  consumerCreditNote: {
+    taxableValuePaise: f("taxableValuePaise"),
+    cgstPaise: f("cgstPaise"),
+    sgstPaise: f("sgstPaise"),
+    igstPaise: f("igstPaise"),
     totalPaise: f("totalPaise"),
   },
   tdsAdjustment: { amountPaise: f("amountPaise") },

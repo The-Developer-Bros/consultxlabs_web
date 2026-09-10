@@ -1,55 +1,43 @@
+/**
+ * Appointment detail for the detail page. Authz is the shared participation
+ * gate (capability, not UserRole) + platform ADMIN/STAFF; no org-party
+ * surface here — an org operator's grant never widens read access (ADR 20).
+ */
+
 import { NextRequest, NextResponse } from "next/server";
-import * as Sentry from "@sentry/nextjs";
-import { z } from "zod";
-import { getSession } from "@/lib/auth-server";
-import { isPrivileged } from "@/lib/auth-helpers";
+import { AppointmentIdParams } from "@/schemas/support";
 import {
-  readAppointmentDetail,
-  canAccessAppointment,
-} from "@/lib/data/appointment-detail";
+  parseRouteParams,
+  supportError,
+} from "@/lib/api/support-http";
+import {
+  authorizeAppointment,
+  appointmentAuthzError,
+} from "@/lib/api/appointment-access";
+
+const DETAIL_ROUTE = "appointments.detail";
 
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ appointmentId: string }> },
 ) {
+  const id = await parseRouteParams(AppointmentIdParams, params, {
+    route: DETAIL_ROUTE,
+  });
+  if (!id.ok) return id.response;
+  const { appointmentId } = id.data;
   try {
-    const session = await getSession();
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const auth = await authorizeAppointment(appointmentId);
+    if ("code" in auth) {
+      return appointmentAuthzError(auth, { route: DETAIL_ROUTE, appointmentId });
     }
-
-    const parsed = z
-      .object({ appointmentId: z.string().uuid() })
-      .safeParse(await params);
-    if (!parsed.success) {
-      return NextResponse.json(
-        { error: "Invalid appointment id" },
-        { status: 400 },
-      );
-    }
-    const { appointmentId } = parsed.data;
-    const detail = await readAppointmentDetail(appointmentId);
-    if (!detail) {
-      return NextResponse.json(
-        { error: "Appointment not found" },
-        { status: 404 },
-      );
-    }
-
-    if (
-      !canAccessAppointment(session.user.id, detail) &&
-      !isPrivileged(session.user.role)
-    ) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
-
-    return NextResponse.json({ data: detail });
-  } catch (error) {
-    Sentry.captureException(error);
-    console.error("Error fetching appointment detail:", error);
-    return NextResponse.json(
-      { error: "Failed to fetch appointment" },
-      { status: 500 },
-    );
+    return NextResponse.json({ data: auth.detail });
+  } catch (cause) {
+    return supportError({
+      status: 500,
+      code: "INTERNAL",
+      cause,
+      context: { route: DETAIL_ROUTE, action: "get", appointmentId },
+    });
   }
 }

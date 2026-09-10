@@ -1,0 +1,91 @@
+name: Reconcile Orphaned Recordings
+
+# #1270 — the backstop for a dropped `call.recording_ready` webhook.
+#
+# A recording reaches the database exactly one way in normal operation: Stream
+# delivers the webhook and the route writes a `Recording` row. When that
+# delivery is lost, nothing notices. The `MeetingSession` still carries
+# `recordingStartedAt`, because our own code wrote it, so the database says a
+# recording was made and simply has no row for it. The only repair before this
+# job was `POST /api/stream/recordings/sync`, which a consultant has to click —
+# and the person who would click it is the person who does not yet know
+# anything is missing.
+#
+# Stream deletes the file fourteen days after the call, so a dropped webhook is
+# a permanent loss of the customer's recording on a fourteen-day fuse. #1134
+# established that dropped webhooks here were not hypothetical: for the whole
+# period the webhook secret was unset in production, every delivery was lost.
+#
+# cron-runtime-minutes: 5
+
+on:
+  schedule:
+    # 05:00 UTC daily (10:30 IST). Hour 5 carries no other scheduled job, so
+    # this co-starts with nothing — see scripts/ci/check-workflow-hygiene.ts.
+    # Daily is the right cadence against a fourteen-day deletion deadline, and
+    # the sweep costs one Stream `listRecordings` per orphaned session.
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+# The job claims rows under a cron lock, but a queued run is cheaper than two
+# runs issuing the same Stream lookups over the same batch.
+concurrency:
+  group: reconcile-orphaned-recordings
+  cancel-in-progress: false
+
+# Reads the repository only to run a script; never writes back.
+permissions:
+  contents: read
+
+jobs:
+  reconcile-orphaned-recordings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      # #1066 — jobs run as bare Node processes, so Sentry.init only sees what
+      # the step env carries.
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      # #476 cron locks load lib/redis at import — every job entry needs these
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      # Without these the job refuses to run rather than reporting an empty
+      # sweep: a run that could not ask Stream has verified nothing, and
+      # "verified nothing" must never look like "nothing was wrong".
+      STREAM_API_KEY: ${{ secrets.STREAM_API_KEY }}
+      STREAM_API_SECRET: ${{ secrets.STREAM_API_SECRET }}
+      NEXT_PUBLIC_STREAM_API_KEY: ${{ secrets.NEXT_PUBLIC_STREAM_API_KEY }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        # The runner holds deploy-scoped secrets, so a compromised transitive
+        # dependency's postinstall would run with them. Nothing here needs
+        # lifecycle scripts. Same posture as reconcile-orphaned-sessions.yml.
+        run: npm ci --ignore-scripts
+
+      - name: Generate Prisma client
+        run: npx --no-install --ignore-scripts prisma generate
+
+      - name: Reconcile orphaned recordings
+        run: npx --yes --ignore-scripts tsx@4.23.1 jobs/stream/reconcile-orphaned-recordings.ts
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          # Fallback sink — Slack has never been provisioned, so this is
+          # what actually pages today. See 07-required-secrets.md.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "reconcile-orphaned-recordings"

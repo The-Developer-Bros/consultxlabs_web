@@ -4,9 +4,9 @@
 |---|---|
 | Status | Stable |
 | Audience | All engineers |
-| Last reviewed | 2026-04-26 |
+| Last reviewed | 2026-08-30 |
 | Sibling folder | [`docs/authentication/`](../authentication/) for "who is this user" |
-| Source files | `lib/auth-helpers.ts`, `lib/auth-guard.ts` |
+| Source files | `lib/auth-helpers.ts`, `lib/auth-guard.ts`, `lib/auth/backoffice-permissions.ts`, `lib/auth/org-permissions.ts` |
 
 ## 1. Background
 
@@ -20,6 +20,7 @@ Authorization is **our code**, not BetterAuth's. The helpers in `lib/auth-helper
 |---|---|
 | API route auth helpers (`requireApiAuth`, `requireOrgAccess`, etc.) | BetterAuth setup — see `authentication/betterauth/` |
 | Platform role hierarchy (ADMIN > STAFF > others) | Session lifecycle, hooks |
+| Back-office surface matrix (`BACKOFFICE_PERMISSIONS`) | Novu notification targeting |
 | Org role hierarchy (OWNER > MAINTAINER > … > LEARNER) | SSO enforcement |
 | Capability gates (canSponsor, canHost, fundingSource) | Rate limiting |
 | Error conventions (401 vs 403 vs 404 vs 409) | OAuth/SSO provider config |
@@ -55,6 +56,18 @@ const { session, error } = await requirePrivilegedAuth();  // ADMIN or STAFF
 if (session.user.role === "ADMIN") { ... }
 ```
 
+### The back-office permission matrix
+
+`isPrivileged()` answers a coarse question, and it is the wrong question wherever ADMIN and STAFF should differ. [`lib/auth/backoffice-permissions.ts`](../../lib/auth/backoffice-permissions.ts) is the declared single source of truth for which platform role reaches which internal surface, and `requireBackofficeSurface(surface)` is the guard that consults it. The sidebar, the page guards and the API routes all read the same map, which is what keeps a surface out of the "tab shown, page redirects, API 403s" state.
+
+The policy the matrix encodes is that staff own support end-to-end, read every money surface without mutating any of it, and admin alone executes money, owns org lifecycle and platform config, and takes the irreversible user actions. Two recent additions are worth naming because they are the shape the matrix exists for.
+
+`refunds.manage` is admin-only while `refunds.read` is not, because a staff member resolving a billing ticket needs to see the refund and has no business issuing one.
+
+`recordings.read` and `recordings.play` (#1270) split the same way, and more sharply. A recording is the audio and video of a private session between two people who agreed to record it for each other, not for the platform. Staff hold `recordings.read` and receive status, storage type, duration, timestamps and URL expiry, which is everything a "where is my replay" ticket needs. `recordings.play` — any URL that renders the session — is ADMIN-only, and every read granted by either key writes an audit trail. See [`docs/stream/13-recording-webhooks.md`](../stream/13-recording-webhooks.md#operator-access-admin--staff).
+
+A bare `isPrivileged(session.user.role)` in a route is not merely coarse; it makes the grant invisible to the file that is supposed to enumerate every grant. If a surface needs a role distinction, add the key here rather than branching in the handler.
+
 ## 5. Org Role Hierarchy
 
 Six org-level roles with numeric rank (`ORG_ROLE_RANK`):
@@ -80,7 +93,7 @@ orgRoleSatisfies("LEARNER", "MANAGER");    // false — 20 < 60
 
 ## 6. API Helpers Inventory
 
-All helpers live in [`lib/auth-helpers.ts`](file:///Users/kaustavghosh/Desktop/familiarise_web/lib/auth-helpers.ts).
+All helpers live in [`lib/auth-helpers.ts`](../../lib/auth-helpers.ts).
 
 ### 6.1 Session Helpers
 
@@ -90,6 +103,7 @@ All helpers live in [`lib/auth-helpers.ts`](file:///Users/kaustavghosh/Desktop/f
 | `requireAdminAuth()` | `{ session }` or `{ error: 401\|403 }` | Platform admin–only routes (irreversible mutations) |
 | `requireStaffAuth()` | `{ session }` or `{ error: 401\|403 }` | Staff-only routes (own support tickets) |
 | `requirePrivilegedAuth()` | `{ session }` or `{ error: 401\|403 }` | Shared admin/staff routes (most common) |
+| `requireBackofficeSurface(surface)` | `{ session }` or `{ error: 401\|403 }` | Any back-office route where ADMIN and STAFF differ — resolves `BackofficeSurface` against the matrix |
 
 ### 6.2 Org Access Helpers
 
@@ -210,3 +224,4 @@ export async function POST(req) {
 - [`docs/authentication/betterauth/`](../authentication/betterauth/) — BetterAuth setup, session model
 - [`docs/authentication/betterauth/03-sessions-and-hooks.md`](../authentication/betterauth/03-sessions-and-hooks.md) — Auth guard functions (page-level)
 - [`docs/api/`](../api/) — General API conventions
+- [`docs/stream/13-recording-webhooks.md`](../stream/13-recording-webhooks.md#access-control-matrix) — how the recording surfaces apply the back-office matrix, and what a privileged read writes to the audit trail

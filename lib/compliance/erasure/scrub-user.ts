@@ -47,6 +47,7 @@ import { createHash } from "node:crypto";
 import type { Db } from "@/lib/prisma";
 import { AUDIT_ACTIONS } from "@/lib/enterprise/audit-actions";
 import { dispatchWebhookEvent } from "@/lib/enterprise/outbound-webhooks/dispatch";
+import { releaseSeatsForTerminatedAssignments } from "@/lib/api/organizations/seat-count";
 
 export interface ScrubResult {
   /// True iff this call performed the scrub. False means the user was
@@ -152,6 +153,12 @@ export async function scrubUser(
         },
         data: { periodEnd: now, status: "CANCELLED" },
       });
+      // E2E-audit P1 fix — erasure must also release billed seats, same as
+      // member removal (the reconcile invariant reads activeSeatCount).
+      await releaseSeatsForTerminatedAssignments(
+        tx,
+        memberships.map((m) => m.id),
+      );
     }
 
     // Free-text PII on profiles (best-effort — fields may or may not

@@ -1,4 +1,22 @@
-"use server";
+/**
+ * Channel-creation primitives for Stream Chat (webinar/class/consultation/
+ * subscription/collaborator channels).
+ *
+ * DELIBERATELY NOT a "use server" module (architecture review 2026-08-23,
+ * F-HIGH-1). Marking this file "use server" turned every export into a
+ * remotely invocable RPC endpoint with no session check, and Stream's
+ * server-side API bypasses all permission checks ("server-side allows
+ * everything so long as a valid API key and secret is provided") — so that
+ * surface let any browser mint arbitrary channels/memberships or trigger a
+ * full-database upsert+create storm billed to our MAU.
+ *
+ * All callers are server-side: API routes under app/api/stream and
+ * app/api/bookings, lib/payments/webhooks/handlers.ts,
+ * lib/collaborators/service.ts, and tests. This file must NEVER be re-marked
+ * "use server". If a client ever needs one of these operations directly, put
+ * an authenticated, session-checked API route (or a gated action in its own
+ * "use server" file) in front of it.
+ */
 
 import { z } from "zod";
 import prisma from "@/lib/prisma";
@@ -6,11 +24,13 @@ import { getStreamChatClient } from "@/lib/stream-client";
 import { streamLogger } from "@/lib/stream-logger";
 import { markChannelExists } from "@/lib/stream-cache";
 import { upsertUsersToStream } from "./user.action";
-import { bookingOrgId, getDmChannelId } from "@/lib/stream-utils";
-import { getChannelTypeFromId } from "@/lib/stream-channel-ids";
-import { getSession } from "@/lib/auth-server";
-import { isPrivileged } from "@/lib/auth-helpers";
-import * as Sentry from "@sentry/nextjs";
+import {
+  bookingOrgId,
+  getDmChannelId,
+  isChannelAlreadyExistsError,
+} from "@/lib/stream-utils";
+import { assertCanDirectMessage } from "@/lib/stream/dm-eligibility";
+import { addRemainingMembers, createMemberChunk } from "@/lib/stream/batch";
 
 // Input validation schemas
 const channelTypeSchema = z.enum(["messaging", "team"]);
@@ -109,10 +129,16 @@ export async function createChannel(input: {
 
   // Create the channel with members atomically
   // Note: Explicitly typing channel data for stream-chat v9
+  // #1270 — `create()` carries its roster in the request body and Stream caps
+  // that at 100 members, the same ceiling `upsertUsersToStream` above already
+  // respects. A 150-seat webinar therefore built a valid roster and then threw
+  // it at Stream in one oversized call, which was rejected outright. The
+  // creator is first in `allMembers` by construction, so they are always inside
+  // this chunk; the rest are added below.
   const createChannelData = {
     name: validated.channelName,
     created_by_id: validated.createdById,
-    members: allMembers,
+    members: createMemberChunk(allMembers),
     ...mergedAdditionalData,
   };
   const channel = client.channel(
@@ -121,7 +147,33 @@ export async function createChannel(input: {
     createChannelData as Record<string, unknown>,
   );
 
-  const channelData = await channel.create();
+  // F-HIGH-3: two simultaneous first joins can both miss `addMembers` and
+  // both reach this create(); the loser rejects with Stream's duplicate-create
+  // error. ADOPT the winner's channel instead of failing the caller — from
+  // the awaited payment-webhook path that used to fail a real attendee's
+  // booking join outright.
+  let channelData;
+  try {
+    channelData = await channel.create();
+  } catch (error) {
+    if (!isChannelAlreadyExistsError(error)) throw error;
+
+    // Lost the race. The winner created the same channelId from the same
+    // roster, so continue down the normal post-create path (moderator grant,
+    // existence cache). The raw create response is dropped (`null`) — callers
+    // consume channelId/members, never the payload.
+    channelData = null;
+    streamLogger.info("Lost channel-create race; adopting existing channel", {
+      channelId: validated.channelId,
+      type: validated.channelType,
+    });
+  }
+
+  // #1270 — everyone the create() chunk could not carry, 100 at a time. Runs
+  // on the adopted path too: the winner created the same channel from the same
+  // roster, so the same remainder is owed either way and `addMembers` is
+  // idempotent for anyone already in.
+  await addRemainingMembers(channel, allMembers);
 
   // Channel-scoped moderation replaces the old global-admin Stream role
   // (#899). Only the channel HOST may moderate — never an arbitrary creator:
@@ -156,7 +208,21 @@ export async function createChannel(input: {
 }
 
 /**
- * Create a direct message channel between two users
+ * Create a direct message channel between two users.
+ *
+ * The eligibility check is the point of this function now. It used to validate
+ * two non-empty strings and nothing else — no session, no relationship query,
+ * not even `a !== b` — and was safe only by accident, because every caller
+ * happened to be a booking-approval or payment-success path where the link was
+ * already established. That is an invariant held by convention across five call
+ * sites in three files, which is not an invariant. It is enforced here so that
+ * adding a sixth caller cannot quietly reopen the hole.
+ *
+ * Note this deliberately gates on the RELATIONSHIP, not on the caller's
+ * session. Every legitimate caller is server-side and acts on behalf of the
+ * system (a Razorpay webhook has no session at all), so a session check here
+ * would break the create path while adding nothing — the user-initiated
+ * surface is `POST /api/stream/channels/dm`, which does both.
  */
 export async function createDirectMessageChannel(
   currentUserId: string,
@@ -172,6 +238,8 @@ export async function createDirectMessageChannel(
   // Validate inputs
   memberIdSchema.parse(currentUserId);
   memberIdSchema.parse(targetUserId);
+
+  await assertCanDirectMessage(currentUserId, targetUserId);
 
   const channelId = getDmChannelId(currentUserId, targetUserId, organizationId);
 
@@ -390,6 +458,16 @@ export async function createConsultationChannel(
   const consultantId = consultation.consultationPlan.consultantProfile.user.id;
   const consulteeId = consultation.requestedBy.user.id;
 
+  // Legacy self-booked row (checkout blocks these now): getDmChannelId throws
+  // on a self-pair, so skip rather than take the whole approval path down.
+  // Same guard the search routes apply per row.
+  if (consultantId === consulteeId) {
+    streamLogger.warn("Skipping consultation channel — consultant and consultee are the same user", {
+      consultationId,
+    });
+    return null;
+  }
+
   if (!consultantId || !consulteeId) {
     throw new Error(
       `Participants not found for consultation: ${consultationId}`,
@@ -479,6 +557,14 @@ export async function createSubscriptionChannel(
   const consultantId = subscription.subscriptionPlan.consultantProfile.user.id;
   const consulteeId = subscription.requestedBy.user.id;
 
+  // Same self-pair guard as the consultation path above.
+  if (consultantId === consulteeId) {
+    streamLogger.warn("Skipping subscription channel — consultant and consultee are the same user", {
+      subscriptionId,
+    });
+    return null;
+  }
+
   if (!consultantId || !consulteeId) {
     throw new Error(
       `Participants not found for subscription: ${subscriptionId}`,
@@ -507,188 +593,6 @@ export async function createSubscriptionChannel(
     },
     organizationId: resolvedOrgId,
   });
-}
-
-/**
- * Initialize channels for all existing entities
- * Uses parallel processing for better performance
- */
-export async function initializeAllChannels() {
-  streamLogger.info("Starting bulk channel initialization");
-
-  // Fetch all data in parallel
-  const [webinars, classes, consultations, subscriptions] = await Promise.all([
-    prisma.webinar.findMany({
-      include: {
-        webinarPlan: {
-          include: {
-            consultantProfile: { include: { user: { select: { id: true } } } },
-          },
-        },
-        appointment: {
-          select: {
-            slotsOfAppointment: {
-              select: { user: { select: { id: true } } },
-            },
-          },
-        },
-      },
-    }),
-    prisma.class.findMany({
-      include: {
-        classPlan: {
-          include: {
-            consultantProfile: { include: { user: { select: { id: true } } } },
-          },
-        },
-        appointments: {
-          select: {
-            slotsOfAppointment: {
-              select: { user: { select: { id: true } } },
-            },
-          },
-        },
-      },
-    }),
-    prisma.consultation.findMany({
-      where: { status: "APPROVED" },
-      include: {
-        consultationPlan: {
-          include: {
-            consultantProfile: { include: { user: { select: { id: true } } } },
-          },
-        },
-        requestedBy: { include: { user: { select: { id: true } } } },
-      },
-    }),
-    prisma.subscription.findMany({
-      where: { status: "APPROVED" },
-      include: {
-        subscriptionPlan: {
-          include: {
-            consultantProfile: { include: { user: { select: { id: true } } } },
-          },
-        },
-        requestedBy: { include: { user: { select: { id: true } } } },
-      },
-    }),
-  ]);
-
-  streamLogger.info("Fetched entities for initialization", {
-    webinars: webinars.length,
-    classes: classes.length,
-    consultations: consultations.length,
-    subscriptions: subscriptions.length,
-  });
-
-  // Collect all unique user IDs
-  const userIds = new Set<string>();
-
-  webinars.forEach((w) => {
-    if (w.webinarPlan.consultantProfile?.user?.id) {
-      userIds.add(w.webinarPlan.consultantProfile.user.id);
-    }
-    (w.appointment?.slotsOfAppointment ?? [])
-      .flatMap((slot) => slot.user)
-      .forEach((u) => userIds.add(u.id));
-  });
-
-  classes.forEach((c) => {
-    if (c.classPlan.consultantProfile?.user?.id) {
-      userIds.add(c.classPlan.consultantProfile.user.id);
-    }
-    c.appointments
-      .flatMap((apt) => apt.slotsOfAppointment)
-      .flatMap((slot) => slot.user)
-      .forEach((u) => userIds.add(u.id));
-  });
-
-  consultations.forEach((c) => {
-    if (c.consultationPlan.consultantProfile?.user?.id) {
-      userIds.add(c.consultationPlan.consultantProfile.user.id);
-    }
-    if (c.requestedBy?.user?.id) userIds.add(c.requestedBy.user.id);
-  });
-
-  subscriptions.forEach((s) => {
-    if (s.subscriptionPlan.consultantProfile?.user?.id) {
-      userIds.add(s.subscriptionPlan.consultantProfile.user.id);
-    }
-    if (s.requestedBy?.user?.id) userIds.add(s.requestedBy.user.id);
-  });
-
-  // Batch upsert all users first
-  const uniqueUserIds = Array.from(userIds);
-  if (uniqueUserIds.length > 0) {
-    await upsertUsersToStream(uniqueUserIds);
-  }
-
-  // Create channels in parallel batches (limit concurrency to avoid rate limits)
-  const BATCH_SIZE = 10;
-  const results = {
-    webinars: { success: 0, failed: 0 },
-    classes: { success: 0, failed: 0 },
-    consultations: { success: 0, failed: 0 },
-    subscriptions: { success: 0, failed: 0 },
-  };
-
-  // Process webinars
-  for (let i = 0; i < webinars.length; i += BATCH_SIZE) {
-    const batch = webinars.slice(i, i + BATCH_SIZE);
-    const batchResults = await Promise.allSettled(
-      batch.map((w) => createWebinarChannel(w.id)),
-    );
-    batchResults.forEach((r) => {
-      if (r.status === "fulfilled") results.webinars.success++;
-      else results.webinars.failed++;
-    });
-  }
-
-  // Process classes
-  for (let i = 0; i < classes.length; i += BATCH_SIZE) {
-    const batch = classes.slice(i, i + BATCH_SIZE);
-    const batchResults = await Promise.allSettled(
-      batch.map((c) => createClassChannel(c.id)),
-    );
-    batchResults.forEach((r) => {
-      if (r.status === "fulfilled") results.classes.success++;
-      else results.classes.failed++;
-    });
-  }
-
-  // Process consultations
-  for (let i = 0; i < consultations.length; i += BATCH_SIZE) {
-    const batch = consultations.slice(i, i + BATCH_SIZE);
-    const batchResults = await Promise.allSettled(
-      batch.map((c) => createConsultationChannel(c.id)),
-    );
-    batchResults.forEach((r) => {
-      if (r.status === "fulfilled") results.consultations.success++;
-      else results.consultations.failed++;
-    });
-  }
-
-  // Process subscriptions
-  for (let i = 0; i < subscriptions.length; i += BATCH_SIZE) {
-    const batch = subscriptions.slice(i, i + BATCH_SIZE);
-    const batchResults = await Promise.allSettled(
-      batch.map((s) => createSubscriptionChannel(s.id)),
-    );
-    batchResults.forEach((r) => {
-      if (r.status === "fulfilled") results.subscriptions.success++;
-      else results.subscriptions.failed++;
-    });
-  }
-
-  streamLogger.info("Bulk channel initialization completed", { results });
-
-  return {
-    success: true,
-    counts: {
-      users: uniqueUserIds.length,
-      ...results,
-    },
-  };
 }
 
 /**
@@ -840,67 +744,4 @@ export async function createCollaboratorChannel(
     members: expectedMemberIds,
     channelData,
   };
-}
-
-/**
- * Adds a user to a specific channel.
- *
- * Stream's server-side API bypasses its permission system entirely, so the
- * authz gate lives here (#899): ADMIN/STAFF may add to any channel; anyone
- * else only to a channel they created — mirroring the create-route checks.
- * Non-privileged callers never lazily create channels they don't own.
- */
-export async function addMemberToChannel(
-  channelId: string,
-  userId: string,
-  channelType?: "messaging" | "team",
-) {
-  channelIdSchema.parse(channelId);
-  memberIdSchema.parse(userId);
-
-  const session = await getSession();
-  if (!session?.user?.id) {
-    throw new Error("Unauthorized: sign in to manage channel members");
-  }
-
-  const client = getStreamChatClient();
-
-  const resolvedChannelType = channelType ?? getChannelTypeFromId(channelId);
-
-  streamLogger.debug("Adding member to channel", {
-    channelId,
-    userId,
-    channelType: resolvedChannelType,
-  });
-
-  try {
-    const channel = client.channel(resolvedChannelType, channelId);
-    const privileged = isPrivileged(session.user.role);
-    if (privileged) {
-      await channel.create(); // Creates if doesn't exist, no-op if exists
-    } else {
-      const state = await channel.query({});
-      const createdById = state.channel?.created_by?.id;
-      if (createdById !== session.user.id) {
-        throw new Error(
-          "Forbidden: only the channel creator or staff may add members",
-        );
-      }
-    }
-
-    const response = await channel.addMembers([userId]);
-
-    streamLogger.debug("Member added successfully", { channelId, userId });
-    return { success: true, response };
-  } catch (error) {
-    streamLogger.error("Failed to add member to channel", error, {
-      channelId,
-      userId,
-    });
-    Sentry.captureException(
-      error instanceof Error ? error : new Error(String(error)),
-      { tags: { subsystem: "stream" } },
-    );
-    throw error;
-  }
 }

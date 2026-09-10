@@ -33,7 +33,28 @@
  * SUCCEEDED payment through.
  */
 
-import { EarningStatus, Prisma, PaymentStatus, RefundStatus } from "@prisma/client";
+import {
+  EarningStatus,
+  Prisma,
+  PaymentStatus,
+  RefundStatus,
+} from "@prisma/client";
+import { setParticipantStatus } from "@/lib/booking/participants";
+
+async function markParticipantsRefunded(paymentId: string): Promise<void> {
+  try {
+    await setParticipantStatus(prisma, { paymentId }, "REFUNDED");
+  } catch (error) {
+    // Shadow table: never let it fail a refund that already went through.
+    console.warn(
+      JSON.stringify({
+        event: "participant_refund_stamp_failed",
+        paymentId,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
+}
 
 import prisma, { type Tx } from "@/lib/prisma";
 import { withSerializableRetry } from "@/lib/db/serializable-retry";
@@ -46,11 +67,14 @@ import { AUDIT_ACTIONS } from "@/lib/enterprise/audit-actions";
 import { applyReversal } from "./reversal-engine";
 import { RefundValidationError, refundPayment } from "./refund";
 
+/** Which rail a booking's money travels on, in or out. */
+export type FundingRail = "GATEWAY" | "INTERNAL" | "CREDITS";
+
 export type BookingRefundResult = {
   refundId: string;
   amountRefundedPaise: number;
   /** Which rail actually returned the money (CREDITS = referral restoration). */
-  rail: "GATEWAY" | "INTERNAL" | "CREDITS";
+  rail: FundingRail;
 };
 
 /** Org-funded bookings carry a synthetic paymentIntent no gateway can refund. */
@@ -61,6 +85,25 @@ export function isInternalFundedIntent(paymentIntent: string): boolean {
 /** Fully credit-funded bookings — zero gateway money, credits to restore. */
 export function isFreeCreditIntent(paymentIntent: string): boolean {
   return paymentIntent.startsWith("free_");
+}
+
+/**
+ * The rail a payment WILL refund on, decided before anything moves.
+ *
+ * `refundBookingPayment` answers the same question after the fact, from the
+ * same two prefixes. The cancellation quote has to answer it beforehand — the
+ * dialog was promising every learner that "refunds reach your original payment
+ * method in 5–7 working days", which is a sentence about a card nobody
+ * charged on the org rails. Both readings come from here so the quote and the
+ * charge cannot describe different rails.
+ */
+export function fundingRailForIntent(
+  paymentIntent: string | null | undefined,
+): FundingRail {
+  if (!paymentIntent) return "GATEWAY";
+  if (isFreeCreditIntent(paymentIntent)) return "CREDITS";
+  if (isInternalFundedIntent(paymentIntent)) return "INTERNAL";
+  return "GATEWAY";
 }
 
 export async function refundBookingPayment(input: {
@@ -97,6 +140,9 @@ export async function refundBookingPayment(input: {
 
   if (!isInternalFundedIntent(payment.paymentIntent)) {
     const r = await refundPayment(input);
+    // #1319 A9 — the seat this payment funded is refunded (best-effort, after
+    // the gateway refund committed; the participant table is shadow-only).
+    await markParticipantsRefunded(input.paymentId);
     return {
       refundId: r.refundId,
       amountRefundedPaise: r.amountRefundedPaise,
@@ -202,13 +248,18 @@ async function refundFreeCreditPayment(input: {
           initiatedByUserId: input.initiatedByUserId ?? null,
         });
 
+        await setParticipantStatus(tx, { paymentId: payment.id }, "REFUNDED");
         return {
           refundId: refundRow.id,
           amountRefundedPaise: 0,
           rail: "CREDITS" as const,
         };
       },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, maxWait: 10_000, timeout: 15_000 },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        maxWait: 10_000,
+        timeout: 15_000,
+      },
     ),
   );
 }
@@ -277,7 +328,10 @@ async function reverseFreeCreditSettlement(
     },
   });
 
-  if (payment.earnings.length === 0 && payment.organizationEarnings.length === 0)
+  if (
+    payment.earnings.length === 0 &&
+    payment.organizationEarnings.length === 0
+  )
     return;
 
   // Consultant earnings net in full — same cap + legal-transition guard as
@@ -390,8 +444,7 @@ async function reverseFreeCreditSettlement(
       amountPaise: promoTotal,
     });
   } else {
-    const discountBack =
-      payment.originalAmount + (payment.taxAmount ?? 0);
+    const discountBack = payment.originalAmount + (payment.taxAmount ?? 0);
     if (discountBack > 0) {
       credits.push({
         account: { kind: "DISCOUNT" },
@@ -432,7 +485,10 @@ async function reverseFreeCreditSettlement(
   for (const orgEarn of payment.organizationEarnings) {
     if (orgEarn.orgSharePaise > 0) {
       debits.push({
-        account: { kind: "ORG_PAYABLE", organizationId: orgEarn.organizationId },
+        account: {
+          kind: "ORG_PAYABLE",
+          organizationId: orgEarn.organizationId,
+        },
         direction: "DEBIT",
         amountPaise: orgEarn.orgSharePaise,
       });
@@ -461,6 +517,16 @@ async function reverseFreeCreditSettlement(
 
   const debitTotal = debits.reduce((s, d) => s + d.amountPaise, 0);
   const creditTotal = credits.reduce((s, c) => s + c.amountPaise, 0);
+  // #1218-triage — a fully-zero settlement (zero-share earnings rows only)
+  // produces empty postings on BOTH sides: that is a legitimate nothing-to-
+  // journal outcome, not an imbalance. Only a one-sided non-empty total is
+  // a real logic bug worth rolling back for.
+  if (debits.length === 0 && credits.length === 0) {
+    console.log(
+      `ℹ️ free-credit reversal for payment ${input.paymentId}: zero-value settlement — no journal posted`,
+    );
+    return;
+  }
   if (debitTotal === 0 || debitTotal !== creditTotal) {
     // Unreachable given the plug — a mismatch is a real logic bug. Throwing
     // rolls back the whole Serializable tx (Refund row included) for a clean
@@ -597,13 +663,18 @@ async function refundInternalFundedPayment(input: {
           payment.amount,
         );
 
+        await setParticipantStatus(tx, { paymentId: payment.id }, "REFUNDED");
         return {
           refundId: refundRow.id,
           amountRefundedPaise: requested,
           rail: "INTERNAL" as const,
         };
       },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, maxWait: 10_000, timeout: 15_000 },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        maxWait: 10_000,
+        timeout: 15_000,
+      },
     ),
   );
 }

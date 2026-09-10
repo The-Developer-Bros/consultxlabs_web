@@ -27,7 +27,12 @@ import { getAppUrl } from "@/lib/url";
  * their side is known — a precise link beats a router bounce.
  */
 
-type Surface = "appointments" | "requests" | "recordings" | "earnings";
+type Surface =
+  | "appointments"
+  | "requests"
+  | "recordings"
+  | "earnings"
+  | "documents";
 
 /**
  * Multi-recipient safe. `organizationId` null means B2C.

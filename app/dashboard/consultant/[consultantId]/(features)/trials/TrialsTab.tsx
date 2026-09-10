@@ -51,6 +51,10 @@ import { cn } from "@/utils/tailwind";
 import type { MeetingSlot } from "@/lib/meeting";
 import { useLazyJoinMeeting } from "@/hooks/scheduling/useLazyJoinMeeting";
 import {
+  CONSULTANT_JOIN_WINDOW_MS,
+  getJoinableSession,
+} from "@/lib/appointments/slots";
+import {
   TrialScheduleCalendar,
   SelectedSlot,
 } from "./components/TrialScheduleCalendar";
@@ -410,22 +414,29 @@ export function TrialsTab() {
     });
   };
 
-  // Check if a trial session is joinable (within 10 mins before start and before end time)
+  /**
+   * #1270 — was a hand-rolled 10-minute comparison against
+   * `slotsOfAppointment[0]`. Two things were wrong with it: the host window is
+   * 15 minutes everywhere else, and reading one row treats a 30-minute slot as
+   * the whole session, so a longer trial stopped being joinable half an hour
+   * in (#1061). The shared session helper answers both.
+   */
   const isTrialJoinable = (trial: TrialSession): boolean => {
-    if (
-      trial.status !== "SCHEDULED" ||
-      !trial.appointment?.slotsOfAppointment?.[0]
-    ) {
-      return false;
-    }
-
-    const slot = trial.appointment.slotsOfAppointment[0];
-    const now = new Date();
-    const startTime = new Date(slot.startsAt);
-    const endTime = new Date(slot.endsAt);
-    const joinWindowStart = new Date(startTime.getTime() - 10 * 60 * 1000); // 10 mins before
-
-    return now >= joinWindowStart && now <= endTime;
+    if (trial.status !== "SCHEDULED") return false;
+    const appointment = trial.appointment;
+    if (!appointment) return false;
+    return (
+      getJoinableSession(
+        // `groupSlotsIntoRuns` buckets rows by appointment and the trials
+        // payload omits the FK, so without stamping it every 30-minute row
+        // would be its own session (#1061).
+        appointment.slotsOfAppointment.map((slot) => ({
+          ...slot,
+          appointmentId: appointment.id,
+        })),
+        { joinWindowMs: CONSULTANT_JOIN_WINDOW_MS },
+      ) !== null
+    );
   };
 
   const handleJoinMeeting = async (trial: TrialSession) => {
@@ -816,7 +827,11 @@ export function TrialsTab() {
                         </TooltipTrigger>
                         {!isTrialJoinable(trial) && (
                           <TooltipContent>
-                            <p>Available 10 minutes before the scheduled time</p>
+                            <p>
+                              Available{" "}
+                              {CONSULTANT_JOIN_WINDOW_MS / 60_000} minutes
+                              before the scheduled time
+                            </p>
                           </TooltipContent>
                         )}
                       </Tooltip>

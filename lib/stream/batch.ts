@@ -84,3 +84,104 @@ export async function forEachChunk<T>(
     await fn(batches[i], i);
   }
 }
+
+/**
+ * How many channels `queryChannels` actually returns, per call.
+ *
+ * #1270 — Stream caps this response at 30 regardless of the `limit` you pass;
+ * asking for 100 returns exactly 30. Two reconciliation call sites paged with
+ * `do … while (page.length === 100)`, so the loop saw 30, decided the roster
+ * was exhausted and exited after ONE page — and the `offset += 100` it used to
+ * advance would have skipped 70 channels had it ever looped. A stale DM sitting
+ * at position 41 of a user's membership list was therefore never classified
+ * stale and never revoked. `scripts/stream/purge-memberless-dms.ts` learned
+ * this first; the constant now lives here so nothing relearns it a third time.
+ */
+export const STREAM_QUERY_CHANNELS_LIMIT = 30;
+
+/**
+ * The largest `offset` Stream will accept on `queryChannels`.
+ *
+ * Offset paging therefore tops out a little past a thousand channels and there
+ * is no cursor for this endpoint to continue with. Going deeper means
+ * re-querying under a moving `last_message_at` bound, which a membership
+ * reconciler cannot do safely: it sorts by nothing in particular, a channel's
+ * `last_message_at` changes underneath the walk, and a page boundary that
+ * shifts mid-walk hides channels rather than repeating them. So we stop, and
+ * we say so — `queryChannelsPaged` reports `truncated` instead of quietly
+ * handing back a short list that a caller would read as "this is everything".
+ */
+export const STREAM_QUERY_CHANNELS_MAX_OFFSET = 1000;
+
+/**
+ * Walk every page of a `queryChannels` filter.
+ *
+ * Generic over the page type and agnostic about how the request is made, so a
+ * caller can wrap its own fetch in the Stream circuit breaker (or not) without
+ * this helper needing to know about either.
+ *
+ * `truncated` is true only when Stream's offset ceiling stopped the walk, which
+ * means the result is a prefix of the real answer. It is never true just
+ * because the caller has few channels.
+ */
+export async function queryChannelsPaged<T>(
+  fetchPage: (opts: { limit: number; offset: number }) => Promise<T[]>,
+): Promise<{ channels: T[]; truncated: boolean }> {
+  const channels: T[] = [];
+  let offset = 0;
+
+  for (;;) {
+    const page = await fetchPage({
+      limit: STREAM_QUERY_CHANNELS_LIMIT,
+      offset,
+    });
+    channels.push(...page);
+
+    // Advance by what came BACK, not by what was asked for. These differ
+    // whenever Stream trims the page, and treating them as equal is what
+    // silently skipped channels before #1270.
+    offset += page.length;
+
+    // A short page is the end of the list. A full page at the offset ceiling
+    // is the end of what Stream will serve.
+    if (page.length < STREAM_QUERY_CHANNELS_LIMIT) {
+      return { channels, truncated: false };
+    }
+    if (offset > STREAM_QUERY_CHANNELS_MAX_OFFSET) {
+      return { channels, truncated: true };
+    }
+  }
+}
+
+/** The subset of a Stream channel `addRemainingMembers` needs. */
+interface MemberAddable {
+  addMembers: (memberIds: string[]) => Promise<unknown>;
+}
+
+/**
+ * The members that fit in the atomic `channel.create()` call.
+ *
+ * #1270 — `create()` carries its roster in the request body and is bound by the
+ * same 100-member ceiling as `addMembers`, so a 150-seat webinar's first
+ * attendee to open chat got a rejected create and no chat at all. Whoever must
+ * definitely end up in the channel — the creator, and the person whose join
+ * triggered the create — belongs at the FRONT of `members` so they land in this
+ * chunk rather than in a follow-up request that could fail on its own.
+ */
+export function createMemberChunk(members: string[]): string[] {
+  return members.slice(0, STREAM_BATCH_LIMIT);
+}
+
+/**
+ * Add everyone `createMemberChunk` left behind, 100 at a time.
+ *
+ * A no-op for the overwhelming majority of channels, which have two members.
+ */
+export async function addRemainingMembers(
+  channel: MemberAddable,
+  members: string[],
+): Promise<void> {
+  await forEachChunk(members.slice(STREAM_BATCH_LIMIT), async (batch) => {
+    await channel.addMembers(batch);
+  });
+}

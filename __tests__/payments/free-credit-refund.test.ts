@@ -31,6 +31,9 @@ const mockRecordTdsReversal = jest.fn();
 const mockPaymentFindUnique = jest.fn();
 
 const tx = {
+  appointmentParticipant: {
+    updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+  },
   refund: {
     findFirst: jest.fn(),
     create: jest.fn(),
@@ -88,8 +91,7 @@ jest.mock("../../lib/referrals/service", () => ({
 }));
 
 jest.mock("../../lib/api/organizations/program-helpers", () => ({
-  reverseBookingUtilization: (...a: unknown[]) =>
-    mockReverseUtilization(...a),
+  reverseBookingUtilization: (...a: unknown[]) => mockReverseUtilization(...a),
 }));
 
 jest.mock("../../lib/payments/payouts/earning-status", () => ({
@@ -132,7 +134,10 @@ function freeCreditSettlement() {
   };
 }
 
-function sum(postings: Array<{ direction: string; amountPaise: number }>, d: string) {
+function sum(
+  postings: Array<{ direction: string; amountPaise: number }>,
+  d: string,
+) {
   return postings
     .filter((p) => p.direction === d)
     .reduce((s, p) => s + p.amountPaise, 0);
@@ -337,5 +342,126 @@ describe("refundBookingPayment — free_ credit rail (#1161)", () => {
         }),
       ]),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1218-triage — the org-clawback and TDS branches of
+// reverseFreeCreditSettlement were never exercised (all fixtures had empty
+// organizationEarnings and payoutId: null).
+// ---------------------------------------------------------------------------
+describe("free_ credit rail — org clawback + TDS reversal branches", () => {
+  beforeEach(() => {
+    mockPaymentFindUnique
+      .mockResolvedValueOnce({ paymentIntent: "free_1730000000_abc" })
+      .mockResolvedValueOnce({
+        id: PAYMENT_ID,
+        currency: "INR",
+        paymentStatus: "SUCCEEDED",
+        paymentGateway: "RAZORPAY",
+      });
+  });
+
+  it("nets PAID-out consultant earnings and reverses their TDS", async () => {
+    tx.payment.findUniqueOrThrow.mockResolvedValue({
+      ...freeCreditSettlement(),
+      earnings: [
+        {
+          id: "ce-paid",
+          consultantProfileId: "cp-1",
+          consultantSharePaise: 80_000,
+          refundedShareAmount: 0,
+          status: "PAID",
+          payoutId: "payout-9",
+        },
+      ],
+    });
+
+    await refundBookingPayment({
+      paymentId: PAYMENT_ID,
+      reason: "cancellation",
+    });
+
+    // The paid share nets to REFUNDED…
+    const earningUpdate = tx.consultantEarnings.update.mock.calls.find(
+      ([arg]: [{ where: { id: string } }]) => arg.where.id === "ce-paid",
+    );
+    // Cumulative-set semantics on this rail (not {increment}).
+    expect(earningUpdate[0].data).toMatchObject({
+      status: "REFUNDED",
+      refundedShareAmount: 80_000,
+    });
+    // …and the withholding against its payout is reversed.
+    expect(mockRecordTdsReversal).toHaveBeenCalledWith(
+      expect.anything(), // tx client
+      expect.objectContaining({
+        payoutId: "payout-9",
+        earningsId: "ce-paid",
+      }),
+    );
+    // Journal still balances with the paid-share debit included.
+    const postings = mockPostLedgerTxn.mock.calls[0][1].postings;
+    expect(sum(postings, "DEBIT")).toBe(sum(postings, "CREDIT"));
+  });
+
+  it("claws back a COMPLETED org payout and writes the audit row", async () => {
+    tx.payment.findUniqueOrThrow.mockResolvedValue({
+      ...freeCreditSettlement(),
+      organizationEarnings: [
+        {
+          id: "oe-1",
+          organizationId: "org-1",
+          orgSharePaise: 20_000,
+          refundedAmountPaise: 0,
+          status: "PAID",
+          orgPayoutId: "opayout-7",
+          orgPayout: { status: "COMPLETED", clawbackInitiatedAt: null },
+        },
+      ],
+      // No consultant side — org-collaborator-only settlement.
+      earnings: [],
+    });
+    const orgEarningUpdates: Array<{ data: Record<string, unknown> }> = [];
+    tx.organizationEarnings.update.mockImplementation(
+      async ({ data }: { data: Record<string, unknown> }) => {
+        orgEarningUpdates.push({ data });
+        return {};
+      },
+    );
+
+    await refundBookingPayment({
+      paymentId: PAYMENT_ID,
+      reason: "cancellation",
+    });
+
+    // Org share flips to REFUNDED with the full proration.
+    expect(orgEarningUpdates[0]?.data).toMatchObject({
+      status: "REFUNDED",
+      refundedAmountPaise: 20_000, // cumulative-set
+    });
+    // Clawback recorded on the COMPLETED payout — exactly once stamped.
+    const clawback = tx.organizationPayout.update.mock.calls.find(
+      ([arg]: [{ data?: { clawbackAmountPaise?: unknown } }]) =>
+        !!arg.data?.clawbackAmountPaise,
+    );
+    expect(clawback?.[0].data.clawbackAmountPaise).toEqual({
+      increment: 20_000,
+    });
+    expect(tx.orgAuditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ category: "PAYOUT" }),
+      }),
+    );
+    // And the journal balances with the ORG_PAYABLE debit present.
+    const postings =
+      mockPostLedgerTxn.mock.calls[mockPostLedgerTxn.mock.calls.length - 1][1]
+        .postings;
+    expect(
+      postings.some(
+        (p: { account: { kind: string }; direction: string }) =>
+          p.account.kind === "ORG_PAYABLE" && p.direction === "DEBIT",
+      ),
+    ).toBe(true);
+    expect(sum(postings, "DEBIT")).toBe(sum(postings, "CREDIT"));
   });
 });

@@ -28,6 +28,8 @@ function outputToGitHubActions(result: SlotReconciliationResult): void {
     const outputs = [
       `tentative_cleared=${result.tentativeFlagsCleared}`,
       `double_bookings=${result.doubleBookingsDetected}`,
+      // #1206 — sessions recovered for partially-scheduled recurring plans.
+      `top_up_sessions_placed=${result.topUps.sessionsPlaced}`,
       `success=${result.success}`,
     ].join("\n");
 
@@ -70,6 +72,9 @@ async function main(): Promise<void> {
     console.log(
       `   Double Bookings Detected: ${result.doubleBookingsDetected}`,
     );
+    console.log(
+      `   Top-ups: ${result.topUps.placed} event(s), ${result.topUps.sessionsPlaced} session(s) placed`,
+    );
     console.log(`   Success: ${result.success}`);
 
     if (result.doubleBookings.length > 0) {
@@ -100,6 +105,7 @@ async function main(): Promise<void> {
     Sentry.logger.info("job:reconcile-slot-availability finished", {
       tentativeFlagsCleared: result.tentativeFlagsCleared,
       doubleBookingsDetected: result.doubleBookingsDetected,
+      topUpSessionsPlaced: result.topUps.sessionsPlaced,
     });
 
     // Exit with error if double bookings found (to trigger alerts)

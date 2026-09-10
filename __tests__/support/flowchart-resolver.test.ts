@@ -22,7 +22,10 @@ function ctx(overrides: Partial<SupportContext> = {}): SupportContext {
     appointmentType: "CONSULTATION" as SupportContext["appointmentType"],
     isOrgContext: false,
     isProvider: false,
+    isOrgOperator: false,
+    stage: "UPCOMING",
     startsAt: new Date("2026-08-01T10:00:00Z"),
+    endsAt: new Date("2026-08-01T11:00:00Z"),
     refundPctIfCancelledNow: 100,
     paymentId: "pay1",
     paymentAmountPaise: 1000_00,
@@ -81,6 +84,78 @@ describe("flow availability by context", () => {
     expect(
       flowsForContext(ctx({ isOrgContext: true })).map((f) => f.category),
     ).toContain("SPONSORSHIP_BILLING");
+  });
+
+  it("stage-gates intents like an order state (Swiggy pattern)", () => {
+    // Upcoming: cancel + reschedule + technical, no post-session intents.
+    const upcoming = flowsForContext(ctx({ stage: "UPCOMING" })).map(
+      (f) => f.category,
+    );
+    expect(upcoming).toContain("CANCEL_REFUND");
+    expect(upcoming).toContain("RESCHEDULE");
+    expect(upcoming).toContain("TECHNICAL");
+    expect(upcoming).not.toContain("NO_SHOW");
+    expect(upcoming).not.toContain("RECORDING_ACCESS");
+
+    // Completed: post-session intents, no cancel/reschedule.
+    const completed = flowsForContext(ctx({ stage: "COMPLETED" })).map(
+      (f) => f.category,
+    );
+    expect(completed).not.toContain("CANCEL_REFUND");
+    expect(completed).not.toContain("RESCHEDULE");
+    expect(completed).toContain("NO_SHOW");
+    expect(completed).toContain("RECORDING_ACCESS");
+    expect(completed).toContain("QUALITY_COMPLAINT");
+
+    // Payment status is offered at every stage.
+    expect(upcoming).toContain("PAYMENT_STATUS");
+    expect(completed).toContain("PAYMENT_STATUS");
+  });
+
+  it("picks the provider no-show variant for the delivering side", () => {
+    const attendee = flowsForContext(ctx({ stage: "COMPLETED", isProvider: false }));
+    const provider = flowsForContext(ctx({ stage: "COMPLETED", isProvider: true }));
+    expect(attendee.find((f) => f.category === "NO_SHOW")?.title).toContain(
+      "expert",
+    );
+    expect(provider.find((f) => f.category === "NO_SHOW")?.title).toContain(
+      "participant",
+    );
+  });
+
+  it("offers ORG_ADMIN_DISPUTE only to org operators", () => {
+    const member = flowsForContext(
+      ctx({ isOrgContext: true, isOrgOperator: false }),
+    ).map((f) => f.category);
+    const operator = flowsForContext(
+      ctx({ isOrgContext: true, isOrgOperator: true }),
+    ).map((f) => f.category);
+    expect(member).not.toContain("ORG_ADMIN_DISPUTE");
+    expect(operator).toContain("ORG_ADMIN_DISPUTE");
+  });
+
+  it("routes the org dispute flow: billing → self-serve, conduct → escalate", () => {
+    const flow = flowForCategory(
+      ctx({ isOrgContext: true, isOrgOperator: true }),
+      "ORG_ADMIN_DISPUTE",
+    )!;
+    const billing = flow.nodes["billing"];
+    const conduct = flow.nodes["conduct"];
+    expect(billing?.kind).toBe("TERMINAL");
+    expect(conduct?.kind).toBe("TERMINAL");
+    if (billing?.kind !== "TERMINAL" || conduct?.kind !== "TERMINAL") return;
+    expect(billing.resolved).toBe(true);
+    expect(conduct.escalate).toBe(true);
+    expect(conduct.reason).toBe("org_conduct_dispute");
+  });
+
+  it("carries machine-readable reasons on escalating terminals", () => {
+    const flow = flowForCategory(
+      ctx({ stage: "COMPLETED", isProvider: false }),
+      "NO_SHOW",
+    )!;
+    const expert = flow.nodes["expert"];
+    expect(expert.kind === "TERMINAL" && expert.reason).toBe("provider_no_show");
   });
 });
 

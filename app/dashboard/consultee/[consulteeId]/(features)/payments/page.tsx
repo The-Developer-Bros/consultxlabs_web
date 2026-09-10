@@ -33,6 +33,13 @@ export default function PaymentsPage({ params }: Readonly<PageProps>) {
       return json.data;
     },
     staleTime: 2 * 60 * 1000,
+    // E2E-audit P1 fix — this is the only money surface without an SSR
+    // seed, and the global query client sets refetchOnMount/refetchOnWindow
+    // Focus to false, so a purchase made elsewhere in the same SPA session
+    // never appeared here until a full reload. Remounting this tab must
+    // always revalidate: the newest transaction (and REFUNDED flips caused
+    // by auto-refunds) land within one navigation.
+    refetchOnMount: "always",
   });
 
   if (isLoading) {

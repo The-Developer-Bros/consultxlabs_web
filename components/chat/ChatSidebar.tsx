@@ -3,7 +3,14 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { formatDistanceToNow } from "date-fns";
 import { RefreshCwIcon } from "lucide-react";
-import { useEffect, useState, useCallback, useRef, memo, startTransition } from "react";
+import {
+  useEffect,
+  useState,
+  useCallback,
+  useRef,
+  memo,
+  startTransition,
+} from "react";
 import type { Channel, Event } from "stream-chat";
 import { useChatContext } from "stream-chat-react";
 import { ChannelSearch } from "./ChannelSearch";
@@ -18,9 +25,14 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "../ui/tooltip";
-import { getChannelDisplayInfo } from "./utils/channelUtils";
+import {
+  buildOrgChannelFilter,
+  getChannelDisplayInfo,
+  isUsableDmChannel,
+} from "./utils/channelUtils";
 import { useChatPane } from "./ChatPaneContext";
 import { useOrgScope } from "@/hooks/useOrgScope";
+import { scopeOrgId } from "@/lib/api/scope/parse";
 import { useSession } from "@/lib/auth-client";
 import { useServerSessionFacts } from "@/components/dashboard/ServerUserId";
 
@@ -99,7 +111,9 @@ const ChannelItem = memo(
               </Avatar>
               {isGroupDM && (
                 <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-primary rounded-full border border-card flex items-center justify-center">
-                  <span className="text-[8px] text-primary-foreground font-bold">G</span>
+                  <span className="text-[8px] text-primary-foreground font-bold">
+                    G
+                  </span>
                 </div>
               )}
             </div>
@@ -215,6 +229,19 @@ export const ChatSidebar = () => {
   // succeeds (not when a fetch is skipped) so a skipped/failed fetch never
   // marks a scope as done. Refetch still happens on a genuine client/scope change.
   const fetchedKeyRef = useRef<string | null>(null);
+  /**
+   * How many rows Stream has actually returned per list, before filtering.
+   *
+   * The pagination offset must count what the SERVER has handed over, not what
+   * survived `isUsableDmChannel`. Using `directMessages.length` meant every
+   * phantom dropped from a page shifted the next offset backwards by one, so
+   * page two re-fetched rows already on screen and the tail of the list became
+   * unreachable — the filter silently ate the pagination.
+   */
+  const fetchedCountRef = useRef<{ team: number; messaging: number }>({
+    team: 0,
+    messaging: 0,
+  });
 
   // Pagination state
   const [hasMoreTeamChannels, setHasMoreTeamChannels] = useState(true);
@@ -226,7 +253,10 @@ export const ChatSidebar = () => {
   // genuinely different key (and thus never skipped against an unrelated fetch).
   const computeFetchKey = useCallback((): string | null => {
     if (!client?.userID) return null;
-    const scopeKey = scope.kind === "org" ? `org:${scope.orgId}` : scope.kind;
+    // scopeOrgId, not `kind === "org"`: `orgMember` pins an org too, so keying
+    // on the kind alone gave two different orgs the SAME cache key (#674).
+    const pinnedOrgId = scopeOrgId(scope);
+    const scopeKey = pinnedOrgId ? `org:${pinnedOrgId}` : scope.kind;
     return `${client.userID}::${scopeKey}`;
   }, [client, scope]);
 
@@ -251,20 +281,9 @@ export const ChatSidebar = () => {
     setError(null);
 
     try {
-      // #674 org-scope filter — Stream channels created by the
-      // enterprise wiring carry a `custom.organization_id` field.
-      // Without scoping, a consultant in Acme + Zeta sees every chat
-      // cross-tenanted in one inbox. Apply the same three-mode shape
-      // as the server-side resolveOrgScope:
-      //   - personal → channels with no organization_id (legacy/B2C)
-      //   - org:<id> → channels tagged with that org id
-      //   - all     → no scope filter (admin-only)
-      const orgFilter: Record<string, unknown> =
-        scope.kind === "personal"
-          ? { organization_id: { $exists: false } }
-          : scope.kind === "org"
-            ? { organization_id: { $eq: scope.orgId } }
-            : {};
+      // #674 org-scope filter — see buildOrgChannelFilter for what each scope
+      // kind means and why `orgMember` has to pin too.
+      const orgFilter: Record<string, unknown> = buildOrgChannelFilter(scope);
       const filter = {
         members: { $in: [client.userID] },
         ...orgFilter,
@@ -274,7 +293,11 @@ export const ChatSidebar = () => {
         watch: true, // Crucial for real-time updates
         state: true,
         limit: 20, // Reduced initial limit for faster loading
-        message_limit: 100, // Load recent messages for proper chat history and scroll functionality
+        // Sidebar previews need recent context, not full history: 100/channel ×
+        // 40 channels hydrated ~4,000 messages just to paint a list (Stream's
+        // storage-and-bandwidth guidance: align limits with actual need).
+        // Opening a channel paginates deeper history on demand.
+        message_limit: 10,
         presence: false, // Disable presence for initial load to improve performance
       };
 
@@ -291,10 +314,25 @@ export const ChatSidebar = () => {
         return;
       }
 
-      setTeamChannels(teamResponse);
-      setDirectMessages(dmResponse);
+      const usableDms = dmResponse.filter(isUsableDmChannel);
 
-      // Update pagination state
+      setTeamChannels(teamResponse);
+      // Phantoms filtered out here rather than hidden at render: a row that is
+      // merely styled as unavailable is still selectable, still opens, and still
+      // accepts a message. See isUsableDmChannel.
+      setDirectMessages(usableDms);
+
+      // Raw counts, for the next page's offset.
+      fetchedCountRef.current = {
+        team: teamResponse.length,
+        messaging: dmResponse.length,
+      };
+
+      // Update pagination state — measured against the RAW response length, not
+      // the filtered one. `response.length === limit` is Stream's
+      // "there may be more" signal, and comparing a filtered count to the limit
+      // would report no-more-pages the moment a single phantom is dropped from
+      // an otherwise full page.
       setHasMoreTeamChannels(teamResponse.length === options.limit);
       setHasMoreDMChannels(dmResponse.length === options.limit);
 
@@ -306,7 +344,10 @@ export const ChatSidebar = () => {
       if (!initialSelectionDoneRef.current) {
         initialSelectionDoneRef.current = true;
         const mostRecentTeam = teamResponse[0];
-        const mostRecentDM = dmResponse[0];
+        // The FILTERED list — auto-selecting `dmResponse[0]` could open a
+        // phantom on load, which is the exact thing being filtered out
+        // everywhere else.
+        const mostRecentDM = usableDms[0];
         let channelToSelect = null;
         if (mostRecentTeam && mostRecentDM) {
           const teamTime = new Date(
@@ -315,8 +356,7 @@ export const ChatSidebar = () => {
           const dmTime = new Date(
             (mostRecentDM.data?.last_message_at as string) || 0,
           ).getTime();
-          channelToSelect =
-            dmTime >= teamTime ? mostRecentDM : mostRecentTeam;
+          channelToSelect = dmTime >= teamTime ? mostRecentDM : mostRecentTeam;
         } else {
           channelToSelect = mostRecentTeam || mostRecentDM || null;
         }
@@ -349,22 +389,19 @@ export const ChatSidebar = () => {
     async (type: "team" | "messaging") => {
       if (!client?.userID || isLoadingMore) return;
 
-      const currentChannels = type === "team" ? teamChannels : directMessages;
       const hasMore = type === "team" ? hasMoreTeamChannels : hasMoreDMChannels;
 
       if (!hasMore) return;
+
+      // The scope this page belongs to, captured before the request goes out.
+      const pageKey = computeFetchKey();
 
       setIsLoadingMore(true);
 
       try {
         // Mirror the org-scope filter from `fetchChannels` so the
         // load-more page stays in the same tenant context.
-        const orgFilter: Record<string, unknown> =
-          scope.kind === "personal"
-            ? { organization_id: { $exists: false } }
-            : scope.kind === "org"
-              ? { organization_id: { $eq: scope.orgId } }
-              : {};
+        const orgFilter: Record<string, unknown> = buildOrgChannelFilter(scope);
         const filter = {
           members: { $in: [client.userID] },
           type,
@@ -372,24 +409,43 @@ export const ChatSidebar = () => {
         };
         const sort: { last_message_at: -1 } = { last_message_at: -1 };
 
-        const offset = currentChannels.length;
+        // Raw fetched count, never `currentChannels.length` — see
+        // fetchedCountRef.
+        const offset = fetchedCountRef.current[type];
 
         const options = {
           watch: true,
           state: true,
           limit: 20,
-          message_limit: 100, // Load messages for paginated channels too
+          message_limit: 10, // Match the initial-load trim above
           presence: false,
           offset,
         };
 
         const response = await client.queryChannels(filter, sort, options);
 
+        // Staleness guard, the same one `fetchChannels` applies to its own late
+        // response: switching org mid-pagination let Acme's page two land on
+        // Zeta's list, cross-tenanting the inbox the scope filter exists to
+        // keep apart — and corrupting the offset the next page reads. Stale
+        // when a newer scope has already loaded, or when one is in flight.
+        const supersededByLoaded = fetchedKeyRef.current !== pageKey;
+        const supersededByInFlight =
+          inFlightFetchKeyRef.current !== null &&
+          inFlightFetchKeyRef.current !== pageKey;
+        if (supersededByLoaded || supersededByInFlight) return;
+
+        fetchedCountRef.current[type] += response.length;
+
         if (type === "team") {
           setTeamChannels((prev) => [...prev, ...response]);
           setHasMoreTeamChannels(response.length === options.limit);
         } else {
-          setDirectMessages((prev) => [...prev, ...response]);
+          setDirectMessages((prev) => [
+            ...prev,
+            ...response.filter(isUsableDmChannel),
+          ]);
+          // Raw length again — see fetchChannels.
           setHasMoreDMChannels(response.length === options.limit);
         }
       } catch (error) {
@@ -400,12 +456,14 @@ export const ChatSidebar = () => {
     },
     [
       client,
-      teamChannels,
-      directMessages,
+      // `teamChannels` / `directMessages` are deliberately absent: the offset
+      // now comes from `fetchedCountRef`, so this callback no longer reads
+      // either list. Keeping them would rebuild it on every incoming message.
       hasMoreTeamChannels,
       hasMoreDMChannels,
       isLoadingMore,
       scope,
+      computeFetchKey,
     ],
   );
 
@@ -481,7 +539,7 @@ export const ChatSidebar = () => {
       setDirectMessages((prevChannels) => {
         const existingIds = new Set(prevChannels.map((ch) => ch.cid));
         const newChannels = recentDMChannels.filter(
-          (ch) => !existingIds.has(ch.cid),
+          (ch) => !existingIds.has(ch.cid) && isUsableDmChannel(ch),
         );
         if (newChannels.length > 0) {
           return [...newChannels, ...prevChannels]; // New channels at top
@@ -598,10 +656,19 @@ export const ChatSidebar = () => {
         }
       };
 
-      client.on("*.**", handleEvent); // Listen to all events
+      // #1280 2.6 — the SINGLE-argument form is the "every event" listener.
+      //
+      // `client.on("*.**", handler)` registers under the LITERAL key `"*.**"`;
+      // there is no wildcard matching in the SDK's dispatcher, which only ever
+      // looks up `listeners.all` and `listeners[event.type]`. No Stream event
+      // has the type `"*.**"`, so this entire live channel-list updater never
+      // fired once — the list only ever changed on an explicit refetch, while
+      // the unread badge pointing at it updated correctly because
+      // `useChatUnreadCount` already uses the right form.
+      client.on(handleEvent);
 
       return () => {
-        client.off("*.**", handleEvent);
+        client.off(handleEvent);
       };
     }
     // #248: deps intentionally exclude `fetchChannels` and `activeChannelId` so
@@ -687,7 +754,15 @@ export const ChatSidebar = () => {
         <div className="px-4 py-2 flex justify-between items-center sticky top-0 bg-card z-10">
           <h2 className="font-semibold">Channels</h2>
           {canCreateChannels && (
-            <CreateChannelDialog onChannelCreated={handleChannelCreated} />
+            <CreateChannelDialog
+              onChannelCreated={handleChannelCreated}
+              // Custom (non-event) channels are admin/staff-only server-side.
+              // Without this the option renders for consultants and every
+              // submission 403s.
+              canCreateCustomChannel={
+                appRole === "ADMIN" || appRole === "STAFF"
+              }
+            />
           )}
         </div>
         {isLoading ? (
@@ -750,7 +825,18 @@ export const ChatSidebar = () => {
           <div className="p-4 text-center text-sm text-destructive">
             <p>Conversations could not be loaded.</p>
           </div>
-        ) : directMessages.length > 0 ? (
+        ) : (
+          // NOT `directMessages.length > 0 ? list : emptyState`.
+          //
+          // The list is filtered (phantom DMs are dropped, see
+          // isUsableDmChannel) but `hasMoreDMChannels` is measured against the
+          // RAW page length. So a page whose 20 rows are all phantoms leaves the
+          // list empty with more pages still to come — and with the load-more
+          // button living inside the non-empty branch, the empty state rendered
+          // "No conversations yet" over a stranded list the user could not
+          // reach. The button is now tied to `hasMoreDMChannels` alone, and the
+          // empty state only claims there is nothing when there is genuinely
+          // nothing left to fetch.
           <div>
             {directMessages.map((channel) => (
               <ChannelItem
@@ -760,6 +846,15 @@ export const ChatSidebar = () => {
                 onClick={() => handleChannelSelect(channel)}
               />
             ))}
+
+            {directMessages.length === 0 && !hasMoreDMChannels && (
+              <div className="p-4 text-center text-muted-foreground text-sm">
+                {isConsultant
+                  ? "No conversations yet. Conversations will appear here once clients book sessions."
+                  : "No conversations yet. Book a consultation to start chatting."}
+              </div>
+            )}
+
             {hasMoreDMChannels && (
               <div className="p-2">
                 <Button
@@ -771,16 +866,12 @@ export const ChatSidebar = () => {
                 >
                   {isLoadingMore
                     ? "Loading..."
-                    : `Showing ${directMessages.length} conversations — Load more`}
+                    : directMessages.length === 0
+                      ? "Load conversations"
+                      : `Showing ${directMessages.length} conversations — Load more`}
                 </Button>
               </div>
             )}
-          </div>
-        ) : (
-          <div className="p-4 text-center text-muted-foreground text-sm">
-            {isConsultant
-              ? "No conversations yet. Conversations will appear here once clients book sessions."
-              : "No conversations yet. Book a consultation to start chatting."}
           </div>
         )}
       </div>

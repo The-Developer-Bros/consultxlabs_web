@@ -1,0 +1,94 @@
+name: TDS quarterly return draft
+
+# #1354/#1362 — builds the Form 26Q / Form 140 deductee-wise draft for a
+# fiscal quarter, prints the MASKED draft to the job log, and writes the
+# full-PAN CSV into the private Supabase bucket for the CA. There is
+# deliberately NO artifact upload: an Actions artifact is downloadable by
+# anyone with repo read access, and this job is the one place a decrypted PAN
+# exists outside the database.
+#
+# cron-runtime-minutes: 3
+
+on:
+  schedule:
+    # 01:20 UTC = 06:50 IST on the 5th of the month after each fiscal quarter
+    # closes (Jan/Apr/Jul/Oct), which puts the draft in front of finance before
+    # the India business day and well inside the 31st-of-the-month filing
+    # window. Hour 01 UTC carries one other cron, at minute 00.
+    #
+    # CR #1354 r1 — with no inputs the job targets the quarter that CLOSED, so
+    # this trigger date and the exported period agree. Deriving the period from
+    # "today" made the 5 April run export five days of the new FY.
+    - cron: "20 1 5 1,4,7,10 *"
+  workflow_dispatch:
+    inputs:
+      financialYear:
+        description: 'Financial year, e.g. "2026-27" (defaults to the FY of the quarter that closed)'
+        required: false
+        type: string
+      quarter:
+        description: "Fiscal quarter 1-4 (defaults to the quarter that closed)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: >-
+    tds-return-draft-${{ github.event.inputs.financialYear || 'current' }}-${{
+    github.event.inputs.quarter || 'current' }}
+  # A second run would overwrite the same CSV object with the same content;
+  # cancelling the first mid-upload is the only way to get a truncated file.
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies without lifecycle scripts
+        # S6505 — no arbitrary lifecycle scripts during install; the one
+        # artifact generation we need (Prisma client) is invoked explicitly
+        # from our pinned devDependency right after.
+        run: npm ci --ignore-scripts
+      - name: Generate Prisma client
+        run: npx --no-install prisma generate
+      - name: Build the draft and write the return CSV
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+          # #476 cron locks load lib/redis at import — every job entry needs these
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          # Without this the CSV ships with every PAN cell blank and the draft
+          # silently understates who was withheld at the no-PAN rate.
+          PAN_ENCRYPTION_KEY: ${{ secrets.PAN_ENCRYPTION_KEY }}
+          # lib/supabase-storage-core.ts builds the PUBLIC client at module
+          # scope and throws without the anon key, even though this job only
+          # ever uses the service-role client.
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # #1066 — jobs run as bare Node processes, so Sentry.init only sees
+          # what the step env carries.
+          NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+          NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
+          TDS_RETURN_FY: ${{ github.event.inputs.financialYear }}
+          TDS_RETURN_QUARTER: ${{ github.event.inputs.quarter }}
+        # S8543/S6505 — run the locally-installed binary directly; no
+        # on-demand package resolution at execution time.
+        run: node_modules/.bin/tsx jobs/compliance/tds-26q-draft-export.ts
+      - name: Notify on failure
+        if: failure()
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "tds-return-draft"

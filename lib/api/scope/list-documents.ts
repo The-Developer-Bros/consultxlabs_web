@@ -41,6 +41,8 @@ const documentMetadataSelect = {
   reviewedById: true,
   uploadedByRole: true,
   responseToDocumentId: true,
+  rootDocumentId: true,
+  versionNo: true,
   isStorageMissing: true,
   uploadedAt: true,
   updatedAt: true,
@@ -88,6 +90,8 @@ function buildWhere(
   params: ListDocumentsParams,
 ): Prisma.AppointmentDocumentWhereInput {
   const base: Prisma.AppointmentDocumentWhereInput = {
+    // Soft-deleted rows are pending nightly purge; no list surface shows them.
+    deletedAt: null,
     ...(params.reviewStatus && { reviewStatus: params.reviewStatus }),
   };
   if (params.scope.kind === "personal") {

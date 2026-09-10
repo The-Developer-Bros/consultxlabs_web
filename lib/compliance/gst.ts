@@ -47,6 +47,7 @@
  */
 
 import { numericStateCode } from "./state-codes";
+import { hasValidPlatformLut } from "./lut";
 
 export interface GstBreakdown {
   subtotalPaise: number;
@@ -109,8 +110,25 @@ export function deriveGstBreakdown(params: {
       ? buyerState
       : (supplierState ?? null);
 
-  // Zero-rated export
+  // Zero-rated export — but ONLY under a LUT valid for the current FY
+  // (Rule 96A / Form RFD-11). #1230: the platform previously zero-rated on
+  // buyer country alone; without a filed LUT those supplies were taxable at
+  // 18% with interest, retroactively. Fail closed to IGST instead.
   if (params.buyerCountry !== "IN") {
+    if (!hasValidPlatformLut()) {
+      const taxPaise = Math.round(params.subtotalPaise * GST_RATE);
+      return {
+        subtotalPaise: params.subtotalPaise,
+        igstPaise: taxPaise,
+        cgstPaise: 0,
+        sgstPaise: 0,
+        totalPaise: params.subtotalPaise + taxPaise,
+        hsnCode,
+        placeOfSupply,
+        reverseCharge: false,
+        reason: "EXPORT_NO_LUT_IGST",
+      };
+    }
     return {
       subtotalPaise: params.subtotalPaise,
       igstPaise: 0,

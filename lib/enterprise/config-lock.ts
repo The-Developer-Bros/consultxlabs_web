@@ -76,21 +76,31 @@ export function isContractTermsLocked(s: ContractLockSignals): boolean {
  * Resolve the lock state for one program. #779 — `configLockedAt` is the
  * authoritative signal (non-null ⇒ locked); the bounded count queries stay as a
  * belt-and-braces fallback so counts > 0 still lock even if the column is null.
+ *
+ * CR #1234 wave-3 — pass a transaction client to read the caller's snapshot.
+ * The pre-transaction friendly check uses the global client; callers that
+ * WRITE money fields must re-check inside their tx, or a concurrent
+ * first-assignment (which stamps `configLockedAt`) can land between check
+ * and write and let terms change under a just-created allocation (#779).
  */
 export async function getProgramLockState(
   programId: string,
+  client: Pick<
+    typeof prisma,
+    "program" | "programAssignment" | "bookingUtilization" | "overageEvent"
+  > = prisma,
 ): Promise<{ locked: boolean; signals: ProgramLockSignals }> {
   const [program, assignmentCount, bookingCount, overageEventCount] =
     await Promise.all([
-      prisma.program.findUnique({
+      client.program.findUnique({
         where: { id: programId },
         select: { configLockedAt: true },
       }),
-      prisma.programAssignment.count({ where: { programId } }),
-      prisma.bookingUtilization.count({
+      client.programAssignment.count({ where: { programId } }),
+      client.bookingUtilization.count({
         where: { programAssignment: { programId } },
       }),
-      prisma.overageEvent.count({
+      client.overageEvent.count({
         where: { programAssignment: { programId } },
       }),
     ]);
@@ -100,14 +110,15 @@ export async function getProgramLockState(
   return { locked, signals };
 }
 
-/** Resolve the in-use signals for one contract. */
+/** Resolve the in-use signals for one contract. Same tx-client note as above. */
 export async function getContractLockState(
   contractId: string,
   status: ContractStatus,
+  client: Pick<typeof prisma, "organizationInvoice" | "programAssignment"> = prisma,
 ): Promise<{ locked: boolean; signals: ContractLockSignals }> {
   const [invoiceCount, liveAssignmentCount] = await Promise.all([
-    prisma.organizationInvoice.count({ where: { contractId } }),
-    prisma.programAssignment.count({
+    client.organizationInvoice.count({ where: { contractId } }),
+    client.programAssignment.count({
       where: { program: { contractId }, periodEnd: { gte: new Date() } },
     }),
   ]);

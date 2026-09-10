@@ -22,7 +22,8 @@ jest.mock("../../lib/prisma", () => ({
       updateMany: jest.fn(),
       update: jest.fn(),
     },
-    consultantEarnings: { updateMany: jest.fn() },
+    // #1020 — the disbursement dispute guard probes for live disputes.
+    consultantEarnings: { updateMany: jest.fn(), findFirst: jest.fn().mockResolvedValue(null) },
     consultantTaxInfo: { findUnique: jest.fn().mockResolvedValue(null) },
   },
 }));
@@ -78,7 +79,9 @@ const cp = (
   }
 ).consultantPayout;
 const ce = (
-  prisma as unknown as { consultantEarnings: { updateMany: jest.Mock } }
+  prisma as unknown as {
+    consultantEarnings: { updateMany: jest.Mock; findFirst: jest.Mock };
+  }
 ).consultantEarnings;
 
 const APPROVED = {

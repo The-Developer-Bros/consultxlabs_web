@@ -16,7 +16,11 @@
  * Skips cleanly (exit 0) when DATABASE_URL is absent, so forks and PRs without
  * secrets are not punished.
  */
-import fs from "node:fs";
+// Without this the script reads a bare process.env, finds no DATABASE_URL, and
+// self-skips with exit 0 — which is how this guard reported success on every CI
+// run while never once executing. CI writes the secret to .env as a FILE; only
+// Next loads that implicitly. Every other DB-touching script here does the same.
+import "dotenv/config";
 import path from "node:path";
 
 import prisma from "../../lib/prisma";
@@ -24,42 +28,20 @@ import prisma from "../../lib/prisma";
 const ROOT = path.join(__dirname, "..", "..");
 const SQL_DIR = path.join(ROOT, "prisma", "sql");
 
-type Expected = {
-  kind: "constraint" | "index" | "trigger";
-  name: string;
-  table?: string;
-  source: string;
-};
+import {
+  parseSidecarDirectory,
+  stripSqlComments,
+  type SidecarObject,
+} from "../db/sidecar-objects";
+
+// Re-exported so the existing comment-stripping test keeps its import path;
+// the implementation lives in scripts/db/sidecar-objects.ts (#1319).
+export { stripSqlComments };
+
+type Expected = SidecarObject;
 
 function parseSidecars(): Expected[] {
-  const expected: Expected[] = [];
-  for (const file of fs
-    .readdirSync(SQL_DIR)
-    .filter((f) => f.endsWith(".sql"))) {
-    const sql = fs.readFileSync(path.join(SQL_DIR, file), "utf8");
-
-    for (const m of sql.matchAll(
-      /ALTER\s+TABLE\s+"(\w+)"\s+ADD\s+CONSTRAINT\s+"([^"]+)"/gi,
-    )) {
-      expected.push({
-        kind: "constraint",
-        table: m[1],
-        name: m[2],
-        source: file,
-      });
-    }
-    for (const m of sql.matchAll(
-      /CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?"([^"]+)"/gi,
-    )) {
-      expected.push({ kind: "index", name: m[1], source: file });
-    }
-    for (const m of sql.matchAll(
-      /CREATE\s+(?:CONSTRAINT\s+)?TRIGGER\s+(\w+)/gi,
-    )) {
-      expected.push({ kind: "trigger", name: m[1], source: file });
-    }
-  }
-  return expected;
+  return parseSidecarDirectory(SQL_DIR);
 }
 
 async function main(): Promise<void> {
@@ -140,9 +122,14 @@ async function main(): Promise<void> {
   );
 }
 
-main()
-  .catch((err) => {
-    console.error("check-db-sidecars: fatal", err);
-    process.exitCode = 1;
-  })
-  .finally(() => prisma.$disconnect());
+// Only run when invoked as a script. `stripSqlComments` is unit-tested, and a
+// bare `main()` at module scope meant importing it opened a database connection
+// and raced the test runner's teardown.
+if (process.argv[1] && /check-db-sidecars/.test(process.argv[1])) {
+  main()
+    .catch((err) => {
+      console.error("check-db-sidecars: fatal", err);
+      process.exitCode = 1;
+    })
+    .finally(() => prisma.$disconnect());
+}

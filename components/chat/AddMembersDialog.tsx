@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useDebouncedCallback } from "use-debounce";
 import Image from "next/image";
 import {
   ResponsiveModal,
@@ -48,44 +49,96 @@ export const AddMembersDialog = ({
     }
   }, [open]);
 
-  const searchConsultees = useCallback(async () => {
-    setIsSearching(true);
-    setHasSearched(true);
+  /**
+   * Same latest-wins guard and cancellation as `ChannelSearch`, for the same
+   * reason: this had a hand-rolled `setTimeout`, no `AbortController` and an
+   * unconditional `setConsultees(...)`, so whichever response landed last won
+   * regardless of which term it answered. Modelled on
+   * `hooks/scheduling/useCalendarData.ts`.
+   *
+   * Unlike ChannelSearch there is deliberately NO minimum-length guard. An
+   * empty term is a real query here — it lists everyone the consultant may add
+   * — and gating it would leave the dialog blank until you typed.
+   */
+  const requestIdRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
-    try {
-      const excludeParam = existingMemberIds.join(",");
-      const response = await fetch(
-        `/api/stream/search-consultees?term=${encodeURIComponent(searchTerm)}&exclude=${excludeParam}`,
-      );
+  // A primitive, so the debounced callback's identity does not change on every
+  // render the way it did with the `existingMemberIds` array in the deps —
+  // which re-ran the debounce effect continuously and re-armed the timer.
+  const excludeParam = existingMemberIds.join(",");
 
-      if (!response.ok) {
-        throw new Error("Failed to search consultees");
+  const searchConsultees = useCallback(
+    async (term: string, exclude: string) => {
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      const requestId = ++requestIdRef.current;
+
+      setIsSearching(true);
+      setHasSearched(true);
+
+      try {
+        const response = await fetch(
+          // Both halves encoded. `term` was, `exclude` was not — so a member id
+          // containing `&`, `+`, `#` or a space truncated or corrupted the
+          // exclusion set, and people already in the channel reappeared as
+          // addable.
+          `/api/stream/search-consultees?term=${encodeURIComponent(term)}&exclude=${encodeURIComponent(exclude)}`,
+          { signal: controller.signal },
+        );
+
+        if (!response.ok) {
+          throw new Error("Failed to search consultees");
+        }
+
+        const data = await response.json();
+        if (requestId !== requestIdRef.current) return;
+        setConsultees(data.consultees || []);
+      } catch (error) {
+        // Our own cancellation, not a failure — and surfacing it as a toast
+        // would fire one per keystroke.
+        if (error instanceof DOMException && error.name === "AbortError")
+          return;
+        if (requestId !== requestIdRef.current) return;
+        console.error("Error searching consultees:", error);
+        toast({
+          title: "Error",
+          description: "Failed to search consultees",
+          variant: "destructive",
+        });
+      } finally {
+        if (requestId === requestIdRef.current) setIsSearching(false);
       }
+    },
+    [toast],
+  );
 
-      const data = await response.json();
-      setConsultees(data.consultees || []);
-    } catch (error) {
-      console.error("Error searching consultees:", error);
-      toast({
-        title: "Error",
-        description: "Failed to search consultees",
-        variant: "destructive",
-      });
-    } finally {
-      setIsSearching(false);
-    }
-  }, [searchTerm, existingMemberIds, toast]);
+  const debouncedSearch = useDebouncedCallback(searchConsultees, 300);
 
-  // Debounced search
   useEffect(() => {
     if (!open) return;
+    debouncedSearch(searchTerm, excludeParam);
+  }, [searchTerm, excludeParam, open, debouncedSearch]);
 
-    const timeoutId = setTimeout(() => {
-      searchConsultees();
-    }, 300);
+  // Abort on close as well as unmount: the dialog resets its state when it
+  // closes, and a late response would repopulate the list behind it.
+  useEffect(() => {
+    if (!open) {
+      debouncedSearch.cancel();
+      abortRef.current?.abort();
+    }
+  }, [open, debouncedSearch]);
 
-    return () => clearTimeout(timeoutId);
-  }, [searchTerm, open, searchConsultees]);
+  useEffect(
+    () => () => {
+      // See ChannelSearch — use-debounce v10 leaves trailing callbacks armed
+      // across unmount.
+      debouncedSearch.cancel();
+      abortRef.current?.abort();
+    },
+    [debouncedSearch],
+  );
 
   const toggleSelection = (userId: string) => {
     setSelectedIds((prev) => {

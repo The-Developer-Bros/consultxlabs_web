@@ -1,4 +1,5 @@
 import prisma from "@/lib/prisma";
+import { groupSlotsIntoRuns } from "@/lib/appointments/slots";
 import { NextRequest, NextResponse } from "next/server";
 import { CollaboratorStatus, PlanEmailSupport, Prisma } from "@prisma/client";
 import {
@@ -104,7 +105,8 @@ export async function GET(request: NextRequest) {
     };
 
     // For trending sort, use a two-step Prisma approach:
-    // 1. Lightweight select (IDs + nested slot IDs only) to rank by enrollment count
+    // 1. Lightweight select (IDs + nested slot rows only) to rank by how many
+    //    SESSIONS the plan's classes had scheduled in the window
     // 2. Fetch full plan data only for the paginated slice
     if (sort === "trending") {
       const thirtyDaysAgo = new Date();
@@ -118,9 +120,19 @@ export async function GET(request: NextRequest) {
             select: {
               appointments: {
                 select: {
+                  id: true,
                   slotsOfAppointment: {
                     where: { createdAt: { gte: thirtyDaysAgo } },
-                    select: { id: true },
+                    // #1071 — what groupSlotsIntoRuns needs to fold the
+                    // half-hour atoms of one session back into one session.
+                    select: {
+                      id: true,
+                      startsAt: true,
+                      endsAt: true,
+                      isTentative: true,
+                      completionStatus: true,
+                      deletedAt: true,
+                    },
                   },
                 },
               },
@@ -129,6 +141,10 @@ export async function GET(request: NextRequest) {
         },
       });
 
+      // #1319 — this counted slot ROWS, so a class stored as canonical 30-minute
+      // atoms outranked an identical one stored as legacy 60-minute rows two to
+      // one: the ranking measured how a plan's sessions happen to be chunked,
+      // not how much of it is running. Count contiguous runs (= sessions).
       const ranked = plansForRanking
         .map((p) => ({
           id: p.id,
@@ -136,7 +152,14 @@ export async function GET(request: NextRequest) {
             (sum, cls) =>
               sum +
               cls.appointments.reduce(
-                (s, apt) => s + apt.slotsOfAppointment.length,
+                (s, apt) =>
+                  s +
+                  groupSlotsIntoRuns(
+                    apt.slotsOfAppointment.map((slot) => ({
+                      ...slot,
+                      appointmentId: apt.id,
+                    })),
+                  ).length,
                 0,
               ),
             0,
@@ -251,6 +274,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // `body` is untyped JSON and the required-field check above never asked for
+    // `classContents`, so a request that omitted it threw inside the mapper
+    // below and the caller was told 500 for a malformed request. Absent means
+    // no curriculum rows; present-but-not-a-list is the client's error.
+    if (classContents !== undefined && !Array.isArray(classContents)) {
+      return NextResponse.json(
+        { error: "classContents must be an array" },
+        { status: 400 },
+      );
+    }
+
     const newClassPlan = await prisma.classPlan.create({
       data: {
         title,
@@ -273,14 +307,16 @@ export async function POST(request: NextRequest) {
           ? { connect: topicIds.map((id: string) => ({ id })) }
           : undefined,
         classContents: {
-          create: classContents.map((content: Prisma.ClassContentCreateWithoutClassPlanInput) => ({
-            title: content.title,
-            description: content.description,
-            contentType: content.contentType,
-            contentUrl: content.contentUrl,
-            order: content.order,
-            hoursAllotted: content.hoursAllotted,
-          })),
+          create: (classContents ?? []).map(
+            (content: Prisma.ClassContentCreateWithoutClassPlanInput) => ({
+              title: content.title,
+              description: content.description,
+              contentType: content.contentType,
+              contentUrl: content.contentUrl,
+              order: content.order,
+              hoursAllotted: content.hoursAllotted,
+            }),
+          ),
         },
       },
       include: {

@@ -1,3 +1,22 @@
+# Bot review rounds: two, then stop.
+#
+# CodeRabbit runs on the ASSERTIVE profile and re-reviews on every push, so each
+# round of fixes produces a fresh round of comments on the diff those fixes
+# created. Round 1 clears the substantive findings; round 2 clears whatever
+# round 1 provoked. After that, answer remaining comments in the thread and
+# merge — do not push again just to silence the bot.
+#
+# The drawback, stated so nobody has to rediscover it: stopping at two means a
+# genuine finding raised in round 3 gets a reply rather than a fix in this PR.
+# That is the accepted cost. The alternative — looping until the bot is silent —
+# does not converge on an ASSERTIVE profile: it reliably finds something on any
+# new diff, and past round 2 that something is overwhelmingly refactor-for-its-
+# own-sake (cognitive-complexity thresholds, helper extraction). Each extra push
+# also resets approvals and burns a full CI cycle, so the churn is not free.
+#
+# Anything real that surfaces late belongs in a follow-up issue, where it keeps
+# its own context, instead of growing this PR's diff past what a human will read.
+
 name: CI
 
 on:

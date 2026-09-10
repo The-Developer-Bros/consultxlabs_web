@@ -49,6 +49,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
+import { AppointmentTimeline } from "./AppointmentTimeline";
 import type {
   StaffAppointment,
   StaffAppointmentsPayload,
@@ -169,35 +170,30 @@ export function OperatorAppointmentsClient() {
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  const {
-    data,
-    isLoading,
-    isFetching,
-    refetch,
-    error,
-  } = useQuery<StaffAppointmentsPayload>({
-    queryKey: appointmentsKey({
-      page,
-      type: typeFilter,
-      status: activeTab,
-      search: debouncedSearch,
-    }),
-    // Tab, type, page and search all live in the key, so each combination is
-    // its own query. Same fix as #346 on the appointments list.
-    placeholderData: keepPreviousData,
-    queryFn: async () => {
-      const params = new URLSearchParams();
-      params.set("page", page.toString());
-      if (typeFilter !== "all") params.set("type", typeFilter.toUpperCase());
-      if (activeTab !== "all") params.set("status", activeTab);
-      if (debouncedSearch) params.set("search", debouncedSearch);
+  const { data, isLoading, isFetching, refetch, error } =
+    useQuery<StaffAppointmentsPayload>({
+      queryKey: appointmentsKey({
+        page,
+        type: typeFilter,
+        status: activeTab,
+        search: debouncedSearch,
+      }),
+      // Tab, type, page and search all live in the key, so each combination is
+      // its own query. Same fix as #346 on the appointments list.
+      placeholderData: keepPreviousData,
+      queryFn: async () => {
+        const params = new URLSearchParams();
+        params.set("page", page.toString());
+        if (typeFilter !== "all") params.set("type", typeFilter.toUpperCase());
+        if (activeTab !== "all") params.set("status", activeTab);
+        if (debouncedSearch) params.set("search", debouncedSearch);
 
-      const response = await fetch(`/api/staff/appointments?${params}`);
-      if (!response.ok) throw new Error("Failed to fetch appointments");
-      return response.json();
-    },
-    refetchOnWindowFocus: false,
-  });
+        const response = await fetch(`/api/staff/appointments?${params}`);
+        if (!response.ok) throw new Error("Failed to fetch appointments");
+        return response.json();
+      },
+      refetchOnWindowFocus: false,
+    });
 
   useEffect(() => {
     if (error) {
@@ -254,7 +250,9 @@ export function OperatorAppointmentsClient() {
             </div>
             <div>
               <p className="text-2xl font-bold">{counts.all}</p>
-              <p className="text-sm text-muted-foreground">Total Appointments</p>
+              <p className="text-sm text-muted-foreground">
+                Total Appointments
+              </p>
             </div>
           </CardContent>
         </Card>
@@ -704,6 +702,10 @@ export function OperatorAppointmentsClient() {
                     </div>
                   </div>
                 )}
+
+                {/* Audit trail (#1319 PR 8 / #448) — mounted with the modal, so
+                    the trail is fetched only for the row an operator opened. */}
+                <AppointmentTimeline appointmentId={selectedAppointment.id} />
 
                 {/* Staff Notes */}
                 <div>

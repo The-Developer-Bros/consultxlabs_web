@@ -5,6 +5,10 @@
 import { toast } from "@/hooks/use-toast";
 import { WebinarEvent } from "@/types/planner-events";
 import {
+  positioningPayload,
+  priceToPaise,
+} from "@/components/planner/services/shared/plan-payload";
+import {
   CreateWebinarPayload,
   UpdateWebinarPayload,
   WebinarRequestBody,
@@ -208,7 +212,8 @@ export class WebinarService {
     const basePayload: CreateWebinarPayload = {
       title: plan?.title ?? "",
       description: plan?.description ?? undefined,
-      price: plan?.price ?? 0,
+      // The form edits rupees; the DB stores paise (#780 money model).
+      price: priceToPaise(plan?.price),
       priceCurrency: plan?.priceCurrency,
       durationInHours: plan?.durationInHours ?? 1,
       maxParticipants: plan?.maxParticipants ?? 1,
@@ -219,6 +224,7 @@ export class WebinarService {
       prerequisites: plan?.prerequisites ?? undefined,
       materialProvided: plan?.materialProvided ?? undefined,
       learningOutcomes: plan?.learningOutcomes,
+      ...positioningPayload(plan ?? {}),
       topics: topicNames,
       consultantProfileId: consultantId,
       scheduledAt: scheduledAtDate,

@@ -47,7 +47,14 @@ export interface IExpertsMetaData {
       name: string;
       consultantCount: number;
     }[];
+    /** Mean of the PUBLISHED per-consultant scores, 0 when none qualify. */
     averageRating: number;
+    /** Denominator behind `averageRating` — published reviews across the
+     *  directory. Gates whether the rating is shown at all (#1485). */
+    publishedReviewCount: number;
+    /** Meetings actually held across the platform — COMPLETED slots, not
+     *  appointments (#1485). */
+    completedSessions: number;
   };
   availableLanguages: string[];
   availableCompanies: string[];
@@ -156,6 +163,7 @@ export function filtersToSearchParams(filters: IExpertFilters): string {
     params.set("minRating", String(filters.minRating));
   for (const company of filters.companies) params.append("companies", company);
   if (filters.language) params.set("language", filters.language);
-  if (filters.affiliationType) params.set("affiliationType", filters.affiliationType);
+  if (filters.affiliationType)
+    params.set("affiliationType", filters.affiliationType);
   return params.toString();
 }

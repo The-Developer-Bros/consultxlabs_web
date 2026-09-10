@@ -42,7 +42,15 @@ export type TConsultantProfile = Prisma.ConsultantProfileGetPayload<{
  */
 export interface IConsultantCardData {
   id: string;
-  rating: number;
+  /**
+   * #705 — the PUBLISHED score. Null until the consultant has
+   * MIN_RATED_UNITS_FOR_PUBLIC_SCORE distinct rated sessions, so one review
+   * cannot define a new consultant.
+   */
+  rating: number | null;
+  /** How many reviews the score is based on. Always shown, even when the score
+   *  is suppressed — "3 reviews" is honest, an average of three is not. */
+  reviewCount?: number;
   headline: string | null;
   experience: number | null;
   description: string | null;

@@ -264,16 +264,24 @@ export const ConsultantCard = memo(function ConsultantCard({
                   </Link>
                 )}
               </div>
+              {/* #705 — a null score means too few rated sessions to publish
+                  one. Say that rather than printing 0.0, which reads as a bad
+                  consultant instead of a new one. */}
               <div className="flex items-center gap-2 mt-2">
-                <div className="flex items-center gap-1">
-                  <Star className="w-4 h-4 text-amber-400 fill-amber-400" />
-                  <span className="font-semibold text-foreground">
-                    {consultant.rating.toFixed(1)}
-                  </span>
-                </div>
-                <span className="text-muted-foreground/70">•</span>
+                {consultant.rating !== null ? (
+                  <>
+                    <div className="flex items-center gap-1">
+                      <Star className="w-4 h-4 text-amber-400 fill-amber-400" />
+                      <span className="font-semibold text-foreground">
+                        {consultant.rating.toFixed(1)}
+                      </span>
+                    </div>
+                    <span className="text-muted-foreground/70">•</span>
+                  </>
+                ) : null}
                 <span className="text-sm text-muted-foreground">
-                  {consultant.reviews?.length || 0} reviews
+                  {consultant.reviewCount ?? consultant.reviews?.length ?? 0}{" "}
+                  reviews
                 </span>
               </div>
             </div>

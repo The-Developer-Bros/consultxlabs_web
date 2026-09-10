@@ -31,6 +31,9 @@ export const orgDetailsInclude = {
       bankName: true,
     },
   },
+  // #1230 — settings UI renders the MSME declaration; the payout deadline
+  // engine already reads this satellite server-side.
+  msmeInfo: { select: { msmeStatus: true, msmeWrittenAgreementOnFile: true } },
   _count: {
     select: {
       memberships: true,

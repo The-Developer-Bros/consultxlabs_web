@@ -315,11 +315,3 @@ export async function getOrganisationsMetadata(): Promise<OrganisationsMetadata>
     total,
   };
 }
-
-/** Public org profile, used by /explore/enterprise/organisations/[orgSlug]. */
-export async function getPublicOrgBySlug(slug: string) {
-  return prisma.organization.findFirst({
-    where: { slug, ...baseWhere() },
-    select: orgListSelect,
-  });
-}

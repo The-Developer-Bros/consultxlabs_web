@@ -22,65 +22,25 @@ export const PRIORITY_OPTIONS: {
 ];
 
 /**
- * Issue types filtered by context
- * Based on GitHub Issue #298 requirements
+ * #support-hub — issue types the PLATFORM-level form may offer. Session-scoped
+ * types ("consultant didn't show up", cancellation help…) are deliberately
+ * absent: they describe what happened IN a session, so they are raised on the
+ * appointment's "Get help" flowchart thread, which routes them with full
+ * context. The server enforces the same line (422 on session-scoped types).
  */
-export const CONTEXTUAL_ISSUE_TYPES = {
-  COMPLETED: [
-    SupportIssueType.CONSULTANT_NO_SHOW,
-    SupportIssueType.CONSULTANT_LATE,
-    SupportIssueType.SESSION_ENDED_EARLY,
-    SupportIssueType.SESSION_QUALITY_POOR,
-    SupportIssueType.COMMUNICATION_ISSUE,
-    SupportIssueType.TECHNICAL_ISSUES,
-    SupportIssueType.OTHER,
-  ],
-  UPCOMING: [
-    SupportIssueType.WANT_TO_CANCEL,
-    SupportIssueType.RESCHEDULING_HELP,
-    SupportIssueType.ACCESS_ISSUE,
-    SupportIssueType.TIMEZONE_CONFUSION,
-    SupportIssueType.TECHNICAL_ISSUES,
-    SupportIssueType.OTHER,
-  ],
-  PAYMENT: [
+export const PLATFORM_ISSUE_TYPE_CATEGORIES = {
+  "Payment Issues": [
+    SupportIssueType.PAYMENT_FAILED,
     SupportIssueType.CHARGED_TWICE,
     SupportIssueType.REFUND_REQUEST,
-    SupportIssueType.PAYMENT_FAILED,
     SupportIssueType.BILLING_QUESTION,
-    SupportIssueType.OTHER,
   ],
+  "Account & Access": [
+    SupportIssueType.ACCOUNT_ISSUE,
+    SupportIssueType.TECHNICAL_ISSUES,
+  ],
+  General: [SupportIssueType.GENERAL_INQUIRY, SupportIssueType.OTHER],
 } as const;
-
-/**
- * All available issue types for generic support
- */
-export const ALL_ISSUE_TYPES = Object.values(SupportIssueType);
-
-/**
- * Get filtered issue types based on context
- * @param appointmentStatus - COMPLETED or UPCOMING
- * @param isPayment - Whether this is a payment-related issue
- * @returns Array of applicable SupportIssueType values
- */
-export function getFilteredIssueTypes(
-  appointmentStatus?: AppointmentStatus,
-  isPayment?: boolean,
-): SupportIssueType[] {
-  if (isPayment) {
-    return [...CONTEXTUAL_ISSUE_TYPES.PAYMENT];
-  }
-
-  if (appointmentStatus === "COMPLETED") {
-    return [...CONTEXTUAL_ISSUE_TYPES.COMPLETED];
-  }
-
-  if (appointmentStatus === "UPCOMING") {
-    return [...CONTEXTUAL_ISSUE_TYPES.UPCOMING];
-  }
-
-  return ALL_ISSUE_TYPES;
-}
 
 /**
  * Human-readable labels for issue types
@@ -92,7 +52,12 @@ export const ISSUE_TYPE_LABELS: Record<SupportIssueType, string> = {
   [SupportIssueType.SESSION_ENDED_EARLY]: "Session ended earlier than expected",
   [SupportIssueType.SESSION_QUALITY_POOR]: "Poor session quality",
   [SupportIssueType.COMMUNICATION_ISSUE]: "Audio/video problems during call",
-  [SupportIssueType.TECHNICAL_ISSUES]: "Technical issues",
+  // Platform-scoped ON PURPOSE. An unqualified "Technical issues" on the
+  // platform form is the one item a user whose CALL broke reaches for, and
+  // that ticket then arrives with no session attached. In-session audio/video
+  // trouble is COMMUNICATION_ISSUE (session-scoped, raised from the
+  // appointment's Get help).
+  [SupportIssueType.TECHNICAL_ISSUES]: "Site or app not working",
   [SupportIssueType.WRONG_CONSULTANT]: "Wrong consultant assigned",
 
   // Access & Scheduling
@@ -120,37 +85,14 @@ export const ISSUE_TYPE_LABELS: Record<SupportIssueType, string> = {
 };
 
 /**
- * Issue type categories for grouped display
+ * #705 — how a ticket is named on screen. Prefer the minted reference; fall back
+ * to the LAST eight characters of the uuid for tickets that predate it. One
+ * definition because there were two: the staff table truncated from the front
+ * and the staff home from the back, so the same ticket had two names.
  */
-export const ISSUE_TYPE_CATEGORIES = {
-  "Session Issues": [
-    SupportIssueType.CONSULTANT_NO_SHOW,
-    SupportIssueType.CONSULTANT_LATE,
-    SupportIssueType.SESSION_ENDED_EARLY,
-    SupportIssueType.SESSION_QUALITY_POOR,
-    SupportIssueType.COMMUNICATION_ISSUE,
-    SupportIssueType.TECHNICAL_ISSUES,
-    SupportIssueType.WRONG_CONSULTANT,
-  ],
-  "Access & Scheduling": [
-    SupportIssueType.ACCESS_ISSUE,
-    SupportIssueType.TIMEZONE_CONFUSION,
-    SupportIssueType.RESCHEDULING_HELP,
-  ],
-  "Payment Issues": [
-    SupportIssueType.PAYMENT_FAILED,
-    SupportIssueType.CHARGED_TWICE,
-    SupportIssueType.REFUND_REQUEST,
-    SupportIssueType.BILLING_QUESTION,
-  ],
-  Documents: [SupportIssueType.DOCUMENT_ISSUE],
-  Cancellation: [
-    SupportIssueType.WANT_TO_CANCEL,
-    SupportIssueType.CANCELLATION_ISSUE,
-  ],
-  General: [
-    SupportIssueType.ACCOUNT_ISSUE,
-    SupportIssueType.GENERAL_INQUIRY,
-    SupportIssueType.OTHER,
-  ],
-} as const;
+export function ticketLabel(ticket: {
+  referenceNumber?: string | null;
+  id: string;
+}): string {
+  return ticket.referenceNumber ?? ticket.id.slice(-8).toUpperCase();
+}

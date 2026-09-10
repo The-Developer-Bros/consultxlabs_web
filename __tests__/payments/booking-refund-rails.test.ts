@@ -41,6 +41,9 @@ jest.mock("../../lib/prisma", () => ({
     payment: { findUnique: (...a: unknown[]) => mockPaymentFindUnique(...a) },
     $transaction: (fn: (tx: unknown) => unknown) =>
       fn({
+        appointmentParticipant: {
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        },
         refund: {
           findMany: (...a: unknown[]) => mockRefundFindMany(...a),
           create: (...a: unknown[]) => mockRefundCreate(...a),

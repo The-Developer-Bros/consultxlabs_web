@@ -1,6 +1,7 @@
 import { cache } from "react";
 import { reportSentryError } from "@/lib/observability/report";
 import prisma from "@/lib/prisma";
+import { stripAnonymousReviewers } from "@/lib/data/review-privacy";
 import { consultantPublicScalars } from "@/lib/data/consultant-public";
 
 /**
@@ -28,6 +29,10 @@ export const getConsultantDetail = cache(async (consultantId: string) => {
       description: true,
       experience: true,
       rating: true,
+      // #705 — the published score and the count behind it. `rating` above is
+      // the RAW mean and stays internal; the profile shows this one.
+      publishedRating: true,
+      reviewCount: true,
       headline: true,
       websiteUrl: true,
       twitterUrl: true,
@@ -129,6 +134,7 @@ export const getConsultantReviews = cache(
       },
       orderBy: { rating: "desc" },
     });
-    return reviews;
+    // The reviewer chose to be unnamed; that has to hold in the payload.
+    return stripAnonymousReviewers(reviews);
   },
 );

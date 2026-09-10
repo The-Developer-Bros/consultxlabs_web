@@ -1,4 +1,5 @@
 import * as Sentry from "@sentry/nextjs";
+import { withSerializableRetry } from "@/lib/db/serializable-retry";
 import prisma, { type Tx } from "@/lib/prisma";
 import { Prisma, type CollaboratorRole } from "@prisma/client";
 import type { Collaborator, CollaboratorStatus } from "@prisma/client";
@@ -74,7 +75,7 @@ function asPlanRole(planType: PlanType, role: string): CollaboratorRole | null {
 // #768 lockdown #12 — capability booleans, set from invite input. Default
 // false so an unspecified permission is never silently granted.
 // Enforced: canSeeAttendees (participant-roster GET).
-// TODO #768 — enforce canApprovePayment / canViewAnalytics / canEditEvent
+// TODO #1319 — enforce canApprovePayment / canViewAnalytics / canEditEvent
 // once collaborator-facing payment-approval, analytics, and event-edit
 // surfaces exist; today they have no endpoint to gate, so only the SET lands.
 export interface CollaboratorPermissions {
@@ -124,58 +125,60 @@ export async function inviteCollaborator(
 
   // FIX B1: Wrap validation + creation in a serializable transaction
   // to prevent concurrent invites from exceeding the 90% cap.
-  const txResult = await prisma.$transaction(
-    async (tx) => {
-      // Validate revenue share total <= 90% INSIDE transaction
-      const valid = await validateRevenueSharesTx(
-        tx,
-        planType,
-        planId,
-        revenueSharePercentage,
-      );
-      if (!valid) return null;
+  const txResult = await withSerializableRetry(() =>
+    prisma.$transaction(
+      async (tx) => {
+        // Validate revenue share total <= 90% INSIDE transaction
+        const valid = await validateRevenueSharesTx(
+          tx,
+          planType,
+          planId,
+          revenueSharePercentage,
+        );
+        if (!valid) return null;
 
-      // FIX #6: Check for ANY existing collaboration (including REMOVED/DECLINED).
-      // If REMOVED/DECLINED, re-activate instead of creating to respect unique constraint.
-      const existing = await tx.collaborator.findFirst({
-        where: { ...planWhere(planType, planId), consultantProfileId },
-      });
+        // FIX #6: Check for ANY existing collaboration (including REMOVED/DECLINED).
+        // If REMOVED/DECLINED, re-activate instead of creating to respect unique constraint.
+        const existing = await tx.collaborator.findFirst({
+          where: { ...planWhere(planType, planId), consultantProfileId },
+        });
 
-      if (existing) {
-        if (existing.status === "REMOVED" || existing.status === "DECLINED") {
-          // Re-activate with new parameters
-          return tx.collaborator.update({
-            where: { id: existing.id },
-            data: {
-              role: planRole,
-              revenueShareBps: pctToBps(revenueSharePercentage),
-              status: "PENDING",
-              invitedById,
-              respondedAt: null,
-              ...perms,
-            },
-          });
+        if (existing) {
+          if (existing.status === "REMOVED" || existing.status === "DECLINED") {
+            // Re-activate with new parameters
+            return tx.collaborator.update({
+              where: { id: existing.id },
+              data: {
+                role: planRole,
+                revenueShareBps: pctToBps(revenueSharePercentage),
+                status: "PENDING",
+                invitedById,
+                respondedAt: null,
+                ...perms,
+              },
+            });
+          }
+          // PENDING or ACCEPTED — already active
+          return null;
         }
-        // PENDING or ACCEPTED — already active
-        return null;
-      }
 
-      return tx.collaborator.create({
-        data: {
-          consultantProfileId,
-          ...planScope(planType, planId),
-          role: planRole,
-          revenueShareBps: pctToBps(revenueSharePercentage),
-          status: "PENDING",
-          invitedById,
-          ...perms,
-        },
-      });
-    },
-    {
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-      timeout: 10000,
-    },
+        return tx.collaborator.create({
+          data: {
+            consultantProfileId,
+            ...planScope(planType, planId),
+            role: planRole,
+            revenueShareBps: pctToBps(revenueSharePercentage),
+            status: "PENDING",
+            invitedById,
+            ...perms,
+          },
+        });
+      },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        timeout: 10000,
+      },
+    ),
   );
 
   // Fire-and-forget: notify invited collaborator
@@ -472,39 +475,41 @@ export async function updateCollaborator(
     planRole = matched;
   }
 
-  return prisma.$transaction(
-    async (tx) => {
-      // Verify collaborator belongs to this plan (IDOR prevention)
-      const collab = await tx.collaborator.findFirst({
-        where: { id: collaborationId, ...planWhere(planType, planId) },
-      });
-      if (!collab) return null;
+  return withSerializableRetry(() =>
+    prisma.$transaction(
+      async (tx) => {
+        // Verify collaborator belongs to this plan (IDOR prevention)
+        const collab = await tx.collaborator.findFirst({
+          where: { id: collaborationId, ...planWhere(planType, planId) },
+        });
+        if (!collab) return null;
 
-      if (updates.revenueSharePercentage !== undefined) {
-        const valid = await validateRevenueSharesTx(
-          tx,
-          planType,
-          planId,
-          updates.revenueSharePercentage,
-          collaborationId,
-        );
-        if (!valid) return null;
-      }
+        if (updates.revenueSharePercentage !== undefined) {
+          const valid = await validateRevenueSharesTx(
+            tx,
+            planType,
+            planId,
+            updates.revenueSharePercentage,
+            collaborationId,
+          );
+          if (!valid) return null;
+        }
 
-      return tx.collaborator.update({
-        where: { id: collaborationId },
-        data: {
-          ...(updates.revenueSharePercentage !== undefined && {
-            revenueShareBps: pctToBps(updates.revenueSharePercentage),
-          }),
-          ...(planRole && { role: planRole }),
-        },
-      });
-    },
-    {
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-      timeout: 10000,
-    },
+        return tx.collaborator.update({
+          where: { id: collaborationId },
+          data: {
+            ...(updates.revenueSharePercentage !== undefined && {
+              revenueShareBps: pctToBps(updates.revenueSharePercentage),
+            }),
+            ...(planRole && { role: planRole }),
+          },
+        });
+      },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        timeout: 10000,
+      },
+    ),
   );
 }
 
@@ -879,19 +884,6 @@ async function validateRevenueSharesTx(
   const currentTotal = collabs.reduce((sum, c) => sum + c.revenueShareBps, 0);
 
   return currentTotal + pctToBps(newShare) <= MAX_COLLAB_BPS;
-}
-
-/**
- * Validate that total revenue shares don't exceed 90% (host keeps min 10%).
- * Public wrapper that uses the global prisma client.
- */
-export async function validateRevenueShares(
-  planType: PlanType,
-  planId: string,
-  newShare: number,
-  excludeId?: string,
-): Promise<boolean> {
-  return validateRevenueSharesTx(prisma, planType, planId, newShare, excludeId);
 }
 
 /**

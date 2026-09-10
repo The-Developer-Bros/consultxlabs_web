@@ -52,9 +52,20 @@ jest.mock("../../lib/auth-helpers", () => ({
   isPrivileged: (role?: string | null) => role === "ADMIN" || role === "STAFF",
 }));
 
+// The DM eligibility gate is exercised against real query shapes in
+// __tests__/security/dm-eligibility.test.ts. Here it is stubbed so these tests
+// keep asserting what they are about — id derivation and Stream call shape —
+// rather than turning into relationship fixtures. Default: permitted.
+const mockAssertCanDirectMessage = jest.fn();
+jest.mock("../../lib/stream/dm-eligibility", () => ({
+  assertCanDirectMessage: (...args: unknown[]) =>
+    mockAssertCanDirectMessage(...args),
+}));
+
 describe("Channel Actions", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockAssertCanDirectMessage.mockResolvedValue(undefined);
     mockStreamClient.channel.mockReturnValue(mockChannel);
     mockStreamClient.queryChannels.mockResolvedValue([]);
     mockGetSession.mockResolvedValue({
@@ -90,6 +101,89 @@ describe("Channel Actions", () => {
         }),
       );
       expect(mockChannel.create).toHaveBeenCalled();
+    });
+
+    // #1270 — the roster travels inside the create() request body and Stream
+    // caps that at 100 members, the same ceiling `upsertUsersToStream` already
+    // respects. A 150-seat webinar built a valid roster and then had the whole
+    // create rejected, so the attendee who triggered it got no chat at all.
+    it("caps the create() roster at 100 and adds the rest in chunks", async () => {
+      const { createChannel } = await import(
+        "../../actions/stream/chat/channel.action"
+      );
+
+      mockChannel.query.mockResolvedValueOnce({ members: {} });
+      const members = Array.from({ length: 249 }, (_, i) => `attendee-${i}`);
+
+      const result = await createChannel({
+        channelType: "team",
+        channelId: "webinar-sold-out",
+        members,
+        createdById: "host",
+      });
+
+      const createData = mockStreamClient.channel.mock.calls.at(-1)?.[2] as {
+        members: string[];
+      };
+      expect(createData.members).toHaveLength(100);
+      // The creator has to be inside the atomic call — Stream needs
+      // created_by_id to resolve, and the host is the one channel member the
+      // channel cannot function without.
+      expect(createData.members[0]).toBe("host");
+
+      const followUps = mockChannel.addMembers.mock.calls.map(
+        ([batch]: [string[]]) => batch,
+      );
+      expect(followUps.map((b: string[]) => b.length)).toEqual([100, 50]);
+
+      // Nobody dropped, nobody duplicated, and the caller still sees everyone.
+      expect([...createData.members, ...followUps.flat()]).toEqual([
+        "host",
+        ...members,
+      ]);
+      expect(result.members).toHaveLength(250);
+    });
+
+    it("adds no follow-up request for an ordinary two-person channel", async () => {
+      const { createChannel } = await import(
+        "../../actions/stream/chat/channel.action"
+      );
+
+      mockChannel.query.mockResolvedValueOnce({ members: {} });
+
+      await createChannel({
+        channelType: "messaging",
+        channelId: "dm-a-b",
+        members: ["a", "b"],
+        createdById: "a",
+      });
+
+      // Chunking must not cost a second round trip on the shape almost every
+      // channel actually has.
+      expect(mockChannel.addMembers).not.toHaveBeenCalled();
+    });
+
+    it("still backfills the roster after losing a create race", async () => {
+      const { createChannel } = await import(
+        "../../actions/stream/chat/channel.action"
+      );
+
+      mockChannel.query.mockResolvedValueOnce({ members: {} });
+      mockChannel.create.mockRejectedValueOnce(
+        new Error('GetOrCreateChannel failed: "channel already exists"'),
+      );
+
+      await createChannel({
+        channelType: "team",
+        channelId: "webinar-raced",
+        members: Array.from({ length: 149 }, (_, i) => `attendee-${i}`),
+        createdById: "host",
+      });
+
+      // The winner created the same channel from the same roster, so the same
+      // remainder is owed either way and addMembers is idempotent.
+      expect(mockChannel.addMembers).toHaveBeenCalledTimes(1);
+      expect(mockChannel.addMembers.mock.calls[0][0]).toHaveLength(50);
     });
 
     it("should deduplicate members list", async () => {
@@ -136,6 +230,77 @@ describe("Channel Actions", () => {
           members: expect.arrayContaining(["creator", "other"]),
         }),
       );
+    });
+
+    it.each([
+      [
+        "plain already-exists message",
+        new Error('GetOrCreateChannel failed: "channel already exists"'),
+      ],
+      [
+        "message with unrelated numeric code",
+        Object.assign(new Error("channel already exists"), { code: 4 }),
+      ],
+    ])(
+      "adopts an existing channel on duplicate rejection (%s)",
+      async (_label, duplicateError) => {
+        const { createChannel } =
+          await import("../../actions/stream/chat/channel.action");
+
+        mockChannel.create.mockRejectedValueOnce(duplicateError);
+
+        // team type so the post-create path includes the host moderator grant.
+        const result = await createChannel({
+          channelType: "team",
+          channelId: "race-loser",
+          members: ["user1"],
+          createdById: "user1",
+        });
+
+        // Adopted, not failed: same id handed back, no raw payload, and the
+        // normal post-create path still ran (moderator grant + cache stamp).
+        expect(result.channelId).toBe("race-loser");
+        expect(result.channelData).toBeNull();
+        expect(mockChannel.assignRoles).toHaveBeenCalled();
+        expect(mockCache.markChannelExists).toHaveBeenCalled();
+      },
+    );
+
+    it("rethrows Not Allowed (code 17) failures instead of adopting", async () => {
+      // Stream's error table defines 17 as Not Allowed / HTTP 403 — a
+      // permission failure, never a duplicate. The predicate must not swallow
+      // it into the adopt path or creation would be skipped silently.
+      const forbidden = Object.assign(new Error("Not Allowed"), { code: 17 });
+      mockChannel.create.mockRejectedValueOnce(forbidden);
+
+      const { createChannel } =
+        await import("../../actions/stream/chat/channel.action");
+
+      await expect(
+        createChannel({
+          channelType: "messaging",
+          channelId: "forbidden-channel",
+          members: ["user1"],
+          createdById: "user1",
+        }),
+      ).rejects.toThrow("Not Allowed");
+      expect(mockCache.markChannelExists).not.toHaveBeenCalled();
+    });
+
+    it("rethrows non-duplicate create failures", async () => {
+      const { createChannel } =
+        await import("../../actions/stream/chat/channel.action");
+
+      mockChannel.create.mockRejectedValueOnce(new Error("Stream 500"));
+
+      await expect(
+        createChannel({
+          channelType: "messaging",
+          channelId: "real-failure",
+          members: ["user1"],
+          createdById: "user1",
+        }),
+      ).rejects.toThrow("Stream 500");
     });
 
     it("should reject invalid channel type", async () => {
@@ -221,12 +386,52 @@ describe("Channel Actions", () => {
       await expect(createDirectMessageChannel("", "user2")).rejects.toThrow();
       await expect(createDirectMessageChannel("user1", "")).rejects.toThrow();
     });
+
+    it("consults the eligibility gate before creating anything", async () => {
+      const { createDirectMessageChannel } =
+        await import("../../actions/stream/chat/channel.action");
+
+      mockChannel.query.mockResolvedValue({ members: {} });
+      await createDirectMessageChannel("bob", "alice");
+
+      expect(mockAssertCanDirectMessage).toHaveBeenCalledWith("bob", "alice");
+    });
+
+    it("creates no channel when the pair has no booking link", async () => {
+      const { createDirectMessageChannel } =
+        await import("../../actions/stream/chat/channel.action");
+
+      mockAssertCanDirectMessage.mockRejectedValue(
+        new Error("Direct messages are only available between people who share a booking."),
+      );
+
+      await expect(
+        createDirectMessageChannel("stranger-a", "stranger-b"),
+      ).rejects.toThrow("share a booking");
+
+      // The gate has to run BEFORE the Stream call, not alongside it — a
+      // refusal that still creates the channel is not a refusal.
+      expect(mockStreamClient.channel).not.toHaveBeenCalled();
+    });
+
+    it("refuses a self-pair at id derivation", async () => {
+      const { createDirectMessageChannel } =
+        await import("../../actions/stream/chat/channel.action");
+
+      // The gate is stubbed permissive here, so this asserts the SECOND line of
+      // defence: getDmChannelId itself rejects `a === a` rather than producing
+      // `dm-a-a`, which createChannel would then de-duplicate into a
+      // one-member channel that renders as its own raw id.
+      await expect(
+        createDirectMessageChannel("same-user", "same-user"),
+      ).rejects.toThrow(/self-DM/i);
+    });
   });
 
   describe("addMemberToChannel", () => {
     it("should add member to existing channel", async () => {
       const { addMemberToChannel } =
-        await import("../../actions/stream/chat/channel.action");
+        await import("../../actions/stream/chat/member.action");
 
       const result = await addMemberToChannel(
         "consultation-123",
@@ -239,7 +444,7 @@ describe("Channel Actions", () => {
 
     it("should infer messaging type for consultation channels", async () => {
       const { addMemberToChannel } =
-        await import("../../actions/stream/chat/channel.action");
+        await import("../../actions/stream/chat/member.action");
 
       await addMemberToChannel("consultation-abc", "user123");
 
@@ -251,7 +456,7 @@ describe("Channel Actions", () => {
 
     it("should infer messaging type for subscription channels", async () => {
       const { addMemberToChannel } =
-        await import("../../actions/stream/chat/channel.action");
+        await import("../../actions/stream/chat/member.action");
 
       await addMemberToChannel("subscription-xyz", "user456");
 
@@ -263,7 +468,7 @@ describe("Channel Actions", () => {
 
     it("should infer team type for other channels", async () => {
       const { addMemberToChannel } =
-        await import("../../actions/stream/chat/channel.action");
+        await import("../../actions/stream/chat/member.action");
 
       await addMemberToChannel("webinar-123", "user789");
 
@@ -275,7 +480,7 @@ describe("Channel Actions", () => {
 
     it("should reject invalid inputs", async () => {
       const { addMemberToChannel } =
-        await import("../../actions/stream/chat/channel.action");
+        await import("../../actions/stream/chat/member.action");
 
       await expect(addMemberToChannel("", "user")).rejects.toThrow();
       await expect(addMemberToChannel("channel", "")).rejects.toThrow();
@@ -287,7 +492,7 @@ describe("Channel Actions", () => {
       mockGetSession.mockResolvedValueOnce(null);
 
       const { addMemberToChannel } =
-        await import("../../actions/stream/chat/channel.action");
+        await import("../../actions/stream/chat/member.action");
 
       await expect(
         addMemberToChannel("consultation-123", "new-user-id"),
@@ -307,7 +512,7 @@ describe("Channel Actions", () => {
       });
 
       const { addMemberToChannel } =
-        await import("../../actions/stream/chat/channel.action");
+        await import("../../actions/stream/chat/member.action");
 
       await expect(
         addMemberToChannel("consultation-123", "new-user-id"),
@@ -326,7 +531,7 @@ describe("Channel Actions", () => {
       });
 
       const { addMemberToChannel } =
-        await import("../../actions/stream/chat/channel.action");
+        await import("../../actions/stream/chat/member.action");
 
       const result = await addMemberToChannel(
         "consultation-123",
@@ -483,9 +688,10 @@ describe("Entity Channel Creation", () => {
         await import("../../actions/stream/chat/channel.action");
 
       const result = await createConsultationChannel("consultation-789");
+      expect(result).not.toBeNull();
 
       // IDs sorted: "consultant-3" < "consultee-1" alphabetically
-      expect(result.channelId).toBe("dm-consultant-3-consultee-1");
+      expect(result!.channelId).toBe("dm-consultant-3-consultee-1");
       expect(mockStreamClient.channel).toHaveBeenCalledWith(
         "messaging",
         "dm-consultant-3-consultee-1",
@@ -542,9 +748,10 @@ describe("Entity Channel Creation", () => {
         await import("../../actions/stream/chat/channel.action");
 
       const result = await createSubscriptionChannel("subscription-101");
+      expect(result).not.toBeNull();
 
       // IDs sorted: "consultant-4" < "subscriber-1" alphabetically
-      expect(result.channelId).toBe("dm-consultant-4-subscriber-1");
+      expect(result!.channelId).toBe("dm-consultant-4-subscriber-1");
       expect(mockStreamClient.channel).toHaveBeenCalledWith(
         "messaging",
         "dm-consultant-4-subscriber-1",
@@ -586,120 +793,6 @@ describe("Entity Channel Creation", () => {
   });
 });
 
-describe("initializeAllChannels", () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    mockStreamClient.channel.mockReturnValue(mockChannel);
-    mockChannel.query.mockResolvedValue({ members: {} });
-  });
-
-  it("should handle empty database gracefully", async () => {
-    mockPrisma.webinar.findMany.mockResolvedValueOnce([]);
-    mockPrisma.class.findMany.mockResolvedValueOnce([]);
-    mockPrisma.consultation.findMany.mockResolvedValueOnce([]);
-    mockPrisma.subscription.findMany.mockResolvedValueOnce([]);
-
-    const { initializeAllChannels } =
-      await import("../../actions/stream/chat/channel.action");
-
-    const result = await initializeAllChannels();
-
-    expect(result.success).toBe(true);
-    expect(result.counts.users).toBe(0);
-    expect(result.counts.webinars.success).toBe(0);
-    expect(result.counts.webinars.failed).toBe(0);
-  });
-
-  it("should initialize channels for all entity types", async () => {
-    mockPrisma.webinar.findMany.mockResolvedValueOnce([
-      {
-        id: "w1",
-        webinarPlan: { consultantProfile: { user: { id: "c1" } } },
-        appointment: { slotsOfAppointment: [{ user: [{ id: "u1" }] }] },
-      },
-    ]);
-    mockPrisma.class.findMany.mockResolvedValueOnce([
-      {
-        id: "cl1",
-        classPlan: { consultantProfile: { user: { id: "c2" } } },
-        appointments: [],
-      },
-    ]);
-    mockPrisma.consultation.findMany.mockResolvedValueOnce([
-      {
-        id: "co1",
-        consultationPlan: { consultantProfile: { user: { id: "c3" } } },
-        requestedBy: { user: { id: "u2" } },
-      },
-    ]);
-    mockPrisma.subscription.findMany.mockResolvedValueOnce([
-      {
-        id: "s1",
-        subscriptionPlan: { consultantProfile: { user: { id: "c4" } } },
-        requestedBy: { user: { id: "u3" } },
-      },
-    ]);
-
-    // Mock the individual entity lookups for channel creation
-    mockPrisma.webinar.findUnique.mockResolvedValue({
-      id: "w1",
-      webinarPlan: {
-        title: "Webinar",
-        consultantProfile: { user: { id: "c1" } },
-      },
-      appointment: null,
-    });
-    mockPrisma.class.findUnique.mockResolvedValue({
-      id: "cl1",
-      classPlan: { title: "Class", consultantProfile: { user: { id: "c2" } } },
-      appointments: [],
-    });
-    mockPrisma.consultation.findUnique.mockResolvedValue({
-      id: "co1",
-      consultationPlan: { consultantProfile: { user: { id: "c3" } } },
-      requestedBy: { user: { id: "u2" } },
-    });
-    mockPrisma.subscription.findUnique.mockResolvedValue({
-      id: "s1",
-      subscriptionPlan: { consultantProfile: { user: { id: "c4" } } },
-      requestedBy: { user: { id: "u3" } },
-    });
-
-    const { initializeAllChannels } =
-      await import("../../actions/stream/chat/channel.action");
-
-    const result = await initializeAllChannels();
-
-    expect(result.success).toBe(true);
-    expect(result.counts.users).toBeGreaterThan(0);
-  });
-
-  it("should handle partial failures", async () => {
-    mockPrisma.webinar.findMany.mockResolvedValueOnce([
-      {
-        id: "w1",
-        webinarPlan: { consultantProfile: { user: { id: "c1" } } },
-        appointment: null,
-      },
-    ]);
-    mockPrisma.class.findMany.mockResolvedValueOnce([]);
-    mockPrisma.consultation.findMany.mockResolvedValueOnce([]);
-    mockPrisma.subscription.findMany.mockResolvedValueOnce([]);
-
-    // Make the webinar channel creation fail
-    mockPrisma.webinar.findUnique.mockResolvedValue(null);
-
-    const { initializeAllChannels } =
-      await import("../../actions/stream/chat/channel.action");
-
-    const result = await initializeAllChannels();
-
-    expect(result.success).toBe(true);
-    expect(result.counts.webinars.failed).toBe(1);
-    expect(result.counts.webinars.success).toBe(0);
-  });
-});
-
 describe("addMemberToChannel error handling", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -713,7 +806,7 @@ describe("addMemberToChannel error handling", () => {
     mockChannel.addMembers.mockRejectedValueOnce(new Error("API error"));
 
     const { addMemberToChannel } =
-      await import("../../actions/stream/chat/channel.action");
+      await import("../../actions/stream/chat/member.action");
 
     await expect(
       addMemberToChannel("test-channel", "user-123"),

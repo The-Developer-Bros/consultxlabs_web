@@ -20,7 +20,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { EducationSchema } from "@/schemas/user";
+import {
+  EducationSchema,
+  LONG_FORM_TEXT_MAX,
+  SHORT_FORM_TEXT_MAX,
+} from "@/schemas/user";
 import { Education } from "./EducationSection";
 import {
   InstitutionLogo,
@@ -238,6 +242,7 @@ export function AddEducationModal({
                   setFormData({ ...formData, activities: e.target.value })
                 }
                 placeholder="e.g., Student Council, Debate Club"
+                maxLength={SHORT_FORM_TEXT_MAX}
               />
             </div>
 
@@ -251,7 +256,12 @@ export function AddEducationModal({
                 }
                 placeholder="Additional details about your education..."
                 rows={3}
+                maxLength={LONG_FORM_TEXT_MAX}
               />
+              <p className="text-xs text-muted-foreground text-right">
+                {formData.description?.length || 0}/{LONG_FORM_TEXT_MAX}{" "}
+                characters
+              </p>
             </div>
           </div>
 

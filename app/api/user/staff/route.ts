@@ -2,6 +2,7 @@ import * as Sentry from "@sentry/nextjs";
 import { NextResponse, type NextRequest } from "next/server";
 import prisma from "@/lib/prisma";
 import { UserRole } from "@prisma/client";
+import bcrypt from "bcrypt";
 import {
   requireApiAuth,
   isPrivileged,
@@ -24,7 +25,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const {
       email,
-      password, // Raw password from client
+      password,
       name,
       phone,
       address,
@@ -40,9 +41,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // NOTE: Password hashing is handled by BetterAuth (lib/auth.ts).
-    // The staff user.create below does not store a password directly.
-
     // Check if user already exists
     const existingUser = await prisma.user.findUnique({ where: { email } });
     if (existingUser) {
@@ -52,26 +50,41 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Create the user and staff profile within a transaction
-    const newUser = await prisma.user.create({
-      data: {
-        name,
-        email,
-        phone,
-        role: UserRole.STAFF,
-        address,
-        staffProfile: {
-          create: {
-            department,
-            position,
+    // #695 ADM-1 — hash the password and store a credential Account row so
+    // the staff member can actually sign in. The previous code accepted the
+    // password but never persisted it (the comment claimed BetterAuth handled
+    // hashing — it didn't; this route bypasses BetterAuth entirely).
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    const newUser = await prisma.$transaction(async (tx) => {
+      const user = await tx.user.create({
+        data: {
+          name,
+          email,
+          phone,
+          emailVerified: true,
+          role: UserRole.STAFF,
+          address,
+          staffProfile: {
+            create: { department, position },
           },
         },
-      },
-      include: { staffProfile: true },
+      });
+      await tx.account.create({
+        data: {
+          userId: user.id,
+          accountId: email,
+          providerId: "credential",
+          password: passwordHash,
+        },
+      });
+      return user;
     });
 
-    // Return the newly created staff user (excluding password)
-    return NextResponse.json(newUser, { status: 201 });
+    return NextResponse.json(
+      { ...newUser, staffProfile: { department, position } },
+      { status: 201 },
+    );
   } catch (error) {
     console.error("Error creating staff:", error);
     Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "staff" } });

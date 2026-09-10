@@ -20,7 +20,7 @@
 
 import { StreamChat, UserResponse } from "stream-chat";
 import prisma from "../../lib/prisma";
-import { acquireLock, releaseLock, withCircuitBreaker } from "../../lib/redis";
+import { withCronLock } from "@/lib/cron/with-cron-lock";
 
 // Types
 interface FailedDeletionFromSDK {
@@ -52,8 +52,6 @@ export interface SyncOptions {
   excludeUserIds?: string[];
   /** Delay between batch deletions in ms (default: 500) */
   batchDelayMs?: number;
-  /** Fail if the lock cannot be acquired (default: true) */
-  requireLock?: boolean;
 }
 
 // User IDs that should never be deleted (from env or defaults)
@@ -74,8 +72,9 @@ function getExcludedUserIds(): Set<string> {
 // System user prefixes that should be excluded
 const SYSTEM_USER_PREFIXES = ["system-", "recording-egress-"];
 
-// Distributed lock configuration
-const SYNC_LOCK_KEY = "stream-sync:lock";
+// Distributed lock configuration. The key itself is now derived by
+// `withCronLock` from the job name ("cron:lock:stream-sync"); only the TTL
+// is still ours to choose.
 // #1134 P1-21 — was 10 minutes, which is SHORTER than the run it guards. At
 // 100k users this walks 1,000 pages with a 500ms sleep between deletions (8
 // minutes of sleep alone) plus a Stream round-trip and a Prisma query per page:
@@ -139,12 +138,10 @@ function sleep(ms: number): Promise<void> {
 /**
  * Perform Stream user synchronization
  *
- * This function:
- * 1. Acquires distributed lock to prevent concurrent runs
- * 2. Fetches all users from Stream (paginated)
- * 3. Compares against database users
- * 4. Deletes stale users from Stream that don't exist in database
- * 5. Releases lock on completion
+ * Runs under the fleet cron lock, then fetches every Stream user page by page,
+ * compares each against the database and soft-deletes the ones that no longer
+ * exist here. Throws `CronLockHeldError` when another runner already holds the
+ * lock, which `runJob` treats as a clean skip rather than a failure.
  *
  * @param options Sync configuration options
  * @returns Summary of the synchronization operation
@@ -152,44 +149,48 @@ function sleep(ms: number): Promise<void> {
 export async function performStreamUserSync(
   options: SyncOptions = {},
 ): Promise<SyncSummary> {
+  // #1270 — was a bespoke `acquireLock`/`releaseLock` pair. It excluded
+  // correctly, but it was invisible: `withCronLock` is what writes the
+  // `SystemJobExecution` row and refreshes the fleet heartbeat, so for as long
+  // as this job held its own lock it appeared in no operator surface, had no
+  // recorded last run and no recorded duration, and the staff Jobs page could
+  // only ever show it as never having run.
+  //
+  // Fail-closed, and stated as a literal rather than derived from the old
+  // `requireLock` option, for two reasons. #1134 P1-21 already decided this job
+  // must refuse to run rather than risk two concurrent deletion sweeps, so a
+  // caller-supplied override was a knob nobody wanted and nobody set. And the
+  // fleet's fail modes are audited statically by
+  // __tests__/maintenance/cron-lock-registry.test.ts, which cannot read a
+  // fail mode that is computed at runtime.
+  //
+  // One behaviour changes: under mock Redis — a laptop with no Upstash
+  // credentials — fail-closed throws instead of proceeding unlocked. That is
+  // the right answer for a job that soft-deletes Stream users.
+  return withCronLock(
+    "stream-sync",
+    {
+      failMode: "closed",
+      // The walk takes 15-30 minutes at 100k users, so the lock has to outlive
+      // any run that can exist or a second scheduled run starts deleting
+      // concurrently (#1134 P1-21).
+      ttlMs: SYNC_LOCK_TTL,
+    },
+    () => performStreamUserSyncUnlocked(options),
+  );
+}
+
+async function performStreamUserSyncUnlocked(
+  options: SyncOptions = {},
+): Promise<SyncSummary> {
   const {
     pageLimit = 100,
     dryRun = false,
     excludeUserIds = [],
     batchDelayMs = 500,
-    // #1134 P1-21 — was false, so the job proceeded even when the lock was held
-    // or Redis was down: the one guard against two concurrent deletion runs was
-    // advisory. This job soft-deletes Stream users; overlapping runs is not a
-    // risk worth taking for availability of a nightly sweep.
-    requireLock = true,
   } = options;
 
   const excludedSet = getExcludedUserIds();
-
-  // Acquire distributed lock to prevent concurrent runs
-  let lockToken: string | null = null;
-  try {
-    lockToken = await withCircuitBreaker(
-      () => acquireLock(SYNC_LOCK_KEY, SYNC_LOCK_TTL),
-      () => null, // Fallback if Redis is down
-    );
-  } catch (error) {
-    // Not "proceeding without" — the default now throws below. Saying
-    // otherwise in the log sends whoever reads it looking for a run that
-    // never happened.
-    console.warn("⚠️ Failed to acquire lock:", error);
-  }
-
-  if (lockToken === null) {
-    const message =
-      "Could not acquire lock - sync may already be in progress or Redis unavailable";
-    if (requireLock) {
-      throw new Error(message);
-    }
-    console.warn(`⚠️ ${message}`);
-  } else {
-    console.log("🔒 Acquired distributed lock");
-  }
 
   console.log("🔄 Starting Stream user synchronization...");
   if (dryRun) {
@@ -336,17 +337,6 @@ export async function performStreamUserSync(
   } catch (error) {
     console.error("❌ Synchronization failed:", error);
     throw error;
-  } finally {
-    // Always release the lock when done (success or failure)
-    if (lockToken) {
-      try {
-        await releaseLock(SYNC_LOCK_KEY, lockToken);
-        console.log("🔓 Released distributed lock");
-      } catch (releaseError) {
-        console.warn("⚠️ Failed to release lock:", releaseError);
-        // Lock will auto-expire after TTL anyway
-      }
-    }
   }
 }
 

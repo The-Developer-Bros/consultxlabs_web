@@ -26,8 +26,10 @@ function CheckoutFailureContent() {
   };
 
   const handleContactSupport = () => {
-    // Navigate to support page with payment intent info
-    const supportUrl = `/support?issue=payment_failed${paymentIntent ? `&payment_intent=${paymentIntent}` : ""}`;
+    // E2E-audit fix — /support does not exist as a public route; the support
+    // hub lives inside the dashboard. Carry the failure context in the query
+    // so the dashboard landing can route it onward.
+    const supportUrl = `/dashboard?issue=payment_failed${paymentIntent ? `&payment_intent=${paymentIntent}` : ""}`;
     router.push(supportUrl);
   };
 
@@ -160,7 +162,7 @@ function CheckoutFailureContent() {
           <p>
             Need immediate assistance?{" "}
             <a
-              href="/support"
+              href="/dashboard"
               className="text-foreground font-medium hover:underline"
             >
               Contact our support team

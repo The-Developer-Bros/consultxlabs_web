@@ -27,6 +27,7 @@ import { restoreOverageBaseCarve } from "@/lib/payments/billing/overage-base-car
 import { recordSystemError } from "@/lib/enterprise/system-events";
 import { getAppUrl } from "@/lib/url";
 import { withCronLock } from "@/lib/cron/with-cron-lock";
+import { abortIfMaintenance } from "@/lib/maintenance-cron";
 import * as Sentry from "@sentry/nextjs";
 import { runJob } from "@/lib/observability/job-sentry";
 
@@ -61,7 +62,9 @@ export async function runTimeoutMemberOverages(): Promise<TimeoutStats> {
           program: {
             select: {
               name: true,
-              contract: { select: { organization: { select: { name: true } } } },
+              contract: {
+                select: { organization: { select: { name: true } } },
+              },
             },
           },
         },
@@ -124,6 +127,7 @@ export async function runTimeoutMemberOverages(): Promise<TimeoutStats> {
 }
 
 async function main() {
+  await abortIfMaintenance("timeout-member-overages");
   console.log(
     `[timeout-member-overages] Starting at ${new Date().toISOString()}`,
   );
@@ -136,9 +140,14 @@ async function main() {
   console.log(
     `[timeout-member-overages] Done. scanned=${stats.scanned} timedOut=${stats.timedOut}`,
   );
-  Sentry.logger.info("job:timeout-member-overages finished", { scanned: stats.scanned, timedOut: stats.timedOut });
+  Sentry.logger.info("job:timeout-member-overages finished", {
+    scanned: stats.scanned,
+    timedOut: stats.timedOut,
+  });
 }
 
 if (require.main === module) {
-  runJob("timeout-member-overages", () => main().finally(() => prisma.$disconnect()));
+  runJob("timeout-member-overages", () =>
+    main().finally(() => prisma.$disconnect()),
+  );
 }

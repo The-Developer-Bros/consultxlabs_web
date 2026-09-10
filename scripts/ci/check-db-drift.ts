@@ -20,6 +20,11 @@
  *
  * Skips cleanly (exit 0) when DATABASE_URL is absent.
  */
+// Without this the script reads a bare process.env, finds no DATABASE_URL, and
+// self-skips with exit 0 — which is how this guard reported success on every CI
+// run while never once executing. CI writes the secret to .env as a FILE; only
+// Next loads that implicitly. Every other DB-touching script here does the same.
+import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 

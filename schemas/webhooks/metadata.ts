@@ -131,7 +131,21 @@ export function normalizeLegacySlotKeys(
  * @throws ZodError if validation fails
  */
 export function validateWebhookMetadata(rawMetadata: Record<string, string>) {
-  const metadata = normalizeLegacySlotKeys(rawMetadata);
+  // #1462 — an empty-string note is an ABSENT field, not a present one. The
+  // optional datetime fields above accept a missing key and reject `""`, so a
+  // scheduling-period subscription whose order was minted with
+  // `startsAt: ""` failed validation on every capture and stranded the sale as
+  // REQUIRES_MANUAL_RECOVERY. The builder no longer emits those keys, but
+  // gateway notes are persisted external data and a Razorpay order never
+  // expires, so orders already minted with empty strings keep replaying for as
+  // long as they are payable; stripping here is what makes those replays land.
+  // It runs before the legacy-key normalization so an empty legacy key cannot
+  // shadow a real new-key value either.
+  const present: Record<string, string> = {};
+  for (const [key, value] of Object.entries(rawMetadata)) {
+    if (value !== "") present[key] = value;
+  }
+  const metadata = normalizeLegacySlotKeys(present);
   // First parse appointmentType to determine which schema to use
   const { appointmentType } = baseMetadataSchema.parse(metadata);
 

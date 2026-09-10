@@ -60,12 +60,21 @@ export async function POST(
     );
   }
 
-  await unfreezeWalletSpend({
+  const applied = await unfreezeWalletSpend({
     billingAccountId: account.id,
     organizationId: account.ownerOrgId,
     actorUserId: auth.session.user.id,
     reason: body.data.reason,
   });
+
+  // false ⇒ not frozen (raced with another actor or a concurrent re-freeze
+  // abort) — surface as conflict, never report success for a no-op.
+  if (!applied) {
+    return NextResponse.json(
+      { error: "Wallet spend is not frozen on this account" },
+      { status: 409 },
+    );
+  }
 
   return NextResponse.json({ status: "unfrozen", billingAccountId: account.id });
 }

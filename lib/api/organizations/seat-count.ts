@@ -100,3 +100,50 @@ export async function adjustActiveSeatCount(
   });
   return { applied: true, balanceAfter: after.activeSeatCount };
 }
+
+/**
+ * E2E-audit P1 fix — seat-count release for member-lifecycle cascades.
+ *
+ * The assignment-cancel paths on the assignment routes already decrement the
+ * billed seat, but the MEMBER-level cascades (removal via DELETE/PATCH,
+ * SCIM deprovision, DPDP erasure) terminated live ProgramAssignments without
+ * releasing their seats — a deprovisioned member stayed fully counted against
+ * `activeSeatCount` while any future PER_SEAT enablement would bill them.
+ * Call AFTER the assignments have been stamped CANCELLED; pass the same
+ * membership ids whose assignments were just terminated. Best-effort per
+ * program: non-LICENSED_SEAT programs and unlicensed contracts no-op inside
+ * `adjustActiveSeatCount`.
+ */
+export async function releaseSeatsForTerminatedAssignments(
+  tx: Tx,
+  membershipIds: string[],
+): Promise<number> {
+  if (membershipIds.length === 0) return 0;
+
+  const now = new Date();
+  const terminated = await tx.programAssignment.findMany({
+    where: {
+      membershipId: { in: membershipIds },
+      periodEnd: { gte: now },
+      status: "CANCELLED",
+    },
+    select: { programId: true },
+  });
+
+  const seen = new Set<string>();
+  for (const assignment of terminated) {
+    if (seen.has(assignment.programId)) continue;
+    seen.add(assignment.programId);
+    try {
+      await adjustActiveSeatCount(tx, {
+        programId: assignment.programId,
+        delta: -1,
+      });
+    } catch (err) {
+      // A concurrent double-release losing the underflow guard is a benign
+      // outcome (the count is already correct); anything else propagates.
+      if (!(err instanceof SeatCountUnderflowError)) throw err;
+    }
+  }
+  return seen.size;
+}

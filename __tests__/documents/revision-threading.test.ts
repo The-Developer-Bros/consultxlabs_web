@@ -35,9 +35,10 @@ describe("consultee revision upload", () => {
 
   it("scopes the revision target to THIS appointment before linking", () => {
     // The guard must constrain on appointmentId, not just the document id —
-    // that constraint is the whole defence.
+    // that constraint is the whole defence. Tombstoned parents are also
+    // rejected (a purged document cannot gain a new revision).
     expect(src).toMatch(
-      /findFirst\(\{\s*where:\s*\{\s*id:\s*revisionOf,\s*appointmentId\s*\}/,
+      /findFirst\(\{\s*where:\s*\{\s*id:\s*revisionOf,\s*appointmentId,\s*deletedAt:\s*null\s*\}/,
     );
     expect(src).toContain("INVALID_REVISION_TARGET");
   });

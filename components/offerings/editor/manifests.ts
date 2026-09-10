@@ -154,6 +154,50 @@ const supportLevelField = {
   ],
 };
 
+/**
+ * Recording and certification promises. Every model carries the recording
+ * columns (#1134 P1-6 made them reachable for 1:1 types too); only webinar
+ * and class can issue a certificate, so the toggle is opt-in per type.
+ */
+const extrasSection = (withCertificate: boolean): SectionSpec => ({
+  id: "extras",
+  title: "Extras",
+  description: "Recordings and certificates.",
+  fields: [
+    {
+      name: "recordingEnabled",
+      kind: "switch",
+      label: "Record sessions",
+      description: "Sessions are recorded for attendees to revisit.",
+      span: 3,
+    },
+    {
+      // Always rendered rather than shown only when recording is on — the
+      // renderer cannot express field dependencies, and choosing a policy
+      // before enabling is harmless.
+      name: "recordingStoragePolicy",
+      kind: "select",
+      label: "Recording storage",
+      span: 3,
+      options: [
+        { value: "STREAM_ONLY", label: "Stream only" },
+        { value: "PERMANENT", label: "Permanent library" },
+      ],
+    },
+    ...(withCertificate
+      ? [
+          {
+            name: "certificateProvided",
+            kind: "switch" as const,
+            label: "Provide a certificate",
+            description: "Attendees receive a completion certificate.",
+            span: 3 as const,
+          },
+        ]
+      : []),
+  ],
+});
+
 export const CONSULTATION_MANIFEST: OfferingManifest = {
   type: "consultation",
   noun: "consultation",
@@ -167,7 +211,7 @@ export const CONSULTATION_MANIFEST: OfferingManifest = {
         {
           name: "price",
           kind: "price",
-          label: "Price",
+          label: "Price (₹)",
           currencyName: "priceCurrency",
           span: 3,
         },
@@ -182,6 +226,7 @@ export const CONSULTATION_MANIFEST: OfferingManifest = {
       ],
     },
     contentSection("consultation"),
+    extrasSection(false),
     faqSection,
   ],
 };
@@ -199,7 +244,7 @@ export const SUBSCRIPTION_MANIFEST: OfferingManifest = {
         {
           name: "price",
           kind: "price",
-          label: "Price",
+          label: "Price (₹)",
           currencyName: "priceCurrency",
           span: 2,
         },
@@ -232,6 +277,7 @@ export const SUBSCRIPTION_MANIFEST: OfferingManifest = {
       ],
     },
     contentSection("subscription"),
+    extrasSection(false),
     {
       id: "roadmap",
       title: "Session roadmap",
@@ -257,7 +303,7 @@ export const WEBINAR_MANIFEST: OfferingManifest = {
         {
           name: "price",
           kind: "price",
-          label: "Price",
+          label: "Price (₹)",
           currencyName: "priceCurrency",
           span: 2,
         },
@@ -280,6 +326,7 @@ export const WEBINAR_MANIFEST: OfferingManifest = {
       ],
     },
     contentSection("webinar"),
+    extrasSection(true),
     {
       id: "sessions",
       title: "Sessions",
@@ -314,7 +361,7 @@ export const CLASS_MANIFEST: OfferingManifest = {
         {
           name: "price",
           kind: "price",
-          label: "Price",
+          label: "Price (₹)",
           currencyName: "priceCurrency",
           span: 2,
         },
@@ -357,6 +404,7 @@ export const CLASS_MANIFEST: OfferingManifest = {
       ],
     },
     contentSection("class"),
+    extrasSection(true),
     {
       id: "sessions",
       title: "Sessions",

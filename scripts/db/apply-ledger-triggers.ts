@@ -10,17 +10,13 @@ import { readFileSync } from "fs";
 import { join } from "path";
 
 import prisma from "../../lib/prisma";
+import { splitSqlStatements } from "./sql-chunks";
 
 async function main(): Promise<void> {
   const sqlPath = join(process.cwd(), "prisma", "sql", "ledger-triggers.sql");
   const raw = readFileSync(sqlPath, "utf8");
 
-  // Prisma's $executeRawUnsafe runs one statement per call (extended protocol),
-  // so split the file on the `-- SPLIT` markers and run each non-empty statement.
-  const statements = raw
-    .split(/^--\s*SPLIT\s*$/m)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0 && !/^(--.*\n?)*$/.test(s));
+  const statements = splitSqlStatements(raw);
 
   for (const stmt of statements) {
     await prisma.$executeRawUnsafe(stmt);

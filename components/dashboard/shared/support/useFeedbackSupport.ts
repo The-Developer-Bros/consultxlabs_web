@@ -10,6 +10,7 @@ import {
 } from "@prisma/client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
+import { describeSupportError } from "@/lib/support/error-copy";
 import React from "react";
 import { createConsulteeQueries } from "@/lib/dashboard-queries";
 
@@ -95,8 +96,10 @@ export function useFeedbackSupport(scopeId: string) {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.message || "Failed to submit your feedback");
+        // Envelope-aware: prefer the coded copy, fall back to the server's
+        // user-safe `error` (the old `errorData.message` field never existed).
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(describeSupportError(payload, "Failed to submit your feedback"));
       }
 
       toast({
@@ -133,9 +136,9 @@ export function useFeedbackSupport(scopeId: string) {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
+        const payload = await response.json().catch(() => ({}));
         throw new Error(
-          errorData.message || "Failed to create your support ticket",
+          describeSupportError(payload, "Failed to create your support ticket"),
         );
       }
 
@@ -181,8 +184,8 @@ export function useFeedbackSupport(scopeId: string) {
       );
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.message || "Failed to submit your response");
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(describeSupportError(payload, "Failed to submit your response"));
       }
 
       toast({

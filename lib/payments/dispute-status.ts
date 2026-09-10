@@ -62,6 +62,24 @@ const ALLOWED: Record<DisputeStatus, DisputeStatus[]> = {
  * (idempotent), but callers should short-circuit on equality to avoid re-running
  * resolution side effects on a webhook redelivery.
  */
+/**
+ * #677/PM-37 — evidence-submission deadline guard. Status-blind on purpose:
+ * the route's terminal-status gate handles WON/LOST separately; this only
+ * answers "is the evidence window still open". Null dueBy (deadline unknown)
+ * never blocks — Stripe's own rejection remains the backstop.
+ */
+export interface EvidenceDeadlineInput {
+  status: DisputeStatus;
+  dueBy: Date | null;
+  nowMs: number;
+}
+
+export function evidenceDeadlinePassed(
+  input: EvidenceDeadlineInput,
+): boolean {
+  return !!input.dueBy && input.dueBy.getTime() < input.nowMs;
+}
+
 export function isLegalDisputeTransition(
   from: DisputeStatus,
   to: DisputeStatus,

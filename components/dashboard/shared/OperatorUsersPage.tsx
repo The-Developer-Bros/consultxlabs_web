@@ -24,7 +24,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -35,9 +34,6 @@ import {
   Shield,
   MoreHorizontal,
   Eye,
-  Mail,
-  Flag,
-  Ban,
   CheckCircle,
   Loader2,
   RefreshCw,
@@ -224,22 +220,15 @@ export function OperatorUsersPage() {
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
+        {/* #1270 — "Send Email", "Flag Account" and "Suspend User" used to sit
+            here with no onClick at all: they rendered, they highlighted on
+            hover, they closed the menu, and nothing happened. Removed rather
+            than wired, because banning is ADMIN-only and belongs to the
+            moderation flow, and an operator who believes they have suspended
+            an account is worse than one who can see the button is absent. */}
         <DropdownMenuItem onClick={(e) => handleViewUser(user.id, e)}>
           <Eye className="h-4 w-4 mr-2" />
           View Details
-        </DropdownMenuItem>
-        <DropdownMenuItem>
-          <Mail className="h-4 w-4 mr-2" />
-          Send Email
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem>
-          <Flag className="h-4 w-4 mr-2" />
-          Flag Account
-        </DropdownMenuItem>
-        <DropdownMenuItem className="text-red-600 dark:text-red-400">
-          <Ban className="h-4 w-4 mr-2" />
-          Suspend User
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

@@ -202,7 +202,7 @@ Both gateways share a common abstraction layer:
 | File                                       | Purpose                                                                                                                                                |
 | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `lib/payments/index.ts`                    | Unified orchestration — routes `createPaymentIntent()`, `cancelPaymentIntent()`, `createRefund()` to the correct gateway                               |
-| `lib/payments/core/types.ts`               | Shared types (`PaymentIntent`, `RefundResult`, `DisputeResult`), error classes (`PaymentError`, `RefundError`, `DisputeError`), `CURRENCY_MULTIPLIERS` |
+| `lib/payments/core/types.ts`               | Shared types (`PaymentIntent`, `RefundResult`, `DisputeResult`) and the error classes (`PaymentError`, `RefundError`, `DisputeError`) |
 | `lib/payments/payouts/payout-service.ts`   | Provider-agnostic payout orchestration (batch creation, admin approval, processing)                                                                    |
 | `lib/payments/payouts/earnings-service.ts` | Earnings calculation with flat 20% platform fee                                                                                                        |
 | `lib/payments/payouts/constants.ts`        | Hold periods, minimum amounts, fee percentages, payout mode limits                                                                                     |

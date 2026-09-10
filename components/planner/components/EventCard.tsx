@@ -14,19 +14,22 @@ import {
   Users,
   Gift,
   Loader2,
+  Archive,
+  Undo2,
 } from "lucide-react";
 import { cn } from "@/utils/tailwind";
 import { formatCurrencyAmount } from "@/utils/formatting";
 import { isRecurringEventType } from "@/utils/slotAllocation/types";
 import { effectiveMaxParticipants } from "@/lib/events/capacity";
 import { WebinarStatus, ClassStatus } from "@prisma/client";
+import { Event } from "@/types/planner-events";
 import {
-  Event,
-  WebinarEvent,
-  ClassEvent,
-  ConsultationPlanEvent,
-  SubscriptionPlanEvent,
-} from "@/types/planner-events";
+  getPlanArchivedAt,
+  isClassEvent,
+  isConsultationPlanEvent,
+  isSubscriptionPlanEvent,
+  isWebinarEvent,
+} from "@/lib/planner/archive-state";
 
 type EventType = "consultation" | "subscription" | "webinar" | "class";
 
@@ -48,6 +51,12 @@ interface EventCardProps {
   onJoinMeeting?: () => void;
   canJoinNow?: boolean;
   isJoiningMeeting?: boolean;
+  /**
+   * Archive/restore the offering this event's plan represents (#1494).
+   * Omitted (rather than a no-op) for a row with no id, same as onEdit/onDelete.
+   */
+  onArchiveToggle?: () => void;
+  isArchiveToggling?: boolean;
 }
 
 function formatCollaboratorRole(role: string): string {
@@ -59,22 +68,6 @@ function formatCollaboratorRole(role: string): string {
     TEACHING_ASSISTANT: "TA",
   };
   return labels[role] || role;
-}
-
-function isWebinarEvent(event: Event): event is WebinarEvent {
-  return event.type === "webinar";
-}
-
-function isClassEvent(event: Event): event is ClassEvent {
-  return event.type === "class";
-}
-
-function isConsultationPlanEvent(event: Event): event is ConsultationPlanEvent {
-  return event.type === "consultation";
-}
-
-function isSubscriptionPlanEvent(event: Event): event is SubscriptionPlanEvent {
-  return event.type === "subscription";
 }
 
 const eventTypeConfig: Record<
@@ -199,6 +192,28 @@ function getEventStartDate(event: Event): Date | null {
     return startTimeString ? new Date(startTimeString) : null;
   }
   if (isClassEvent(event)) {
+    // #1346 — the planner route's slot include is windowed to ±24h of now
+    // (for the Join affordance), so a class whose sessions fall outside that
+    // day arrives with zero slots here; firstSessionAt travels as its own,
+    // unwindowed field for exactly that consumer and takes priority.
+    if (event.firstSessionAt) return new Date(event.firstSessionAt);
+    // The card promises the first session, so read the scheduled slot like
+    // the webinar arm above (this arm still serves /api/bookings/classes,
+    // which includes slots unwindowed). A class fans out over many
+    // appointments and the include carries no ordering, so take the earliest
+    // live slot rather than trusting position 0. schedulingPeriodStartsAt is
+    // only the window the run was authored with and drifts from the sessions
+    // actually allocated; it stays as the fallback for a class that has none yet.
+    const firstSlotStartsAt = (event.appointments ?? [])
+      .flatMap((appointment) => appointment.slotsOfAppointment ?? [])
+      .filter((slot) => !slot.deletedAt)
+      .map((slot) => new Date(slot.startsAt).getTime())
+      .reduce<number | null>(
+        (earliest, startedAt) =>
+          earliest === null || startedAt < earliest ? startedAt : earliest,
+        null,
+      );
+    if (firstSlotStartsAt !== null) return new Date(firstSlotStartsAt);
     return event.schedulingPeriodStartsAt
       ? new Date(event.schedulingPeriodStartsAt)
       : null;
@@ -254,10 +269,15 @@ export function EventCard({
   canJoinNow,
   isJoiningMeeting,
   canManage = true,
+  onArchiveToggle,
+  isArchiveToggling,
 }: Readonly<EventCardProps>) {
   const config = eventTypeConfig[eventType];
   const Icon = config.icon;
 
+  const isArchived = getPlanArchivedAt(event) !== null;
+  // Named here rather than nested in the JSX ternary below (sonar S3358).
+  const ArchiveToggleIcon = isArchived ? Undo2 : Archive;
   const title = getEventTitle(event);
   const description = getEventDescription(event);
   const price = getEventPrice(event);
@@ -299,6 +319,14 @@ export function EventCard({
               <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
                 {config.label}
               </span>
+              {isArchived && (
+                <span
+                  className="rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800"
+                  title="Off sale. Existing bookings continue."
+                >
+                  Archived
+                </span>
+              )}
               {collaboratorRole && (
                 <span
                   className={cn(
@@ -350,6 +378,30 @@ export function EventCard({
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </Button>
+              {onArchiveToggle && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  disabled={!canManage || isArchiveToggling}
+                  className="h-8 w-8 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-900"
+                  aria-label={`${isArchived ? "Restore" : "Archive"} ${title}`}
+                  title={
+                    isArchived
+                      ? "Restore this offering to put it back on sale."
+                      : "Archive this offering to stop new bookings. Existing appointments continue."
+                  }
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onArchiveToggle();
+                  }}
+                >
+                  {isArchiveToggling ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <ArchiveToggleIcon className="h-3.5 w-3.5" />
+                  )}
+                </Button>
+              )}
             </div>
           )}
         </div>

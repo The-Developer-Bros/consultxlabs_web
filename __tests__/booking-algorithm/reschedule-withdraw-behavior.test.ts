@@ -37,6 +37,7 @@ interface Store {
   request: RequestRow | null;
   slots: SlotRow[];
   consultation: { id: string; status: string } | null;
+  subscription: { id: string; status: string } | null;
 }
 
 let state: Store;
@@ -47,14 +48,25 @@ interface StatusCas {
   where: { id: string; status?: { in: string[] } };
   data: Data;
 }
+/** transitionSlotCompletion's shape: the from-set is an `in` list. */
 interface SlotCas {
-  where: { id: { in: string[] }; completionStatus: string };
+  where: { id: { in: string[] }; completionStatus: { in: string[] } };
   data: Data;
+}
+
+function matchSlots(where: SlotCas["where"]): SlotRow[] {
+  return state.slots.filter(
+    (s) =>
+      where.id.in.includes(s.id) &&
+      where.completionStatus.in.includes(s.completionStatus),
+  );
 }
 
 function makeTx() {
   return {
+    bookingStatusHistory: { create: jest.fn().mockResolvedValue({}) },
     rescheduleRequest: {
+      findUnique: jest.fn(async () => state.request),
       updateMany: jest.fn(async ({ where, data }: StatusCas) => {
         const row = state.request;
         if (!row || row.id !== where.id) return { count: 0 };
@@ -67,17 +79,36 @@ function makeTx() {
       }),
     },
     slotOfAppointment: {
-      updateMany: jest.fn(async ({ where, data }: SlotCas) => {
-        const targets = state.slots.filter(
-          (s) =>
-            where.id.in.includes(s.id) &&
-            s.completionStatus === where.completionStatus,
-        );
+      findMany: jest.fn(async ({ where }: SlotCas) =>
+        matchSlots(where).map((s) => ({
+          id: s.id,
+          completionStatus: s.completionStatus,
+        })),
+      ),
+      updateManyAndReturn: jest.fn(async ({ where, data }: SlotCas) => {
+        const targets = matchSlots(where);
         targets.forEach((s) => Object.assign(s, data));
-        return { count: targets.length };
+        return targets.map((s) => ({ id: s.id }));
+      }),
+    },
+    subscription: {
+      findUnique: jest.fn(async ({ where }: { where: { id: string } }) =>
+        state.subscription && state.subscription.id === where.id
+          ? { status: state.subscription.status }
+          : null,
+      ),
+      updateMany: jest.fn(async ({ where, data }: StatusCas) => {
+        const row = state.subscription;
+        if (!row || row.id !== where.id) return { count: 0 };
+        if (where.status?.in && !where.status.in.includes(row.status)) {
+          return { count: 0 };
+        }
+        Object.assign(row, data);
+        return { count: 1 };
       }),
     },
     consultation: {
+      findUnique: jest.fn(async () => state.consultation ?? null),
       updateMany: jest.fn(async ({ where, data }: StatusCas) => {
         const row = state.consultation;
         if (!row || row.id !== where.id) return { count: 0 };
@@ -99,8 +130,8 @@ jest.mock("../../lib/prisma", () => ({
     rescheduleRequest: {
       findUnique: jest.fn(async () => state.request),
     },
-    $transaction: jest.fn(async (fn: (t: ReturnType<typeof makeTx>) => unknown) =>
-      fn(tx),
+    $transaction: jest.fn(
+      async (fn: (t: ReturnType<typeof makeTx>) => unknown) => fn(tx),
     ),
   },
 }));
@@ -123,6 +154,7 @@ function seed(
     consultationId: string | null;
     subscriptionId: string | null;
     consultationStatus: string;
+    subscriptionStatus: string;
   }> = {},
 ) {
   const slots = overrides.slots ?? [
@@ -130,7 +162,9 @@ function seed(
     { id: "slot-2", isTentative: true, completionStatus: "RESCHEDULED" },
   ];
   const consultationId =
-    overrides.consultationId === undefined ? "cons-1" : overrides.consultationId;
+    overrides.consultationId === undefined
+      ? "cons-1"
+      : overrides.consultationId;
 
   state = {
     request: {
@@ -147,7 +181,16 @@ function seed(
     },
     slots,
     consultation: consultationId
-      ? { id: consultationId, status: overrides.consultationStatus ?? "PENDING" }
+      ? {
+          id: consultationId,
+          status: overrides.consultationStatus ?? "PENDING",
+        }
+      : null,
+    subscription: overrides.subscriptionId
+      ? {
+          id: overrides.subscriptionId,
+          status: overrides.subscriptionStatus ?? "PENDING",
+        }
       : null,
   };
   tx = makeTx();
@@ -230,8 +273,17 @@ describe("withdrawRescheduleRequest", () => {
     expect(state.consultation?.status).toBe("APPROVED");
   });
 
-  it("leaves a subscription alone — it has no per-session status (#448)", async () => {
-    seed({ consultationId: null, subscriptionId: "sub-1" });
+  it("restores a WHOLE-subscription reschedule to APPROVED", async () => {
+    // E2E-audit P1 fix. A whole-booking reschedule (no slotIds) flips the
+    // subscription to PENDING via the reschedule route. Withdrawing used to
+    // leave it there, stranded in the consultant's request queue, where
+    // expirePendingSubscriptions could EXPIRE + fully refund a plan that
+    // still owed — or had already delivered — sessions.
+    seed({
+      consultationId: null,
+      subscriptionId: "sub-1",
+      subscriptionStatus: "PENDING",
+    });
 
     const result = await withdrawRescheduleRequest({
       rescheduleRequestId: "req-1",
@@ -239,8 +291,32 @@ describe("withdrawRescheduleRequest", () => {
     });
 
     expect(result).toEqual({ withdrawn: true });
+    expect(state.subscription?.status).toBe("APPROVED");
     expect(tx.consultation.updateMany).not.toHaveBeenCalled();
-    // The slots still restore; only the parent status is skipped.
+    // The slots still restore alongside the parent.
+    expect(state.slots.every((s) => s.completionStatus === "SCHEDULED")).toBe(
+      true,
+    );
+  });
+
+  it("leaves a PARTIAL subscription proposal's parent alone (#448)", async () => {
+    // #448's guarantee survives: a partial (per-session) proposal never
+    // flipped the parent, so it sits at APPROVED and the restore must not
+    // touch it. The PENDING-only read is what distinguishes the two.
+    seed({
+      consultationId: null,
+      subscriptionId: "sub-1",
+      subscriptionStatus: "APPROVED",
+    });
+
+    const result = await withdrawRescheduleRequest({
+      rescheduleRequestId: "req-1",
+      withdrawnById: INITIATOR,
+    });
+
+    expect(result).toEqual({ withdrawn: true });
+    expect(state.subscription?.status).toBe("APPROVED");
+    expect(tx.subscription.updateMany).not.toHaveBeenCalled();
     expect(state.slots.every((s) => s.completionStatus === "SCHEDULED")).toBe(
       true,
     );

@@ -451,6 +451,13 @@ export function DocumentsTab({
       cell: (document) => (
         <div>
           <StatusBadge {...documentReviewStatusBadge(document.reviewStatus)} />
+          {(document.versionNo ?? 1) > 1 && (
+            <div className="mt-1 text-xs text-muted-foreground">
+              {document.uploadedByRole === "CONSULTANT"
+                ? `Response #${document.versionNo}`
+                : `Version ${document.versionNo}`}
+            </div>
+          )}
           {document.reviewedAt && (
             <div className="mt-1 text-xs text-muted-foreground">
               Reviewed {format(new Date(document.reviewedAt), "MMM d, yyyy")}

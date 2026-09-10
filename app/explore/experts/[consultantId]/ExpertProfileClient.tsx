@@ -4,12 +4,13 @@ import { useToast } from "@/components/ui/use-toast";
 import type { ConsultantDetailData } from "./types";
 import { TSlotTiming } from "@/types/slots";
 import { TUserWithProfessionalBackground } from "@/types/user";
-import { TConsultantReview } from "@/types/review";
+import { TPublicConsultantReview } from "@/types/review";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { ArrowLeft } from "lucide-react";
+import { useSession } from "@/lib/auth-client";
 import { AboutSection } from "./components/AboutSection";
 import { ClassesAndWebinars } from "./components/ClassesAndWebinars";
 import { ConsultantAvailability } from "./components/ConsultantAvailability";
@@ -23,7 +24,7 @@ import { formatInTimeZone } from "date-fns-tz";
 interface ExpertProfileClientProps {
   consultantDetails: ConsultantDetailData;
   userDetails: TUserWithProfessionalBackground;
-  reviews: TConsultantReview[];
+  reviews: TPublicConsultantReview[];
 }
 
 // Per-date rollup shown as dots under each calendar day. Derived client-side
@@ -40,6 +41,7 @@ export function ExpertProfileClient({
   reviews,
 }: ExpertProfileClientProps) {
   const searchParams = useSearchParams();
+  const { data: session } = useSession();
   const { timezone: browserTimezone, isLoading: isTimezoneLoading } =
     useTimezone();
   const { toast } = useToast();
@@ -240,9 +242,18 @@ export function ExpertProfileClient({
       params.append("endsAt", endsAt.toISOString());
 
       const checkoutUrl = `/checkout/plans/consultation/${activePlan.id}?${params.toString()}`;
+      // #booking-journey — route guests through sign-in EXPLICITLY, carrying
+      // the full checkout URL (plan + slot params) as the callback. Letting
+      // them hit /checkout first works only via a middleware 302 onto a
+      // generic sign-in page with no purchase context; doing it here keeps
+      // one full-page load out of the funnel and reads as intentional.
+      if (!session?.user?.id) {
+        window.location.href = `/auth/signin?callbackUrl=${encodeURIComponent(checkoutUrl)}`;
+        return;
+      }
       window.location.href = checkoutUrl;
     },
-    [selectedSlot, consultantDetails, toast],
+    [selectedSlot, consultantDetails, session?.user?.id, toast],
   );
 
   const handleSubscriptionBooking = useCallback(
@@ -282,9 +293,17 @@ export function ExpertProfileClient({
         schedulingPeriodStartsAt,
         schedulingPeriodEndsAt,
       });
-      window.location.href = `/checkout/plans/subscription/${activePlan.id}?${params.toString()}`;
+      const checkoutUrl = `/checkout/plans/subscription/${activePlan.id}?${params.toString()}`;
+      // #booking-journey — same explicit guest handoff as consultations: the
+      // checkout URL (plan + scheduling period) becomes the auth callback so
+      // the purchase resumes untouched after sign-in/sign-up/onboarding.
+      if (!session?.user?.id) {
+        window.location.href = `/auth/signin?callbackUrl=${encodeURIComponent(checkoutUrl)}`;
+        return;
+      }
+      window.location.href = checkoutUrl;
     },
-    [consultantDetails, toast],
+    [consultantDetails, session?.user?.id, toast],
   );
 
   const renderCalendar = useCallback(() => {
@@ -407,7 +426,7 @@ export function ExpertProfileClient({
               <ProfileHeader
                 userDetails={userDetails}
                 consultantDetails={consultantDetails}
-                reviewCount={reviews.length}
+                reviewCount={consultantDetails.reviewCount}
               />
 
               <AboutSection
@@ -485,7 +504,11 @@ export function ExpertProfileClient({
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.3 }}
           >
-            <ReviewsSection reviews={reviews} />
+            <ReviewsSection
+              reviews={reviews}
+              publishedRating={consultantDetails.publishedRating}
+              reviewCount={consultantDetails.reviewCount}
+            />
           </motion.div>
           {/* Spacer to match pricing sidebar width */}
           <div className="hidden xl:block w-[450px] 2xl:w-[500px] flex-shrink-0" />

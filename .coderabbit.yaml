@@ -1,11 +1,14 @@
 # CodeRabbit configuration — tuned for maximum review depth on a money-critical
 # Next.js/TypeScript codebase. Reference: https://docs.coderabbit.ai/reference/configuration
 language: en-US
+# Hard-capped at 250 characters by CodeRabbit's schema. Over it, the WHOLE file
+# fails validation and every review silently falls back to defaults (#1223 shipped
+# it at 259). Count before editing.
 tone_instructions: >-
-  Fintech codebase handling real money (B2C consultations + B2B org billing,
-  Razorpay/RazorpayX/Stripe). Flag any correctness, rounding, idempotency,
-  authorization, or race-condition risk aggressively; money bugs here mean
-  double payouts or lost customer funds.
+  Fintech codebase moving real money (B2C consultations, B2B org billing,
+  Razorpay/RazorpayX/Stripe). Aggressively flag correctness, rounding,
+  idempotency, authorization and race-condition risk: money bugs mean
+  double payouts or lost funds.
 reviews:
   # assertive = deepest review profile (more findings, including nitpicks).
   profile: assertive
@@ -56,6 +59,25 @@ reviews:
         Edge cases that must be covered for money tests: zero/negative amounts,
         currency mismatch, concurrent invocations, expired signatures/orders,
         partial refunds, idempotent replays.
+  # Static analyzers — correctness/security set. Style-duplicating linters
+  # (biome/oxlint) left off: repo already runs ESLint in CI.
+  # Belongs under `reviews`, not at the root — #1223 put it at the root, where
+  # the schema rejects it as an unknown top-level key.
+  tools:
+    eslint: { enabled: true }
+    reactDoctor: { enabled: true }
+    semgrep: { enabled: true }
+    gitleaks: { enabled: true }
+    trufflehog: { enabled: true }
+    presidio: { enabled: true } # PII detector — cards/PANs must not leak
+    actionlint: { enabled: true }
+    zizmor: { enabled: true } # GitHub Actions security (the cron fleet lives there)
+    yamllint: { enabled: true }
+    squawk: { enabled: true } # unsafe-Postgres-migration detection for prisma/sql sidecars
+    sqlfluff: { enabled: true }
+    prismaLint: { enabled: true }
+    ast-grep: { essential_rules: true }
+    github-checks: { enabled: true }
   path_filters:
     - "!**/package-lock.json"
 chat:
@@ -64,20 +86,3 @@ knowledge_base:
   opt_out: false
   learnings:
     scope: local
-# Static analyzers — correctness/security set. Style-duplicating linters
-# (biome/oxlint) left off: repo already runs ESLint in CI.
-tools:
-  eslint: { enabled: true }
-  reactDoctor: { enabled: true }
-  semgrep: { enabled: true }
-  gitleaks: { enabled: true }
-  trufflehog: { enabled: true }
-  presidio: { enabled: true } # PII detector — cards/PANs must not leak
-  actionlint: { enabled: true }
-  zizmor: { enabled: true } # GitHub Actions security (the cron fleet lives there)
-  yamllint: { enabled: true }
-  squawk: { enabled: true } # unsafe-Postgres-migration detection for prisma/sql sidecars
-  sqlfluff: { enabled: true }
-  prismaLint: { enabled: true }
-  ast-grep: { essential_rules: true }
-  github-checks: { enabled: true }

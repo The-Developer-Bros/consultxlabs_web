@@ -125,6 +125,35 @@ distinct `event:` line:
   `OrganizationSSOSettings WHERE breakGlassUntil > now()`. See the
   warning row added below.
 
+### Stream jobs on the operator surface (#1270)
+
+Every scheduled Stream job is now listed by `/api/staff/system-jobs` and can be
+run from `/api/admin/system-jobs/run`, using the same core function the workflow
+calls. This closed two gaps at once. Before it, no Stream job appeared in either
+catalogue, so the staff Jobs page could not show when any of them had last run;
+and because `stream-sync` held a bespoke Redis lock rather than the fleet's
+`withCronLock`, it wrote no `SystemJobExecution` row at all and would have shown
+as never having run even after being listed.
+
+| Job id | Summary fields | What a non-zero value means |
+| --- | --- | --- |
+| `stream-sync` | `staleIdentified / usersDeleted / failedDeletions` | Users that exist on Stream but not here were removed. Persistent `failedDeletions` usually means a Stream rate limit. |
+| `mark-expired-recordings` | `expiredCount` | Recordings whose Stream URL has lapsed were tombstoned. |
+| `transfer-expiring-recordings` | `succeeded / failed / expiringStreamOnly` | A non-zero `failed`, or any at-risk count in the job's own warning, means permanent recordings are approaching Stream's fourteen-day deletion with no copy in Supabase. Page on it. |
+| `cleanup-old-stream-recordings` | `scanned / expired` | Recordings past their organization's retention window were erased from Supabase and tombstoned. A run that fails is a DPDP erasure gap, not a tidiness problem. |
+| `reconcile-orphaned-recordings` | `scanned / recovered / stillMissing / unrecoverable` | `recovered` is good news about the job and bad news about the webhook: the row exists only because a delivery was lost. `unrecoverable` counts recordings Stream has already deleted, and it only ever grows. |
+| `expire-event-channels` | `frozen / deleted / skippedAlreadyFrozen` | Post-event chat channels moved through the freeze and delete stages. |
+| `reconcile-orphaned-sessions` | `processed / reconciled / streamNotFound` | Meeting sessions whose `call.session_ended` webhook never landed were closed. |
+
+Two guards keep this fleet honest, and both are static, so they fail in CI rather
+than in production. `__tests__/maintenance/cron-lock-registry.test.ts` re-derives
+every scheduled workflow's entrypoint and asserts it takes a cron lock, which is
+also what guarantees the `SystemJobExecution` row exists. `__tests__/maintenance/workflow-import-env.test.ts`
+walks the same entrypoints' import graphs and fails if any of them reaches a
+`server-only` module — the defect that had five workflows dying during module
+evaluation, on every run, with no signal anywhere except a red Actions job that
+nobody was watching.
+
 ---
 
 ## Alerts

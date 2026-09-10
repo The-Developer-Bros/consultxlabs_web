@@ -36,6 +36,7 @@ import { requireOrgAccess } from "@/lib/auth-helpers";
 // "with the person who pays the bill", which is now BILLING_ADMIN.
 import { requireOrgBillingAdminOrOwner } from "@/lib/auth/billing-admin-gate";
 import { initiateTopUp } from "@/lib/api/organizations/wallet";
+import { Prisma } from "@prisma/client";
 import { AUDIT_ACTIONS } from "@/lib/enterprise/audit-actions";
 import { createRazorpayOrder } from "@/lib/payments/core/razorpay";
 import { PaymentError } from "@/lib/payments/core/types";
@@ -204,6 +205,38 @@ export async function POST(
       });
     });
   } catch (err) {
+    // #1205-triage — the preflight lookup is not atomic with this insert. If
+    // a concurrent request from ANY org claimed the same global key between
+    // our lookup and here, the insert dies with P2002. Re-run the
+    // ownership-aware lookup: same-org → surface as reuse; cross-org → 409.
+    // Falling through to the generic error path would leak a 500 where a
+    // deterministic idempotency answer exists.
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === "P2002"
+    ) {
+      const winner = await prisma.walletTopUp.findUnique({
+        where: { providerOrderId: walletEntryOrderId },
+        select: { providerOrderId: true, billingAccount: { select: { ownerOrgId: true } } },
+      });
+      if (winner?.billingAccount.ownerOrgId === orgId) {
+        return NextResponse.json(
+          {
+            topUpId: winner.providerOrderId,
+            amountPaise,
+            status: "pending",
+            reused: true,
+            error:
+              "A top-up with this idempotency key already exists. Retry without the key to launch a new gateway order.",
+          },
+          { status: 200 },
+        );
+      }
+      return NextResponse.json(
+        { error: "A top-up with this idempotency key already exists" },
+        { status: 409 },
+      );
+    }
     Sentry.captureException(err instanceof Error ? err : new Error(String(err)), { tags: { subsystem: "enterprise" } });
     console.error(
       "[wallet/top-ups] placeholder WalletEntry persistence failed:",

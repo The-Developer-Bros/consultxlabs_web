@@ -80,17 +80,18 @@ export async function getOrgAnalytics(
       canSponsor: true,
       canHost: true,
       billingAccount: {
-        select: { fundingSource: true, walletBalance: true, currency: true },
+        select: { id: true, fundingSource: true, walletBalance: true, currency: true },
       },
     },
   });
   if (!org) return null;
 
   const thirtyDaysAgo = new Date(Date.now() - THIRTY_DAYS_MS);
-  const baId = await prisma.billingAccount.findFirst({
-    where: { ownerOrgId: orgId },
-    select: { id: true },
-  });
+  // Same row as the include above: BillingAccount.ownerOrgId is a @unique
+  // 1:1 back-reference to Organization.billingAccountId, so this is the
+  // identical account — no separate round-trip needed. (Was a serial
+  // findFirst that added one DB hop to every org home/analytics render.)
+  const baId = org.billingAccount ? { id: org.billingAccount.id } : null;
 
   const [
     memberAggregate,

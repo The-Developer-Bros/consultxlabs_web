@@ -174,6 +174,79 @@
   }
 }
 
+/*
+ * Dashboard scroll architecture — no document lock, by construction.
+ *
+ * Role shells are exactly one viewport tall (`.h-screen-maintenance` =
+ * 100dvh − banner) and scroll inside their own `<main>`, so the DOCUMENT
+ * never grows past the viewport on /dashboard/*: body's floor is the
+ * stable small viewport (`min-h-svh`, root layout) and the shell already
+ * subtracts the banner it sits under. One scrollport, nothing to lock.
+ * If a future page breaks that arithmetic the window simply scrolls —
+ * a visible symptom — instead of content being silently clipped.
+ *
+ * Full-viewport states INSIDE the dashboard tree (auth gates, loading)
+ * must use `min-h-svh`, never the legacy `min-h-screen` floor, which on
+ * mobile is taller than the visible viewport and re-opens the dead scroll.
+ * Enforced by __tests__/dashboards/shell-overflow-contract.test.ts.
+ */
+
+/*
+ * Radix Select bubble-input containment — app-wide sweep.
+ *
+ * Radix Select renders a visually-hidden native <select> (BubbleSelect)
+ * beside its trigger for form autofill. Its VISUALLY_HIDDEN_STYLES use
+ * position:absolute WITHOUT a top/left pin (radix-ui/primitives#3875,
+ * unfixed in @radix-ui/react-select 2.2.6), so when no ancestor up the tree
+ * is positioned it anchors to the document at its static position — on the
+ * offerings editor three of them (Language, Level, Price currency) landed
+ * ~620px below the fold and extended document scrollHeight past the
+ * viewport-sized shell: the dead white over-scroll, live-measured at 1282px
+ * document vs a 662px viewport.
+ *
+ * Two layers of defense:
+ *   - `components/ui/form.tsx` FormItem carries `relative`, pinning the
+ *     bubble select inside its own field for every form-bound Select.
+ *   - This rule is the sweep for every other Select (explore filters,
+ *     toolbars, admin tables): top/left 0 is exactly the upstream fix
+ *     (primitives#3876). On a static (visible) select, top/left are no-ops —
+ *     they only apply to positioned elements — so this cannot misplace
+ *     anything; on the absolute bubble select it collapses it to a clipped
+ *     1px pixel at its containing block's origin instead of miles down the
+ *     page. Deliberately UNLAYERED so content-scan emission can never drop it.
+ */
+select[aria-hidden="true"] {
+  top: 0;
+  left: 0;
+}
+
+/*
+ * Flush-bottom chrome for pages with a bottom-docked bar (the offering
+ * editor's save bar). Opt in by adding `content-flush-bottom` to the page's
+ * <DashboardContent className="...">.
+ *
+ * Why this exists: the save bar is `sticky bottom-0 mt-auto` inside <main>,
+ * but two stacked paddings sat BETWEEN the bar and main's bottom edge —
+ * DashboardContent's py-6 (24px) and this file's shell wrapper p-4/6/8
+ * (16/24/32px, responsive). Sticky can never pull an element past its
+ * containing block, so at full scroll the bar rested ~40-56px above the
+ * bottom edge: the "still not fully sticky" float.
+ *
+ * Both rules are deliberately UNLAYERED (always emitted, always outrank the
+ * layered wrapper and content spacing utilities at every breakpoint). The
+ * :has() form lets the wrapper drop its bottom padding only on opt-in pages
+ * — every other dashboard page keeps its scrolled-end breathing room.
+ * :has() is Baseline widely-available; a browser without it simply keeps the
+ * small float.
+ */
+.content-flush-bottom {
+  padding-bottom: 0;
+}
+
+main > div:has(> .content-flush-bottom) {
+  padding-bottom: 0;
+}
+
 @layer utilities {
   /* Maintenance banner offset for fixed/sticky elements */
   .top-maintenance {
@@ -182,29 +255,6 @@
 
   .h-screen-maintenance {
     height: calc(100dvh - var(--maintenance-banner-height, 0px));
-  }
-
-  /*
-   * Dashboard document scroll lock — see DashboardScrollLock.tsx.
-   * Beats body.min-h-screen from the root layout so the window cannot
-   * scroll past the viewport-sized shell into empty white space.
-   */
-  html.dashboard-scroll-locked,
-  html.dashboard-scroll-locked body {
-    overflow: hidden;
-    height: 100%;
-    max-height: 100dvh;
-  }
-
-  html.dashboard-scroll-locked body {
-    /* Tailwind min-h-screen on <body> must not re-open a document scrollport */
-    min-height: 0;
-  }
-
-  html.dashboard-scroll-locked body > .flex-1 {
-    min-height: 0;
-    height: 100%;
-    overflow: hidden;
   }
 
   /* Safe area inset utilities */

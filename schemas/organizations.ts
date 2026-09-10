@@ -87,6 +87,10 @@ export const PatchOrganizationPayloadSchema = z.object({
     .regex(/^#[0-9a-fA-F]{6}$/, "Hex colour required")
     .nullable()
     .optional(),
+  // MSME declaration (#1230) — mirrors the server PATCH schema; feeds the
+  // 15/45-day payout-deadline engine.
+  msmeStatus: z.enum(["NONE", "MICRO", "SMALL", "MEDIUM"]).optional(),
+  msmeWrittenAgreementOnFile: z.boolean().optional(),
 });
 
 // POST /api/organizations/[orgId]/rate-cards — 3-way split for host orgs.

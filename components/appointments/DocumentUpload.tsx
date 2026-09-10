@@ -81,6 +81,10 @@ interface UploadedDocument {
     uploadedByRole: DocumentUploadRole;
   } | null;
   responseDocuments?: UploadedDocument[];
+  // Threaded review versioning — 1 = original upload; the highest number in
+  // a thread is the current version.
+  rootDocumentId?: string | null;
+  versionNo?: number;
 }
 
 interface ApiError {
@@ -673,6 +677,21 @@ export function DocumentUpload({
                                   >
                                     {doc.reviewStatus.replace("_", " ")}
                                   </Badge>
+                                  {(doc.versionNo ?? 1) > 1 && (
+                                    <Badge
+                                      variant="outline"
+                                      className="text-xs"
+                                      title={
+                                        doc.uploadedByRole === "CONSULTANT"
+                                          ? `Consultant response #${doc.versionNo} in this review thread`
+                                          : `Revision v${doc.versionNo}`
+                                      }
+                                    >
+                                      {doc.uploadedByRole === "CONSULTANT"
+                                        ? `response #${doc.versionNo}`
+                                        : `v${doc.versionNo}`}
+                                    </Badge>
+                                  )}
                                 </div>
                               </div>
                               {doc.description && (

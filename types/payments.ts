@@ -3,6 +3,8 @@
  * Used by admin/staff payment, refund, payout, and dispute pages.
  */
 
+import type { AppointmentsType } from "@prisma/client";
+
 // ─── Payment List (admin/payments, staff/payments) ─────────────────
 export interface Payment {
   id: string;
@@ -17,8 +19,19 @@ export interface Payment {
   isMockPayment?: boolean;
   createdAt: string;
   appointment: {
-    appointmentType: string;
+    appointmentType: AppointmentsType;
   } | null;
+  consumerInvoice?: PaymentConsumerInvoice | null;
+}
+
+// ─── B2C tax invoice (#1365) ───────────────────────────────────────
+/** Summary of the statutory consumer tax invoice attached to a payment. The
+ *  PDF itself is fetched from /api/payments/[paymentId]/invoice/pdf, which
+ *  authorises the caller and returns a short-lived signed URL. */
+export interface PaymentConsumerInvoice {
+  id: string;
+  invoiceNumber: string;
+  issuedAt: string;
 }
 
 export interface PaymentListResponse {
@@ -75,7 +88,7 @@ export interface PaymentDetail {
   };
   appointment: {
     id: string;
-    appointmentType: string;
+    appointmentType: AppointmentsType;
   } | null;
   discountCode: {
     code: string;
@@ -84,6 +97,7 @@ export interface PaymentDetail {
   } | null;
   refunds: PaymentDetailRefund[];
   disputes: PaymentDetailDispute[];
+  consumerInvoice?: PaymentConsumerInvoice | null;
 }
 
 // ─── Refund List (admin/refunds, staff/refunds) ────────────────────
@@ -140,7 +154,7 @@ export interface RecentPayment {
   paymentGateway: string;
   createdAt: string;
   appointment: {
-    appointmentType: string;
+    appointmentType: AppointmentsType;
   } | null;
 }
 

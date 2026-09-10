@@ -25,7 +25,11 @@ interface CancelRefundPreview {
    */
   hoursUntilNextSession: number | null;
   prorated: boolean;
-  creditFunded: boolean;
+  /**
+   * Which rail the money comes back on. Null on the whole-event rail, where a
+   * roster funds through several at once and no single sentence is true.
+   */
+  fundingRail: "GATEWAY" | "INTERNAL" | "CREDITS" | null;
   /**
    * Cancelling a class or webinar refunds the entire roster in full, not the
    * viewer's own seat — `estimatedRefundPaise` is then the sum across
@@ -78,12 +82,20 @@ export function CancelConfirmationDialog({
   // group event refunds through the roster route rather than this one.
   const previewEnabled =
     isOpen && !!appointmentId && !isLeave && !isPendingPayment;
-  const { data: preview, isLoading: isPreviewLoading } =
-    useQuery<CancelRefundPreview>({
+  const {
+    data: preview,
+    isLoading: isPreviewLoading,
+    isError: isPreviewError,
+  } = useQuery<CancelRefundPreview>({
       queryKey: ["cancel-refund-preview", appointmentId],
       queryFn: async () => {
         const response = await fetch(
           `/api/appointments/${appointmentId}/cancel/preview`,
+          // R18 — the quote had no deadline, and the confirm button is disabled
+          // while it loads. A hung request therefore did not just withhold the
+          // number, it locked the user out of cancelling their own booking
+          // behind a spinner that never stopped.
+          { signal: AbortSignal.timeout(8_000) },
         );
         if (!response.ok) throw new Error("Could not estimate the refund");
         return response.json();
@@ -123,10 +135,15 @@ export function CancelConfirmationDialog({
       );
     }
     if (!preview) {
+      // A quote that timed out or 500'd is a different fact from a booking that
+      // was never priced, and the difference matters to someone deciding: one
+      // says "we can't tell you right now", the other "there is nothing to
+      // tell". Both end at the same rule, which is what still governs the click.
       return (
         <p className="text-muted-foreground text-sm">
-          If a payment was captured, any refund follows the booking&apos;s
-          cancellation policy.
+          {isPreviewError
+            ? "We couldn't load the refund estimate just now — the booking's cancellation policy still applies."
+            : "If a payment was captured, any refund follows the booking's cancellation policy."}
         </p>
       );
     }
@@ -162,7 +179,7 @@ export function CancelConfirmationDialog({
         </p>
       );
     }
-    if (preview.creditFunded) {
+    if (preview.fundingRail === "CREDITS") {
       // #1161 — credit restoration is all-or-nothing. Only a full-refund window
       // restores automatically; inside a partial window the cancellation still
       // stands but the credits are escalated for a human, not returned. The
@@ -185,9 +202,13 @@ export function CancelConfirmationDialog({
       );
     }
     if (preview.estimatedRefundPaise > 0) {
+      // The learner never paid on an org-funded booking — the wallet, invoice
+      // accrual or licence did — so "your original payment method" names a card
+      // that was never charged and promises a settlement that will never arrive.
+      const isInternal = preview.fundingRail === "INTERNAL";
       return (
         <p className="text-muted-foreground text-sm">
-          You&apos;ll be refunded{" "}
+          {isInternal ? "Your organisation is credited " : "You'll be refunded "}
           <strong className="text-foreground">
             ~
             {formatCurrencyAmount(
@@ -196,8 +217,10 @@ export function CancelConfirmationDialog({
             )}
           </strong>{" "}
           ({preview.refundPct}%
-          {preview.prorated ? ", prorated for sessions already held" : ""}).
-          Refunds reach your original payment method in 5–7 working days.
+          {preview.prorated ? ", prorated for sessions already held" : ""}).{" "}
+          {isInternal
+            ? "Your organisation's balance is restored; nothing was charged to you."
+            : "Refunds reach your original payment method in 5–7 working days."}
         </p>
       );
     }

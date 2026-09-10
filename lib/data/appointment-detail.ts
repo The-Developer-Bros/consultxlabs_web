@@ -12,6 +12,7 @@
  */
 
 import prisma from "@/lib/prisma";
+import type { AppointmentFeedbackRole } from "@prisma/client";
 import { toPlain } from "@/lib/data/serialize";
 
 const userSelect = {
@@ -23,7 +24,7 @@ const recordingsSelect = {
     id: true,
     title: true,
     recordingUrl: true,
-    supabaseUrl: true,
+    storageUrl: true,
     thumbnailUrl: true,
     status: true,
     durationInMinutes: true,
@@ -36,7 +37,12 @@ const slotsInclude = {
   include: {
     user: userSelect,
     meetingSession: {
-      select: { id: true, endedAt: true, recordings: recordingsSelect },
+      select: {
+        id: true,
+        endedAt: true,
+        endedReason: true,
+        recordings: recordingsSelect,
+      },
     },
   },
 } as const;
@@ -114,6 +120,9 @@ export async function readAppointmentDetail(appointmentId: string) {
           currency: true,
           paymentStatus: true,
           createdAt: true,
+          // #1428 — the tentative-hold deadline shown on the detail page;
+          // without it a held slot has no way to say when it releases.
+          expiresAt: true,
         },
       },
       organization: { select: { id: true, name: true } },
@@ -169,10 +178,32 @@ export type TAppointmentDetail = NonNullable<
  *  or a slot participant), the plan's consultant, and ACCEPTED collaborators.
  *  Capability-based — participation, not UserRole (#org-appts). Platform
  *  ADMIN/STAFF are handled by the caller via isPrivileged. */
+/**
+ * #705 — which side of the session this user is on, or null if neither.
+ *
+ * PROVIDER wins a tie. A consultant who is also somehow on the attendee list
+ * must not be counted as an attendee: their CSAT would then feed the org
+ * quality average, which is a rating of THEIR OWN work.
+ */
+export function appointmentRaterRole(
+  userId: string,
+  detail: TAppointmentDetail,
+): AppointmentFeedbackRole | null {
+  const { consulteeUserIds, consultantUserIds } = participantUserIds(detail);
+  if (consultantUserIds.includes(userId)) return "PROVIDER";
+  if (consulteeUserIds.includes(userId)) return "CONSULTEE";
+  return null;
+}
+
 export function canAccessAppointment(
   userId: string,
   detail: TAppointmentDetail,
 ): boolean {
+  const { consulteeUserIds, consultantUserIds } = participantUserIds(detail);
+  return [...consulteeUserIds, ...consultantUserIds].includes(userId);
+}
+
+function participantUserIds(detail: TAppointmentDetail) {
   const { appointment } = detail;
   const consulteeUserIds = [
     appointment.consultation?.requestedBy?.userId,
@@ -195,7 +226,7 @@ export function canAccessAppointment(
       (c) => c.consultantProfile?.userId,
     ),
   ];
-  return [...consulteeUserIds, ...consultantUserIds].includes(userId);
+  return { consulteeUserIds, consultantUserIds };
 }
 export type TDetailAppointment = TAppointmentDetail["appointment"];
 export type TDetailRecording =

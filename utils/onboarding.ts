@@ -20,6 +20,7 @@ import {
   EducationSchema,
   CertificationSchema,
   CareerStageEnum,
+  LONG_FORM_TEXT_MAX,
 } from "@/schemas/user";
 
 // ============================================================================
@@ -38,7 +39,15 @@ export const SlotCustomCreateInputSchema = CustomSlotSchema;
 export const AchievementCreateInputSchema = z.object({
   id: z.string().optional(),
   title: z.string().min(1, "Achievement title is required"),
-  description: z.string().optional(),
+  // Capped like the other pasteable free-text fields — see the note on
+  // LONG_FORM_TEXT_MAX in schemas/user.ts.
+  description: z
+    .string()
+    .max(
+      LONG_FORM_TEXT_MAX,
+      `Description must be ${LONG_FORM_TEXT_MAX} characters or less`,
+    )
+    .optional(),
   url: z.string().url().or(z.literal("")).optional(),
   imageUrl: z.string().url().or(z.literal("")).optional(),
   achievementType: z.nativeEnum(AchievementType).default(AchievementType.OTHER),
@@ -246,7 +255,15 @@ export const PersonalInfoAndRoleFormSchema = z.object({
 
 // Consultant form: scalar fields from source + frontend relational fields + stricter description
 export const ConsultantProfileFormSchema = consultantScalarFields.extend({
-  description: z.string().min(1, "Description is required"),
+  // Re-stated to add the required-ness, so the cap inherited from
+  // ConsultantProfileSchema has to be re-stated with it.
+  description: z
+    .string()
+    .min(1, "Description is required")
+    .max(
+      LONG_FORM_TEXT_MAX,
+      `Description must be ${LONG_FORM_TEXT_MAX} characters or less`,
+    ),
   domain: domainRefSchema,
   subDomains: z.array(subDomainRefSchema).optional(),
   tags: z.array(tagRefSchema).optional(),
@@ -310,7 +327,14 @@ const consultantFormFields = sharedFormFields.extend({
   role: z.literal(UserRole.CONSULTANT),
   // Consultant profile fields (from single source)
   ...consultantScalarFields.shape,
-  description: z.string().optional(),
+  // Loosened to optional for progressive step state; the cap still applies.
+  description: z
+    .string()
+    .max(
+      LONG_FORM_TEXT_MAX,
+      `Description must be ${LONG_FORM_TEXT_MAX} characters or less`,
+    )
+    .optional(),
   experience: experienceValidation.optional(),
   scheduleType: z.nativeEnum(ScheduleType).optional(),
   // Frontend-shaped relations

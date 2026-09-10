@@ -14,6 +14,9 @@
  *   - Cap with BLOCK throws ProgramAssignmentLimitError when exceeded
  *   - Cap with CHARGE_MEMBER / CHARGE_ORG marks wasOverage and continues
  *   - reverseBookingUtilization decrements engagementsUsed by the row's full count
+ *   - #1372: the MONEY meter, not just the count meter — a CREDIT_POOL reversal
+ *     decrements consumedPaise, a LICENSED_SEAT reversal leaves it alone, and a
+ *     refundRatio reverses price in proportion to the money actually refunded
  *
  * Architecture note: the helper does an upsert on `paymentId` (which is
  * @unique on BookingUtilization). For SUBSCRIPTION, the first allocation
@@ -93,7 +96,9 @@ function makeTx(opts: {
       create: jest.fn().mockResolvedValue({}),
       // Defaults to "no prior reversals" for fresh tests; partial-reversal
       // tests override this to simulate cumulative-reversed state.
-      aggregate: jest.fn().mockResolvedValue({ _sum: { engagementsConsumed: 0 } }),
+      aggregate: jest
+        .fn()
+        .mockResolvedValue({ _sum: { engagementsConsumed: 0 } }),
     },
     overageEvent: {
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
@@ -242,7 +247,9 @@ describe("recordBookingUtilization — engagement counting (issue #710)", () => 
       expect(result.engagementsConsumedDelta).toBe(2);
       expect(tx.programAssignment.update).toHaveBeenCalledTimes(1);
       // Upsert was called with appointmentIds in create branch
-      expect(tx.bookingUtilization.upsert.mock.calls[0][0].create).toMatchObject({
+      expect(
+        tx.bookingUtilization.upsert.mock.calls[0][0].create,
+      ).toMatchObject({
         engagementsConsumed: 2,
         appointmentIds: ["a", "b"],
       });
@@ -284,7 +291,9 @@ describe("recordBookingUtilization — engagement counting (issue #710)", () => 
       });
       expect(result.engagementsConsumedDelta).toBe(1);
       // Upsert append-pushes only the new id
-      expect(tx.bookingUtilization.upsert.mock.calls[0][0].update.appointmentIds).toEqual({
+      expect(
+        tx.bookingUtilization.upsert.mock.calls[0][0].update.appointmentIds,
+      ).toEqual({
         push: ["c"],
       });
     });
@@ -503,6 +512,114 @@ describe("reverseBookingUtilization — refund cap reversal (full + partial)", (
     expect(result.reversed).toBe(false);
     expect(tx.programAssignment.update).not.toHaveBeenCalled();
     expect(tx.usageLedgerEntry.create).not.toHaveBeenCalled();
+  });
+
+  // #1372 — every case above meters ENGAGEMENTS. A CREDIT_POOL program meters
+  // PAISE, and that arm had no assertions at all, so `consumedPaise` could have
+  // reversed the wrong amount (or not at all) without a single test noticing.
+  // `makeTx`'s single `aggregate` mock answers both aggregates; `sumPaise` of an
+  // undefined sum is 0, so the price clamp below is inert and the proportional
+  // amount is what lands.
+  it("#1372 CREDIT_POOL: a full reversal decrements consumedPaise by the whole price", async () => {
+    const tx = makeTx({ cap: 10, behavior: "BLOCK" });
+    tx.bookingUtilization.findUnique = jest.fn().mockResolvedValue({
+      programAssignmentId: "asg-1",
+      engagementsConsumed: 2,
+      priceAtBookingPaise: 200_000,
+      wasOverage: false,
+      reversedAt: null,
+      programAssignment: {
+        membershipId: "mem-1",
+        program: { type: "CREDIT_POOL" },
+      },
+    });
+
+    await reverseBookingUtilization(tx as never, {
+      paymentId: "pay-credit-pool",
+      reason: "Refund",
+    });
+
+    expect(tx.programAssignment.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          engagementsUsed: { decrement: 2 },
+          consumedPaise: { decrement: 200_000 },
+        }),
+      }),
+    );
+  });
+
+  it("#1372 LICENSED_SEAT: consumedPaise is left untouched", async () => {
+    const tx = makeTx({ cap: 10, behavior: "BLOCK" });
+    tx.bookingUtilization.findUnique = jest.fn().mockResolvedValue({
+      programAssignmentId: "asg-1",
+      engagementsConsumed: 2,
+      priceAtBookingPaise: 200_000,
+      wasOverage: false,
+      reversedAt: null,
+      programAssignment: {
+        membershipId: "mem-1",
+        program: { type: "LICENSED_SEAT" },
+      },
+    });
+
+    await reverseBookingUtilization(tx as never, {
+      paymentId: "pay-licensed-seat",
+      reason: "Refund",
+    });
+
+    // A seat program meters seats, so writing paise back would be inventing a
+    // number. `undefined` is the deliberate absence, not a forgotten branch.
+    expect(tx.programAssignment.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.not.objectContaining({
+          consumedPaise: expect.anything(),
+        }),
+      }),
+    );
+  });
+
+  it("#1372 refundRatio: reverses price in proportion to the money refunded", async () => {
+    // The docblock's own example: a ₹750 refund of a 2 × ₹1,000 booking releases
+    // one seat but reverses ₹750 of price, not the ₹1,000 the seat count implies.
+    const tx = makeTx({ cap: 10, behavior: "BLOCK" });
+    tx.bookingUtilization.findUnique = jest.fn().mockResolvedValue({
+      programAssignmentId: "asg-1",
+      engagementsConsumed: 2,
+      priceAtBookingPaise: 200_000,
+      wasOverage: false,
+      reversedAt: null,
+      programAssignment: {
+        membershipId: "mem-1",
+        program: { type: "CREDIT_POOL" },
+      },
+    });
+
+    const result = await reverseBookingUtilization(tx as never, {
+      paymentId: "pay-refund-ratio",
+      engagementsToReverse: 1,
+      refundRatio: { refundAmountPaise: 75_000, paymentAmountPaise: 200_000 },
+      reason: "Partial refund",
+    });
+
+    expect(result.engagementsReversed).toBe(1);
+    expect(tx.programAssignment.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          engagementsUsed: { decrement: 1 },
+          consumedPaise: { decrement: 75_000 },
+        }),
+      }),
+    );
+    // The ledger has to agree with the meter or the two drift apart silently.
+    expect(tx.usageLedgerEntry.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          engagementsConsumed: -1,
+          priceAtBookingPaise: -75_000,
+        }),
+      }),
+    );
   });
 
   it("overageCount only decrements on the LAST (fully-reversing) reversal", async () => {

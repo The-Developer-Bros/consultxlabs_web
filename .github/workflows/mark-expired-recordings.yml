@@ -6,6 +6,10 @@ on:
     - cron: "20 3 * * *"
   workflow_dispatch: # Allow manual triggering
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   mark-expired-recordings:
     runs-on: ubuntu-latest
@@ -22,6 +26,14 @@ jobs:
       UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
       UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
       DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      # #1270 — `lib/supabase.ts` THROWS at module scope when either of these
+      # is unset, and this entrypoint reaches it transitively (job →
+      # RecordingTransferService → lib/supabase). The job therefore died during
+      # import, before a single row was read, on every run it has ever had.
+      # The anon key is required even where only the admin client is used: the
+      # module builds the public client first and throws before it gets there.
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
 
     steps:
       - name: Checkout code

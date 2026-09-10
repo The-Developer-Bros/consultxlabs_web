@@ -50,6 +50,7 @@ import {
   WEBHOOK_ROTATION_GRACE_MS,
 } from "./signing";
 import { assertPublicUrl } from "./ssrf-guard";
+import { recordSystemEvent } from "@/lib/enterprise/system-events";
 
 // Re-export silenced — the worker doesn't generate secrets; this keeps
 // the module's surface area clean while preventing an unused-import lint.
@@ -58,6 +59,38 @@ void _unused_re_export;
 const MAX_BATCH = 50;
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_ATTEMPTS = 5;
+
+/**
+ * Wave-3 (#1230) — consecutive-failure threshold at which an ACTIVE endpoint
+ * is auto-disabled. Previously failureCount grew unread and a dead receiver
+ * kept costing a full delivery attempt + backoff slot every tick forever.
+ * Re-enable is the existing endpoint PATCH route (operator action after
+ * fixing the receiver).
+ */
+export const ENDPOINT_AUTO_DISABLE_FAILURES = 25;
+
+async function maybeAutoDisableEndpoint(
+  prisma: PrismaLike,
+  endpoint: { id: string; organizationId: string; url: string },
+): Promise<void> {
+  const flipped = await prisma.webhookEndpoint.updateMany({
+    where: {
+      id: endpoint.id,
+      status: "ACTIVE",
+      failureCount: { gte: ENDPOINT_AUTO_DISABLE_FAILURES },
+    },
+    data: { status: "DISABLED" },
+  });
+  if (flipped.count > 0) {
+    void recordSystemEvent({
+      organizationId: endpoint.organizationId,
+      category: "WEBHOOK",
+      severity: "WARN",
+      message: `Webhook endpoint auto-disabled after ${ENDPOINT_AUTO_DISABLE_FAILURES} consecutive failures: ${endpoint.url}`,
+      context: { endpointId: endpoint.id, url: endpoint.url },
+    });
+  }
+}
 
 // #812: A row flipped to IN_FLIGHT (the soft lock below) but never resolved is a
 // worker that crashed mid-delivery. Nothing re-selects IN_FLIGHT, so without a
@@ -150,6 +183,7 @@ export async function runDispatchTick(params: {
           url: true,
           secret: true,
           status: true,
+          organizationId: true,
           secretRotatedAt: true,
           previousSecretHash: true,
         },
@@ -300,6 +334,7 @@ export async function runDispatchTick(params: {
           failureCount: { increment: 1 },
         },
       });
+      await maybeAutoDisableEndpoint(prisma, row.endpoint);
       result.failed += 1;
       continue;
     }
@@ -330,6 +365,7 @@ export async function runDispatchTick(params: {
           failureCount: { increment: 1 },
         },
       });
+      await maybeAutoDisableEndpoint(prisma, row.endpoint);
       Sentry.captureException(
         new Error(`Webhook delivery dead-lettered: ${deadLetterError}`),
         {

@@ -5,6 +5,10 @@
 import { toast } from "@/hooks/use-toast";
 import { ClassEvent } from "@/types/planner-events";
 import {
+  positioningPayload,
+  priceToPaise,
+} from "@/components/planner/services/shared/plan-payload";
+import {
   CreateClassPayload,
   UpdateClassPayload,
   ClassRequestBody,
@@ -197,7 +201,8 @@ export class ClassService {
     const basePayload: CreateClassPayload = {
       title: plan?.title ?? "",
       description: plan?.description ?? "",
-      price: plan?.price ?? 0,
+      // The form edits rupees; the DB stores paise (#780 money model).
+      price: priceToPaise(plan?.price),
       priceCurrency: plan?.priceCurrency,
       durationInMonths: plan?.durationInMonths ?? 1,
       sessionsPerWeek: plan?.sessionsPerWeek ?? 1,
@@ -210,6 +215,7 @@ export class ClassService {
       prerequisites: plan?.prerequisites ?? undefined,
       materialProvided: plan?.materialProvided ?? undefined,
       learningOutcomes: plan?.learningOutcomes,
+      ...positioningPayload(plan ?? {}),
       topics: topicNames,
       classContents: plan?.classContents?.map((content) => ({
         id: content.id,

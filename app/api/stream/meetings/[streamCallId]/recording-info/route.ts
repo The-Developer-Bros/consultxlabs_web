@@ -9,7 +9,10 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { isPaymentEntitled } from "@/lib/payments/utils/refund-balance";
 import { isRecordingEnabledForAppointment } from "@/lib/stream/recording-utils";
-import { isPrivileged } from "@/lib/auth-helpers";
+import {
+  auditOperatorRecordingAccess,
+  resolveOperatorRecordingAccess,
+} from "@/lib/stream/recording-operator-access";
 
 import { getSession } from "@/lib/auth-server";
 import * as Sentry from "@sentry/nextjs";
@@ -114,11 +117,9 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
     // Access is granted if ANY independent path passes; each path is an
     // ownership/participation check, never a role gate.
     let hasAccess = false;
-
-    // Privileged operators can access any meeting.
-    if (isPrivileged(session.user.role)) {
-      hasAccess = true;
-    }
+    // True when only the platform role let this caller through — drives the
+    // audit write below.
+    let viaOperatorGrant = false;
 
     // Participant on the meeting slot (either side).
     if (!hasAccess) {
@@ -179,8 +180,36 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
       }
     }
 
+    // #1270 — the operator grant, resolved through BACKOFFICE_PERMISSIONS
+    // rather than a bare `isPrivileged` so it is visible in the file that is
+    // supposed to enumerate every back-office grant. Last, so an ADMIN or
+    // STAFF member who is genuinely on this appointment is audited as a
+    // participant (i.e. not at all) rather than as an operator reaching in.
+    //
+    // `recordings.read` is the whole grant needed here: this endpoint returns
+    // recording STATE — enabled, running, who started it — and never a URL, so
+    // there is nothing for `recordings.play` to gate.
+    const operator = resolveOperatorRecordingAccess(session.user.role);
+    if (!hasAccess && operator.canRead) {
+      hasAccess = true;
+      viaOperatorGrant = true;
+    }
+
     if (!hasAccess) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
+    }
+
+    if (viaOperatorGrant) {
+      await auditOperatorRecordingAccess({
+        actorUserId: session.user.id,
+        actorRole: String(session.user.role),
+        surface: "GET /api/stream/meetings/[streamCallId]/recording-info",
+        // No URL is ever returned by this endpoint.
+        played: false,
+        meetingSessionId: meetingSession.id,
+        streamCallId: meetingSession.streamCallId,
+        organizationId: meetingSession.organizationId ?? null,
+      });
     }
 
     // #1134 P1-6 — one resolver for all four plan kinds. This used to be a

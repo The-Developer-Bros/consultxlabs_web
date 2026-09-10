@@ -3,7 +3,7 @@ title: An organization sees that a session happened, not what happened in it
 band: 70-design-decisions
 audience: sde3
 status: live
-last-reviewed: 2026-07-27
+last-reviewed: 2026-08-30
 ---
 
 # ADR 20 — Organizations see session metadata, never session content
@@ -47,3 +47,22 @@ What we pay is that an organization investigating a complaint cannot self-serve 
 ## Addendum (2026-08-14)
 
 A consequence of this decision that keeps getting re-reported as a bug deserves stating plainly: the rows in the org "Everyone" appointments table deliberately do not link anywhere. There is no per-session detail page an organization role is permitted to open — such a page would exist only to show content this ADR withholds — so the table is metadata-only **by design**, and the missing row link is intent, not an unfinished feature. The 2026-08-13 booking audit (#1169) flagged the absence and this addendum records the resolution: do not add a drill-in without revisiting this ADR itself.
+
+## Addendum (2026-08-21) — #support-hub: support conversations are content
+
+The support subsystem (#appt-support / #support-hub) lands inside this decision's boundary, and the org-facing triage surface states the rule rather than inheriting it by accident. A member's support conversation about their own session is **content**: it contains their complaints, and a member who believes their employer can read "the expert was unprepared" will raise fewer of them. So:
+
+- The org triage page and its endpoint (`GET /api/organizations/[orgId]/support-threads`, gated `operations.read`) select an explicit metadata allowlist — status, category, channel, timestamps, the member's name, the plan title — and **no messages, no bodies, no last-message preview**. `__tests__/security/org-scope-payload-allowlist.test.ts` pins the select; adding a content field to it fails the suite.
+- The org's CSAT visibility is the aggregate card (`/feedback-summary`: average + count) — individual ratings and comments never reach an organization surface, consistent with "either party's feedback, the rating" being content.
+- What the org DOES get is a party role, not a spectator role: an operator holding `operations.read` may open **their own** conversation on one of their org's appointments (`ORG_ADMIN_DISPUTE` / `SPONSORSHIP_BILLING` intents only, enforced in the thread route's authorize branch and clamped again in the support service). The org can raise a concern; it still cannot read anyone else's.
+- Platform staff are the exception by function, not by grant: once a thread escalates to the HUMAN channel, staff must read the transcript to respond — the same deliberate line as the back-office documents page, stated here so it is a decision rather than an `include`. The back-office Conversations inbox reads transcripts for exactly this reason and no other.
+
+## Addendum (2026-08-30) — #1270: the Stream call export was the missed arm
+
+The July 2026 audit fixed the two list helpers and left a third surface carrying the same leak. `GET /api/organizations/[orgId]/stream/calls` is the org-scoped Stream call log, gated MANAGER+, and when called with `?withRecordings=1` it selected `Recording.recordingUrl` and `Recording.supabaseUrl` and returned both verbatim. The first of those is Stream's pre-signed S3 link: fourteen days of validity, its own credentials embedded, no session required to fetch it. Anybody who ended up holding the string could watch the session, which means forwarding the JSON forwarded the video — to a colleague, into a BI tool, or out of the company entirely. Like the two surfaces before it, nothing in the product rendered the field, so the exposure was invisible in the UI and plain in the network tab.
+
+The route now uses an explicit select allowlist with the same shape as `recordingMetadataSelect`, naming no field that reaches or resolves to the media. It keeps the retention facts the compliance pull exists for — status, storage type, duration, and the Stream URL expiry that drives the transfer window.
+
+It deliberately does **not** gain a short-lived signed-URL arm, even behind a separate opt-in parameter and even though every call already writes a `STREAM_CALLS_EXPORTED` audit row. That is the alternative this decision considered and rejected above, and the reasoning has not changed: the trail deters casual browsing but does not alter what a member has to assume about who can watch their session, and it only functions if somebody reads the log. An organization that needs evidence still opens a support ticket.
+
+`__tests__/stream/recording-operator-access.test.ts` pins the route's select alongside the platform-operator rules from the same issue.

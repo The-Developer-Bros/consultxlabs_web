@@ -71,6 +71,8 @@ describe("org nav targets resolve", () => {
     "disputes",
     "documents",
     "recordings",
+    // #support-hub — org triage (metadata-only, ADR 20) + CSAT aggregate.
+    "support",
     "analytics",
     "audit",
     "consent",

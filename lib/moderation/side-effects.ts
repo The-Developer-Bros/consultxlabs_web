@@ -15,9 +15,11 @@
 import * as Sentry from "@sentry/nextjs";
 import type { ModerationActionType } from "@prisma/client";
 import { EarningStatus } from "@prisma/client";
-import type { Tx } from "@/lib/prisma";
+import prisma, { type Tx } from "@/lib/prisma";
+import { recomputeConsultantRating } from "@/lib/reviews";
 import {
   getStreamChatClient,
+  isExpectedStreamError,
   withStreamCircuitBreaker,
 } from "@/lib/stream-client";
 import { assertEarningStatusTransitionLegal } from "@/lib/payments/payouts/earning-status";
@@ -32,9 +34,23 @@ import {
   type BulkCancelSummary,
 } from "./cancel-user-engagements";
 
+export interface ModerationReportRef {
+  id: string;
+  targetUserId: string;
+  reviewId: string | null;
+  /** #1270 — set on MESSAGE reports; what CONTENT_REMOVED deletes on Stream. */
+  streamMessageId?: string | null;
+  /**
+   * #1270 — the channel the message lives in, canonical from Stream. Carried
+   * with the id because the two are only useful together, and because the
+   * retry sweep was forwarding one without the other.
+   */
+  streamChannelCid?: string | null;
+}
+
 export interface ModerationSideEffectInput {
   actionType: ModerationActionType;
-  report: { id: string; targetUserId: string; reviewId: string | null };
+  report: ModerationReportRef;
   staffUserId: string;
   notes?: string;
   /** Required for USER_SUSPENDED. */
@@ -46,14 +62,27 @@ export interface TransactionalEffectResult {
   earningsHeld?: number;
   profilesUnverified?: number;
   reviewRemoved?: boolean;
+  /** #705 — whose public surfaces need purging once the transaction commits.
+   *  A removed review kept rendering on the landing page for up to an hour
+   *  because nothing invalidated the cache. */
+  reviewRemovedConsultantProfileId?: string;
   banExpires?: string | null;
 }
 
-type StepStatus = "ok" | "failed" | "skipped";
+export type StepStatus = "ok" | "failed" | "skipped" | "gave_up";
 
 export interface SideEffectSummary extends TransactionalEffectResult {
   cancellations?: BulkCancelSummary;
+  /**
+   * The outcome of this action's Stream write — and, since #1270, the queue the
+   * retry sweep drains. One field covers both Stream steps because an action
+   * only ever owes one: a ban revokes and deactivates, CONTENT_REMOVED deletes
+   * a message. `errors[]` carries the prefix that tells them apart, and
+   * `gave_up` is the terminal state the sweep stamps once it stops retrying.
+   */
   stream?: StepStatus;
+  /** #1270 — how many times the sweep has re-driven a failed Stream step. */
+  streamAttempts?: number;
   notification?: StepStatus;
   errors?: string[];
 }
@@ -85,9 +114,14 @@ export async function applyTransactionalEffects(
     case "PROFILE_UNVERIFIED":
       return unverifyProfiles(tx, report.targetUserId);
     case "CONTENT_REMOVED":
+      // A reported chat message is removed in phase 2 — the delete is a Stream
+      // API call and cannot join this transaction (#1270).
       return softDeleteReview(tx, report.reviewId);
     case "WARNING_ISSUED":
     case "NO_ACTION":
+    case "USER_REINSTATED":
+      // A reinstatement is taken through the unban route, which owns clearing
+      // the ban columns and restoring Stream access; it never lands here.
       return {};
   }
 }
@@ -189,18 +223,14 @@ async function softDeleteReview(
     where: { id: reviewId },
     data: { deletedAt: new Date() },
   });
-  const remaining = await tx.consultantReview.aggregate({
-    where: {
-      consultantProfileId: review.consultantProfileId,
-      deletedAt: null,
-    },
-    _avg: { rating: true },
-  });
-  await tx.consultantProfile.update({
-    where: { id: review.consultantProfileId },
-    data: { rating: remaining._avg.rating || 0 },
-  });
-  return { reviewRemoved: true };
+  // #705 — was an inlined plain `_avg`, a second implementation of the rating
+  // rule that silently disagreed with lib/reviews.ts once group sessions became
+  // one data point, and never touched publishedRating at all.
+  await recomputeConsultantRating(tx, review.consultantProfileId);
+  return {
+    reviewRemoved: true,
+    reviewRemovedConsultantProfileId: review.consultantProfileId,
+  };
 }
 
 type TriggerOutcome = { success: boolean; error?: Error | string } | null;
@@ -215,7 +245,9 @@ export async function applyBestEffortEffects(
 
   if (actionType === "USER_SUSPENDED" || actionType === "USER_BANNED") {
     await runBulkCancellations(input, summary, errors);
-    await runStreamRevocation(input, summary, errors);
+  }
+  if (hasStreamEnforcement(actionType, input.report)) {
+    await runStreamStep(input, summary, errors);
   }
 
   await runNotification(input, transactional, summary, errors);
@@ -241,13 +273,41 @@ async function runBulkCancellations(
   }
 }
 
-async function runStreamRevocation(
-  input: ModerationSideEffectInput,
-  summary: SideEffectSummary,
-  errors: string[],
+/**
+ * #1270 — does this action owe Stream a write at all?
+ *
+ * Also the sweep's filter: an action with no Stream step must never be picked
+ * up for retry, and a CONTENT_REMOVED on a review has nothing to delete there.
+ */
+export function hasStreamEnforcement(
+  actionType: ModerationActionType,
+  report: ModerationReportRef,
+): boolean {
+  if (actionType === "USER_BANNED" || actionType === "USER_SUSPENDED") {
+    return true;
+  }
+  return actionType === "CONTENT_REMOVED" && Boolean(report.streamMessageId);
+}
+
+/**
+ * The single Stream write an action owes, isolated from the bookkeeping around
+ * it so the retry sweep re-drives exactly this and nothing else (#1270).
+ *
+ * Every branch is idempotent, which is what makes a blind retry safe:
+ * re-revoking moves a timestamp that is already in the past, re-deactivating an
+ * inactive user is a no-op, and a message that is already gone is the outcome
+ * we wanted.
+ */
+export async function applyStreamEnforcement(
+  actionType: ModerationActionType,
+  report: ModerationReportRef,
 ): Promise<void> {
-  const { actionType, report } = input;
-  try {
+  await withStreamCircuitBreaker(async () => {
+    const chat = getStreamChatClient();
+    if (actionType === "CONTENT_REMOVED") {
+      await deleteReportedMessage(chat, report);
+      return;
+    }
     // revokeUserToken sets revoke_tokens_issued_before = now, which invalidates
     // every token issued BEFORE that instant. A suspension therefore self-heals:
     // once banExpires passes, the token provider mints a fresh token whose `iat`
@@ -257,23 +317,106 @@ async function runStreamRevocation(
     // `iat` at all, and Stream treats an iat-less token as INVALID whenever
     // revocation is active — so every future token was rejected too and a 7-day
     // suspension was permanent. lib/stream-client.ts now always sets `iat`.
-    await withStreamCircuitBreaker(async () => {
-      const chat = getStreamChatClient();
-      await chat.revokeUserToken(report.targetUserId, new Date());
-      if (actionType === "USER_BANNED") {
-        // Deactivated users cannot connect at all; history is preserved.
-        // Permanent by design — USER_BANNED sets banExpires null. Lifting one
-        // is an explicit act and must call restoreStreamAccess below.
-        await chat.deactivateUser(report.targetUserId, {
-          mark_messages_deleted: false,
-        });
-      }
-    });
+    await chat.revokeUserToken(report.targetUserId, new Date());
+    if (actionType === "USER_BANNED") {
+      // Deactivated users cannot connect at all; history is preserved.
+      // Permanent by design — USER_BANNED sets banExpires null. Lifting one
+      // is an explicit act and must call restoreStreamAccess below.
+      await chat.deactivateUser(report.targetUserId, {
+        mark_messages_deleted: false,
+      });
+    }
+  });
+}
+
+async function deleteReportedMessage(
+  chat: ReturnType<typeof getStreamChatClient>,
+  report: ModerationReportRef,
+): Promise<void> {
+  if (!report.streamMessageId) return;
+  try {
+    // Soft delete: Stream keeps the row and stops serving the text, so the
+    // evidence survives an appeal while the channel stops showing the abuse.
+    // A hard delete would destroy the only copy of what was moderated.
+    await chat.deleteMessage(report.streamMessageId);
+  } catch (error) {
+    // A message Stream cannot find is already gone — the state this step
+    // exists to reach — and that is the normal answer when the sweep re-drives
+    // a step that actually succeeded, or when the author deleted it first.
+    // Stream answers with the 404/code-16 shape isExpectedStreamError already
+    // recognises as "Stream is up and said no such thing"; an outage never
+    // looks like this, so nothing real is being swallowed.
+    if (isExpectedStreamError(error)) return;
+    throw error;
+  }
+}
+
+async function runStreamStep(
+  input: ModerationSideEffectInput,
+  summary: SideEffectSummary,
+  errors: string[],
+): Promise<void> {
+  const { actionType, report } = input;
+  try {
+    await applyStreamEnforcement(actionType, report);
     summary.stream = "ok";
   } catch (error) {
     summary.stream = "failed";
-    errors.push(`stream: ${errMsg(error)}`);
+    summary.streamAttempts = 1;
+    errors.push(`${streamErrorPrefix(actionType)}: ${errMsg(error)}`);
     captureModerationError(error);
+  }
+}
+
+/** Which Stream step failed — the two are indistinguishable from `stream` alone. */
+export function streamErrorPrefix(actionType: ModerationActionType): string {
+  return actionType === "CONTENT_REMOVED" ? "message-delete" : "stream";
+}
+
+/**
+ * Best-effort persistence of the side-effect summary, which is what staff read
+ * and what the retry sweep drains. A failure here is captured but never
+ * surfaced to the caller: the enforcement itself already happened, and failing
+ * the request would invite a retry that the 409 idempotency guard would refuse.
+ */
+export async function persistActionSideEffects(
+  actionId: string,
+  sideEffects: SideEffectSummary,
+): Promise<void> {
+  const write = () =>
+    prisma.moderationAction.update({
+      where: { id: actionId },
+      // NOT structuredClone (Sonar S7784): this is a SERIALIZATION, not a
+      // deep clone. `SideEffectSummary` has five optional fields, and Prisma's
+      // InputJsonValue rejects `undefined` in an object — the JSON round-trip
+      // strips those keys, structuredClone would preserve them.
+      data: { sideEffects: JSON.parse(JSON.stringify(sideEffects)) },
+    });
+
+  try {
+    await write();
+  } catch (first) {
+    // #1270 review — this row IS the outbox. `retry-moderation-enforcement`
+    // selects on `sideEffects.stream === "failed"`, so losing this write does
+    // not merely lose a status field: it loses the queue entry, and a ban that
+    // never reached Stream is then never retried and never surfaced. Swallowing
+    // it, as this used to, made the one durable record of an unlanded
+    // enforcement the most disposable thing in the flow.
+    captureModerationError(first);
+    try {
+      await write();
+    } catch (second) {
+      // Both attempts gone. Nothing downstream can recover this, so it is
+      // raised at a level a human sees rather than logged and forgotten.
+      Sentry.captureException(
+        second instanceof Error ? second : new Error(String(second)),
+        {
+          level: "fatal",
+          tags: { subsystem: "moderation", op: "persistActionSideEffects" },
+          extra: { actionId, streamOutcome: sideEffects.stream ?? null },
+        },
+      );
+    }
   }
 }
 
@@ -334,6 +477,10 @@ function triggerModerationNotification(
         dashboardUrl: "/dashboard",
       });
     case "NO_ACTION":
+    case "USER_REINSTATED":
+      // No Novu workflow exists for a reinstatement, and inventing a
+      // log-and-skip trigger would report "skipped" for one nobody plans to
+      // build.
       return Promise.resolve(null);
   }
 }

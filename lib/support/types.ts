@@ -17,6 +17,11 @@ import type {
   SupportMessageSender,
 } from "@prisma/client";
 
+/** Where the session sits in its lifecycle — the support analogue of an
+ *  order state. Gates which intents are offered (Swiggy pattern: you can't
+ *  "cancel" a completed order; you can't "no-show" an upcoming one). */
+export type SupportStage = "UPCOMING" | "LIVE" | "COMPLETED";
+
 /** Immutable facts about the appointment, resolved once and passed to every
  *  resolver so none of them re-query or diverge. */
 export interface SupportContext {
@@ -29,8 +34,19 @@ export interface SupportContext {
   isOrgContext: boolean;
   /** True when the caller is the delivering side (expert/consultant). */
   isProvider: boolean;
+  /**
+   * True when the caller holds an ACTIVE membership with `operations.read` on
+   * the appointment's organization — the org-operator party. Gates the
+   * ORG_ADMIN_DISPUTE intent (the org-party thread entry), never widens
+   * transcript access (ADR 20: org sees metadata, never content).
+   */
+  isOrgOperator: boolean;
+  /** Session stage derived from the slot window — see SupportStage. */
+  stage: SupportStage;
   /** Soonest upcoming slot start, if any (drives reschedule/cancel windows). */
   startsAt: Date | null;
+  /** That slot's end (drives the recording-ready 48h window). */
+  endsAt: Date | null;
   /** Policy refund % were the user to cancel now (reuse computeRefundPct). */
   refundPctIfCancelledNow: number | null;
   paymentId: string | null;
@@ -61,6 +77,7 @@ export type SupportAction =
   | { kind: "OFFER_RESCHEDULE" }
   | { kind: "SHOW_REFUND_STATUS" }
   | { kind: "SHOW_RECORDING_LINK" }
+  | { kind: "SHOW_INVOICES" }
   | { kind: "COLLECT_FEEDBACK" }
   | { kind: "NONE" };
 
@@ -75,6 +92,29 @@ export interface SupportTurnResult {
   escalate: boolean;
   /** True → the thread is resolved. */
   resolved: boolean;
+  /**
+   * Machine-readable why (terminal node's `reason`, e.g. "provider_no_show").
+   * Flows into the escalated ticket's description/priority mapping — ops
+   * triages on this instead of prose.
+   */
+  reason?: string;
+  /**
+   * The LABEL of the option the user just picked, when this turn advanced by a
+   * chip rather than free text.
+   *
+   * Without it the user's side of the conversation is invisible: the transcript
+   * is a run of bot questions with no record of the answers that produced them,
+   * both on screen and — for persisted appointment threads — in the row a staff
+   * member reads in the back-office inbox. Knowing the outcome (the terminal
+   * `reason`) is not the same as knowing the path.
+   */
+  chosenLabel?: string;
+  /**
+   * True when the input matched no option at the current prompt — free text the
+   * tree can't parse, a stale option id, or a double-submit. The cursor has not
+   * moved, so the caller must NOT treat this as progress.
+   */
+  unrecognized?: boolean;
 }
 
 /** The uniform contract every channel implements. */
@@ -120,6 +160,8 @@ export type FlowNode =
       action?: SupportAction;
       escalate?: boolean;
       resolved?: boolean;
+      /** Machine-readable escalation reason — see SupportTurnResult.reason. */
+      reason?: string;
     };
 
 /** A named flowchart for one intent, with an entry node. Availability can be

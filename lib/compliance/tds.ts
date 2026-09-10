@@ -48,8 +48,11 @@
  * This is the single TDS engine of record. The parallel consultant pipeline
  * `lib/payments/tax/tds-service.ts` (194J/₹50K) is slated for deprecation —
  * see its header for the step-by-step plan. When consultant payouts route here:
- *   - `ConsultantProfile.taxEntityType` (#778 §D) selects the threshold/section
- *     for the residual 194J/194C cases (entity-type-aware withholding).
+ *   - `ConsultantTaxInfo.taxEntityType` (#778 §D; canonical since the
+ *     BLOCKER-0 dedup, #1230) selects the threshold/section for the
+ *     residual 194J/194C cases (entity-type-aware withholding). Null until
+ *     declared via /api/consultant/tax-info — reads as INELIGIBLE for the
+ *     194-O ₹5L exemption (fail-closed).
  *   - `tdsSection` override stays the per-consultant escape hatch.
  *   - Rate inputs move Float→integer bps (#781 §C) so storage is exact.
  *   - Emit a `TdsAdjustment` (#778 §D) on refund-driven reversals instead of a

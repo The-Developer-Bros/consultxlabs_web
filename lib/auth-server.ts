@@ -28,13 +28,47 @@ import { headers } from "next/headers";
  * N times the queries, and no test would catch it. Revisit when React 19
  * lands properly; Next 15's App Router targets it.
  */
-const getSessionCached = cache(async (disableCookieCache: boolean) => {
-  return auth.api.getSession({
+type SessionReader = (
+  disableCookieCache: boolean,
+) => ReturnType<typeof auth.api.getSession>;
+
+const readSession: SessionReader = async (disableCookieCache) =>
+  auth.api.getSession({
     headers: await headers(),
     ...(disableCookieCache && { query: { disableCookieCache: true } }),
   });
-});
+
+/**
+ * #1275 — built on FIRST CALL, not at module scope, and only when `cache` is
+ * actually a function.
+ *
+ * The docblock above warned that losing Next's React alias would silently
+ * degrade this to no memoization. The reality was worse: `cache(...)` at module
+ * scope THREW, and it threw in every process that is not the RSC layer. Eight
+ * scheduled jobs import this file transitively and every one of them died
+ * during module evaluation, before a line of their own code ran:
+ *
+ *   $ npx tsx -e "import('./jobs/payments/reconcile-payment-status.ts')"
+ *   IMPORT FAILS: (0 , import_react.cache) is not a function
+ *
+ * Those eight are the payments and payouts reconciliation layer, plus
+ * `sweep-stuck-webhook-events` — which is the durability backstop the Stream
+ * webhook route explicitly delegates to. None had ever completed a run.
+ *
+ * Deferring the call fixes the import; tolerating an absent `cache` fixes the
+ * job. Memoization is meaningless in a one-shot cron process anyway — there is
+ * one request — so the unmemoized reader is the correct behaviour there, not a
+ * degraded one. Inside a render nothing changes: the memo is built on the first
+ * guard's call and every later guard in that render shares it.
+ */
+let memoizedReader: SessionReader | undefined;
+
+function sessionReader(): SessionReader {
+  memoizedReader ??=
+    typeof cache === "function" ? cache(readSession) : readSession;
+  return memoizedReader;
+}
 
 export async function getSession(disableCookieCache = false) {
-  return getSessionCached(disableCookieCache);
+  return sessionReader()(disableCookieCache);
 }

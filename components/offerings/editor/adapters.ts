@@ -74,14 +74,32 @@ export interface OfferingAdapter {
   ) => Promise<unknown>;
 }
 
+/**
+ * The API returns `price` in paise (#780 money model) while the form edits
+ * rupees — same convention as every other price field in the product. Each
+ * adapter's `planOf` divides on the way IN; the services multiply on the way
+ * OUT. Everything else passes through untouched.
+ */
+const toFormValues = (plan: Record<string, unknown>): Record<string, unknown> => ({
+  ...plan,
+  price: typeof plan.price === "number" ? plan.price / 100 : plan.price,
+});
+
 export const OFFERING_ADAPTERS: Record<OfferingType, OfferingAdapter> = {
   consultation: {
     schema: ConsultationPlanSchema,
     imageType: "consultation-plans",
-    defaults: { ...sharedDefaults, durationInHours: 1 },
-    planOf: (event) =>
-      (event as { consultationPlan?: Record<string, unknown> })
-        ?.consultationPlan,
+    defaults: {
+      ...sharedDefaults,
+      durationInHours: 1,
+      recordingEnabled: false,
+      recordingStoragePolicy: "STREAM_ONLY",
+    },
+    planOf: (event) => {
+      const plan = (event as { consultationPlan?: Record<string, unknown> })
+        ?.consultationPlan;
+      return plan ? toFormValues(plan) : undefined;
+    },
     save: (values, consultantId) =>
       ConsultationService.saveConsultationPlan(
         { consultationPlan: values } as never,
@@ -99,10 +117,14 @@ export const OFFERING_ADAPTERS: Record<OfferingType, OfferingAdapter> = {
       sessionDurationInHours: 1,
       emailSupport: "GENERAL",
       subscriptionContents: [],
+      recordingEnabled: false,
+      recordingStoragePolicy: "STREAM_ONLY",
     },
-    planOf: (event) =>
-      (event as { subscriptionPlan?: Record<string, unknown> })
-        ?.subscriptionPlan,
+    planOf: (event) => {
+      const plan = (event as { subscriptionPlan?: Record<string, unknown> })
+        ?.subscriptionPlan;
+      return plan ? toFormValues(plan) : undefined;
+    },
     save: (values, consultantId) =>
       SubscriptionService.saveSubscriptionPlan(
         { subscriptionPlan: values } as never,
@@ -122,9 +144,13 @@ export const OFFERING_ADAPTERS: Record<OfferingType, OfferingAdapter> = {
       maxParticipants: 100,
       certificateProvided: false,
       recordingEnabled: false,
+      recordingStoragePolicy: "STREAM_ONLY",
     },
-    planOf: (event) =>
-      (event as { webinarPlan?: Record<string, unknown> })?.webinarPlan,
+    planOf: (event) => {
+      const plan = (event as { webinarPlan?: Record<string, unknown> })
+        ?.webinarPlan;
+      return plan ? toFormValues(plan) : undefined;
+    },
     save: (values, consultantId) =>
       WebinarService.saveWebinar(
         { webinarPlan: values } as never,
@@ -147,6 +173,7 @@ export const OFFERING_ADAPTERS: Record<OfferingType, OfferingAdapter> = {
       emailSupport: "GENERAL",
       certificateProvided: false,
       recordingEnabled: false,
+      recordingStoragePolicy: "STREAM_ONLY",
       classContents: [],
       schedulingStartDate: null,
     },
@@ -160,7 +187,7 @@ export const OFFERING_ADAPTERS: Record<OfferingType, OfferingAdapter> = {
       };
       if (!wrapper?.classPlan) return undefined;
       return {
-        ...wrapper.classPlan,
+        ...toFormValues(wrapper.classPlan),
         schedulingStartDate: wrapper.schedulingPeriodStartsAt
           ? new Date(wrapper.schedulingPeriodStartsAt)
           : null,

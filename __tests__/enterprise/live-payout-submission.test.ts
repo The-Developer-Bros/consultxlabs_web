@@ -41,6 +41,8 @@ jest.mock("../../lib/prisma", () => ({
     },
     organizationEarnings: {
       updateMany: jest.fn(),
+      // #1020 — the disbursement dispute guard probes for live disputes.
+      findFirst: jest.fn().mockResolvedValue(null),
     },
     orgAuditLog: {
       create: jest.fn().mockResolvedValue({}),

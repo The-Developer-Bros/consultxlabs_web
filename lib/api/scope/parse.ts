@@ -190,14 +190,3 @@ export function scopeToWhereOrgId(
     return { organizationId: scope.orgId };
   return {};
 }
-
-/**
- * Serialize a Scope back to the URL form. Inverse of `resolveOrgScope`.
- * Used by the `useOrgScope` hook to mutate the URL when the user
- * toggles the dropdown.
- */
-export function serializeScope(scope: Scope): string {
-  if (scope.kind === "personal") return "mine";
-  if (scope.kind === "all") return "all";
-  return scope.orgId; // org + orgMember both serialize to the orgId
-}

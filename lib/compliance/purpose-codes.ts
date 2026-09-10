@@ -102,3 +102,24 @@ export function normalizePurposeCode(code: string): PurposeCode | undefined {
     ? (code as PurposeCode)
     : undefined;
 }
+
+/**
+ * Reverse of `normalizePurposeCode`: every string an artifact may legitimately
+ * be STORED under for a given canonical code — the canonical code itself plus
+ * each legacy alias that normalises to it.
+ *
+ * #1472 — the runtime gates matched the canonical code exactly, so an artifact
+ * written under the pre-taxonomy kebab-case code (`session-booking`) was
+ * invisible to them and every booking against that consultant answered 403
+ * although `withdrawnAt` was null. A consent record is a legal artifact: the
+ * gate has to recognise every code the platform ever wrote, so reads go through
+ * `hasSome: purposeCodeAliases(code)` rather than `has: code`. Writes still
+ * normalise to the canonical form, and the DB is deliberately NOT backfilled
+ * (pre-MVP reset).
+ */
+export function purposeCodeAliases(code: PurposeCode): string[] {
+  const legacy = Object.keys(LEGACY_PURPOSE_CODE_MAP).filter(
+    (alias) => LEGACY_PURPOSE_CODE_MAP[alias] === code,
+  );
+  return [code, ...legacy];
+}

@@ -13,6 +13,7 @@ import {
 } from "./types";
 import { RefundStatus, DisputeStatus } from "@prisma/client";
 import { getAppUrl } from "@/lib/url";
+import { assertInrSettlement } from "@/lib/payments/validation/currency-guards";
 
 /**
  * Convert Stripe's complex Evidence object to a plain record.
@@ -34,8 +35,57 @@ const initializeStripeClient = () => {
     console.warn("STRIPE_SECRET_KEY not found in environment variables");
     return null;
   }
+
+  // #1351, mirroring the PM-10 guard in core/razorpay.ts. Nothing downstream
+  // distinguishes test mode from live mode, so a TEST key in a production
+  // posture boots cleanly and fails only at the first customer: charges
+  // decline, refunds dead-end, webhooks never verify, while every Payment row
+  // still reads as gateway-authoritative. Razorpay fails at module load
+  // because its guard predates the lazy client; Stripe's lives here instead,
+  // because #1376 made gateway cores load at call time and a module-scope
+  // throw would fire on any import of this file.
+  //
+  // EXCEPT during `next build`: builds run with NODE_ENV=production and CI /
+  // Netlify build environments legitimately hold test keys — a build moves no
+  // money. Before launch the production site also legitimately runs on test
+  // keys, so STRIPE_ALLOW_TEST_KEYS_IN_PRODUCTION=true downgrades the throw to
+  // a loud error log; the variable must go away with the first LIVE keys.
+  //
+  // Both test-mode prefixes count: `rk_test_` is a RESTRICTED test key, which
+  // Stripe recommends for exactly this server-side use, so it is the prefix a
+  // security-conscious operator is most likely to paste in. Matching only
+  // `sk_test_` would let the more careful mistake through the guard.
+  const isTestModeKey =
+    apiKey.startsWith("sk_test_") || apiKey.startsWith("rk_test_");
+  if (
+    process.env.NODE_ENV === "production" &&
+    process.env.NEXT_PHASE !== "phase-production-build" &&
+    isTestModeKey
+  ) {
+    if (process.env.STRIPE_ALLOW_TEST_KEYS_IN_PRODUCTION === "true") {
+      console.error(
+        "[stripe] STRIPE_ALLOW_TEST_KEYS_IN_PRODUCTION=true: the production posture is running on a Stripe TEST secret key. " +
+          "No real money can move. Delete the variable and set a LIVE key before Stripe is enabled for customers.",
+      );
+    } else {
+      throw new PaymentError(
+        "STRIPE_SECRET_KEY is set to a Stripe TEST key (sk_test_… / rk_test_…) while NODE_ENV=production. " +
+          "Live checkout, refunds and webhooks cannot run against Stripe test mode. " +
+          "Fix: replace STRIPE_SECRET_KEY with the account's LIVE key " +
+          "(dashboard.stripe.com → Developers → API keys, live mode) and redeploy.",
+        "STRIPE_TEST_KEY_IN_PRODUCTION",
+        "STRIPE",
+      );
+    }
+  }
+
   return new Stripe(apiKey, {
     apiVersion: "2026-02-25.clover",
+    // Parity with the explicit 30 s budget withRazorpaySdkTimeout enforces:
+    // webhook after() callbacks and every refund phase await these calls, so
+    // an unbounded hang is a correctness problem, not just a latency one.
+    timeout: 30_000,
+    maxNetworkRetries: 2,
   });
 };
 
@@ -85,6 +135,18 @@ export async function createStripeCheckoutSession({
   currency,
   metadata,
 }: PaymentIntentParams): Promise<PaymentIntent> {
+  // #1396 — same boundary as the Razorpay sibling, and equally the first
+  // statement here. `unit_amount` below is INR paise no matter what this
+  // argument says, so lower-casing an unvalidated code into
+  // `price_data.currency` would price the order in a foreign subunit.
+  // #1396 — use the canonical code the guard just normalised, not the raw
+  // (possibly padded/lowercased) input.
+  const settlementCurrency = assertInrSettlement(
+    currency,
+    "create a Stripe checkout session",
+    "STRIPE",
+  );
+
   const stripeClient = getStripeClient();
   if (!stripeClient) {
     throw new PaymentError(
@@ -109,7 +171,7 @@ export async function createStripeCheckoutSession({
       line_items: [
         {
           price_data: {
-            currency: currency.toLowerCase(),
+            currency: settlementCurrency.toLowerCase(),
             product_data: {
               name: `${metadata.appointmentType} Appointment`,
               description: `Appointment booking for ${metadata.appointmentType}`,
@@ -126,14 +188,29 @@ export async function createStripeCheckoutSession({
       expires_at: Math.floor(Date.now() / 1000) + 30 * 60, // 30 minutes
     });
 
+    // Stripe types `url` as nullable and returns null for sessions in a UI
+    // mode that has no hosted page. `session.url!` shipped that null to the
+    // browser as the redirect target, so the buyer landed on "null" with a
+    // live PENDING Payment row behind them.
+    if (!session.url) {
+      throw new PaymentError(
+        `Stripe checkout session ${session.id} was created without a hosted checkout URL`,
+        "STRIPE_SESSION_URL_MISSING",
+        "STRIPE",
+      );
+    }
+
     return {
       id: session.id,
-      client_secret: session.url!, // Checkout URL
+      client_secret: session.url, // Checkout URL
       amount,
       currency,
       status: session.status || "open",
     };
   } catch (error) {
+    // Our own precondition failures are already precise; re-wrapping them
+    // through handleStripeError would flatten them to UNKNOWN_ERROR.
+    if (error instanceof PaymentError) throw error;
     console.error("Stripe checkout session creation failed:", error);
     // A declined/invalid card is an ANSWER the gateway gave us, not a fault —
     // tag it separately so the dashboard doesn't read "Stripe is down" for
@@ -198,7 +275,10 @@ export async function cancelStripePayment(
       }
     }
     console.error(`Failed to cancel Stripe payment ${paymentIntentId}:`, error);
-    reportSentryError(error, { subsystem: "payments", tags: { provider: "stripe" } });
+    reportSentryError(error, {
+      subsystem: "payments",
+      tags: { provider: "stripe" },
+    });
   }
 }
 
@@ -214,6 +294,7 @@ export async function createStripeRefund({
   amount,
   reason,
   metadata,
+  idempotencyKey,
 }: RefundParams): Promise<RefundResult> {
   const stripeClient = getStripeClient();
   if (!stripeClient) {
@@ -224,18 +305,63 @@ export async function createStripeRefund({
     );
   }
 
+  // The Razorpay rail has carried an idempotency key since #825; this one
+  // dropped it on the floor, so a Phase 2 retry after a timeout refunded the
+  // customer twice. The only caller passes the Phase 1 reservation id, which
+  // is the logical refund's identity, so a missing key means the caller is
+  // wrong — refuse rather than issue an unkeyed refund.
+  if (!idempotencyKey) {
+    throw new RefundError(
+      "Stripe refunds require an idempotency key — refusing to issue an unkeyed refund",
+      "REFUND_IDEMPOTENCY_KEY_REQUIRED",
+      "STRIPE",
+    );
+  }
+
+  // `amount || undefined` turned 0 and undefined into "refund everything".
+  // Every caller computes an explicit paise figure; an absent or zero one is a
+  // bug upstream, and silently promoting it to a full refund spends real money.
+  //
+  // #1351 — `<= 0` alone still admits NaN, Infinity and fractions, none of
+  // which compare false against zero. Stripe takes an integer minor unit, so
+  // those reach the API and come back as a generic gateway error the caller
+  // books as a rail failure rather than the upstream arithmetic bug it is.
+  // Same shape as the ledger's posting guard in lib/payments/ledger/post.ts.
+  if (amount === undefined || !Number.isSafeInteger(amount) || amount <= 0) {
+    throw new RefundError(
+      `Refund amount must be a positive whole number of paise (got ${String(amount)})`,
+      "INVALID_AMOUNT",
+      "STRIPE",
+    );
+  }
+
   try {
-    // Fetch the payment intent to get the currency
     const paymentIntent =
       await stripeClient.paymentIntents.retrieve(paymentIntentId);
-    const _currency = paymentIntent.currency;
 
-    const refund = await stripeClient.refunds.create({
-      payment_intent: paymentIntentId,
-      amount: amount || undefined, // already in smallest currency unit (paise/cents)
-      reason: mapRefundReason(reason),
-      metadata,
-    });
+    // Refunding an intent that never captured is not a no-op: Stripe answers
+    // with a generic error the caller books as a gateway failure, while an
+    // uncaptured intent should be CANCELLED instead. Fail with a code that
+    // says which.
+    if (paymentIntent.status !== "succeeded") {
+      throw new RefundError(
+        `Stripe payment intent ${paymentIntentId} is ${paymentIntent.status}, not succeeded — cancel it instead of refunding`,
+        "STRIPE_PAYMENT_NOT_CAPTURED",
+        "STRIPE",
+      );
+    }
+
+    const refund = await stripeClient.refunds.create(
+      {
+        payment_intent: paymentIntentId,
+        amount, // already in smallest currency unit (paise/cents)
+        reason: mapRefundReason(reason),
+        metadata,
+      },
+      // Request option, NOT a body param: as a param Stripe ignores it and the
+      // retry mints a second refund.
+      { idempotencyKey },
+    );
 
     return {
       refundId: refund.id,
@@ -245,8 +371,14 @@ export async function createStripeRefund({
       metadata: refund.metadata || undefined,
     };
   } catch (error) {
+    // Our own precondition failures already carry a precise code;
+    // handleStripeRefundError would flatten them to UNKNOWN_ERROR.
+    if (error instanceof RefundError) throw error;
     console.error("Stripe refund creation failed:", error);
-    reportSentryError(error, { subsystem: "payments", tags: { provider: "stripe" } });
+    reportSentryError(error, {
+      subsystem: "payments",
+      tags: { provider: "stripe" },
+    });
     throw handleStripeRefundError(error);
   }
 }
@@ -276,7 +408,10 @@ export async function getStripeRefund(refundId: string): Promise<RefundResult> {
     };
   } catch (error) {
     console.error("Stripe refund retrieval failed:", error);
-    reportSentryError(error, { subsystem: "payments", tags: { provider: "stripe" } });
+    reportSentryError(error, {
+      subsystem: "payments",
+      tags: { provider: "stripe" },
+    });
     throw handleStripeRefundError(error);
   }
 }
@@ -312,7 +447,10 @@ export async function listStripeRefunds(
     }));
   } catch (error) {
     console.error("Stripe refunds list failed:", error);
-    reportSentryError(error, { subsystem: "payments", tags: { provider: "stripe" } });
+    reportSentryError(error, {
+      subsystem: "payments",
+      tags: { provider: "stripe" },
+    });
     throw handleStripeRefundError(error);
   }
 }
@@ -357,7 +495,10 @@ export async function getStripeDispute(
     } else {
       console.error("Stripe dispute retrieval failed:", error);
     }
-    reportSentryError(error, { subsystem: "payments", tags: { provider: "stripe" } });
+    reportSentryError(error, {
+      subsystem: "payments",
+      tags: { provider: "stripe" },
+    });
     throw handleStripeDisputeError(error);
   }
 }
@@ -412,7 +553,10 @@ export async function submitStripeDisputeEvidence({
     };
   } catch (error) {
     console.error("Stripe dispute evidence submission failed:", error);
-    reportSentryError(error, { subsystem: "payments", tags: { provider: "stripe" } });
+    reportSentryError(error, {
+      subsystem: "payments",
+      tags: { provider: "stripe" },
+    });
     throw handleStripeDisputeError(error);
   }
 }
@@ -446,7 +590,10 @@ export async function listStripeDisputes(
     }));
   } catch (error) {
     console.error("Stripe disputes list failed:", error);
-    reportSentryError(error, { subsystem: "payments", tags: { provider: "stripe" } });
+    reportSentryError(error, {
+      subsystem: "payments",
+      tags: { provider: "stripe" },
+    });
     throw handleStripeDisputeError(error);
   }
 }
@@ -475,6 +622,12 @@ function mapStripeRefundStatus(status: string | null): RefundStatus {
     case "canceled":
       return "CANCELLED";
     default:
+      // Reconcile re-polls PENDING, so an unknown status self-corrects on the
+      // next pass — but the value itself must be visible, or a new Stripe
+      // status ships as a silent permanent PENDING.
+      console.warn(
+        `[stripe] Unknown refund status "${status}" — treating as PENDING`,
+      );
       return "PENDING";
   }
 }

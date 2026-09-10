@@ -1,4 +1,8 @@
 import "server-only";
+import {
+  mergeAdjacentCustomRows,
+  mergeAdjacentWeeklyRows,
+} from "@/utils/slotAllocation/mergeAdjacentWeeklyRows";
 import { Prisma } from "@prisma/client";
 import { UserRole, ScheduleType } from "@prisma/client";
 import prisma, { type Tx } from "@/lib/prisma";
@@ -6,8 +10,12 @@ import { isValidTimeRange } from "@/utils/timeSlotValidation";
 import {
   validateWeeklySlotTimeOrder,
   slotsOverlap,
-  getTimezoneOffsetMinutes,
 } from "@/utils/slotAllocation/slotTimeUtils";
+import {
+  resolveWeeklyTimezone,
+  resolveWeeklyUtcOffsetMinutes,
+  weeklyRowLocalColumns,
+} from "@/lib/scheduling/weeklyUtcOffset";
 import { notifyNewConsultantApplication } from "@/lib/novu";
 import type { OnboardingData, ConsultantProfileCreateData } from "./onboarding";
 import {
@@ -17,6 +25,8 @@ import {
   buildStaffScalarData,
   buildAdminScalarData,
   validateProfessionalBackground,
+  shouldSubmitVerification,
+  isPersistableVerificationDoc,
 } from "./onboarding-shared";
 
 // ============================================================================
@@ -136,7 +146,15 @@ async function syncAvailabilitySlots(
   tx: Tx,
   timezone?: string,
 ) {
-  const utcOffsetMinutes = timezone ? getTimezoneOffsetMinutes(timezone) : 0;
+  // #1326 — this path stored 0 for a consultant with no onboarding timezone,
+  // so their whole published week projected as if they lived in UTC. One
+  // resolver now answers for every write path, and a conflicting caller value
+  // throws into the failed transaction rather than being written.
+  const utcOffsetMinutes = resolveWeeklyUtcOffsetMinutes({
+    profileTimezone: timezone,
+    consultantProfileId,
+  });
+  const rowTimezone = resolveWeeklyTimezone(timezone);
   if (scheduleType === ScheduleType.WEEKLY) {
     await tx.slotOfAvailabilityCustom.deleteMany({
       where: { consultantProfileId },
@@ -183,14 +201,28 @@ async function syncAvailabilitySlots(
         }
       }
 
+      // #1320 — adjacent entries ("3:30–4:30" + "4:30–5:30") become one row so
+      // storage matches the window the customer is shown and can book.
+      //
+      // #1326 — the offset is stamped BEFORE the merge: mergeAdjacentWeeklyRows
+      // refuses to fold rows whose offsets differ, and every row here carried
+      // an absent offset until after the fold, so that guard was comparing
+      // undefined with undefined and could never fire.
+      // #872 — the five DST columns are derived from the MERGED row, which is
+      // the one actually stored. No reader consults them until the reader flip.
+      const rowsWithOffset = weeklySlotsToCreate.map((slot) => ({
+        ...slot,
+        utcOffsetMinutes,
+      }));
       await tx.slotOfAvailabilityWeekly.createMany({
-        data: weeklySlotsToCreate.map((slot) => ({
+        data: mergeAdjacentWeeklyRows(rowsWithOffset).map((slot) => ({
           startDay: slot.startDay,
           startTimeUtc: slot.startTimeUtc,
           endDay: slot.endDay,
           endTimeUtc: slot.endTimeUtc,
           consultantProfileId,
           utcOffsetMinutes,
+          ...weeklyRowLocalColumns(slot, rowTimezone, utcOffsetMinutes),
         })),
       });
     }
@@ -237,12 +269,16 @@ async function syncAvailabilitySlots(
         }
       }
 
+      // #1320 — merge AFTER the per-slot 12-hour cap above, so a chain of
+      // adjacent entries still has each entry checked on its own.
       await tx.slotOfAvailabilityCustom.createMany({
-        data: customSlotsToCreate.map((slot) => ({
-          startsAt: slot.startsAt,
-          endsAt: slot.endsAt,
-          consultantProfileId,
-        })),
+        data: mergeAdjacentCustomRows(
+          customSlotsToCreate.map((slot) => ({
+            startsAt: new Date(slot.startsAt),
+            endsAt: new Date(slot.endsAt),
+            consultantProfileId,
+          })),
+        ),
       });
     }
   }
@@ -478,7 +514,14 @@ async function submitVerificationRequest(
   });
 
   if (verificationDocuments && verificationDocuments.length > 0) {
-    const existingDocuments = verificationDocuments.filter(
+    // Same predicate that gated the deferral decision in
+    // maybeSubmitConsultantVerification — a doc that would not persist here
+    // must never have started a review (review round 1).
+    const persistableDocs = verificationDocuments.filter(
+      isPersistableVerificationDoc,
+    ) as VerificationDocumentInput[];
+
+    const existingDocuments = persistableDocs.filter(
       (doc) => doc.id && !doc.isOnboardingUpload,
     );
     if (existingDocuments.length > 0) {
@@ -492,7 +535,7 @@ async function submitVerificationRequest(
       });
     }
 
-    const onboardingDocuments = verificationDocuments.filter(
+    const onboardingDocuments = persistableDocs.filter(
       (doc) => doc.isOnboardingUpload || (!doc.id && doc.fileUrl),
     );
     if (onboardingDocuments.length > 0) {
@@ -577,6 +620,11 @@ type OnboardingResult = {
   user?: Record<string, unknown>;
   error?: string;
   verificationWarning?: string;
+  /// True when the consultant finished onboarding without completing the
+  /// verification package (LinkedIn + ≥1 document). The profile exists with
+  /// verificationStatus PENDING_VERIFICATION; the client uses this to show a
+  /// "finish from Settings" message instead of "under review".
+  verificationDeferred?: boolean;
 };
 
 async function runOnboardingTransaction(
@@ -646,32 +694,59 @@ async function recoverIdempotentOnboarding(
   return null;
 }
 
-// Post-transaction consultant verification. Returns a warning string when the
-// profile saved but the verification submission failed, else undefined.
+/**
+ * Post-transaction consultant verification. Returns a warning string when the
+ * profile saved but the verification submission failed; `deferred: true` when
+ * the consultant finished without a complete verification package. The policy
+ * itself lives in `shouldSubmitVerification` (onboarding-shared) so it stays
+ * unit-testable outside this server-only module.
+ */
 async function maybeSubmitConsultantVerification(
   userId: string,
   updatedUser: OnboardingUser,
   body: unknown,
   role: OnboardingData["role"],
-): Promise<string | undefined> {
+): Promise<{ warning?: string; deferred?: boolean } | undefined> {
   if (role !== UserRole.CONSULTANT || !updatedUser.consultantProfileId) {
     return undefined;
   }
+
+  const verificationBody = body as VerificationBody;
+  const { hasDocuments, hasLinkedin } =
+    shouldSubmitVerification(verificationBody);
+
+  // Deferred path (#onboarding-ux): the profile is real and saved with the
+  // model default PENDING_VERIFICATION ("onboarding complete, awaiting
+  // review"); marketplace visibility continues to gate on verification, so a
+  // deferred consultant is simply unlisted until they finish from Settings.
+  // Whatever LinkedIn they did enter still lands on the User row.
+  if (!hasDocuments || !hasLinkedin) {
+    if (hasLinkedin) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          linkedinUrl: verificationBody.verificationLinkedinUrl!.trim(),
+        },
+      });
+    }
+    return { deferred: true };
+  }
+
   try {
     await submitVerificationRequest(
       userId,
       updatedUser.consultantProfileId,
-      body as VerificationBody,
+      verificationBody,
       updatedUser.name || "",
       updatedUser.email || "",
     );
     return undefined;
   } catch (verificationError) {
-    console.error(
-      "Failed to create verification request:",
-      verificationError,
-    );
-    return "Your profile was saved but verification submission failed. Please contact support.";
+    console.error("Failed to create verification request:", verificationError);
+    return {
+      warning:
+        "Your profile was saved but verification submission failed. Please contact support.",
+    };
   }
 }
 
@@ -720,14 +795,19 @@ export async function processOnboardingData(
       throw error;
     }
 
-    const verificationWarning = await maybeSubmitConsultantVerification(
+    const verification = await maybeSubmitConsultantVerification(
       userId,
       updatedUser,
       body,
       validatedBody.role,
     );
 
-    return { success: true, user: updatedUser, verificationWarning };
+    return {
+      success: true,
+      user: updatedUser,
+      verificationWarning: verification?.warning,
+      verificationDeferred: verification?.deferred,
+    };
   } catch (error: unknown) {
     console.error("Error in processOnboardingData:", error);
     const errorMessage =

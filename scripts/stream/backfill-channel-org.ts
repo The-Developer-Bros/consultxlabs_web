@@ -48,6 +48,24 @@
  * 7. Re-run the script — it should report 0 updates (idempotent).
  */
 
+// #1280 PR 7 — this script has never been runnable, and this line is why.
+//
+// Every other script in scripts/stream/ loads dotenv; this one did not. `tsx`
+// does not read `.env` on its own, so `lib/redis.ts` — pulled in transitively
+// by `lib/stream-client` — hit its module-scope env check with
+// UPSTASH_REDIS_REST_URL undefined and threw before a single line of this file
+// executed:
+//
+//   Error: UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be set
+//     at Object.<anonymous> (lib/redis.ts:389:16)
+//
+// Which explains the finding that prompted this PR. The backfill was written,
+// reviewed and merged, and zero of 886 channels carry `organization_id` —
+// because the script that was supposed to tag them could not start. Same shape
+// as the CI database guards in #1285, which printed "DATABASE_URL unset —
+// skipping" on every run for the same reason.
+import "dotenv/config";
+
 import prisma from "@/lib/prisma";
 import { getStreamChatClient } from "@/lib/stream-client";
 import { bookingOrgId, getDmChannelId } from "@/lib/stream-utils";
@@ -194,7 +212,10 @@ export async function backfillChannelOrg(
   const queued = new Map<string, { target: ChannelTarget; orgId: string }>();
 
   let cursor: string | null = null;
-  // eslint-disable-next-line no-constant-condition
+  // The disable directive that used to sit here was already dead — this config
+  // does not flag `while (true)` — and eslint reports an unused directive as a
+  // warning of its own. Removed rather than left, now that this file is being
+  // touched anyway.
   while (true) {
     type AppointmentRow = {
       id: string;
@@ -249,12 +270,40 @@ export async function backfillChannelOrg(
   for (const [channelId, { target, orgId }] of Array.from(queued.entries())) {
     try {
       const channel = client.channel(target.channelType, channelId);
-      // `query` returns the live channel state, including custom data.
-      // Stream returns 4xx if the channel doesn't exist — caught below.
-      const state = await channel.query({ state: false, messages: { limit: 0 } });
-      // `state.channel` is typed as `ChannelResponse` but at runtime carries
+
+      // #1280 PR 7 — `queryChannels`, NOT `channel.query()`.
+      //
+      // `channel.query()` maps to Stream's GetOrCreateChannel endpoint, which
+      // under server-side auth refuses without an author:
+      //
+      //   StreamChat error code 4: GetOrCreateChannel failed with error:
+      //   "either data.created_by or data.created_by_id must be provided
+      //    when using server side auth."
+      //
+      // So every channel this script touched errored before it could read
+      // anything — the second reason (after the missing dotenv above) that the
+      // backfill has never tagged a single channel. It is also the same trap
+      // #1270 hit on the video side: a read-shaped call that can create is not
+      // a read.
+      //
+      // `queryChannels` with an id filter cannot create. If the channel does
+      // not exist it returns an empty page, which is the right answer for a
+      // backfill — there is nothing to tag, and minting one here would create
+      // an empty channel purely as a side effect of inspecting it.
+      const [found] = await client.queryChannels(
+        { type: target.channelType, id: { $eq: channelId } },
+        {},
+        { limit: 1, state: false, watch: false, presence: false },
+      );
+
+      if (!found) {
+        result.channelMissing++;
+        continue;
+      }
+
+      // `found.data` is typed as `ChannelResponse` but at runtime carries
       // arbitrary custom fields. Cast through `unknown` for the type system.
-      const channelData = state.channel as unknown as
+      const channelData = found.data as unknown as
         | Record<string, unknown>
         | undefined;
       const existing = channelData?.organization_id;
@@ -301,9 +350,17 @@ export async function backfillChannelOrg(
 
 // Allow `npx tsx scripts/stream/backfill-channel-org.ts [--dry-run]`
 async function main() {
-  const dryRun = process.argv.includes("--dry-run");
+  // #1280 PR 7 — dry run is the DEFAULT, and `--apply` writes.
+  //
+  // This was the other way round: `--dry-run` was opt-in, so the bare command
+  // wrote to production Stream. Every other script in scripts/stream/ defaults
+  // to a dry run, so an operator who has learned that these are safe to run and
+  // read before applying got the opposite behaviour from this one. `--dry-run`
+  // is still accepted so any runbook or muscle memory carrying it keeps working.
+  const apply = process.argv.includes("--apply");
+  const dryRun = !apply;
   console.log(
-    `Starting Stream channel org backfill (${dryRun ? "DRY RUN" : "LIVE"})...`,
+    `Starting Stream channel org backfill (${dryRun ? "DRY RUN — pass --apply to write" : "LIVE"})...`,
   );
   const result = await backfillChannelOrg({ dryRun });
   console.log("Backfill complete:", result);

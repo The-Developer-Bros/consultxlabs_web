@@ -105,7 +105,7 @@ describe("live-hold filtering is shared by grid and allocator", () => {
         {
           consultation: { status: "APPROVED_PENDING_PAYMENT" },
           subscription: null,
-          payment: [{ expiresAt: past }],
+          payment: [{ paymentStatus: "PENDING", expiresAt: past }],
         },
         now,
       ),
@@ -131,7 +131,7 @@ describe("live-hold filtering is shared by grid and allocator", () => {
         {
           consultation: { status: "SCHEDULED" },
           subscription: null,
-          payment: [{ expiresAt: past }],
+          payment: [{ paymentStatus: "PENDING", expiresAt: past }],
         },
         now,
       ),

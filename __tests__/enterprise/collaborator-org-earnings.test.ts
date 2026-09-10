@@ -44,6 +44,9 @@ jest.mock("../../lib/collaborators/service", () => ({
 
 jest.mock("../../lib/api/organizations/rate-card", () => ({
   resolveEffectiveRateCard: jest.fn(),
+  // #1335 — settlement destructures this from the same module; a partial mock
+  // leaves it undefined and every split throws before it resolves a card.
+  isScopedRateCardResolutionEnabled: () => false,
 }));
 
 // #812 — this suite verifies the per-collaborator EARNINGS-split logic, not the
@@ -100,10 +103,12 @@ jest.mock("../../lib/prisma", () => {
     },
     consultantEarnings: {
       findFirst: jest.fn().mockResolvedValue(null),
-      create: jest.fn().mockImplementation(async ({ data }: { data: { id?: string } }) => ({
-        id: "earnings-" + Math.random().toString(36).slice(2, 8),
-        ...data,
-      })),
+      create: jest
+        .fn()
+        .mockImplementation(async ({ data }: { data: { id?: string } }) => ({
+          id: "earnings-" + Math.random().toString(36).slice(2, 8),
+          ...data,
+        })),
     },
     consultantProfile: {
       update: jest.fn().mockResolvedValue({}),
@@ -115,28 +120,33 @@ jest.mock("../../lib/prisma", () => {
       count: jest.fn().mockResolvedValue(1),
     },
     organizationEarnings: {
-      create: jest.fn().mockImplementation(async ({ data }: { data: CapturedCreate }) => {
-        const key = `${data.paymentId}::${data.organizationId}`;
-        if (p2002Targets.has(key)) {
-          // Simulate Prisma P2002 unique constraint violation.
-          // We can't import Prisma's real error class without dragging
-          // the runtime in; throw an object that quacks like one.
-          const err = new Error("Unique constraint failed") as Error & {
-            code: string;
-            clientVersion: string;
-            meta: Record<string, unknown>;
-          };
-          err.code = "P2002";
-          err.clientVersion = "test";
-          err.meta = { target: ["paymentId", "organizationId"] };
-          // Re-tag prototype so `instanceof Prisma.PrismaClientKnownRequestError` matches
-          const { Prisma } = jest.requireActual("@prisma/client");
-          Object.setPrototypeOf(err, Prisma.PrismaClientKnownRequestError.prototype);
-          throw err;
-        }
-        capturedOrgEarnings.push(data);
-        return { id: "org-earn-" + capturedOrgEarnings.length, ...data };
-      }),
+      create: jest
+        .fn()
+        .mockImplementation(async ({ data }: { data: CapturedCreate }) => {
+          const key = `${data.paymentId}::${data.organizationId}`;
+          if (p2002Targets.has(key)) {
+            // Simulate Prisma P2002 unique constraint violation.
+            // We can't import Prisma's real error class without dragging
+            // the runtime in; throw an object that quacks like one.
+            const err = new Error("Unique constraint failed") as Error & {
+              code: string;
+              clientVersion: string;
+              meta: Record<string, unknown>;
+            };
+            err.code = "P2002";
+            err.clientVersion = "test";
+            err.meta = { target: ["paymentId", "organizationId"] };
+            // Re-tag prototype so `instanceof Prisma.PrismaClientKnownRequestError` matches
+            const { Prisma } = jest.requireActual("@prisma/client");
+            Object.setPrototypeOf(
+              err,
+              Prisma.PrismaClientKnownRequestError.prototype,
+            );
+            throw err;
+          }
+          capturedOrgEarnings.push(data);
+          return { id: "org-earn-" + capturedOrgEarnings.length, ...data };
+        }),
     },
     membership: {
       findFirst: jest.fn(),
@@ -155,9 +165,11 @@ jest.mock("../../lib/prisma", () => {
   return {
     __esModule: true,
     default: {
-      $transaction: jest.fn().mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => {
-        return await fn(mockTx);
-      }),
+      $transaction: jest
+        .fn()
+        .mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => {
+          return await fn(mockTx);
+        }),
       // Expose tx-bound mocks via the default export so tests can
       // configure findFirst per-case.
       __mockTx: mockTx,
@@ -172,12 +184,16 @@ import { createEarningsFromPayment } from "@/lib/payments/payouts/earnings-servi
 
 // `findFirst` is the time-scoped membership lookup inside resolveOrgSplit.
 // We set it per-test to map consultantProfileId -> { orgId, payoutRecipient }.
-const mockedTx = (prisma as unknown as { __mockTx: {
-  membership: { findFirst: jest.Mock };
-  consultantEarnings: { findFirst: jest.Mock; create: jest.Mock };
-  organization: { findUnique: jest.Mock };
-  organizationEarnings: { create: jest.Mock };
-} }).__mockTx;
+const mockedTx = (
+  prisma as unknown as {
+    __mockTx: {
+      membership: { findFirst: jest.Mock };
+      consultantEarnings: { findFirst: jest.Mock; create: jest.Mock };
+      organization: { findUnique: jest.Mock };
+      organizationEarnings: { create: jest.Mock };
+    };
+  }
+).__mockTx;
 
 const mockedCalculateSplit = calculateRevenueSplit as jest.MockedFunction<
   typeof calculateRevenueSplit
@@ -207,7 +223,10 @@ function makePayment(overrides: Partial<{ id: string; amount: number }> = {}) {
  * consultant (no HOST-org membership).
  */
 function setMembershipMap(
-  map: Record<string, { orgId: string; payoutRecipient?: "SELF" | "ORGANIZATION" } | null>,
+  map: Record<
+    string,
+    { orgId: string; payoutRecipient?: "SELF" | "ORGANIZATION" } | null
+  >,
 ) {
   mockedTx.membership.findFirst.mockImplementation(
     async (args: { where: { consultantProfileId: string } }) => {
@@ -262,7 +281,10 @@ beforeEach(() => {
         err.code = "P2002";
         err.clientVersion = "test";
         err.meta = { target: ["paymentId", "organizationId"] };
-        Object.setPrototypeOf(err, Prisma.PrismaClientKnownRequestError.prototype);
+        Object.setPrototypeOf(
+          err,
+          Prisma.PrismaClientKnownRequestError.prototype,
+        );
         throw err;
       }
       capturedOrgEarnings.push(data);
@@ -285,8 +307,16 @@ describe("A3 (Q3): per-collaborator HOST-org earnings", () => {
     // the independent collab → owner keeps the rest.
     mockedCalculateSplit.mockResolvedValue([
       { consultantProfileId: PRIMARY_PROFILE, share: 42_500, role: "OWNER" },
-      { consultantProfileId: COLLAB_HOST_PROFILE, share: 25_500, role: "CO_HOST" },
-      { consultantProfileId: COLLAB_INDEP_PROFILE, share: 17_000, role: "CO_HOST" },
+      {
+        consultantProfileId: COLLAB_HOST_PROFILE,
+        share: 25_500,
+        role: "CO_HOST",
+      },
+      {
+        consultantProfileId: COLLAB_INDEP_PROFILE,
+        share: 17_000,
+        role: "CO_HOST",
+      },
     ]);
 
     await createEarningsFromPayment({
@@ -323,8 +353,8 @@ describe("A3 (Q3): per-collaborator HOST-org earnings", () => {
     expect(anotherAgency!.rateCardIdApplied).toBe(`rc-${ORG_ANOTHER}`);
 
     // No row for the independent collaborator's profile id was ever passed.
-    const independentRows = capturedOrgEarnings.filter(
-      (r) => r.organizationId.includes("indep"),
+    const independentRows = capturedOrgEarnings.filter((r) =>
+      r.organizationId.includes("indep"),
     );
     expect(independentRows).toHaveLength(0);
   });
@@ -337,7 +367,11 @@ describe("A3 (Q3): per-collaborator HOST-org earnings", () => {
 
     mockedCalculateSplit.mockResolvedValue([
       { consultantProfileId: PRIMARY_PROFILE, share: 60_000, role: "OWNER" },
-      { consultantProfileId: COLLAB_SAME_ORG_PROFILE, share: 25_000, role: "CO_HOST" },
+      {
+        consultantProfileId: COLLAB_SAME_ORG_PROFILE,
+        share: 25_000,
+        role: "CO_HOST",
+      },
     ]);
 
     // Pre-arm the P2002 trap on (PAYMENT_ID, ORG_LEARNPRO) to fire on
@@ -358,7 +392,10 @@ describe("A3 (Q3): per-collaborator HOST-org earnings", () => {
             err.code = "P2002";
             err.clientVersion = "test";
             err.meta = { target: ["paymentId", "organizationId"] };
-            Object.setPrototypeOf(err, Prisma.PrismaClientKnownRequestError.prototype);
+            Object.setPrototypeOf(
+              err,
+              Prisma.PrismaClientKnownRequestError.prototype,
+            );
             throw err;
           }
         }
@@ -396,7 +433,11 @@ describe("A3 (Q3): per-collaborator HOST-org earnings", () => {
 
     mockedCalculateSplit.mockResolvedValue([
       { consultantProfileId: PRIMARY_PROFILE, share: 70_000, role: "OWNER" },
-      { consultantProfileId: COLLAB_HOST_PROFILE, share: 30_000, role: "CO_HOST" },
+      {
+        consultantProfileId: COLLAB_HOST_PROFILE,
+        share: 30_000,
+        role: "CO_HOST",
+      },
     ]);
 
     await createEarningsFromPayment({

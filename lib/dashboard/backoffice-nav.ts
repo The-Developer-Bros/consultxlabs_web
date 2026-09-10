@@ -11,6 +11,7 @@ import {
   Landmark,
   ListChecks,
   Megaphone,
+  MessagesSquare,
   Play,
   Receipt,
   RefreshCw,
@@ -21,6 +22,7 @@ import {
   Users,
   Wallet,
   Wrench,
+  Target,
 } from "lucide-react";
 import type { UserRole } from "@prisma/client";
 
@@ -93,6 +95,13 @@ function groupSpecs({ showTds = false }: BackofficeNavOptions): NavGroupSpec[] {
           surface: "tickets.manage",
         },
         {
+          // #support-hub — the per-appointment conversation inbox.
+          name: "Conversations",
+          icon: MessagesSquare,
+          path: "threads",
+          surface: "threads.manage",
+        },
+        {
           name: "User Feedback",
           icon: Star,
           path: "feedback",
@@ -120,6 +129,14 @@ function groupSpecs({ showTds = false }: BackofficeNavOptions): NavGroupSpec[] {
           icon: ListChecks,
           path: "waitlist",
           surface: "waitlist.manage",
+        },
+        {
+          name: "Leads",
+          icon: Target,
+          path: "leads",
+          surface: "leads.manage",
+          // Only /dashboard/admin/leads exists — the staff tree would 404.
+          only: "admin",
         },
         { name: "Users", icon: Users, path: "users", surface: "users.read" },
         // Support context for "why was my document rejected?" — read-only.

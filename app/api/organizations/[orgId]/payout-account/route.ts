@@ -19,6 +19,11 @@ import prisma from "@/lib/prisma";
 import { requireOrgAccess, requireOrgOwner } from "@/lib/auth-helpers";
 import { AUDIT_ACTIONS } from "@/lib/enterprise/audit-actions";
 import { encodeAccountEnvelope } from "@/lib/payments/payouts/account-crypto";
+import {
+  getRazorpayPayoutsService,
+  isRazorpayPayoutsConfigured,
+} from "@/lib/payments/payouts/razorpay-payouts";
+import { transitionOrgPayoutAccount } from "@/lib/enterprise/transitions";
 
 const UpsertBodySchema = z.object({
   accountHolderName: z.string().min(1).max(200),
@@ -71,6 +76,102 @@ export async function GET(
     );
   }
   return NextResponse.json({ payoutAccount, exists: true });
+}
+
+/**
+ * S3776 — provisioning + penny-drop extracted from the PUT handler. Behavior
+ * unchanged: demote VERIFIED before re-provisioning, create contact/fund
+ * account, penny-drop, bind ids to the bank-detail revision, and verify via
+ * the guarded CAS on "valid". All failures are non-fatal by design.
+ */
+async function provisionAndVerifyOrgPayoutAccount(ctx: {
+  orgId: string;
+  actorMembershipId: string;
+  upsertedId: string;
+  upsertedVersion: number;
+  currentStatus: string;
+  accountHolderName: string;
+  billingEmail: string;
+  ifscCode: string | null;
+  accountNumber: string;
+  last4: string;
+}): Promise<void> {
+  const {
+    orgId,
+    actorMembershipId,
+    upsertedId,
+    upsertedVersion,
+    currentStatus,
+    accountHolderName,
+    billingEmail,
+    ifscCode,
+    accountNumber,
+    last4,
+  } = ctx;
+  if (!isRazorpayPayoutsConfigured() || !ifscCode) return;
+
+  // A re-provisioning attempt must not leave the row VERIFIED while its new
+  // fund account is still unproven: demote first (VERIFIED→PENDING is a
+  // legal edge), then provision.
+  if (currentStatus === "VERIFIED") {
+    await prisma.$transaction(async (tx) => {
+      await transitionOrgPayoutAccount(tx, {
+        where: { id: upsertedId, version: upsertedVersion },
+        to: "PENDING_VERIFICATION",
+        data: { verifiedAt: null },
+      });
+    });
+  }
+  try {
+    const svc = getRazorpayPayoutsService();
+    const contact = await svc.createContact({
+      name: accountHolderName,
+      email: billingEmail,
+      type: "vendor",
+      referenceId: orgId,
+    });
+    const fund = await svc.createFundAccount({
+      contactId: contact.id,
+      accountType: "bank_account",
+      bankAccount: {
+        name: accountHolderName,
+        ifsc: ifscCode,
+        accountNumber,
+      },
+    });
+    const validation = await svc.validateBankAccount(fund.id);
+
+    // Bind BOTH writes to the bank-detail revision this request created: a
+    // second PUT landing while our Razorpay calls are in flight must never
+    // receive stale ids or an unearned VERIFIED stamp.
+    await prisma.organizationPayoutAccount.updateMany({
+      where: { id: upsertedId, version: upsertedVersion },
+      data: {
+        razorpayContactId: contact.id,
+        razorpayFundAccountId: fund.id,
+      },
+    });
+    if (validation.accountStatus === "valid") {
+      await prisma.$transaction(async (tx) => {
+        await transitionOrgPayoutAccount(tx, {
+          where: { id: upsertedId, version: upsertedVersion },
+          to: "VERIFIED",
+          data: { verifiedAt: new Date() },
+          audit: {
+            organizationId: orgId,
+            actorMembershipId,
+            category: "SETTINGS",
+            action: AUDIT_ACTIONS.SETTINGS.SETTINGS_CHANGED,
+            description: "Payout account verified via RazorpayX penny-drop",
+            details: { fundAccountId: fund.id, last4 },
+          },
+        });
+      });
+    }
+  } catch (err) {
+    // Non-fatal: bank-detail upsert succeeded; verification retries later.
+    console.error("[org-payout-account] penny-drop error:", err);
+  }
 }
 
 export async function PUT(
@@ -144,13 +245,24 @@ export async function PUT(
         ifscCode: body.ifscCode ?? null,
         routingNumber: body.routingNumber ?? null,
         swiftCode: body.swiftCode ?? null,
-        // Force re-verification on any account-number change.
-        ...(existing?.accountNumberLast4 !== last4 && {
-          status: "PENDING_VERIFICATION",
-          verifiedAt: null,
-          razorpayContactId: null,
-          razorpayFundAccountId: null,
-        }),
+        // CR #1234 r3.5 — each PUT revision gets a distinct version, or the
+        // id+version CAS predicates below cannot tell revisions apart.
+        version: { increment: 1 },
+        // Force re-verification on any verification-relevant change (CR
+        // #1234 r2 — holder name and IFSC identify the destination as much
+        // as the last-4 does; comparing last4 alone let a same-last-4
+        // different-bank edit keep a stale VERIFIED stamp).
+        ...(existing &&
+        (existing.accountNumberLast4 !== last4 ||
+          existing.accountHolderName !== body.accountHolderName ||
+          (existing.ifscCode ?? null) !== (body.ifscCode ?? null))
+          ? {
+              status: "PENDING_VERIFICATION" as const,
+              verifiedAt: null,
+              razorpayContactId: null,
+              razorpayFundAccountId: null,
+            }
+          : {}),
       },
     });
 
@@ -175,20 +287,40 @@ export async function PUT(
     return next;
   });
 
+  // #1230 — wire the dormant verification loop (see helper below).
+  await provisionAndVerifyOrgPayoutAccount({
+    orgId,
+    actorMembershipId: access.member.id,
+    upsertedId: upserted.id,
+    upsertedVersion: upserted.version,
+    currentStatus: upserted.status,
+    accountHolderName: body.accountHolderName,
+    billingEmail: access.org.billingEmail ?? "",
+    ifscCode: body.ifscCode ?? null,
+    accountNumber: body.accountNumber,
+    last4,
+  });
+
+  // CR #1234 r2 — respond with the POST-verification row: the transition
+  // above may have flipped status/verifiedAt after `upserted` was read.
+  const fresh = await prisma.organizationPayoutAccount.findUniqueOrThrow({
+    where: { organizationId: orgId },
+  });
+
   return NextResponse.json(
     {
       payoutAccount: {
-        id: upserted.id,
-        accountHolderName: upserted.accountHolderName,
-        accountNumberLast4: upserted.accountNumberLast4,
-        bankName: upserted.bankName,
-        ifscCode: upserted.ifscCode,
-        routingNumber: upserted.routingNumber,
-        swiftCode: upserted.swiftCode,
-        status: upserted.status,
-        verifiedAt: upserted.verifiedAt,
-        createdAt: upserted.createdAt,
-        updatedAt: upserted.updatedAt,
+        id: fresh.id,
+        accountHolderName: fresh.accountHolderName,
+        accountNumberLast4: fresh.accountNumberLast4,
+        bankName: fresh.bankName,
+        ifscCode: fresh.ifscCode,
+        routingNumber: fresh.routingNumber,
+        swiftCode: fresh.swiftCode,
+        status: fresh.status,
+        verifiedAt: fresh.verifiedAt,
+        createdAt: fresh.createdAt,
+        updatedAt: fresh.updatedAt,
       },
     },
     { status: 200 },

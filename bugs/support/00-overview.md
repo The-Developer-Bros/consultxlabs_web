@@ -4,6 +4,17 @@
 
 In-app `SupportTicket` with responses, attachments, internal notes, and Swiggy-style links to consultation/subscription/payment/refund entities. User and staff APIs; Novu for create/update/response. Mobile API notes in `docs/api/support-tickets-mobile.md`.
 
+## Architecture (2026-08-21, #support-hub)
+
+Two scopes, one engine (`lib/support/`):
+
+- **Per-appointment** — `AppointmentSupportThread` + `SupportMessage` (persisted, one per appointment×user), driven by `FlowchartResolver` over the code-defined flow registry (`flows.ts`). Stage-gated intents (upcoming/live/completed), provider vs attendee variants, org-party intents for operators. Escalation links a `SupportTicket` (the single ops queue) and flips the channel to HUMAN.
+- **Platform** — stateless flowchart intake (`platform-flows.ts` + `POST /api/support/platform`); the client holds the cursor, the server validates every turn. Terminal = self-serve (nothing written) or a `SupportTicket` via the shared `createSupportTicket` factory (org-attributed via `SupportTicket.organizationId`).
+
+Surfaces: the dashboard Support tab is the Swiggy-style hub (`SupportHub.tsx`: Sessions / Platform subtabs, status-bucketed, last-activity-sorted); the appointment detail page carries the inline thread status card + "Get help" sheet; back-office "Conversations" inbox (`threads.manage`) reads full transcripts and replies as AGENT (mirrored to the linked ticket); org dashboards get metadata-only triage + the CSAT aggregate (ADR 20 addendum 2026-08-21). Session-scoped issue types are rejected (422) on the platform ticket route — they belong on the appointment thread.
+
+Deliberately NOT Stream: support chat stays on Postgres (transactional cursor+messages, low volume, ADR-20-allowlistable). Mirror-into-Stream is the post-launch option if human realtime is ever needed.
+
 ## Triage verdict (2026-07-12)
 
 Triaged 2026-07-12 against real code (3 verifier agents cross-checked every claim); fix wave PRs #981–#994 shipped. This dossier's claims map as follows:
@@ -15,7 +26,7 @@ Triaged 2026-07-12 against real code (3 verifier agents cross-checked every clai
 | No SLA / escalation / CSAT automation | 🟡 LEGIT-DEFERRED |
 | No email-to-ticket ingestion / Zendesk bridge | 🟡 LEGIT-DEFERRED |
 | Auto-refund-from-ticket unclear | 🟡 LEGIT-DEFERRED |
-| Priority auto-escalation absent | 🟡 LEGIT-DEFERRED |
+| Priority auto-escalation absent | 🟡 PARTIAL — reason→priority map (`lib/support/priority.ts`); time-based auto-escalation still deferred |
 
 ## Known gaps / bugs
 
@@ -23,7 +34,7 @@ Triaged 2026-07-12 against real code (3 verifier agents cross-checked every clai
 - No email-to-ticket ingestion or Zendesk bridge.
 - `refundId` link exists; auto-refund-from-ticket unclear.
 - No ticket merge/dedup when user opens three tickets for one failed payment.
-- Priority auto-escalation not evident in code.
+- Time-based priority auto-escalation is absent (the reason→priority mapping exists in `lib/support/priority.ts`).
 - Concurrent staff status updates are last-write-wins (no version).
 
 ## Unhappy paths & user psychology

@@ -13,9 +13,12 @@ import type { UserRole } from "@prisma/client";
 import {
   applyTransactionalEffects,
   applyBestEffortEffects,
+  persistActionSideEffects,
+  type ModerationReportRef,
   type SideEffectSummary,
 } from "@/lib/moderation/side-effects";
 import * as Sentry from "@sentry/nextjs";
+import { purgeReviewSurfaces } from "@/lib/data/public-cache";
 interface RouteParams {
   params: Promise<{ reportId: string }>;
 }
@@ -35,7 +38,7 @@ const VALID_ACTIONS: ModerationActionType[] = [
 
 type ModerationActionInput = {
   actionType: ModerationActionType;
-  report: { id: string; targetUserId: string; reviewId: string | null };
+  report: ModerationReportRef;
   staffUserId: string;
   notes?: string;
   suspensionDays?: number;
@@ -124,25 +127,6 @@ function applyModerationTransaction(
   );
 }
 
-// Best-effort persistence of the side-effect summary for staff visibility —
-// a failure here is captured but never surfaced to the caller.
-async function persistSideEffects(
-  actionId: string,
-  sideEffects: SideEffectSummary,
-): Promise<void> {
-  await prisma.moderationAction
-    .update({
-      where: { id: actionId },
-      data: { sideEffects: JSON.parse(JSON.stringify(sideEffects)) },
-    })
-    .catch((error) => {
-      Sentry.captureException(
-        error instanceof Error ? error : new Error(String(error)),
-        { tags: { subsystem: "moderation" } },
-      );
-    });
-}
-
 function moderationActionErrorResponse(error: unknown): NextResponse {
   if (error instanceof Error && "httpStatus" in error) {
     const status =
@@ -151,12 +135,12 @@ function moderationActionErrorResponse(error: unknown): NextResponse {
         : 500;
     return NextResponse.json({ error: error.message }, { status });
   }
-  Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "staff" } });
-  console.error("Error taking moderation action:", error);
-  return NextResponse.json(
-    { error: "Failed to take action" },
-    { status: 500 },
+  Sentry.captureException(
+    error instanceof Error ? error : new Error(String(error)),
+    { tags: { subsystem: "staff" } },
   );
+  console.error("Error taking moderation action:", error);
+  return NextResponse.json({ error: "Failed to take action" }, { status: 500 });
 }
 
 export async function POST(req: NextRequest, { params }: RouteParams) {
@@ -181,10 +165,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     ];
     if (
       ACCOUNT_DESTRUCTIVE.includes(actionType) &&
-      !hasBackofficePermission(
-        session.user.role as UserRole,
-        "users.moderate",
-      )
+      !hasBackofficePermission(session.user.role as UserRole, "users.moderate")
     ) {
       return NextResponse.json(
         {
@@ -201,7 +182,15 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     // Check report exists
     const report = await prisma.moderationReport.findUnique({
       where: { id: reportId },
-      select: { id: true, status: true, targetUserId: true, reviewId: true },
+      select: {
+        id: true,
+        status: true,
+        targetUserId: true,
+        reviewId: true,
+        // #1270 — CONTENT_REMOVED needs the message identity to delete
+        // anything; without it the action removed nothing at all.
+        streamMessageId: true,
+      },
     });
 
     if (!report) {
@@ -223,6 +212,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
         id: report.id,
         targetUserId: report.targetUserId,
         reviewId: report.reviewId,
+        streamMessageId: report.streamMessageId,
       },
       staffUserId: session.user.id,
       notes,
@@ -238,6 +228,14 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
         input,
       );
 
+    // #705 — the moderation path never invalidated the public caches, so a
+    // removed review kept rendering on the landing page and explore for up to
+    // an hour. Purged AFTER the transaction commits: purging before would
+    // repopulate the cache from rows a rollback then restores.
+    if (transactional.reviewRemovedConsultantProfileId) {
+      purgeReviewSurfaces(transactional.reviewRemovedConsultantProfileId);
+    }
+
     // Refunds, Stream revocation, and notifications are best-effort — each
     // step's outcome (including failures) is persisted for staff visibility.
     let sideEffects: SideEffectSummary = transactional;
@@ -249,7 +247,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
         { tags: { subsystem: "moderation" } },
       );
     }
-    await persistSideEffects(action.id, sideEffects);
+    await persistActionSideEffects(action.id, sideEffects);
 
     return NextResponse.json({
       action,

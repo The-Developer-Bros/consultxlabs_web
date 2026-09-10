@@ -285,6 +285,22 @@ export function createConsulteeQueries(
       refetchOnWindowFocus: true,
     },
 
+    // Same dataset as `events`, tuned for the Home tab: the SSR-dehydrated
+    // seed must survive first paint without an immediate refetch waterfall,
+    // and a background tab regaining focus while the user reads their
+    // overview shouldn't churn the list. Appointments keeps the fresher
+    // `events` config above — same key base, different refresh posture.
+    // Keep this paired with `events`: if you change one's queryKey shape,
+    // change both (the server seed pins the key base).
+    eventsHome: {
+      queryKey: ["consultee-events", consulteeId, scopeKey] as const,
+      queryFn: () => consulteeFetchers.events(consulteeId, orgScope),
+      staleTime: 60_000,
+      gcTime: GC_TIME,
+      retry: 2,
+      refetchOnWindowFocus: false,
+    },
+
     // Consultee profile
     profile: {
       queryKey: ["consultee-profile", consulteeId] as const,
@@ -343,12 +359,18 @@ export function createUserQueries(userId: string) {
 // =============================================================================
 
 /**
- * Schedule prefetch using requestIdleCallback when available
+ * Schedule prefetch using requestIdleCallback when available.
+ * Returns a cancel function so callers (hooks with teardown) can retract the
+ * callback if they unmount before the idle slot fires.
  */
-export function schedulePrefetch(callback: () => void, timeout = 2000): void {
+export function schedulePrefetch(
+  callback: () => void,
+  timeout = 2000,
+): () => void {
   if (typeof window !== "undefined" && "requestIdleCallback" in window) {
-    window.requestIdleCallback(callback, { timeout });
-  } else {
-    setTimeout(callback, 100);
+    const handle = window.requestIdleCallback(callback, { timeout });
+    return () => window.cancelIdleCallback?.(handle);
   }
+  const timer = setTimeout(callback, 100);
+  return () => clearTimeout(timer);
 }

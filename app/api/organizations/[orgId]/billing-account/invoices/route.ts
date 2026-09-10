@@ -25,6 +25,7 @@ import { generateOrgInvoiceNumber } from "@/lib/payments/billing/invoice-numberi
 import { AUDIT_ACTIONS } from "@/lib/enterprise/audit-actions";
 import { dispatchWebhookEvent } from "@/lib/enterprise/outbound-webhooks/dispatch";
 import { notifyOrgInvoiceIssued } from "@/lib/novu/org-workflows";
+import { applyRateLimit, moneyOpsLimiter } from "@/lib/rate-limit";
 
 const CurrencySchema = z.enum(["INR", "USD", "EUR", "GBP"]);
 
@@ -106,6 +107,13 @@ export async function POST(
   const access = await requireOrgBillingAdminOrOwner(orgId, { canSponsor: true });
   if (access.error) return access.error;
 
+  // #677/PM-36 — invoice generation is a statutory-document write.
+  const limited = await applyRateLimit(
+    moneyOpsLimiter,
+    access.member?.id ?? orgId,
+  );
+  if (limited) return limited;
+
   const raw = await req.json().catch(() => null);
   const parsed = CreateBodySchema.safeParse(raw);
   if (!parsed.success) {
@@ -138,7 +146,7 @@ export async function POST(
   if (body.purchaseOrderId) {
     const po = await prisma.purchaseOrder.findUnique({
       where: { id: body.purchaseOrderId },
-      select: { organizationId: true, status: true },
+      select: { organizationId: true, status: true, currency: true },
     });
     if (!po || po.organizationId !== orgId) {
       return NextResponse.json(
@@ -149,6 +157,20 @@ export async function POST(
     if (po.status !== "ACTIVE") {
       return NextResponse.json(
         { error: `PurchaseOrder is ${po.status}; only ACTIVE POs can be invoiced against` },
+        { status: 409 },
+      );
+    }
+    // #1396 — the claim below decrements `remainingAmountPaise` by this
+    // invoice's INR total. Nothing compared the two currencies, so an invoice
+    // could spend a PO denominated in something else, paise-for-paise. Both
+    // sides are INR today (the writers are narrowed to INR); this refuses the
+    // combination rather than assuming it stays that way.
+    if (po.currency !== body.displayCurrency) {
+      return NextResponse.json(
+        {
+          error: `PurchaseOrder is denominated in ${po.currency}; this invoice is in ${body.displayCurrency}. A PO can only be drawn down by an invoice in its own currency.`,
+          code: "PO_CURRENCY_MISMATCH",
+        },
         { status: 409 },
       );
     }
@@ -225,6 +247,9 @@ export async function POST(
           id: body.purchaseOrderId,
           organizationId: orgId,
           status: "ACTIVE",
+          // #1396 — repeated in the CAS predicate so the currency check above
+          // cannot be raced by a PATCH between the read and the claim.
+          currency: body.displayCurrency,
           remainingAmountPaise: { gte: gst.totalPaise },
         },
         data: { remainingAmountPaise: { decrement: gst.totalPaise } },

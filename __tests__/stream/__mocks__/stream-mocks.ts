@@ -62,6 +62,9 @@ export const createMockChannel = () => ({
   create: jest.fn().mockResolvedValue({}),
   query: jest.fn().mockResolvedValue({ members: {} }),
   addMembers: jest.fn().mockResolvedValue({}),
+  // #899/F-HIGH-3 — creators attempt a channel-scoped moderator grant on the
+  // post-create path; present so adoption/grant assertions can inspect calls.
+  assignRoles: jest.fn().mockResolvedValue({}),
   id: "test-channel",
   type: "team",
   data: { name: "Test Channel" },

@@ -12,13 +12,15 @@ import { SupportSurface } from "@/components/dashboard/shared/support/SupportSur
  * own. The ticket queue in the back office simply never saw a B2B issue.
  *
  * `SupportSurface` is reused as-is rather than rebuilt: it is already
- * role-agnostic, because `/api/user/feedbacks` and `/api/user/support-tickets`
- * both key off `session.user.id`. The id passed below is only a react-query
- * key namespace.
+ * role-agnostic, and (#support-hub) now renders the Sessions/Platform hub.
+ * Operator-only platform flows (org billing) activate server-side from
+ * ACTIVE memberships, and escalated tickets carry `organizationId`
+ * attribution — the "tickets carry no org" gap this page once documented is
+ * closed.
  *
- * Deliberately at the workspace layer rather than per-org — an operator who
- * manages several organizations needs one place to ask a question, and a
- * ticket does not currently carry an org for routing.
+ * Still deliberately at the workspace layer rather than per-org — an operator
+ * who manages several organizations needs one place to ask a question. The
+ * per-org dashboard carries the org-scoped triage surfaces instead.
  */
 export default async function OrgWorkspaceSupportPage({
   params,

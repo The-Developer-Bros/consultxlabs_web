@@ -37,3 +37,23 @@ export const CreateSupportResponseSchema = z.object({
   message: z.string().trim().min(1, "Message is required").max(MAX_TEXT_LENGTH),
   isInternal: z.boolean().default(false),
 });
+
+// ---------------------------------------------------------------------------
+// Route param schemas — the ONE definition of "what an id looks like" for the
+// support surface. Deliberately NOT .uuid()/.cuid(): ids are opaque strings
+// (uuid in prod, readable slugs like `demo0813-apt-ba` in seeds), and the DB
+// lookup is the real validator — a format check here only produced 400s that
+// looked like data bugs. Length-bounded so garbage can't reach Prisma.
+// ---------------------------------------------------------------------------
+
+export const AppointmentIdParams = z.object({
+  appointmentId: z.string().min(1).max(64),
+});
+
+export const SupportThreadIdParams = z.object({
+  threadId: z.string().min(1).max(64),
+});
+
+export const OrgIdParams = z.object({
+  orgId: z.string().min(1).max(64),
+});

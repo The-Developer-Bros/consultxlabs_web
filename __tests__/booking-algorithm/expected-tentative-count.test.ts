@@ -251,7 +251,7 @@ describe("#1012 expectedTentativeSlotCount", () => {
 
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => {
       const tx = {
-        $queryRaw: jest.fn().mockResolvedValue(undefined),
+        $executeRaw: jest.fn().mockResolvedValue(1),
         appointment: {
           findMany: jest.fn().mockResolvedValue(confirmedAfterRace),
           findFirst: jest.fn().mockResolvedValue(null),

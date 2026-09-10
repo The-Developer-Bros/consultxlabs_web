@@ -192,7 +192,12 @@ export async function transitionProgramAssignment(
 // REMOVED, and the only state REMOVED may still move to.
 export const MEMBER_ALLOWED_FROM: Record<MemberStatus, MemberStatus[]> = {
   PENDING: [],
-  ACTIVE: ["PENDING", "SUSPENDED"],
+  // REMOVED → ACTIVE is a deliberate product edge (direct-add reactivation
+  // preserves the Membership row's downstream FKs) and MUST go through
+  // transitionMembership so its CAS guards it. ERASED is deliberately NOT an
+  // allowed source for anything but itself — a DPDP tombstone can never be
+  // resurrected, even by a stale read-then-write.
+  ACTIVE: ["PENDING", "SUSPENDED", "REMOVED"],
   // PENDING → SUSPENDED: an invited-but-not-joined member can be suspended
   // (dashboard PATCH) or SCIM-deprovisioned before first login.
   SUSPENDED: ["PENDING", "ACTIVE"],

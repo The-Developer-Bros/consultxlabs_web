@@ -73,10 +73,9 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={sora.variable} suppressHydrationWarning>
+    <html lang="en" className={sora.variable}>
       <body
-        className={`${sora.className} flex flex-col min-h-screen antialiased`}
-        suppressHydrationWarning
+        className={`${sora.className} flex flex-col min-h-svh antialiased`}
       >
         <ReactQueryProvider>
           <AuthSyncProvider />

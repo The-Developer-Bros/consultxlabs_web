@@ -528,6 +528,54 @@ export class MockRedis {
   /**
    * Set expiry on a key in milliseconds
    */
+  /**
+   * Set operations, backed by a JSON array in the same string store.
+   *
+   * #1146 — the maintenance drain records the exact channels it froze so the
+   * unfreeze can reverse that set rather than re-deriving it from a heuristic
+   * that misses the sessions whose `call.end()` failed. A Redis SET is the
+   * right shape for it (add-many, read-all, remove-some, no duplicates), and
+   * the mock has to support what local dev and CI actually run.
+   *
+   * Serialised as JSON rather than kept as a live `Set` so it shares the
+   * existing expiry and cleanup machinery instead of needing a parallel store.
+   */
+  private readSet(key: string): string[] {
+    this.cleanupExpiredKey(key);
+    const raw = this.store.get(key)?.value;
+    if (!raw) return [];
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as string[]) : [];
+    } catch {
+      // A key of this name holding a non-set value is a programming error, not
+      // a runtime condition to paper over — but throwing here would take down
+      // a maintenance drain, so it reads as empty and the caller degrades.
+      return [];
+    }
+  }
+
+  async sadd(key: string, ...members: string[]): Promise<number> {
+    const existing = new Set(this.readSet(key));
+    const before = existing.size;
+    for (const m of members) existing.add(m);
+    this.store.set(key, { value: JSON.stringify([...existing]) });
+    return existing.size - before;
+  }
+
+  async smembers(key: string): Promise<string[]> {
+    return this.readSet(key);
+  }
+
+  async srem(key: string, ...members: string[]): Promise<number> {
+    const existing = new Set(this.readSet(key));
+    const before = existing.size;
+    for (const m of members) existing.delete(m);
+    if (existing.size === 0) this.store.delete(key);
+    else this.store.set(key, { value: JSON.stringify([...existing]) });
+    return before - existing.size;
+  }
+
   async pexpire(key: string, ms: number): Promise<number> {
     const entry = this.store.get(key);
     if (!entry) return 0;

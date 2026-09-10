@@ -72,27 +72,83 @@ export interface ProfileVerification {
   reviewNotes: string | null;
 }
 
+/** How far each best-effort step of a moderation action actually got. */
+export type ModerationStepStatus = "ok" | "failed" | "skipped" | "gave_up";
+
+/**
+ * The persisted outcome of an action's side-effects, written by
+ * `lib/moderation/side-effects.ts`. Until #1270 the client type omitted
+ * `stream` and `errors`, so a ban whose Stream revocation failed was reported
+ * to the moderator as a clean success.
+ */
+export interface ModerationSideEffects {
+  sessionsRevoked?: number;
+  earningsHeld?: number;
+  profilesUnverified?: number;
+  reviewRemoved?: boolean;
+  banExpires?: string | null;
+  cancellations?: {
+    engagementsCancelled?: number;
+    refundsIssued?: number;
+  };
+  stream?: ModerationStepStatus;
+  streamAttempts?: number;
+  notification?: ModerationStepStatus;
+  errors?: string[];
+}
+
+export interface ModerationLatestAction {
+  id: string;
+  actionType: string;
+  createdAt: string;
+  sideEffects: ModerationSideEffects | null;
+}
+
+/**
+ * The report shape `GET /api/staff/moderation/reports` actually returns.
+ *
+ * It used to name the two user relations `reporter` and `reportedUser`, which
+ * the route has never sent — every card and the whole review modal threw on the
+ * first report that reached them, and the queue only looked healthy because it
+ * is usually empty.
+ */
 export interface ModerationReport {
   id: string;
   type: string;
   reason: string;
   description: string | null;
+  contentText: string | null;
+  contentUrl: string | null;
+  streamMessageId: string | null;
+  streamChannelCid: string | null;
+  reportCount: number;
   status: string;
   createdAt: string;
-  reporter: {
+  resolvedAt: string | null;
+  reviewId: string | null;
+  assignedToId: string | null;
+  actionCount: number;
+  latestAction: ModerationLatestAction | null;
+  reportedBy: {
     id: string;
     name: string | null;
     email: string;
+    image: string | null;
   };
-  reportedUser: {
+  targetUser: {
     id: string;
     name: string | null;
     email: string;
+    image: string | null;
     role: string;
+    banned: boolean | null;
+    banExpires: string | null;
   };
-  _count?: {
-    actions: number;
-  };
+}
+
+/** What the viewer is allowed to do, decided server-side (#1270). */
+export interface ModerationCapabilities {
+  canModerateUsers: boolean;
 }
 
 export interface ModerationReview {

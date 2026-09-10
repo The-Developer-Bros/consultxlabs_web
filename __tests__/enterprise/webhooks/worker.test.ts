@@ -79,6 +79,10 @@ function makePrismaStub(
           endpointUpdates.push(args);
           return Promise.resolve({ id: initialRow.endpoint.id });
         }),
+        // Wave-3 auto-disable path — CAS on status+failureCount. Default to
+        // "nothing flipped" so existing assertions are unaffected; tests that
+        // exercise the threshold override this mock.
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
     },
     updates,

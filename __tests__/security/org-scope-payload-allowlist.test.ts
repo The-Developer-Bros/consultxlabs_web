@@ -28,6 +28,8 @@ const read = (rel: string) => readFileSync(join(process.cwd(), rel), "utf8");
 
 const RECORDINGS = "lib/api/scope/list-recordings.ts";
 const DOCUMENTS = "lib/api/scope/list-documents.ts";
+const ORG_SUPPORT_THREADS =
+  "app/api/organizations/[orgId]/support-threads/route.ts";
 
 /** The body of the metadata select object, which is what non-participants get. */
 function metadataSelectBody(src: string, constName: string): string {
@@ -45,8 +47,8 @@ describe("org-scope payloads never carry session content", () => {
     // Each of these either IS the media or resolves to it.
     for (const field of [
       "recordingUrl",
-      "supabaseUrl",
-      "supabasePath",
+      "storageUrl",
+      "storagePath",
       "thumbnailUrl",
       "previewClipUrl",
       "streamRecordingId",
@@ -130,4 +132,33 @@ describe("org-scope payloads never carry session content", () => {
       expect(query).toContain("isParticipantScope");
     },
   );
+});
+
+describe("org support triage never carries conversation content (#support-hub)", () => {
+  // A member's support conversation is CONTENT under ADR 20 — it contains
+  // their complaints. The org triage endpoint is metadata-only by design;
+  // this pins the allowlist so a future `messages:` cannot slip in silently.
+  const src = read(ORG_SUPPORT_THREADS);
+
+  it("the metadata select omits the transcript entirely", () => {
+    const start = src.indexOf("const THREAD_METADATA_SELECT = {");
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf("} satisfies", start));
+
+    // No messages relation, no message fields, no free-text fields.
+    for (const field of ["messages", "body:", "metadata", "currentNodeId"]) {
+      expect(body).not.toContain(field);
+    }
+  });
+
+  it("the thread query uses a select allowlist, never an include", () => {
+    const query = src.slice(src.indexOf("findMany({"));
+    expect(query).not.toContain("include:");
+    expect(query).toContain("select: THREAD_METADATA_SELECT");
+  });
+
+  it("the route documents the ADR-20 rule it enforces", () => {
+    expect(src).toContain("METADATA ONLY");
+    expect(src).toContain("ADR 20");
+  });
 });

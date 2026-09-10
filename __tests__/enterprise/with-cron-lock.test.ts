@@ -118,6 +118,45 @@ describe("withCronLock", () => {
     expect(fn).not.toHaveBeenCalled();
   });
 
+  it("#1205-triage: breaker OPEN at acquire → CronLockUnavailableError (pages), not a held skip", async () => {
+    mockAcquire.mockResolvedValue(null);
+    mockHealth.mockResolvedValue(true); // pre-acquire health passes
+    const { isRedisCircuitOpen } = jest.requireMock("../../lib/redis") as {
+      isRedisCircuitOpen: jest.Mock;
+    };
+    isRedisCircuitOpen.mockReturnValue(true);
+
+    const fn = jest.fn().mockResolvedValue("done");
+    const err = await withCronLock("dunning", { failMode: "closed" }, fn).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(CronLockUnavailableError);
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("#1205-triage: null acquire + Redis downed AFTER a healthy gate pages too", async () => {
+    // The first-four-failures window: breaker CLOSED, but every op fails —
+    // acquire returns null via the error fallback while isRedisCircuitOpen()
+    // is false. Only the fresh health probe distinguishes this from "held".
+    // Healthy at the pre-acquire gate (Redis reachable then), down by the
+    // post-null re-probe — exactly the mid-window failure the old code
+    // misclassified as CronLockHeldError.
+    mockHealth.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    mockAcquire.mockResolvedValue(null);
+    const { isRedisCircuitOpen } = jest.requireMock("../../lib/redis") as {
+      isRedisCircuitOpen: jest.Mock;
+    };
+    isRedisCircuitOpen.mockReturnValue(false);
+    const fn = jest.fn().mockResolvedValue("done");
+
+    const err = await withCronLock("dunning", { failMode: "closed" }, fn).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(CronLockUnavailableError);
+    // Two probes total: the pre-acquire gate + the post-null re-probe.
+    expect(mockHealth).toHaveBeenCalledTimes(2);
+  });
+
   it("fail-closed: refuses to run when Redis is unhealthy (circuit open)", async () => {
     mockHealth.mockResolvedValue(false);
     await expect(

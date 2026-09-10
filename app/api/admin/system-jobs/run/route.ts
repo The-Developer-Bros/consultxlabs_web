@@ -58,6 +58,19 @@ import { reconcileDocumentStorage } from "@/scripts/cleanup/reconcile-document-s
 // Alerts
 import { alertOrphanedPayments } from "@/scripts/alerts/alert-orphaned-payments";
 
+// Stream — #1270. Six scheduled Stream jobs existed and not one of them was
+// reachable from any operator surface: this map could execute twenty-five jobs
+// and the staff catalogue listed nine, and no Stream job appeared in either.
+// When recordings stop transferring or event channels stop expiring, the only
+// way to run the repair was to dispatch a GitHub workflow.
+import { performStreamUserSync } from "@/scripts/stream/stream-sync";
+import { cleanupOldStreamRecordings } from "@/scripts/cleanup/cleanup-old-stream-recordings";
+import { reconcileOrphanedRecordings } from "@/scripts/stream/reconcile-orphaned-recordings";
+import { RecordingTransferService } from "@/lib/stream/recording-transfer-service";
+import { expireEventChannels } from "@/jobs/stream/expire-event-channels";
+import { reconcileOrphanedSessions } from "@/jobs/meetings/reconcile-orphaned-sessions";
+import { withCronLock } from "@/lib/cron/with-cron-lock";
+
 import { requireAdminAuth } from "@/lib/auth-helpers";
 import { getMaintenanceState } from "@/lib/maintenance-edge";
 
@@ -154,6 +167,8 @@ const JOB_FUNCTIONS: Record<string, JobFunction> = {
     return {
       success: result.success,
       releasedCount: result.releasedCount,
+      // #1471 — the same run now also releases host-org earnings.
+      organizationEarningsReleased: result.organizationEarningsReleased,
       errorCount: result.errorCount,
     };
   },
@@ -339,6 +354,97 @@ const JOB_FUNCTIONS: Record<string, JobFunction> = {
       maxUsesReachedCount: result.maxUsesReachedCount,
       totalDeactivated: result.totalDeactivated,
       cleanedCount: result.totalDeactivated,
+      errorCount: result.errors.length,
+    };
+  },
+  // Stream (#1270). Each of these delegates to the SAME core the scheduled
+  // workflow runs, so an operator-triggered run and a cron run cannot diverge.
+  "stream-sync": async () => {
+    const result = await performStreamUserSync();
+    return {
+      success: result.success,
+      totalProcessed: result.totalStreamUsersProcessed,
+      staleIdentified: result.totalStaleUsersIdentified,
+      usersDeleted: result.totalStaleUsersDeleted,
+      errorCount: result.totalFailedDeletions,
+    };
+  },
+  "mark-expired-recordings": async () => {
+    // The lock for this one lives in the workflow entrypoint rather than in a
+    // shared core, so the operator path has to take it explicitly — otherwise
+    // an admin click during the 03:20 run would race the cron, and neither run
+    // would leave a `SystemJobExecution` row for the click.
+    const expiredCount = await withCronLock(
+      "mark-expired-recordings",
+      { failMode: "open" },
+      () => RecordingTransferService.markExpiredRecordings(),
+    );
+    return {
+      success: true,
+      totalProcessed: expiredCount,
+      expiredCount,
+    };
+  },
+  "transfer-expiring-recordings": async () => {
+    // Same reasoning as above, and it matters more here: two concurrent runs
+    // would upload the same recording to Supabase twice.
+    const result = await withCronLock(
+      "transfer-expiring-recordings",
+      { failMode: "open" },
+      () =>
+        RecordingTransferService.processExpiringRecordings(
+          14,
+          10,
+          "PERMANENT",
+        ),
+    );
+    return {
+      success: result.failed === 0,
+      totalProcessed: result.processed,
+      succeededCount: result.succeeded,
+      failedCount: result.failed,
+      errorCount: result.errors.length,
+    };
+  },
+  "cleanup-old-stream-recordings": async () => {
+    const result = await cleanupOldStreamRecordings();
+    return {
+      success: result.success,
+      totalProcessed: result.scanned,
+      expiredCount: result.expired,
+      cleanedCount: result.expired,
+      errorCount: result.errors.length,
+    };
+  },
+  "expire-event-channels": async () => {
+    const result = await expireEventChannels();
+    return {
+      success: result.success,
+      totalProcessed: result.frozen + result.deleted,
+      frozenCount: result.frozen,
+      deletedCount: result.deleted,
+      skippedAlreadyFrozen: result.skippedAlreadyFrozen,
+      errorCount: result.errors.length,
+    };
+  },
+  "reconcile-orphaned-sessions": async () => {
+    const result = await reconcileOrphanedSessions();
+    return {
+      success: result.success,
+      totalProcessed: result.processed,
+      reconciledCount: result.reconciled,
+      streamNotFoundCount: result.streamNotFound,
+      errorCount: result.errors,
+    };
+  },
+  "reconcile-orphaned-recordings": async () => {
+    const result = await reconcileOrphanedRecordings();
+    return {
+      success: result.success,
+      totalProcessed: result.scanned,
+      recoveredCount: result.recovered,
+      stillMissingCount: result.stillMissing,
+      unrecoverableCount: result.unrecoverable,
       errorCount: result.errors.length,
     };
   },

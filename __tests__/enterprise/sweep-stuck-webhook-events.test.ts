@@ -50,6 +50,8 @@ const mockWe = (
       findMany: jest.Mock;
       findUnique: jest.Mock;
       update: jest.Mock;
+      // #1205-triage — the sweeper's claim CAS before each re-drive.
+      updateMany: jest.Mock;
     };
   }
 ).webhookEvent;
@@ -60,6 +62,7 @@ const stuckRow = (over: Record<string, unknown> = {}) => ({
   eventType: "payment.captured",
   payload: { payment: { entity: { id: "pay_1" } } },
   receivedAt: new Date("2026-06-01T00:00:00Z"),
+  claimedAt: null as Date | null | undefined,
   ...over,
 });
 
@@ -69,6 +72,36 @@ beforeEach(() => {
 });
 
 describe("sweepStuckWebhookEvents (#785)", () => {
+  it("a LOST claim (claimedAt raced) skips the re-drive entirely (#1205-triage)", async () => {
+    const ev = stuckRow();
+    (mockWe.findMany as jest.Mock).mockResolvedValue([ev]);
+    // Another driver claimed between selection and claim: CAS misses.
+    (mockWe.updateMany as jest.Mock).mockResolvedValue({ count: 0 });
+
+    const result = await sweepStuckWebhookEvents({ staleMinutes: 6 });
+
+    expect(processRazorpayWebhookEvent).not.toHaveBeenCalled();
+    expect(result.recovered).toBe(0);
+  });
+
+  it("the claim CAS keys on claimedAt, not receivedAt (age must survive re-drives)", async () => {
+    const ev = stuckRow();
+    (mockWe.findMany as jest.Mock).mockResolvedValue([ev]);
+    (mockWe.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
+
+    await sweepStuckWebhookEvents({ staleMinutes: 6 });
+
+    const [claim] = (mockWe.updateMany as jest.Mock).mock.calls;
+    expect(claim[0].where).toMatchObject({
+      eventId: ev.eventId,
+      OR: [{ claimedAt: null }, { claimedAt: ev.claimedAt }],
+    });
+    expect(claim[0].data.claimedAt).toBeInstanceOf(Date);
+    // receivedAt untouched — the give-up cap ages on it.
+    expect(claim[0].where.receivedAt).toBeUndefined();
+    expect(claim[0].data.receivedAt).toBeUndefined();
+  });
+
   it("re-drives a stuck event and reconstructs the full envelope", async () => {
     mockWe.findMany.mockResolvedValue([stuckRow()]);
     mockProcess.mockResolvedValue(undefined);

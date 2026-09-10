@@ -51,7 +51,7 @@ export default async function EarningsPage({ params }: Readonly<PageProps>) {
       queryFn: () =>
         getConsultantAppointments({
           consultantProfileId: consultantId,
-          orgScopeFilter: { organizationId: null },
+          scope: { kind: "personal" },
         }),
     }),
   ]);

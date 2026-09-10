@@ -33,6 +33,10 @@ export interface IDocument {
     uploadedByRole: DocumentUploadRole;
   } | null;
   responseDocuments?: IDocument[];
+  // Threaded review versioning — 1 = original upload; the highest number in
+  // a thread (rootDocumentId) is the current version.
+  rootDocumentId?: string | null;
+  versionNo?: number;
   // Client/appointment context
   clientName: string;
   clientId: string;

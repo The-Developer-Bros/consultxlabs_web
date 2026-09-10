@@ -1,6 +1,7 @@
 "use server";
 
 import * as Sentry from "@sentry/nextjs";
+import type { StreamChat } from "stream-chat";
 import { z } from "zod";
 import prisma from "@/lib/prisma";
 import {
@@ -19,8 +20,24 @@ import {
 } from "@/lib/stream-cache";
 import { upsertUserToStream, upsertUsersToStream } from "./user.action";
 import { MANAGED_CHANNEL_PREFIXES } from "@/lib/stream-channel-ids";
-import { bookingOrgId, getDmChannelId } from "@/lib/stream-utils";
+import {
+  bookingOrgId,
+  getDmChannelId,
+  isChannelAlreadyExistsError,
+} from "@/lib/stream-utils";
+import { dmEligibleStatusFilter } from "@/lib/stream/dm-eligibility-statuses";
+import {
+  addRemainingMembers,
+  createMemberChunk,
+  queryChannelsPaged,
+} from "@/lib/stream/batch";
 import { ConsentRequiredError } from "@/lib/compliance/dpdp";
+import {
+  DEFAULT_RETENTION_DAYS,
+  isPastRetention,
+} from "@/lib/stream/channel-lifecycle";
+import { getSession } from "@/lib/auth-server";
+import { isPrivileged } from "@/lib/auth-helpers";
 
 // Validation schemas
 const eventTypeSchema = z.enum([
@@ -99,6 +116,69 @@ export async function checkEventChannelExists(
 }
 
 /**
+ * Upserts the user to Stream, treating a DPDP consent refusal as a skip.
+ *
+ * #1270 — a withdrawn or absent STREAM_DATA_PROCESSING consent is a deliberate
+ * refusal, not a failure, but `addUserToEventChannel` let it bubble unhandled
+ * out of a server action and took the WHOLE appointment page down rather than
+ * just chat. `syncUserChannels` has degraded gracefully since #701; this path
+ * never did. Extracted rather than inlined so the caller stays under the
+ * cognitive-complexity budget.
+ *
+ * @returns false when consent is missing and the caller should skip.
+ */
+async function syncUserOrSkipOnConsent(
+  userId: string,
+  channelId: string,
+): Promise<boolean> {
+  try {
+    await upsertUserToStream(userId);
+    return true;
+  } catch (err) {
+    if (err instanceof ConsentRequiredError) {
+      streamLogger.info(
+        "Skipping event channel join — Stream consent not granted",
+        { userId, channelId, purposeCode: err.purposeCode },
+      );
+      return false;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Adds the user to a channel that is assumed to already exist.
+ *
+ * @returns false when the add failed in a way that suggests the channel is not
+ * there yet, so the caller should create it. A Stream outage is rethrown rather
+ * than reported as "missing", so we don't follow it with a pointless create
+ * that fast-fails too (#473).
+ */
+async function tryAddToExistingChannel(
+  channel: ReturnType<StreamChat["channel"]>,
+  channelId: string,
+  userId: string,
+): Promise<boolean> {
+  try {
+    await withStreamCircuitBreaker(
+      () => channel.addMembers([userId]),
+      () => {
+        throw new StreamUnavailableError();
+      },
+    );
+    markMembership(channelId, userId, true);
+    streamLogger.debug("Added user to existing channel", { channelId, userId });
+    return true;
+  } catch (addError) {
+    if (addError instanceof StreamUnavailableError) throw addError;
+    streamLogger.debug("Channel may not exist, attempting creation", {
+      channelId,
+    });
+    return false;
+  }
+}
+
+/**
  * Add a user to an event channel, creating the channel if it doesn't exist
  * Uses caching to avoid redundant operations
  */
@@ -123,35 +203,17 @@ export async function addUserToEventChannel(
 
   const client = getStreamChatClient();
 
-  try {
-    // Ensure user is upserted to Stream first
-    await upsertUserToStream(userId);
+  // #1270 — a consent refusal must not take the page down with it.
+  if (!(await syncUserOrSkipOnConsent(userId, channelId))) {
+    return { success: false, channelId };
+  }
 
+  try {
     const channel = client.channel(channelType, channelId);
 
     // Try to add member directly (works for existing channels)
-    try {
-      // #473 — breaker-open rethrows StreamUnavailableError, which propagates
-      // out of the outer try (so we don't masquerade an outage as "channel
-      // missing" and attempt a pointless create that also fast-fails).
-      await withStreamCircuitBreaker(
-        () => channel.addMembers([userId]),
-        () => {
-          throw new StreamUnavailableError();
-        },
-      );
-      markMembership(channelId, userId, true);
-      streamLogger.debug("Added user to existing channel", {
-        channelId,
-        userId,
-      });
+    if (await tryAddToExistingChannel(channel, channelId, userId)) {
       return { success: true, channelId };
-    } catch (addError) {
-      if (addError instanceof StreamUnavailableError) throw addError;
-      // Channel might not exist, try to create it
-      streamLogger.debug("Channel may not exist, attempting creation", {
-        channelId,
-      });
     }
 
     // Channel doesn't exist, create it based on event type
@@ -164,8 +226,13 @@ export async function addUserToEventChannel(
 
     // Create channel with all data and members in a single atomic call
     // This fixes the "created_by_id must be provided" error and reduces 3 API calls to 1
-    const { consultantId, members, name } = eventData;
-    const allMembers = Array.from(new Set([consultantId, ...members, userId]));
+    const { consultantId, members, name, organizationId } = eventData;
+    // #1270 — host and joiner FIRST. `Webinar.maxParticipants` is unbounded and
+    // only the first 100 members fit in the create() body, so ordering decides
+    // who is guaranteed a seat in the atomic call and who arrives in a
+    // follow-up request that can fail on its own. The person whose click
+    // triggered this create is the one who must not be the casualty.
+    const allMembers = Array.from(new Set([consultantId, userId, ...members]));
 
     // Ensure all members exist in Stream Chat before creating the channel
     // Without this, channel creation fails with "users don't exist" error
@@ -173,11 +240,28 @@ export async function addUserToEventChannel(
 
     // Re-initialize channel with all required data for atomic creation
     // Note: Explicitly typing channel data for stream-chat v9
+    // #1280 PR 7 — tag the funding org AT SOURCE.
+    //
+    // Measured live on 2026-08-30: ZERO of 886 channels carried
+    // `organization_id`, in any form. The org Messages tab and the
+    // `/api/organizations/[orgId]/stream/channels` compliance route both filter
+    // on it, so both returned empty for every organization — a compliance
+    // export that silently reported "no channels" rather than failing.
+    //
+    // #746 §1 records per-org channel tagging as done. It is not, and this is
+    // the path that made that false: `createChannel` tags on the eager path,
+    // but this lazy create-on-miss is what actually mints most channels, and it
+    // never carried the field.
+    //
+    // Spread rather than a null assignment: a literal `organization_id: null`
+    // is a SET on Stream's side, and the reconciler's `$exists` filters treat a
+    // present-but-null field differently from an absent one.
     const eventChannelData = {
       name,
       created_by_id: consultantId,
       [`${eventType}_id`]: eventId,
-      members: allMembers,
+      ...(organizationId ? { organization_id: organizationId } : {}),
+      members: createMemberChunk(allMembers),
     };
     const channelWithData = client.channel(
       channelType,
@@ -186,12 +270,45 @@ export async function addUserToEventChannel(
     );
 
     // #473 — fast-fail channel creation under a Stream outage.
-    await withStreamCircuitBreaker(
-      () => channelWithData.create(),
-      () => {
-        throw new StreamUnavailableError();
-      },
-    );
+    // F-HIGH-3: a concurrent creator may win the race between our failed
+    // addMembers above and this create(); on their duplicate-create rejection
+    // we ADOPT the winner's channel instead of failing this user's join.
+    let adoptRetryFailed = false;
+    try {
+      await withStreamCircuitBreaker(
+        () => channelWithData.create(),
+        () => {
+          throw new StreamUnavailableError();
+        },
+      );
+    } catch (createError) {
+      if (!isChannelAlreadyExistsError(createError)) throw createError;
+
+      streamLogger.info("Lost channel-create race; adopting existing channel", {
+        channelId,
+        userId,
+      });
+
+      // The winner's roster snapshot may predate us — retry our own membership
+      // once. Best-effort: a failed retry is logged, never thrown, so the
+      // join still resolves and the next sync reconciles if it truly missed.
+      try {
+        await channel.addMembers([userId]);
+      } catch (adoptError) {
+        adoptRetryFailed = true;
+        streamLogger.warn("Post-adoption addMembers retry failed (non-fatal)", {
+          channelId,
+          userId,
+          error: adoptError,
+        });
+      }
+    }
+
+    // #1270 — everyone past the create() chunk, 100 at a time. Runs after an
+    // adopted race too: the winner created the same channel from the same
+    // roster, so the same remainder is owed either way and `addMembers` is
+    // idempotent for anyone already in.
+    await addRemainingMembers(channelWithData, allMembers);
 
     // Lazy-create bypasses createChannel, so the #899 channel-scoped host
     // grant is repeated here. Non-fatal: chat still works without it.
@@ -208,7 +325,13 @@ export async function addUserToEventChannel(
     }
 
     markChannelExists(channelType, channelId);
-    markMembership(channelId, userId, true);
+    // Cache membership only when it is actually ensured: after an adopted race
+    // whose addMembers retry failed we leave it UNCACHED so the next sync (or
+    // navigation) retries, instead of a cached "true" suppressing every future
+    // attempt until the TTL lapses.
+    if (!adoptRetryFailed) {
+      markMembership(channelId, userId, true);
+    }
     created = true;
 
     streamLogger.info("Created channel and added user", {
@@ -309,7 +432,20 @@ async function getEventData(eventType: EventType, eventId: string) {
           s.user.map((u) => u.id),
         ) || [];
 
-      return { consultantId, members, name: webinar.webinarPlan.title };
+      // #1280 PR 7 — the funding org, resolved by the SAME `bookingOrgId`
+      // precedence the DM path and the eligibility gate use: plan first, then
+      // appointment. Carried out of here so the create() below can tag it.
+      const organizationId = bookingOrgId({
+        webinarPlan: webinar.webinarPlan,
+        appointment: webinar.appointment,
+      });
+
+      return {
+        consultantId,
+        members,
+        name: webinar.webinarPlan.title,
+        organizationId,
+      };
     }
 
     case "class": {
@@ -343,7 +479,20 @@ async function getEventData(eventType: EventType, eventId: string) {
             a.slotsOfAppointment?.flatMap((s) => s.user.map((u) => u.id)) || [],
         ) || [];
 
-      return { consultantId, members, name: classData.classPlan.title };
+      const organizationId = bookingOrgId({
+        // A class is funded once but holds many appointments, so `bookingOrgId`
+        // takes the first org-tagged one — the same `find`, not `[0]`, that the
+        // DM path relies on for a subscription.
+        classPlan: classData.classPlan,
+        appointments: classData.appointments,
+      });
+
+      return {
+        consultantId,
+        members,
+        name: classData.classPlan.title,
+        organizationId,
+      };
     }
 
     case "consultation": {
@@ -358,6 +507,15 @@ async function getEventData(eventType: EventType, eventId: string) {
             },
           },
           requestedBy: { include: { user: { select: { id: true } } } },
+          // #1280 PR 7 — the appointment is the second arm of `bookingOrgId`'s
+          // precedence. Without it this branch could only ever see the plan's
+          // org, so a personal plan booked under an organization would produce
+          // an untagged channel while the DM-eligibility path, which does read
+          // it, considered the pair org-scoped. These two arms are reachable
+          // only from tests today (the open route restricts `eventType` to
+          // webinar/class), but a resolver that disagrees with itself depending
+          // on the caller is exactly what this change exists to remove.
+          appointment: { select: { organizationId: true } },
         },
       });
       if (!consultation) return null;
@@ -371,6 +529,10 @@ async function getEventData(eventType: EventType, eventId: string) {
         consultantId,
         members: [consulteeId],
         name: consultation.consultationPlan.title,
+        organizationId: bookingOrgId({
+          consultationPlan: consultation.consultationPlan,
+          appointment: consultation.appointment,
+        }),
       };
     }
 
@@ -386,6 +548,9 @@ async function getEventData(eventType: EventType, eventId: string) {
             },
           },
           requestedBy: { include: { user: { select: { id: true } } } },
+          // Plural here — a subscription holds many appointments and is funded
+          // once, so `bookingOrgId` takes the first org-tagged one.
+          appointments: { select: { organizationId: true } },
         },
       });
       if (!subscription) return null;
@@ -399,51 +564,15 @@ async function getEventData(eventType: EventType, eventId: string) {
         consultantId,
         members: [consulteeId],
         name: subscription.subscriptionPlan.title,
+        organizationId: bookingOrgId({
+          subscriptionPlan: subscription.subscriptionPlan,
+          appointments: subscription.appointments,
+        }),
       };
     }
 
     default:
       return null;
-  }
-}
-
-/**
- * Get all event channels for a user
- */
-export async function getUserEventChannels(userId: string) {
-  userIdSchema.parse(userId);
-
-  const client = getStreamChatClient();
-
-  try {
-    // #473 — dashboard hot path. Breaker-open returns an empty channel list so
-    // the page renders (degraded) rather than hanging on the 30s Stream timeout.
-    const channels = await withStreamCircuitBreaker(
-      () =>
-        client.queryChannels(
-          { members: { $in: [userId] } },
-          { last_message_at: -1 },
-          { limit: 100 },
-        ),
-      // #473 — degrade to an empty list when the breaker is open (T is inferred
-      // from the operation, so the empty array needs no cast).
-      () => [],
-    );
-
-    return channels.map((channel) => ({
-      id: channel.id,
-      type: channel.type,
-      // Access custom channel data with type assertion (stream-chat v9)
-      name: (channel.data as { name?: string } | undefined)?.name,
-      memberCount: Object.keys(channel.state.members || {}).length,
-    }));
-  } catch (error) {
-    Sentry.captureException(
-      error instanceof Error ? error : new Error(String(error)),
-      { tags: { subsystem: "stream" } },
-    );
-    streamLogger.error("Failed to get user event channels", error, { userId });
-    throw error;
   }
 }
 
@@ -469,6 +598,25 @@ export async function syncUserEventChannels(
   durationMs?: number;
 }> {
   userIdSchema.parse(userId);
+
+  // F-HIGH-1 sibling: this module is "use server", so every export is
+  // remotely invocable, and this sync drives unbounded metered Stream writes
+  // keyed off an arbitrary userId. Mirror assertCanMintToken
+  // (stream.action.ts): read the session with the cookie cache disabled so a
+  // just-demoted staff/admin or a just-banned user cannot ride a stale
+  // session, then allow self or privileged only. Legit callers always act as
+  // themselves (the provider's fire-and-forget sync and
+  // InitializeUserChannelsButton both pass the signed-in user's own id).
+  const session = await getSession(true);
+  if (!session?.user?.id) {
+    throw new Error("Unauthorized: sign in to sync channels");
+  }
+  if (session.user.banned) {
+    throw new Error("Forbidden: account suspended");
+  }
+  if (session.user.id !== userId && !isPrivileged(session.user.role)) {
+    throw new Error("Forbidden: cannot sync channels for another user");
+  }
 
   // Allow forced re-sync by clearing the session guard first
   if (force) {
@@ -558,74 +706,79 @@ export async function syncUserEventChannels(
       ),
     ]);
 
-    // --- Add pass: join any channels the user is missing ---
+    // --- There is no longer an add pass. ---
+    //
+    // This used to walk `eventIds` and `dmPairs` five at a time, calling
+    // `addUserToEventChannel` / `addUserToDmChannel` for every one, creating
+    // any channel that did not exist yet. It ran on every cold dashboard load.
+    //
+    // Two things made that untenable. It is unbounded: neither
+    // `getDmPairsForUser` nor the event helpers carry a `take`, and since
+    // `DM_ELIGIBLE_STATUSES` includes `COMPLETED` — an absorbing state — the
+    // pair list is every consultation the consultant has EVER finished, so it
+    // only grows. A consultant with 500 completed bookings paid 100 serial
+    // waves of Stream calls in the background of every load. And it is now
+    // redundant: `POST /api/stream/channels/open` creates the channel on
+    // demand, with both members, at the moment someone actually opens the
+    // conversation. Provisioning 500 channels on the chance one gets opened is
+    // work done for nothing.
+    //
+    // `expectedChannelIds` above is still computed — the reconcile pass below
+    // needs it to decide what is stale, and that half is not replaceable by an
+    // on-demand path: nothing else notices that a membership OUGHT to be
+    // revoked.
+    //
+    // The trade, stated plainly: a user who has lost membership to a channel
+    // that still exists is no longer silently re-added here. They recover by
+    // opening the conversation from search, which routes through
+    // `/api/stream/channels/open` and re-adds them. Booking approval and
+    // payment success still provision channels eagerly, so this only affects
+    // repair, not creation.
     const BATCH_SIZE = 5;
-    let successCount = 0;
-    let failCount = 0;
-
-    if (eventIds.length > 0) {
-      for (let i = 0; i < eventIds.length; i += BATCH_SIZE) {
-        const batch = eventIds.slice(i, i + BATCH_SIZE);
-
-        const results = await Promise.allSettled(
-          batch.map((event) =>
-            addUserToEventChannel(event.type, event.id, userId),
-          ),
-        );
-
-        results.forEach((result) => {
-          if (result.status === "fulfilled") successCount++;
-          else failCount++;
-        });
-      }
-    }
-
-    // --- DM add-pass: one channel per pair PER FUNDING CONTEXT ---
-    // A pair working both B2C and through an org now has two threads, and this
-    // pass joins the user to each. `dmPairs` is already keyed that way.
-    for (let i = 0; i < dmPairs.length; i += BATCH_SIZE) {
-      const batch = dmPairs.slice(i, i + BATCH_SIZE);
-      const results = await Promise.allSettled(
-        batch.map((pair) =>
-          addUserToDmChannel(
-            pair.consultantUserId,
-            pair.consulteeUserId,
-            userId,
-            pair.organizationId,
-          ),
-        ),
-      );
-      results.forEach((r) => {
-        if (r.status === "fulfilled") successCount++;
-        else failCount++;
-      });
-    }
 
     // --- Reconciliation pass: remove user from stale channels ---
-    // Query Stream for every channel this user currently belongs to.
-    // Paginate to handle users with 100+ channel memberships.
-    const PAGE_SIZE = 100;
-    let allStreamChannels: Awaited<ReturnType<typeof client.queryChannels>> =
-      [];
-    let offset = 0;
-    let page;
-    do {
-      // #473 — breaker-open returns [] so reconciliation simply skips the
-      // stale-cleanup pass this run rather than blocking the sync on a dead
-      // Stream backend; the add-pass above already short-circuits too.
-      page = await withStreamCircuitBreaker(
-        () =>
-          client.queryChannels(
-            { members: { $in: [userId] } },
-            {},
-            { limit: PAGE_SIZE, offset },
-          ),
-        () => [], // #473 — degrade to empty page when the breaker is open.
+    //
+    // #1270 — this walk used to ask for pages of 100 and stop as soon as a page
+    // came back smaller than that. Stream never returns more than 30 rows from
+    // `queryChannels`, so the very first page was "short", the loop ended, and
+    // reconciliation only ever examined a user's first 30 memberships. Anything
+    // past that — a DM revoked when a booking was cancelled, say, sitting at
+    // position 41 — was never seen, never classified stale, and never removed.
+    // That is the DM revocation leak. `queryChannelsPaged` pages at the real
+    // cap and advances by the rows actually returned.
+    //
+    // Sorted by `created_at` ascending, not left unsorted. Offset paging is
+    // only coherent over a stable order, and Stream's default sort is
+    // `last_message_at` — which moves while we walk, so an active channel can
+    // jump from page three to page one and push an unread one off the end.
+    // A channel's creation time never changes.
+    const { channels: streamChannels, truncated } = await queryChannelsPaged(
+      (opts) =>
+        // #473 — breaker-open returns [] so reconciliation simply skips the
+        // stale-cleanup pass this run rather than blocking the sync on a dead
+        // Stream backend.
+        withStreamCircuitBreaker(
+          () =>
+            client.queryChannels(
+              { members: { $in: [userId] } },
+              { created_at: 1 },
+              opts,
+            ),
+          () => [],
+        ),
+    );
+
+    // Stream stops serving past offset 1000, so a user with more memberships
+    // than that gets a partial reconcile. Under-revoking is the safe direction
+    // — a channel we never looked at keeps its member, it does not lose one —
+    // but it is a silent partial result, so say so rather than let the run
+    // report a clean sweep it did not perform.
+    if (truncated) {
+      streamLogger.warn(
+        "Reconciliation truncated at Stream's offset cap; some memberships were not examined",
+        { userId, examined: streamChannels.length },
       );
-      allStreamChannels = allStreamChannels.concat(page);
-      offset += PAGE_SIZE;
-    } while (page.length === PAGE_SIZE);
-    const streamChannels = allStreamChannels;
+    }
 
     // Only clean up channels with managed prefixes — preserve collab, support,
     // and manually-created channels that aren't part of the event/dm lifecycle.
@@ -670,9 +823,9 @@ export async function syncUserEventChannels(
     const duration = Date.now() - startTime;
     streamLogger.info("Channel sync completed", {
       userId,
-      successCount,
-      failCount,
+      expectedChannels: expectedChannelIds.size,
       staleChannelsRemoved: staleRemovedCount,
+      staleFailed: staleFailCount,
       durationMs: duration,
     });
 
@@ -681,8 +834,11 @@ export async function syncUserEventChannels(
 
     return {
       success: true,
-      channelsSynced: successCount,
-      failed: failCount,
+      // Kept for the existing callers' shape. Nothing is "synced" in the
+      // create sense any more; this is how many channels the user is expected
+      // to be in, which is the useful number for the same debugging.
+      channelsSynced: expectedChannelIds.size,
+      failed: staleFailCount,
       staleChannelsRemoved: staleRemovedCount,
       durationMs: duration,
     };
@@ -723,7 +879,7 @@ async function getDmPairsForUser(
       prisma.consultation.findMany({
         where: {
           consultationPlan: { consultantProfileId: user.consultantProfileId },
-          status: { in: ["APPROVED", "SCHEDULED"] },
+          status: dmEligibleStatusFilter(),
         },
         include: {
           requestedBy: { include: { user: { select: { id: true } } } },
@@ -738,7 +894,7 @@ async function getDmPairsForUser(
       prisma.subscription.findMany({
         where: {
           subscriptionPlan: { consultantProfileId: user.consultantProfileId },
-          status: { in: ["APPROVED", "SCHEDULED"] },
+          status: dmEligibleStatusFilter(),
         },
         include: {
           requestedBy: { include: { user: { select: { id: true } } } },
@@ -758,7 +914,12 @@ async function getDmPairsForUser(
     ]);
     for (const c of [...consultations, ...subscriptions]) {
       const consulteeUserId = c.requestedBy?.user?.id;
-      if (!consulteeUserId) continue;
+      // Skip, do not throw. `getDmChannelId` rejects a self-pair, and this loop
+      // runs un-isolated inside syncUserEventChannels — one dual-profile user
+      // who self-booked would otherwise abort the entire reconcile for
+      // themselves and leave every other channel unsynced. Checkout blocks
+      // self-booking, so this only fires on legacy or seeded rows.
+      if (!consulteeUserId || consulteeUserId === userId) continue;
       const organizationId = bookingOrgId(c);
       const channelId = getDmChannelId(userId, consulteeUserId, organizationId);
       pairMap.set(channelId, {
@@ -774,7 +935,7 @@ async function getDmPairsForUser(
       prisma.consultation.findMany({
         where: {
           requestedById: user.consulteeProfileId,
-          status: { in: ["APPROVED", "SCHEDULED"] },
+          status: dmEligibleStatusFilter(),
         },
         include: {
           consultationPlan: {
@@ -790,7 +951,7 @@ async function getDmPairsForUser(
       prisma.subscription.findMany({
         where: {
           requestedById: user.consulteeProfileId,
-          status: { in: ["APPROVED", "SCHEDULED"] },
+          status: dmEligibleStatusFilter(),
         },
         include: {
           subscriptionPlan: {
@@ -815,9 +976,13 @@ async function getDmPairsForUser(
     ]);
     for (const c of consultations) {
       const consultantUserId = c.consultationPlan?.consultantProfile?.user?.id;
-      if (!consultantUserId) continue;
+      if (!consultantUserId || consultantUserId === userId) continue;
       const organizationId = bookingOrgId(c);
-      const channelId = getDmChannelId(consultantUserId, userId, organizationId);
+      const channelId = getDmChannelId(
+        consultantUserId,
+        userId,
+        organizationId,
+      );
       pairMap.set(channelId, {
         consultantUserId,
         consulteeUserId: userId,
@@ -827,9 +992,13 @@ async function getDmPairsForUser(
     for (const sub of subscriptions) {
       const consultantUserId =
         sub.subscriptionPlan?.consultantProfile?.user?.id;
-      if (!consultantUserId) continue;
+      if (!consultantUserId || consultantUserId === userId) continue;
       const organizationId = bookingOrgId(sub);
-      const channelId = getDmChannelId(consultantUserId, userId, organizationId);
+      const channelId = getDmChannelId(
+        consultantUserId,
+        userId,
+        organizationId,
+      );
       pairMap.set(channelId, {
         consultantUserId,
         consulteeUserId: userId,
@@ -842,83 +1011,115 @@ async function getDmPairsForUser(
 }
 
 /**
- * Create or join a DM channel for a consultant-consultee pair.
+ * `addUserToDmChannel` used to live here — a private create-or-join for a
+ * consultant/consultee pair, called only by the sync's DM add pass.
+ *
+ * Removed with that pass. It duplicated `createDirectMessageChannel` in
+ * `channel.action.ts`, which is what `POST /api/stream/channels/open` and the
+ * booking paths use, and which unlike this one runs the eligibility gate.
+ * Leaving an ungated, unused channel-provisioning helper in the module is an
+ * invitation to wire it back in without the check.
  */
-async function addUserToDmChannel(
-  consultantUserId: string,
-  consulteeUserId: string,
-  currentUserId: string,
-  /** Funding context — the channel key differs per org (see getDmChannelId). */
-  organizationId: string | null,
-): Promise<{ success: boolean; channelId: string; created?: boolean }> {
-  const channelId = getDmChannelId(
-    consultantUserId,
-    consulteeUserId,
-    organizationId,
+
+/**
+ * F-HIGH-2 — Postgres rows outlive Stream channels. The retention cron
+ * hard-deletes a channel once `retentionDays` have passed since its last slot,
+ * but the underlying Webinar/Class rows survive forever. Before this filter,
+ * those dead rows kept appearing in the sync expected-set, so the next
+ * dashboard sync re-created deleted channels with their full historic roster —
+ * and because the freeze ledger was stamped BEFORE deletion, the resurrected
+ * channel was classified as already-frozen and never frozen again: writable
+ * forever, membership regrowing unbounded. Events past retention are excluded
+ * here using the same window math as the cron, with the thresholds shared via
+ * lib/stream/channel-lifecycle so the two sides cannot drift.
+ */
+
+/** The two inputs of one event's retention decision. */
+interface RetentionWindow {
+  /** Latest slot end across the event's sessions; null = no session yet. */
+  endsAt: Date | null;
+  /** Org dial when known (B2C bookings fall back to the schema default). */
+  retentionDays: number;
+}
+
+/** Structural shape of one event's retention-relevant appointment data. */
+interface AppointmentWindow {
+  organization: { streamRecordingRetentionDays: number | null } | null;
+  slotsOfAppointment: { endsAt: Date }[];
+}
+
+function isPastRetentionWindow(window: RetentionWindow): boolean {
+  // Callers always resolve the org dial against the schema default already.
+  return isPastRetention(window.endsAt, window.retentionDays);
+}
+
+/** Webinar has AT MOST one appointment (singular relation). */
+function webinarRetentionWindow(
+  appointment: AppointmentWindow | null,
+): RetentionWindow {
+  if (!appointment) {
+    // No session yet — the cron can't have expired something that never ran.
+    return { endsAt: null, retentionDays: DEFAULT_RETENTION_DAYS };
+  }
+  const endsAt = appointment.slotsOfAppointment.reduce<Date | null>(
+    (max, s) => (!max || s.endsAt > max ? s.endsAt : max),
+    null,
   );
-  const channelType = "messaging";
+  return {
+    endsAt,
+    retentionDays:
+      appointment.organization?.streamRecordingRetentionDays ??
+      DEFAULT_RETENTION_DAYS,
+  };
+}
 
-  if (getMembershipCached(channelId, currentUserId) === true) {
-    return { success: true, channelId };
+/**
+ * A class spans many appointments (one per attendee cohort) but ONE channel;
+ * collapse to the latest end across all of them, carrying THAT cohort's org
+ * dial — the same collapse rule the expire cron applies per channel.
+ */
+function latestClassRetentionWindow(
+  appointments: AppointmentWindow[] | undefined,
+): RetentionWindow {
+  // Undefined/empty = no session info — treat as live; the retention cron
+  // can never have expired an event it has no slot evidence for.
+  if (!appointments || appointments.length === 0) {
+    return { endsAt: null, retentionDays: DEFAULT_RETENTION_DAYS };
   }
-
-  const client = getStreamChatClient();
-  const channel = client.channel(channelType, channelId);
-
-  // Try adding to existing channel first
-  try {
-    // #473 — surface breaker-open as StreamUnavailableError so an outage
-    // doesn't get mistaken for "channel missing" and trigger a doomed create.
-    await withStreamCircuitBreaker(
-      () => channel.addMembers([currentUserId]),
-      () => {
-        throw new StreamUnavailableError();
-      },
-    );
-    markMembership(channelId, currentUserId, true);
-    return { success: true, channelId };
-  } catch (addError) {
-    if (addError instanceof StreamUnavailableError) throw addError;
-    // Channel may not exist — fall through to creation
-  }
-
-  // Create the DM channel
-  await upsertUsersToStream([consultantUserId, consulteeUserId]);
-  const channelWithData = client.channel(channelType, channelId, {
-    members: [consultantUserId, consulteeUserId],
-    created_by_id: consultantUserId,
-    dm_consultant_user_id: consultantUserId,
-    dm_consultee_user_id: consulteeUserId,
-  } as Record<string, unknown>);
-  await withStreamCircuitBreaker(
-    () => channelWithData.create(),
-    () => {
-      throw new StreamUnavailableError();
+  return appointments.reduce<RetentionWindow>(
+    (latest, apt) => {
+      const aptLatest = apt.slotsOfAppointment.reduce<Date | null>(
+        (max, s) => (!max || s.endsAt > max ? s.endsAt : max),
+        null,
+      );
+      if (!aptLatest) return latest;
+      if (!latest.endsAt || aptLatest > latest.endsAt) {
+        return {
+          endsAt: aptLatest,
+          retentionDays:
+            apt.organization?.streamRecordingRetentionDays ??
+            DEFAULT_RETENTION_DAYS,
+        };
+      }
+      return latest;
     },
+    { endsAt: null, retentionDays: DEFAULT_RETENTION_DAYS },
   );
+}
 
-  // Lazy-create bypasses createChannel, so the #899 channel-scoped host
-  // grant is repeated here. Non-fatal: chat still works without it.
-  try {
-    await channelWithData.assignRoles([
-      { user_id: consultantUserId, channel_role: "channel_moderator" },
-    ]);
-  } catch (grantError) {
-    streamLogger.warn("Failed to grant channel_moderator to DM consultant", {
-      channelId,
-      consultantUserId,
-      error: grantError,
-    });
+/** Dedupe ids and drop any whose channel is past retention (F-HIGH-2). */
+function dedupeLive<T extends { id: string }>(
+  rowGroups: T[][],
+  windowOf: (row: T) => RetentionWindow,
+): string[] {
+  const seen = new Set<string>();
+  const liveIds: string[] = [];
+  for (const row of rowGroups.flat()) {
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    if (!isPastRetentionWindow(windowOf(row))) liveIds.push(row.id);
   }
-
-  markChannelExists(channelType, channelId);
-  markMembership(channelId, currentUserId, true);
-  streamLogger.info("Created DM channel", {
-    channelId,
-    consultantUserId,
-    consulteeUserId,
-  });
-  return { success: true, channelId, created: true };
+  return liveIds;
 }
 
 /**
@@ -932,7 +1133,9 @@ async function getWebinarIdsForUser(
     consulteeProfileId: string | null;
   },
 ): Promise<string[]> {
-  const queries: Promise<{ id: string }[]>[] = [];
+  const queries: Promise<
+    { id: string; appointment: AppointmentWindow | null }[]
+  >[] = [];
 
   // Consultant: get webinars they host
   if (user.consultantProfileId) {
@@ -941,7 +1144,21 @@ async function getWebinarIdsForUser(
         where: {
           webinarPlan: { consultantProfileId: user.consultantProfileId },
         },
-        select: { id: true },
+        select: {
+          id: true,
+          appointment: {
+            select: {
+              organization: {
+                select: { streamRecordingRetentionDays: true },
+              },
+              slotsOfAppointment: {
+                orderBy: { endsAt: "desc" },
+                take: 1,
+                select: { endsAt: true },
+              },
+            },
+          },
+        },
       }),
     );
   }
@@ -954,12 +1171,24 @@ async function getWebinarIdsForUser(
           slotsOfAppointment: { some: { user: { some: { id: userId } } } },
         },
       },
-      select: { id: true },
+      select: {
+        id: true,
+        appointment: {
+          select: {
+            organization: { select: { streamRecordingRetentionDays: true } },
+            slotsOfAppointment: {
+              orderBy: { endsAt: "desc" },
+              take: 1,
+              select: { endsAt: true },
+            },
+          },
+        },
+      },
     }),
   );
 
   const results = await Promise.all(queries);
-  return Array.from(new Set(results.flatMap((r) => r.map((w) => w.id))));
+  return dedupeLive(results, (row) => webinarRetentionWindow(row.appointment));
 }
 
 /**
@@ -973,7 +1202,9 @@ async function getClassIdsForUser(
     consulteeProfileId: string | null;
   },
 ): Promise<string[]> {
-  const queries: Promise<{ id: string }[]>[] = [];
+  const queries: Promise<
+    { id: string; appointments: AppointmentWindow[] }[]
+  >[] = [];
 
   // Consultant: get classes they host
   if (user.consultantProfileId) {
@@ -982,7 +1213,21 @@ async function getClassIdsForUser(
         where: {
           classPlan: { consultantProfileId: user.consultantProfileId },
         },
-        select: { id: true },
+        select: {
+          id: true,
+          appointments: {
+            select: {
+              organization: {
+                select: { streamRecordingRetentionDays: true },
+              },
+              slotsOfAppointment: {
+                orderBy: { endsAt: "desc" },
+                take: 1,
+                select: { endsAt: true },
+              },
+            },
+          },
+        },
       }),
     );
   }
@@ -997,10 +1242,24 @@ async function getClassIdsForUser(
           },
         },
       },
-      select: { id: true },
+      select: {
+        id: true,
+        appointments: {
+          select: {
+            organization: { select: { streamRecordingRetentionDays: true } },
+            slotsOfAppointment: {
+              orderBy: { endsAt: "desc" },
+              take: 1,
+              select: { endsAt: true },
+            },
+          },
+        },
+      },
     }),
   );
 
   const results = await Promise.all(queries);
-  return Array.from(new Set(results.flatMap((r) => r.map((c) => c.id))));
+  return dedupeLive(results, (row) =>
+    latestClassRetentionWindow(row.appointments),
+  );
 }

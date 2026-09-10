@@ -68,14 +68,6 @@ interface AppointmentRow {
   } | null;
   webinar: { webinarPlan: { title: string } } | null;
   class: { classPlan: { title: string } } | null;
-  trialSession: {
-    consulteeProfile: {
-      user: { id: string; name: string | null; email: string };
-    };
-    consultantProfile: {
-      user: { id: string; name: string | null; email: string };
-    };
-  } | null;
   /**
    * Seats in this session that THIS org funded, pre-filtered server-side to the
    * viewing org. Present on the "Everyone" scope only; a group event shares one
@@ -95,12 +87,15 @@ interface AppointmentsResponse {
   perPage: number;
 }
 
+// No TRIAL: a trial is a B2C acquisition session and checkout never stamps an
+// organizationId on one, so this filter had exactly zero rows to return in
+// every org. It read as "this org has no trials yet" rather than "an org does
+// not have trials", which is a different and untrue thing to say.
 const APPOINTMENT_TYPES = [
   "CONSULTATION",
   "SUBSCRIPTION",
   "WEBINAR",
   "CLASS",
-  "TRIAL",
 ] as const;
 
 /** SlotCompletionStatus, plus the derived TENTATIVE state. */
@@ -130,16 +125,13 @@ function getPlanTitle(row: AppointmentRow): string {
     row.subscription?.subscriptionPlan?.title ??
     row.webinar?.webinarPlan?.title ??
     row.class?.classPlan?.title ??
-    row.trialSession?.consulteeProfile?.user?.name ??
     "—"
   );
 }
 
 function getMember(row: AppointmentRow): string {
   const u =
-    row.consultation?.requestedBy?.user ??
-    row.subscription?.requestedBy?.user ??
-    row.trialSession?.consulteeProfile?.user;
+    row.consultation?.requestedBy?.user ?? row.subscription?.requestedBy?.user;
   if (u) return u.name || u.email;
 
   // Group events share one appointment across every registrant, so there is no
@@ -247,9 +239,9 @@ export function AppointmentsPageClient({ orgId }: { orgId: string }) {
   // back to the "All types" placeholder — the control then misreported which
   // filter was actually active.
   const rawTypeFilter = searchParams?.get("appointmentType");
-  const typeFilter = (
-    APPOINTMENT_TYPES as readonly string[]
-  ).includes(rawTypeFilter ?? "")
+  const typeFilter = (APPOINTMENT_TYPES as readonly string[]).includes(
+    rawTypeFilter ?? "",
+  )
     ? (rawTypeFilter as string)
     : undefined;
 

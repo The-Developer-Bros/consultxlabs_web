@@ -40,6 +40,12 @@ export interface PaymentReconciliationResult {
   timestamp: string;
 }
 
+export interface ReconcilePaymentStatusOptions {
+  /** #1356 — caps the batch for the Netlify ticker; undefined keeps the
+   * unbounded GitHub Actions behaviour. */
+  limit?: number;
+}
+
 /**
  * Query Stripe for payment intent status
  */
@@ -224,15 +230,19 @@ function mapGatewayStatus(
  */
 // #476 — locked at the core so every entry (GH Actions / HTTP) shares one
 // mutual exclusion; fail-closed: money state must not double-run unlocked.
-export async function reconcilePaymentStatus(): Promise<PaymentReconciliationResult> {
+export async function reconcilePaymentStatus(
+  opts: ReconcilePaymentStatusOptions = {},
+): Promise<PaymentReconciliationResult> {
   return withCronLock(
     "reconcile-payment-status",
     { failMode: "closed", ttlMs: LONG_JOB_TTL_MS },
-    () => reconcilePaymentStatusUnlocked(),
+    () => reconcilePaymentStatusUnlocked(opts),
   );
 }
 
-async function reconcilePaymentStatusUnlocked(): Promise<PaymentReconciliationResult> {
+async function reconcilePaymentStatusUnlocked(
+  opts: ReconcilePaymentStatusOptions = {},
+): Promise<PaymentReconciliationResult> {
   const errors: string[] = [];
   let reconciledCount = 0;
   let succeededCount = 0;
@@ -261,6 +271,7 @@ async function reconcilePaymentStatusUnlocked(): Promise<PaymentReconciliationRe
       appointment: { select: { id: true } },
     },
     orderBy: { createdAt: "asc" },
+    take: opts.limit,
   });
 
   const razorpayConfigured = !!(

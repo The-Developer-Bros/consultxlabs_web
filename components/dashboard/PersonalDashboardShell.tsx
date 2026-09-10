@@ -120,14 +120,22 @@ export function PersonalDashboardShell({
 
         {banner}
 
-        <main className="min-h-0 flex-1 overflow-y-auto pb-16 md:pb-0">
-          <div className="p-4 sm:p-6 lg:p-8">
+        <main className="min-h-0 flex-1 overflow-y-auto">
+          {/* Flex column with a viewport floor: pages that want a bottom-
+              pinned bar (the offering editor's save bar) declare flex-1 down
+              the chain; ordinary pages are unaffected — block children of a
+              flex column stack and stretch identically. min-h-full resolves
+              against <main>, whose height the shell fixes. */}
+          <div className="flex min-h-full flex-col p-4 sm:p-6 lg:p-8">
             <DashboardErrorBoundary>{children}</DashboardErrorBoundary>
           </div>
         </main>
 
-        {/* Mobile bottom tab bar — only visible below md breakpoint */}
-        <nav className="md:hidden fixed bottom-0 left-0 right-0 z-20 bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 flex">
+        {/* Mobile bottom tab bar — only visible below md breakpoint. In normal
+            flow at the column's end (not fixed): a static child of this
+            non-scrolling flex column is permanently visible, takes real layout
+            space, and spares <main> any compensating bottom padding. */}
+        <nav className="md:hidden shrink-0 bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 flex">
           {mobileTabs.map(({ label, path, Icon }) => {
             const isActive = isActiveRoute(pathname, basePath, path);
             return (

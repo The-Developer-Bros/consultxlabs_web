@@ -19,7 +19,12 @@
  */
 
 import prisma from "@/lib/prisma";
+import { scopeToWhereOrgId } from "@/lib/api/scope/parse";
 import { readByIds } from "@/lib/data/read-by-ids";
+import {
+  pendingConsultationWhere,
+  pendingSubscriptionWhere,
+} from "@/lib/data/needs-you";
 import { Prisma } from "@prisma/client";
 import { PAYOUT_CONSTANTS } from "@/lib/payments/payouts/constants";
 import { sumPaise } from "@/lib/payments/utils/money";
@@ -50,16 +55,21 @@ const HOME_APPOINTMENTS_TAKE = 20;
 const HOME_PENDING_TAKE = 20;
 
 /**
+ * #1166 ORG-1 — personal Home is B2C only (ADR 19), matching the sibling
+ * Appointments page's personal filter; org delivery lives on that org's own
+ * dashboard. #674 defect 13 — the pin is taken from the shared projector
+ * rather than written out as a literal at each of the four sites below, so
+ * "what personal means" has exactly one definition on the platform.
+ */
+const PERSONAL_ORG_PIN = scopeToWhereOrgId({ kind: "personal" });
+
+/**
  * Every appointment this consultant owns or collaborates on. Shared by the
  * Home display read and the active-clients count so the two can never drift.
- *
- * #1166 ORG-1 — pinned to `organizationId: null`: personal Home is B2C only
- * (ADR 19), matching the sibling Appointments page's personal filter. Org
- * delivery lives on that org's dashboard.
  */
 const consultantAppointmentScope = (consultantProfileId: string) =>
   ({
-    organizationId: null,
+    ...PERSONAL_ORG_PIN,
     OR: [
       {
         consultation: {
@@ -118,7 +128,7 @@ const appointmentInclude = {
         select: userSelectFields,
       },
       meetingSession: {
-        select: { id: true, endedAt: true },
+        select: { id: true, endedAt: true, endedReason: true },
       },
     },
   },
@@ -485,17 +495,20 @@ export async function getConsultantDashboard(
     // every pending request regardless of age, and these two numbers render
     // inches apart, so matching its definition is what stops them contradicting
     // each other. The 90-day bound stays on the list, which is only a preview.
+    //
+    // #1345 — and the predicate itself is NeedsYou's, not a re-typed copy. Home
+    // is a personal (B2C) surface like PERSONAL_ORG_PIN below, so an org-funded
+    // pending request belongs to that org's dashboard and must not inflate this
+    // badge while the card underneath it excludes the same row.
     prisma.consultation.count({
-      where: {
-        consultationPlan: { consultantProfile: { id: consultantProfileId } },
-        status: "PENDING",
-      },
+      where: pendingConsultationWhere(consultantProfileId, {
+        kind: "personal",
+      }),
     }),
     prisma.subscription.count({
-      where: {
-        subscriptionPlan: { consultantProfileId },
-        status: "PENDING",
-      },
+      where: pendingSubscriptionWhere(consultantProfileId, {
+        kind: "personal",
+      }),
     }),
     // Fetch recent activities
     prisma.activityLog.findMany({
@@ -518,7 +531,7 @@ export async function getConsultantDashboard(
         consultantProfileId,
         status: { not: "REFUNDED" },
         createdAt: { gte: startOfMonth },
-        payment: { organizationId: null },
+        payment: { ...PERSONAL_ORG_PIN },
       },
     }),
     // 1b. Earnings last month
@@ -528,7 +541,7 @@ export async function getConsultantDashboard(
         consultantProfileId,
         status: { not: "REFUNDED" },
         createdAt: { gte: startOfLastMonth, lt: startOfMonth },
-        payment: { organizationId: null },
+        payment: { ...PERSONAL_ORG_PIN },
       },
     }),
     // 2. Average rating
@@ -548,7 +561,7 @@ export async function getConsultantDashboard(
           // consultantAppointmentScope (different status rules), so the
           // personal pin has to be repeated or Home's completion rate counts
           // org sessions the rest of the page excludes.
-          organizationId: null,
+          ...PERSONAL_ORG_PIN,
           OR: [
             { consultation: { consultationPlan: { consultantProfileId } } },
             { subscription: { subscriptionPlan: { consultantProfileId } } },

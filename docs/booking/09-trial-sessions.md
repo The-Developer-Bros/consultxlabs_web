@@ -169,6 +169,31 @@ sequenceDiagram
 5. **Auto-complete** -- The hourly cron marks `SCHEDULED` trials as `COMPLETED` once all appointment slots have ended (with a 1-hour buffer).
 6. **Conversion** -- If the consultee subscribes, the trial status transitions to `CONVERTED` and `convertedToSubscriptionId` is set.
 
+### Paying for a trial
+
+A priced trial is paid for on our own checkout page at
+`/checkout/plans/trial/[trialId]`, and every "Pay Now" affordance in the product
+has to land there. The page exists because the gateway pay-link on
+`TrialSession.pendingPaymentUrl` opens straight into Razorpay with none of the
+context a buyer needs: the branded page names the amount, shows the held session
+in the viewer's own timezone, states the deadline the hold expires at, and only
+then hands off (#1167).
+
+The one place that decision is made is `trialCheckoutHref` in
+`lib/appointments/trial-checkout-href.ts`. It returns the branded href for a
+trial row and `null` for everything else, and a caller that gets `null` falls
+back to opening `vm.pendingPaymentUrl` in a new tab. The `TrialSession` id only
+survives in the synthetic view-model id the mappers mint (`trial-<id>`), which
+is why the helper parses that prefix rather than reading a field. Both Pay Now
+buttons on the appointment detail page and the one in the appointment sheet call
+it, because the branch previously lived inline in the sheet and a second entry
+point added on the detail page shipped without it, quietly regressing paid
+trials back to the raw gateway link (#1428, #1429).
+
+If you add a new surface that offers to pay for a booking, call the helper
+first; do not re-derive the branch, and do not link to `pendingPaymentUrl`
+directly.
+
 ---
 
 ## How Trial Differs from Consultation

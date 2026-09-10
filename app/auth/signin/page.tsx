@@ -5,14 +5,78 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { signIn, useSession, sendVerificationEmail } from "@/lib/auth-client";
+import {
+  signIn,
+  useSession,
+  sendVerificationEmail,
+  getSession,
+} from "@/lib/auth-client";
 import { ssoSigninWithGuard } from "@/lib/sso/signin-with-toast";
+import { safeSameOriginPath } from "@/lib/safe-callback-url";
 import { GlobeIcon } from "@/components/auth/auth-icons";
 import { SocialLoginButtons } from "@/components/auth/social-login-buttons";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, useMemo, useRef, Suspense } from "react";
 import { AuthFormSkeleton } from "../AuthFormSkeleton";
+
+/**
+ * Resolve the redirect target for an already-authenticated visitor.
+ *
+ * `useSession()` can serve the ≤5-min cookie-cache payload, and acting on a
+ * stale `onboardingCompleted` sent us one way while the server guard (always
+ * force-fresh) immediately bounced the user back — the intermittent
+ * signin↔dashboard↔onboarding flicker. Re-reading the session with
+ * `disableCookieCache` aligns the client's decision with what the server
+ * guard will decide.
+ *
+ * - Fresh read returns a user → trust its onboarding status.
+ * - Fresh read FAILS (network) → fall back to the cached value.
+ * - Fresh read returns NO user → the session is actually gone/revoked; do NOT
+ *   navigate to a protected route (the server would only bounce us back).
+ *   Stay put and let the session-store update drive the UI.
+ */
+function useAuthenticatedRedirectTarget(
+  onboardingCompleted: boolean | undefined,
+  isPending: boolean,
+  callbackUrl: string | null,
+  onboardingUrl: string,
+) {
+  const router = useRouter();
+  const navigatedRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (isPending || onboardingCompleted === undefined) return;
+
+    let cancelled = false;
+    const resolveAndGo = (completed: boolean) => {
+      if (cancelled) return;
+      const target = completed ? callbackUrl || "/dashboard" : onboardingUrl;
+      // Idempotency guard: re-renders / Strict-Mode double-invocation /
+      // duplicate store emissions must not queue a second navigation.
+      // (A delayed-state callbackUrl used to fire this effect twice with
+      // different targets — flashing users through /dashboard en route to
+      // their real destination.)
+      if (navigatedRef.current === target) return;
+      navigatedRef.current = target;
+      router.replace(target);
+    };
+
+    getSession({ query: { disableCookieCache: true } })
+      .then(({ data }) => {
+        // Session revoked between paint and check — no protected redirect.
+        if (!data?.user) return;
+        resolveAndGo(!!data.user.onboardingCompleted);
+      })
+      .catch(() => {
+        resolveAndGo(!!onboardingCompleted);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [onboardingCompleted, isPending, router, callbackUrl, onboardingUrl]);
+}
 
 export default function SignIn() {
   return (
@@ -24,13 +88,11 @@ export default function SignIn() {
 
 function SignInContent() {
   const { toast } = useToast();
-  const router = useRouter();
   const searchParams = useSearchParams();
   const { data: session, isPending } = useSession();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [callbackUrl, setCallbackUrl] = useState<string | null>(null);
   const [ssoCheck, setSsoCheck] = useState<{
     enforceSSO: boolean;
     organizationName: string;
@@ -40,13 +102,23 @@ function SignInContent() {
   const [needsVerification, setNeedsVerification] = useState(false);
   const [resending, setResending] = useState(false);
 
-  useEffect(() => {
-    const url = searchParams.get("callbackUrl");
-    // Only allow relative paths to prevent XSS (e.g. javascript:alert(1))
-    if (url && url.startsWith("/") && !url.startsWith("//")) {
-      setCallbackUrl(url);
-    }
-  }, [searchParams]);
+  // Validate callbackUrl synchronously from the URL. safeSameOriginPath
+  // resolves against a probe origin to reject backslash/scheme-relative
+  // escapes ("/\attacker.example" passes naive prefix checks but parses to an
+  // external origin) and returns the canonical same-origin path.
+  const callbackUrl = useMemo(
+    () => safeSameOriginPath(searchParams.get("callbackUrl")),
+    [searchParams],
+  );
+
+  // #booking-journey — is this sign-in a detour out of a purchase? Derived
+  // from the ALREADY-VALIDATED callbackUrl, never the raw param, so a crafted
+  // "/\\evil.example/checkout/..." cannot light up a trust banner. Drives
+  // only reassurance copy; nothing is authorized on the strength of it.
+  const isPurchaseReturn = useMemo(
+    () => callbackUrl?.startsWith("/checkout/") ?? false,
+    [callbackUrl],
+  );
 
   // Thread the validated callbackUrl through the onboarding + sign-up hand-offs
   // so a first-timer who came here to book/buy returns to their destination
@@ -59,16 +131,12 @@ function SignInContent() {
     ? `/auth/signup?callbackUrl=${encodeURIComponent(callbackUrl)}`
     : "/auth/signup";
 
-  // Redirect authenticated users based on onboarding status
-  useEffect(() => {
-    if (!isPending && session?.user) {
-      if (session.user.onboardingCompleted) {
-        router.push(callbackUrl || "/dashboard");
-      } else {
-        router.push(onboardingUrl);
-      }
-    }
-  }, [session, isPending, router, callbackUrl, onboardingUrl]);
+  useAuthenticatedRedirectTarget(
+    session?.user?.onboardingCompleted,
+    isPending,
+    callbackUrl,
+    onboardingUrl,
+  );
 
   // Show loading while checking session status (fallback for when middleware doesn't catch)
   if (isPending) {
@@ -91,7 +159,9 @@ function SignInContent() {
     if (!email || !email.includes("@")) return;
     setSsoChecking(true);
     try {
-      const res = await fetch(`/api/auth/sso/domain-check?email=${encodeURIComponent(email)}`);
+      const res = await fetch(
+        `/api/auth/sso/domain-check?email=${encodeURIComponent(email)}`,
+      );
       if (res.ok) {
         const data = await res.json();
         // Why: the domain-check route returns `providerMisconfigured: true`
@@ -109,11 +179,15 @@ function SignInContent() {
           });
           setSsoCheck(null);
         } else {
-          setSsoCheck(data.enforceSSO ? {
-            enforceSSO: true,
-            organizationName: data.organizationName,
-            ssoBody: data.ssoBody,
-          } : null);
+          setSsoCheck(
+            data.enforceSSO
+              ? {
+                  enforceSSO: true,
+                  organizationName: data.organizationName,
+                  ssoBody: data.ssoBody,
+                }
+              : null,
+          );
         }
       }
     } catch {
@@ -159,7 +233,9 @@ function SignInContent() {
     }
     setSsoChecking(true);
     try {
-      const res = await fetch(`/api/auth/sso/domain-check?email=${encodeURIComponent(email)}`);
+      const res = await fetch(
+        `/api/auth/sso/domain-check?email=${encodeURIComponent(email)}`,
+      );
       if (!res.ok) throw new Error("check failed");
       const data = await res.json();
       // Same misconfigured-cert short-circuit as the blur handler — see
@@ -174,7 +250,11 @@ function SignInContent() {
         return;
       }
       if (data.enforceSSO) {
-        setSsoCheck({ enforceSSO: true, organizationName: data.organizationName, ssoBody: data.ssoBody });
+        setSsoCheck({
+          enforceSSO: true,
+          organizationName: data.organizationName,
+          ssoBody: data.ssoBody,
+        });
         const result = await ssoSigninWithGuard({
           providerId: data.ssoBody.providerId,
           domain: data.ssoBody.domain,
@@ -190,7 +270,8 @@ function SignInContent() {
       } else {
         toast({
           title: "No SSO provider found",
-          description: "No corporate SSO is configured for this email domain. Contact your IT admin.",
+          description:
+            "No corporate SSO is configured for this email domain. Contact your IT admin.",
           variant: "destructive",
         });
       }
@@ -208,20 +289,34 @@ function SignInContent() {
   const friendlyAuthError = (raw: string | undefined): string => {
     if (!raw) return "Invalid email or password.";
     const lower = raw.toLowerCase();
-    if (lower.includes("email") && (lower.includes("invalid") || lower.includes("required")))
+    if (
+      lower.includes("email") &&
+      (lower.includes("invalid") || lower.includes("required"))
+    )
       return "Please enter a valid email address.";
-    if (lower.includes("password") && (lower.includes("too small") || lower.includes(">=") || lower.includes("required")))
+    if (
+      lower.includes("password") &&
+      (lower.includes("too small") ||
+        lower.includes(">=") ||
+        lower.includes("required"))
+    )
       return "Please enter your password.";
     if (lower.includes("invalid") && lower.includes("credentials"))
       return "Invalid email or password.";
     if (lower.includes("not found") || lower.includes("no user"))
       return "No account found with this email. Check the address or sign up.";
-    return raw.replace(/\[body\.\w+\]\s*/g, "").trim() || "Invalid email or password.";
+    return (
+      raw.replace(/\[body\.\w+\]\s*/g, "").trim() ||
+      "Invalid email or password."
+    );
   };
 
   const handleResendVerification = async () => {
     if (!email || !email.includes("@")) {
-      toast({ title: "Enter your email address first", variant: "destructive" });
+      toast({
+        title: "Enter your email address first",
+        variant: "destructive",
+      });
       return;
     }
     setResending(true);
@@ -231,7 +326,10 @@ function SignInContent() {
       const verificationCallbackUrl = callbackUrl
         ? `/auth/verify-email?callbackUrl=${encodeURIComponent(callbackUrl)}`
         : "/auth/verify-email";
-      await sendVerificationEmail({ email, callbackURL: verificationCallbackUrl });
+      await sendVerificationEmail({
+        email,
+        callbackURL: verificationCallbackUrl,
+      });
       toast({
         title: "Verification email sent",
         description: `Check ${email} for the link.`,
@@ -262,11 +360,15 @@ function SignInContent() {
 
       if (error) {
         const code = (error as { code?: string }).code;
-        if (code === "EMAIL_NOT_VERIFIED" || /verif/i.test(error.message ?? "")) {
+        if (
+          code === "EMAIL_NOT_VERIFIED" ||
+          /verif/i.test(error.message ?? "")
+        ) {
           setNeedsVerification(true);
           toast({
             title: "Verify your email",
-            description: "Your email isn't verified yet — resend the link below.",
+            description:
+              "Your email isn't verified yet — resend the link below.",
           });
         } else {
           toast({
@@ -288,7 +390,10 @@ function SignInContent() {
         // callback must go through onboarding first, not straight to callbackUrl.
       }
     } catch (error) {
-      Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "auth" } });
+      Sentry.captureException(
+        error instanceof Error ? error : new Error(String(error)),
+        { tags: { subsystem: "auth" } },
+      );
       console.error("Sign in error:", error);
       toast({
         title: "Sign In Error",
@@ -332,10 +437,16 @@ function SignInContent() {
           <h2 className="mb-2 text-fluid-3xl font-semibold tracking-tight">
             Sign in to your account
           </h2>
-          {searchParams.get("sso_required") === "1" && (
-            <div className="mb-4 rounded-md border border-yellow-600 bg-yellow-900/40 p-3">
-              <p className="text-sm text-yellow-300">
-                Your organization requires SSO sign-in.
+          {/* #booking-journey — when the callback is a checkout return, say
+              so: a guest bounced from a Buy/Subscribe click must see that
+              their purchase survived the detour, or they read this page as an
+              error and abandon. */}
+          {isPurchaseReturn && (
+            <div className="mb-4 rounded-md border border-emerald-600/60 bg-emerald-900/30 p-3">
+              <p className="text-sm text-emerald-300">
+                You&apos;re almost there — sign in to continue your booking.
+                Your selection is saved and will resume right where you left
+                off.
               </p>
             </div>
           )}

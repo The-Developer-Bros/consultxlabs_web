@@ -25,7 +25,7 @@
 import prisma from "../../lib/prisma";
 import { AUDIT_ACTIONS } from "../../lib/enterprise/audit-actions";
 import { withCronLock } from "@/lib/cron/with-cron-lock";
-import { RecordingTransferService } from "@/lib/stream/recording-transfer-service";
+import { deleteRecordingObject } from "@/lib/stream/recording-storage";
 
 export interface StreamRetentionResult {
   scanned: number;
@@ -36,7 +36,7 @@ export interface StreamRetentionResult {
 }
 
 type OrgRetention = { id: string; streamRecordingRetentionDays: number };
-type RecordingCandidate = { id: string; supabasePath: string | null };
+type RecordingCandidate = { id: string; storagePath: string | null };
 
 function recordOrgOutcome(
   result: StreamRetentionResult,
@@ -66,12 +66,12 @@ async function collectTombstoneIds(
 
   // Rows without a Supabase object need no storage call — tombstone directly.
   for (const candidate of candidates) {
-    if (!candidate.supabasePath) {
+    if (!candidate.storagePath) {
       tombstoneIds.push(candidate.id);
     }
   }
 
-  const supabaseCandidates = candidates.filter((c) => c.supabasePath);
+  const supabaseCandidates = candidates.filter((c) => c.storagePath);
   const CONCURRENCY = 5;
   for (let i = 0; i < supabaseCandidates.length; i += CONCURRENCY) {
     const chunk = supabaseCandidates.slice(i, i + CONCURRENCY);
@@ -81,8 +81,8 @@ async function collectTombstoneIds(
         // + audit log land together in the transaction below so a partial
         // failure can't tombstone the row before the audit write (which the
         // `notIn [EXPIRED]` candidate filter would then never retry).
-        const del = await RecordingTransferService.deleteSupabaseObject(
-          candidate.supabasePath!,
+        const del = await deleteRecordingObject(
+          candidate.storagePath!,
         );
         if (del.success) {
           tombstoneIds.push(candidate.id);
@@ -112,8 +112,8 @@ async function tombstoneRecordings(
       where: { id: { in: tombstoneIds } },
       data: {
         status: "EXPIRED",
-        supabaseUrl: null,
-        supabasePath: null,
+        storageUrl: null,
+        storagePath: null,
         storageType: "STREAM_S3",
       },
     });
@@ -175,7 +175,7 @@ async function cleanupOldStreamRecordingsUnlocked(): Promise<StreamRetentionResu
         createdAt: { lt: cutoff },
         status: { notIn: ["EXPIRED", "FAILED"] },
       },
-      select: { id: true, supabasePath: true },
+      select: { id: true, storagePath: true },
     });
     result.scanned += candidates.length;
     if (candidates.length === 0) {

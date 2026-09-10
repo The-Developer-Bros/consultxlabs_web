@@ -22,6 +22,7 @@ import prisma from "../../lib/prisma";
 import { PayoutStatus, PaymentGateway, EarningStatus } from "@prisma/client";
 import { withCronLock, LONG_JOB_TTL_MS } from "@/lib/cron/with-cron-lock";
 import { handlePayoutWebhook } from "@/lib/payments/payouts";
+import { resolveRazorpayXCredentials } from "@/lib/payments/payouts/razorpay-payouts";
 
 // PM-15 — narrow PayoutStatus to the status union handlePayoutWebhook accepts.
 // mapGatewayStatus only ever returns these four, so the rest map to undefined
@@ -98,12 +99,13 @@ async function getStripePayoutStatus(
 async function getRazorpayPayoutStatus(
   providerPayoutId: string,
 ): Promise<{ status: string; failureReason?: string; utr?: string } | null> {
-  const keyId = process.env.RAZORPAY_KEY_ID;
-  // #677 PM-1 — prod env defines RAZORPAY_SECRET (the canonical name the
-  // core lib reads); reading only RAZORPAY_KEY_SECRET silently disabled
-  // this reconciliation in production while it looked green.
-  const keySecret =
-    process.env.RAZORPAY_SECRET ?? process.env.RAZORPAY_KEY_SECRET;
+  // #1407 — the same resolver the disbursement path uses. Reading
+  // RAZORPAY_KEY_ID/RAZORPAY_SECRET here authenticated as the checkout
+  // merchant, not the RazorpayX one, so on an account with distinct X keys
+  // every lookup 401s and this reconciliation is silently dead while it
+  // looks green. (#677 PM-1 kept the RAZORPAY_SECRET fallback, inside the
+  // resolver now.)
+  const { keyId, keySecret } = resolveRazorpayXCredentials();
 
   if (!keyId || !keySecret) {
     console.warn("RazorpayX credentials not configured");
@@ -176,6 +178,13 @@ function mapGatewayStatus(
         return PayoutStatus.PROCESSING;
       case "rejected":
         return PayoutStatus.FAILED;
+      // #1407 — RazorpayX returns `failed` for a payout the bank refused after
+      // it was queued, and the arm had only `rejected`. A failed payout fell
+      // through to "unknown gateway status" and was skipped, so its earnings
+      // stayed linked to a payout that will never pay while the row sat in
+      // PROCESSING forever. The Stripe arm has always mapped it.
+      case "failed":
+        return PayoutStatus.FAILED;
       case "reversed":
         return PayoutStatus.FAILED;
       case "cancelled":
@@ -225,8 +234,12 @@ async function handleStuckPayoutsUnlocked(): Promise<StuckPayoutsResult> {
     },
   });
 
-  const razorpayConfigured = !!(process.env.RAZORPAY_KEY_ID &&
-    (process.env.RAZORPAY_SECRET ?? process.env.RAZORPAY_KEY_SECRET));
+  // #1407 — the pre-flight gate has to test the credentials the lookup will
+  // actually send, or it reports "configured" and every lookup still 401s.
+  const razorpayXCredentials = resolveRazorpayXCredentials();
+  const razorpayConfigured = !!(
+    razorpayXCredentials.keyId && razorpayXCredentials.keySecret
+  );
   if (!razorpayConfigured) {
     console.warn("⚠️ Razorpay credentials not configured — Razorpay records will be skipped");
   }
@@ -252,39 +265,66 @@ async function handleStuckPayoutsUnlocked(): Promise<StuckPayoutsResult> {
       console.log(`   No provider payout ID - marking as FAILED`);
 
       if (payout.retryCount >= MAX_RETRIES) {
-        await prisma.consultantPayout.update({
-          where: { id: payout.id },
-          data: {
-            status: PayoutStatus.FAILED,
-            failureReason:
-              "Payout never sent to gateway after multiple attempts",
-          },
-        });
-        // Release the earnings like the webhook FAILED path does — without
-        // this, BATCHED earnings stayed welded to a permanently-FAILED
-        // payout: excluded from future batches by `payoutId: null`, never
-        // released, money held hostage with no actor.
-        const released = await prisma.consultantEarnings.updateMany({
-          where: { payoutId: payout.id, status: EarningStatus.BATCHED },
-          data: { payoutId: null, status: EarningStatus.READY },
+        // #1205-triage — CAS the terminal flip inside the same tx as the
+        // earnings release: without the PROCESSING guard, a concurrently
+        // completing gateway webhook could be overwritten by this FAILED.
+        const cas = await prisma.$transaction(async (tx) => {
+          const claimed = await tx.consultantPayout.updateMany({
+            where: { id: payout.id, status: PayoutStatus.PROCESSING },
+            data: {
+              status: PayoutStatus.FAILED,
+              failureReason:
+                "Payout never sent to gateway after multiple attempts",
+            },
+          });
+          if (claimed.count === 0) return { released: 0, claimed: false };
+          const released = await tx.consultantEarnings.updateMany({
+            where: { payoutId: payout.id, status: EarningStatus.BATCHED },
+            data: { payoutId: null, status: EarningStatus.READY },
+          });
+          return { released: released.count, claimed: true };
         });
         failedCount++;
-        console.log(
-          `   Marked as permanently FAILED (max retries reached); released ${released.count} earning(s)`,
-        );
+        if (!cas.claimed) {
+          console.log(
+            `   Skipped — payout left PROCESSING concurrently (webhook won)`,
+          );
+        } else {
+          console.log(
+            `   Marked as permanently FAILED (max retries reached); released ${cas.released} earning(s)`,
+          );
+        }
       } else {
-        // Reset to APPROVED for retry
-        await prisma.consultantPayout.update({
-          where: { id: payout.id },
+        // #1407 — CAS the retry reset, like every sibling write in this loop.
+        // The interleaving: the cohort is read once, then each payout costs a
+        // gateway HTTP round-trip; while this job is out on an earlier
+        // element, a concurrent process-payouts run or a payout webhook can
+        // move a LATER one. The bare `update` carried no guard, so it stamped
+        // that row back to APPROVED from whatever it had become and the next
+        // batch paid it twice.
+        const reset = await prisma.consultantPayout.updateMany({
+          where: {
+            id: payout.id,
+            status: PayoutStatus.PROCESSING,
+            providerPayoutId: null,
+          },
           data: {
             status: PayoutStatus.APPROVED,
             retryCount: { increment: 1 },
           },
         });
-        retriedCount++;
-        console.log(
-          `   Reset to APPROVED for retry (attempt ${payout.retryCount + 1})`,
-        );
+        if (reset.count === 0) {
+          // Whoever moved it owns the row now — never re-arm it from here.
+          skippedCount++;
+          console.log(
+            `   Skipped — raced: a concurrent process-payouts run or payout webhook moved it`,
+          );
+        } else {
+          retriedCount++;
+          console.log(
+            `   Reset to APPROVED for retry (attempt ${payout.retryCount + 1})`,
+          );
+        }
       }
       continue;
     }

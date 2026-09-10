@@ -10,16 +10,31 @@
 
 import "./setup";
 
-jest.mock("../../lib/prisma", () => ({
-  __esModule: true,
-  default: {
-    consultation: { findMany: jest.fn(), updateMany: jest.fn(), count: jest.fn() },
-    subscription: { findMany: jest.fn(), updateMany: jest.fn() },
-    slotOfAppointment: { deleteMany: jest.fn() },
+jest.mock("../../lib/prisma", () => {
+  const db: Record<string, unknown> = {
+    consultation: {
+      findMany: jest.fn(),
+      findUnique: jest.fn().mockResolvedValue(null),
+      updateMany: jest.fn(),
+      count: jest.fn(),
+    },
+    subscription: {
+      findMany: jest.fn(),
+      findUnique: jest.fn().mockResolvedValue(null),
+      updateMany: jest.fn(),
+    },
+    slotOfAppointment: {
+      findMany: jest.fn().mockResolvedValue([]),
+      updateManyAndReturn: jest.fn().mockResolvedValue([]),
+    },
+    bookingStatusHistory: { create: jest.fn().mockResolvedValue({}) },
     appointment: { findMany: jest.fn().mockResolvedValue([]) },
     $disconnect: jest.fn(),
-  },
-}));
+  };
+  // The payment-pending arm now expires each request in its own transaction.
+  db.$transaction = jest.fn(async (fn: (tx: unknown) => unknown) => fn(db));
+  return { __esModule: true, default: db };
+});
 
 // B1's sweep now routes refunds through booking-refund, whose module graph
 // constructs a Stripe client (needs global fetch — absent in this env).
@@ -57,7 +72,9 @@ const rfaRoute = require("fs").readFileSync(
 
 describe("RFA route lock order", () => {
   it("takes the consultee lock before the slot atoms", () => {
-    const consulteeAt = rfaRoute.indexOf("lockConsulteeBooking(session.user.id)");
+    const consulteeAt = rfaRoute.indexOf(
+      "lockConsulteeBooking(session.user.id)",
+    );
     const atomsAt = rfaRoute.indexOf(
       "lockSlotBooking(consultantProfileId, startsAt, endsAt)",
     );
@@ -101,7 +118,7 @@ describe("48h PENDING consultation expiry releases pinned slots", () => {
     });
   });
 
-  it("expires stale consultations by id and deletes their tentative slots", async () => {
+  it("expires stale consultations by id and soft-cancels their tentative slots", async () => {
     (prisma.consultation.findMany as jest.Mock).mockResolvedValue([
       { id: "c1", appointment: { id: "apt-1" } },
       { id: "c2", appointment: { id: "apt-2" } },
@@ -109,13 +126,17 @@ describe("48h PENDING consultation expiry releases pinned slots", () => {
     ]);
     // PR 2c — the sweep now refunds SUCCEEDED payments of expired rows.
     (prisma.appointment.findMany as jest.Mock).mockResolvedValue([]);
-    (refundBookingPayment as jest.Mock).mockResolvedValue({ status: "SUCCEEDED" });
+    (refundBookingPayment as jest.Mock).mockResolvedValue({
+      status: "SUCCEEDED",
+    });
     (prisma.consultation.updateMany as jest.Mock).mockResolvedValue({
       count: 3,
     });
-    (prisma.slotOfAppointment.deleteMany as jest.Mock).mockResolvedValue({
-      count: 5,
-    });
+    (
+      prisma.slotOfAppointment.updateManyAndReturn as jest.Mock
+    ).mockResolvedValueOnce(
+      Array.from({ length: 5 }, (_, i) => ({ id: `slot-${i}` })),
+    );
 
     const result = await expireStaleRequests();
 
@@ -123,33 +144,34 @@ describe("48h PENDING consultation expiry releases pinned slots", () => {
     expect(result.consultationsExpired).toBe(3);
     expect(result.consultationSlotsReleased).toBe(5);
 
-    // The CAS guard rides the WHERE: only rows still PENDING flip.
-    expect(prisma.consultation.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          id: { in: ["c1", "c2", "c3"] },
-          status: "PENDING",
+    // One transaction per consultation: the CAS guard rides the WHERE (only a
+    // row still PENDING flips), and the release of its tentative holds commits
+    // with it, so a failed release can never leave an EXPIRED request holding
+    // the calendar. Freed by status: the row is CANCELLED and tombstoned,
+    // never deleted (doctrine rule 2).
+    for (const id of ["c1", "c2", "c3"]) {
+      expect(prisma.consultation.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ id, status: { in: ["PENDING"] } }),
+          data: expect.objectContaining({ status: "EXPIRED" }),
         }),
-        data: { status: "EXPIRED" },
+      );
+    }
+    // c3 is a slot-less placeholder, so only two releases run.
+    expect(prisma.slotOfAppointment.updateManyAndReturn).toHaveBeenCalledTimes(
+      2,
+    );
+    expect(prisma.slotOfAppointment.updateManyAndReturn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          appointmentId: "apt-1",
+          isTentative: true,
+          deletedAt: null,
+          completionStatus: { in: ["SCHEDULED", "UNVERIFIED", "RESCHEDULED"] },
+        },
+        data: expect.objectContaining({ completionStatus: "CANCELLED" }),
       }),
     );
-
-    // Only TENTATIVE slots of consultations that are STILL expired at delete
-    // time are released — the relational guard re-checks status at write
-    // time, so a request approved between the read and the delete keeps its
-    // hold (CodeRabbit triage on the approve-race).
-    expect(prisma.slotOfAppointment.deleteMany).toHaveBeenCalledWith({
-      where: {
-        appointmentId: { in: ["apt-1", "apt-2"] },
-        isTentative: true,
-        appointment: {
-          consultation: {
-            id: { in: ["c1", "c2", "c3"] },
-            status: "EXPIRED",
-          },
-        },
-      },
-    });
   });
 
   it("is a no-op when nothing is stale", async () => {
@@ -160,11 +182,16 @@ describe("48h PENDING consultation expiry releases pinned slots", () => {
     expect(result.consultationsExpired).toBe(0);
     expect(result.consultationSlotsReleased).toBe(0);
     // The stale-rescheduled-slot release (PR 2e) may fire independently —
-    // assert the CONSULTATION-expiry deleteMany was NOT the one that ran.
-    const calls = (prisma.slotOfAppointment.deleteMany as jest.Mock).mock.calls;
-    const consultationDelete = calls.find(
-      (c: any[]) => !c[0]?.where?.completionStatus,
+    // assert the CONSULTATION-expiry release was NOT the one that ran. Both
+    // arms now carry a completionStatus from-set, so the consultation arm is
+    // identified by its appointmentId scope instead.
+    const calls = (prisma.slotOfAppointment.updateManyAndReturn as jest.Mock)
+      .mock.calls;
+    const consultationRelease = calls.find(
+      ([args]) =>
+        (args as { where?: { appointmentId?: unknown } })?.where
+          ?.appointmentId !== undefined,
     );
-    expect(consultationDelete).toBeUndefined();
+    expect(consultationRelease).toBeUndefined();
   });
 });

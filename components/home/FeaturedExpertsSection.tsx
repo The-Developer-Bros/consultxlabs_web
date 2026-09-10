@@ -39,13 +39,17 @@ function ExpertCard({ expert }: { expert: IConsultantCardData }) {
           </div>
 
           <div className="flex items-center gap-2 mb-4">
-            <div className="flex items-center gap-1">
-              <Star className="w-4 h-4 fill-foreground text-foreground" />
-              <span className="font-medium text-foreground">
-                {expert.rating.toFixed(1)}
-              </span>
-            </div>
-            <span className="text-muted-foreground/70">•</span>
+            {expert.rating !== null && (
+              <>
+                <div className="flex items-center gap-1">
+                  <Star className="w-4 h-4 fill-foreground text-foreground" />
+                  <span className="font-medium text-foreground">
+                    {expert.rating.toFixed(1)}
+                  </span>
+                </div>
+                <span className="text-muted-foreground/70">•</span>
+              </>
+            )}
             <span className="text-sm text-muted-foreground">
               {expert.experience}
             </span>

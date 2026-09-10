@@ -42,7 +42,7 @@ export interface StreamRecording {
  * rather than a Prisma payload type: the consultant and consultee paths reach
  * this point through different `include` shapes.
  */
-type SyncableSession = {
+export type SyncableSession = {
   id: string;
   streamCallId: string | null;
   slotOfAppointment: {
@@ -57,6 +57,12 @@ type SyncableSession = {
 /**
  * Recording Service class for managing video call recordings
  */
+/** Whether a session sync actually completed, and why not if it did not. */
+export interface SyncOutcome {
+  ok: boolean;
+  reason?: "stream-unreachable" | "persist-failed";
+}
+
 export class RecordingService {
   /**
    * Start recording for a call
@@ -140,9 +146,17 @@ export class RecordingService {
    * Get recordings for a specific call from Stream
    * @param streamCallId The Stream call ID
    */
+  /**
+   * What Stream holds for a call, or `null` when Stream could not be asked.
+   *
+   * `null` is not an empty list. Returning `[]` for a transport failure made a
+   * Stream outage indistinguishable from "this call has no recordings", so the
+   * orphan reconciler counted an unreachable session as checked-and-empty and
+   * reported success (#1280).
+   */
   static async getCallRecordingsFromStream(
     streamCallId: string,
-  ): Promise<StreamRecording[]> {
+  ): Promise<StreamRecording[] | null> {
     try {
       const client = getStreamVideoClient();
 
@@ -164,7 +178,7 @@ export class RecordingService {
       streamLogger.error("Failed to get call recordings from Stream", error, {
         streamCallId,
       });
-      return [];
+      return null;
     }
   }
 
@@ -728,17 +742,30 @@ export class RecordingService {
    *
    * Failures are swallowed per session, deliberately: one unreachable call must
    * not abandon the rest of the sync.
+   *
+   * Public since #1270 for a third caller,
+   * `scripts/stream/reconcile-orphaned-recordings.ts`. It stays the ONLY
+   * writer: the nightly reconciliation decides WHICH sessions to look at, this
+   * decides what a Stream recording becomes in our database. A second copy of
+   * the loop is how the org-tag gap above came to exist twice.
    */
-  private static async syncSessionRecordings(
+  static async syncSessionRecordings(
     session: SyncableSession,
     syncedRecordings: RecordingRow[],
-  ): Promise<void> {
-    if (!session.streamCallId) return;
+  ): Promise<SyncOutcome> {
+    if (!session.streamCallId) return { ok: true };
 
     try {
       const streamRecordings = await this.getCallRecordingsFromStream(
         session.streamCallId,
       );
+
+      // Could not ask Stream. Returning here rather than treating it as an
+      // empty result is the whole point: a caller deciding whether a recording
+      // is missing must be able to tell "Stream says there is nothing" from
+      // "Stream did not answer".
+      if (streamRecordings === null)
+        return { ok: false, reason: "stream-unreachable" };
 
       for (const streamRec of streamRecordings) {
         // Check if recording already exists (by filename/streamRecordingId)
@@ -800,12 +827,20 @@ export class RecordingService {
           durationInMinutes,
         });
       }
+      return { ok: true };
     } catch (sessionError) {
-      streamLogger.error("Failed to sync recordings for session", sessionError, {
-        sessionId: session.id,
-        streamCallId: session.streamCallId,
-      });
-      // Continue with next session even if one fails
+      streamLogger.error(
+        "Failed to sync recordings for session",
+        sessionError,
+        {
+          sessionId: session.id,
+          streamCallId: session.streamCallId,
+        },
+      );
+      // Swallowed so one bad session cannot abort a batch — but REPORTED, so a
+      // caller that is deciding whether a recording is genuinely missing does
+      // not read a persistence failure as an answer.
+      return { ok: false, reason: "persist-failed" };
     }
   }
 

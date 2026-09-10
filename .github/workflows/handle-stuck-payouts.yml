@@ -6,6 +6,10 @@ on:
     - cron: "52 */4 * * *"
   workflow_dispatch: # Allow manual triggering
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   handle-stuck-payouts:
     runs-on: ubuntu-latest

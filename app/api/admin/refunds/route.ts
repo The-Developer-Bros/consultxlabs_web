@@ -8,12 +8,13 @@ import {
   requireBackofficeSurface,
 } from "@/lib/auth-helpers";
 import {
-  refundPayment,
   RefundValidationError,
   RefundGatewayError,
 } from "@/lib/payments/operations/refund";
+import { refundBookingPayment } from "@/lib/payments/operations/booking-refund";
 import { refundWholeEventPayments } from "@/lib/payments/operations/event-refunds";
 import { withIdempotency } from "@/lib/api/idempotency";
+import { applyRateLimit, moneyOpsLimiter } from "@/lib/rate-limit";
 
 export async function GET(req: NextRequest) {
   try {
@@ -95,9 +96,10 @@ export async function GET(req: NextRequest) {
 }
 
 // Admin-initiated refund (#776 §C). Exactly one target: a single payment, or a
-// whole class/webinar (every attendee). Single payments credit the gateway via
-// refundPayment; events fan out through the reversal engine (org-funded seats
-// reverse in-ledger, card seats credit the gateway).
+// whole class/webinar (every attendee). Both go through the refund front doors
+// (#1319): a single payment via refundBookingPayment, which splits gateway,
+// org-funded (in-ledger) and credit rails — a raw refundPayment on an org_
+// intent died on UNKNOWN_GATEWAY; events fan out through the reversal engine.
 const RefundBodySchema = z
   .object({
     paymentId: z.string().min(1).optional(),
@@ -123,6 +125,11 @@ export async function POST(req: NextRequest) {
     // privileged: staff read every money surface for ticket context.
     const auth = await requireBackofficeSurface("refunds.manage");
     if (auth.error) return auth.error;
+
+    // #677/PM-36 — throttle the most dangerous button in the app. Keyed per
+    // admin user; 10/min is far above legitimate ops cadence.
+    const limited = await applyRateLimit(moneyOpsLimiter, auth.session.user.id);
+    if (limited) return limited;
 
     const initiatedByUserId = auth.session?.user?.id ?? null;
 
@@ -154,7 +161,7 @@ export async function POST(req: NextRequest) {
         const body = parsed.data;
 
         if (body.paymentId) {
-          const result = await refundPayment({
+          const result = await refundBookingPayment({
             paymentId: body.paymentId,
             amountPaise: body.amountPaise,
             reason: `admin refund: ${body.reason}`,

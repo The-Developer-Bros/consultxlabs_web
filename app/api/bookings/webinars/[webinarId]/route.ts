@@ -1,12 +1,13 @@
 import * as Sentry from "@sentry/nextjs";
 import prisma from "@/lib/prisma";
-import { Prisma } from "@prisma/client";
+import { Prisma, WebinarStatus } from "@prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 import {
   requireApiAuth,
   isPrivileged,
   authorizeEventAccess,
 } from "@/lib/auth-helpers";
+import { EVENT_ALLOWED_FROM } from "@/lib/booking/transitions";
 
 export async function GET(
   request: Request,
@@ -75,9 +76,50 @@ export async function PUT(
   if (authResult.error) return authResult.error;
   const { session } = authResult;
 
+  // Set once a guarded status write is attempted; lets the P2025 handler
+  // below distinguish a CAS-guard miss (409) from a missing row (404).
+  let statusWriteAttempted = false;
+
   try {
     const { webinarId } = await params;
     const body = await request.json();
+
+    // Doctrine #1 — status writes go through the CAS map. `body.status` used
+    // to be written raw, so an owner could drive illegal edges
+    // (CANCELLED → SCHEDULED resurrection, DRAFT → COMPLETED) that
+    // EVENT_ALLOWED_FROM exists to prevent. The allowed-from set rides the
+    // UPDATE's WHERE below, so a racing transition matches zero rows.
+    const requestedStatus =
+      typeof body.status === "string"
+        ? (body.status as WebinarStatus)
+        : undefined;
+    if (
+      requestedStatus &&
+      !Object.values(WebinarStatus).includes(requestedStatus)
+    ) {
+      return NextResponse.json({ error: "Invalid status" }, { status: 400 });
+    }
+    let allowedFrom: WebinarStatus[] | null = null;
+    if (requestedStatus) {
+      const current = await prisma.webinar.findUnique({
+        where: { id: webinarId },
+        select: { status: true },
+      });
+      if (!current) {
+        return NextResponse.json({ error: "Webinar not found" }, { status: 404 });
+      }
+      allowedFrom = EVENT_ALLOWED_FROM[requestedStatus];
+      if (!allowedFrom.includes(current.status)) {
+        return NextResponse.json(
+          {
+            error: `Illegal transition: ${current.status} → ${requestedStatus}`,
+            code: "ILLEGAL_TRANSITION",
+          },
+          { status: 409 },
+        );
+      }
+    }
+    statusWriteAttempted = Boolean(requestedStatus);
 
     // Only the owning consultant or ADMIN/STAFF can update a webinar instance
     const webinarData = await prisma.webinar.update({
@@ -91,9 +133,12 @@ export async function PUT(
                   session.user.consultantProfileId ?? "__none__",
               },
             }),
+        ...(requestedStatus && allowedFrom
+          ? { status: { in: allowedFrom } }
+          : {}),
       },
       data: {
-        status: body.status,
+        status: requestedStatus,
         feedbackSummary: body.feedbackSummary,
         webinarPlan:
           isPrivileged(session.user.role) && body.webinarPlanId
@@ -133,7 +178,17 @@ export async function PUT(
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2025"
     ) {
-      return NextResponse.json({ error: "Webinar not found" }, { status: 404 });
+      // A WHERE miss can be either "no such webinar" or "the status moved
+      // between our read and this write" — the latter is the CAS guard
+      // working and must surface as 409, not a phantom 404.
+      return NextResponse.json(
+        {
+          error: statusWriteAttempted
+            ? "Webinar not found or status changed concurrently"
+            : "Webinar not found",
+        },
+        { status: statusWriteAttempted ? 409 : 404 },
+      );
     }
     Sentry.captureException(
       error instanceof Error ? error : new Error(String(error)),

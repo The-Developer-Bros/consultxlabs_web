@@ -10,6 +10,7 @@ import "./setup";
 import {
   AVAILABILITY_POLL_INTERVAL_MS,
   RETURN_REFETCH_MIN_STALENESS_MS,
+  createAvailabilityPoller,
   nextPollDelay,
   shouldPoll,
   shouldRefetchOnReturn,
@@ -74,5 +75,125 @@ describe("shouldRefetchOnReturn", () => {
 
   it("refetches when the last fetch time is unknown", () => {
     expect(shouldRefetchOnReturn(Number.NaN)).toBe(true);
+  });
+});
+
+/**
+ * R17 — the timer loop itself, now that it is liftable out of the hook.
+ *
+ * Two defects lived here. `useCalendarData` passed a literal `enabled: true`
+ * into `shouldPoll`, so the gate that decides whether polling should run at
+ * all could only ever answer yes. And `onReturn` called `tick()` on a stale
+ * return without clearing the timeout it had already armed, so the pending
+ * timer fired behind the fetch the return had just started — two ticks, two
+ * requests, the second bumping the request id out from under the first.
+ */
+describe("createAvailabilityPoller", () => {
+  const makeHarness = (
+    overrides: Partial<{
+      enabled: boolean;
+      visibility: DocumentVisibilityState;
+      msSinceLastFetch: number;
+    }> = {},
+  ) => {
+    const state = {
+      enabled: overrides.enabled ?? true,
+      visibility:
+        overrides.visibility ?? ("visible" as DocumentVisibilityState),
+      msSinceLastFetch: overrides.msSinceLastFetch ?? 0,
+    };
+    const fetches: Array<() => void> = [];
+    const fetchFn = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          fetches.push(resolve);
+        }),
+    );
+    const poller = createAvailabilityPoller({
+      isEnabled: () => state.enabled,
+      visibilityState: () => state.visibility,
+      msSinceLastFetch: () => state.msSinceLastFetch,
+      inFlight: () => null,
+      fetch: fetchFn,
+    });
+    return { state, fetchFn, fetches, poller };
+  };
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+  });
+
+  it("fires exactly one tick when a stale return races the armed timer", () => {
+    // Armed just under a full interval ago, so the pending timeout is about to
+    // fire; the return is over the staleness floor, so it refetches now.
+    const h = makeHarness({
+      msSinceLastFetch: AVAILABILITY_POLL_INTERVAL_MS - 1,
+    });
+    h.poller.arm();
+
+    h.state.msSinceLastFetch = 30_000;
+    h.poller.onReturn();
+    expect(h.fetchFn).toHaveBeenCalledTimes(1);
+
+    // The old timeout must be gone. Before the fix it was still pending here
+    // and this drain fired a second poll behind the in-flight one.
+    jest.advanceTimersByTime(AVAILABILITY_POLL_INTERVAL_MS * 2);
+    expect(h.fetchFn).toHaveBeenCalledTimes(1);
+
+    h.poller.dispose();
+  });
+
+  it("only re-arms on an alt-tab flick, and the re-arm is a single timer", () => {
+    const h = makeHarness({ msSinceLastFetch: 0 });
+    h.poller.arm();
+
+    // focus and visibilitychange both fire; neither is stale enough to refetch.
+    h.poller.onReturn();
+    h.poller.onVisibilityChange();
+    expect(h.fetchFn).not.toHaveBeenCalled();
+
+    jest.advanceTimersByTime(AVAILABILITY_POLL_INTERVAL_MS);
+    expect(h.fetchFn).toHaveBeenCalledTimes(1);
+
+    h.poller.dispose();
+  });
+
+  it("honours the enable gate the hook used to hardcode to true", () => {
+    const h = makeHarness({ enabled: false });
+    h.poller.arm();
+    jest.advanceTimersByTime(AVAILABILITY_POLL_INTERVAL_MS * 2);
+    expect(h.fetchFn).not.toHaveBeenCalled();
+
+    // And a return while disabled neither fetches nor arms anything.
+    h.poller.onReturn();
+    jest.advanceTimersByTime(AVAILABILITY_POLL_INTERVAL_MS * 2);
+    expect(h.fetchFn).not.toHaveBeenCalled();
+
+    h.poller.dispose();
+  });
+
+  it("pauses on hide and does not leave a timer running", () => {
+    const h = makeHarness({ msSinceLastFetch: 0 });
+    h.poller.arm();
+
+    h.state.visibility = "hidden";
+    h.poller.onVisibilityChange();
+    jest.advanceTimersByTime(AVAILABILITY_POLL_INTERVAL_MS * 3);
+    expect(h.fetchFn).not.toHaveBeenCalled();
+
+    h.poller.dispose();
+  });
+
+  it("stops scheduling once disposed", () => {
+    const h = makeHarness({ msSinceLastFetch: 0 });
+    h.poller.arm();
+    h.poller.dispose();
+    jest.advanceTimersByTime(AVAILABILITY_POLL_INTERVAL_MS * 2);
+    expect(h.fetchFn).not.toHaveBeenCalled();
   });
 });

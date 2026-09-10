@@ -22,6 +22,11 @@ import { OfferingEditor } from "./OfferingEditor";
 import { OFFERING_ADAPTERS } from "./adapters";
 import { OFFERING_MANIFESTS } from "./manifests";
 import type { OfferingType } from "./manifest";
+import {
+  applySponsorPricingHintToManifest,
+  resolveSponsorPricingHint,
+} from "./sponsor-pricing-hint";
+import { useSession } from "@/lib/auth-client";
 
 interface OfferingEditorContainerProps {
   type: OfferingType;
@@ -60,6 +65,20 @@ export function OfferingEditorContainer({
   >(null);
 
   const existingPlan = initialEvent ? adapter.planOf(initialEvent) : undefined;
+
+  // Wave-9 (#1230) — org-context pricing hint. A creator with an ACTIVE
+  // canSponsor org membership is probably authoring an offering members will
+  // book at ₹0 under a program; say so on the price field instead of letting
+  // ₹0 look like an accident. Hint only fires while CREATING — editing keeps
+  // the manifest's own description.
+  const { data: session } = useSession();
+  const sponsorPricingHint = resolveSponsorPricingHint(
+    session?.user?.organizationMemberships,
+  );
+  const effectiveManifest =
+    !existingPlan && sponsorPricingHint
+      ? applySponsorPricingHintToManifest(manifest, sponsorPricingHint)
+      : manifest;
 
   const form = useForm({
     resolver: zodResolver(adapter.schema),
@@ -147,7 +166,7 @@ export function OfferingEditorContainer({
 
   return (
     <OfferingEditor
-      manifest={manifest}
+      manifest={effectiveManifest}
       form={form}
       planId={planId}
       planImageType={adapter.imageType}

@@ -70,6 +70,20 @@ export function getDmChannelId(
   userId2: string,
   organizationId?: string | null,
 ): string {
+  // A pair of one is not a pair. `createChannel` de-duplicates its member array
+  // through a Set, so `[a, a]` silently collapsed to a one-member `messaging`
+  // channel that rendered as its own raw id (channelUtils has no branch for
+  // zero counterparties) and that nothing could ever reply in. Checkout already
+  // refuses self-booking, so reaching here with a self-pair means a caller
+  // resolved the two sides wrongly — which is worth a stack trace, not a
+  // channel. Callers that iterate over untrusted pair lists must filter first;
+  // `getDmPairsForUser` does.
+  if (userId1 === userId2) {
+    throw new Error(
+      `getDmChannelId: refusing to derive a self-DM id for ${userId1}`,
+    );
+  }
+
   // Code-unit ordering, NOT localeCompare. #1134 P0-3: localeCompare sorts by
   // ICU collation — case-insensitive at the primary level and dependent on the
   // runtime's ICU build and default locale — so the same pair yielded different
@@ -125,14 +139,74 @@ export function getDmChannelId(
 export function bookingOrgId(booking: {
   consultationPlan?: { organizationId: string | null } | null;
   subscriptionPlan?: { organizationId: string | null } | null;
+  // #1280 PR 7 — event plans too. The precedence is the same rule (plan first,
+  // then appointment) and the point of this helper is that there is exactly ONE
+  // answer to "which org funded this". A second resolver for webinars and
+  // classes is how the org tag came to disagree between the creator, approval
+  // and the reconciler in the first place.
+  webinarPlan?: { organizationId: string | null } | null;
+  classPlan?: { organizationId: string | null } | null;
   appointment?: { organizationId: string | null } | null;
   appointments?: { organizationId: string | null }[];
 }): string | null {
   return (
     booking.consultationPlan?.organizationId ??
     booking.subscriptionPlan?.organizationId ??
+    booking.webinarPlan?.organizationId ??
+    booking.classPlan?.organizationId ??
     booking.appointment?.organizationId ??
-    booking.appointments?.find((a) => a.organizationId)?.organizationId ??
+    smallestOrgId(booking.appointments) ??
     null
   );
+}
+
+/**
+ * The org id a set of appointments resolves to, deterministically.
+ *
+ * #1304 review — `find()` returns whichever tagged row the relation happened to
+ * yield first, and Prisma relations come back unordered. If two appointments
+ * carry DIFFERENT orgs the answer changes between reads, and since the DM
+ * channel id is a function of the org, one relationship would mint
+ * `dmo-<digest(A)>` on one path and `dmo-<digest(B)>` on another — two channels,
+ * split history. That is the same shape as the `[0]`-vs-`find` bug this helper
+ * was written to fix; `find` closed the null-versus-org half and left this one.
+ *
+ * Fixed here rather than by adding `orderBy` to each query, because there are
+ * several callers and the ones that forgot would keep the bug. Code-unit
+ * ordering, never `localeCompare` — the same rule as the channel ids, and for
+ * the same reason: an ICU-dependent comparison would make the derived channel
+ * id environment-dependent.
+ *
+ * A booking is funded once, so in a well-formed dataset there is at most one
+ * distinct org here and any choice is the same choice. This only decides what
+ * happens when that invariant is violated, and a stable wrong answer is
+ * recoverable where an unstable one is not.
+ */
+function smallestOrgId(
+  appointments: { organizationId: string | null }[] | undefined,
+): string | undefined {
+  let smallest: string | undefined;
+  for (const appointment of appointments ?? []) {
+    const org = appointment.organizationId;
+    if (org && (smallest === undefined || org < smallest)) smallest = org;
+  }
+  return smallest;
+}
+
+/**
+ * Belt-and-braces detector for a duplicate-channel rejection so concurrent
+ * create-on-miss paths can ADOPT the winner's channel instead of failing the
+ * user journey (architecture review F-HIGH-3).
+ *
+ * Deliberately NARROW (message text only). Stream's official API error table
+ * defines no "already exists" code — code 17 is `Not Allowed Error` (HTTP 403)
+ * and v9's channel.create() is an idempotent get-or-create via the /query
+ * endpoint, so duplicates normally RESOLVE rather than reject. Matching by
+ * code or status would misclassify documented failures (notably 17/403) as
+ * benign races and silently skip creation. Only an error whose text names the
+ * collision is treated as adoptable; anything else propagates.
+ */
+export function isChannelAlreadyExistsError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return /already exists/i.test(error.message);
 }

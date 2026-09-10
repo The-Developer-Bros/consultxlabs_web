@@ -49,7 +49,12 @@
  *     re-derive these for any rows still on stub defaults.
  */
 
-import { reportSentryError } from "@/lib/observability/report";
+import {
+  reportSentryError,
+  reportSentryMessage,
+} from "@/lib/observability/report";
+import { recordSystemError } from "@/lib/enterprise/system-events";
+import { withSerializableRetry } from "@/lib/db/serializable-retry";
 import prisma from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import type { PaymentGateway, PayoutStatus } from "@prisma/client";
@@ -57,7 +62,17 @@ import { acquireLock, releaseLock } from "@/lib/redis";
 import { assertPayoutBalance } from "./balance-preflight";
 import { computeMsmePaymentDeadline } from "@/lib/compliance/msme";
 import { computeTdsForPayout } from "@/lib/compliance/tds";
+// #1354 — the org rail now writes the same TDSRecord audit trail the consultant
+// rail does; the FY/quarter arithmetic is shared rather than re-derived here.
+import {
+  getFYDateRange,
+  getIndianFinancialYear,
+  getIndianFYQuarter,
+  recordOrgTDSDeduction,
+  recordOrgTdsReversal,
+} from "@/lib/payments/tax/tds-service";
 import { postLedgerTxn, type Posting } from "@/lib/payments/ledger/post";
+import { DISPUTE_INACTIVE_FOR_GATING } from "@/lib/payments/dispute-status";
 import { AUDIT_ACTIONS } from "@/lib/enterprise/audit-actions";
 import { notifyOrgPayoutCompleted } from "@/lib/novu/org-workflows";
 import { getAppUrl } from "@/lib/url";
@@ -83,6 +98,99 @@ export class PayoutValidationError extends Error {
     super(message);
     this.name = "PayoutValidationError";
   }
+}
+
+/**
+ * #1470 — raised when an OrganizationPayout's withholding identity
+ * (`amountPaise + tdsAmountPaise === netPayoutPaise`) does not hold at the
+ * moment the ORG_PAYOUT journal would be written, or when any of the three
+ * figures is negative (#1473 review): both leave the payout unpostable.
+ *
+ * `netPayoutPaise` is the host org's share BEFORE withholding and `amountPaise`
+ * is what the rail actually transfers, so a payout that breaks the identity has
+ * no correct posting available: any figure we picked would clear ORG_PAYABLE or
+ * credit CASH by an amount the money never moved. Throwing from inside the CAS
+ * transaction rolls the completion (or the reversal) back, which is safe because
+ * the gateway webhook is at-least-once and the stuck-payout sweep re-drives it.
+ */
+export class OrgPayoutWithholdingMismatchError extends Error {
+  readonly code = "ORG_PAYOUT_WITHHOLDING_MISMATCH" as const;
+  constructor(
+    readonly payoutId: string,
+    readonly organizationId: string,
+    readonly netPayoutPaise: number,
+    readonly amountPaise: number,
+    readonly tdsAmountPaise: number,
+  ) {
+    super(
+      `Org payout ${payoutId} withholding identity violated: amountPaise ${amountPaise} + tdsAmountPaise ${tdsAmountPaise} !== netPayoutPaise ${netPayoutPaise}`,
+    );
+    this.name = "OrgPayoutWithholdingMismatchError";
+  }
+}
+
+/**
+ * #1470 — assert the withholding identity before either ORG_PAYOUT posting.
+ * Kept as one helper so the completion and its reversal cannot drift apart.
+ */
+function assertOrgPayoutWithholdingIdentity(payout: {
+  id: string;
+  organizationId: string;
+  netPayoutPaise: number;
+  amountPaise: number;
+  tdsAmountPaise: number | null;
+}): void {
+  const tds = payout.tdsAmountPaise ?? 0;
+  // #1473 review — the identity on its own accepts a negative row (-100 + 0
+  // === -100), and the `netPayoutPaise > 0` guard at the posting site would
+  // then let the completion commit COMPLETED/PAID with no journal at all.
+  // `createOrgPayoutBatch` rejects a non-positive batch and nothing else mints
+  // an OrganizationPayout, so this guards a hand-edited row rather than a known
+  // path — but it is the same class of silent, unpostable money as the identity
+  // itself. Zero stays legal: a zero payout has nothing to post and is skipped
+  // on purpose.
+  const isNegative =
+    payout.netPayoutPaise < 0 || payout.amountPaise < 0 || tds < 0;
+  if (isNegative || payout.amountPaise + tds !== payout.netPayoutPaise) {
+    throw new OrgPayoutWithholdingMismatchError(
+      payout.id,
+      payout.organizationId,
+      payout.netPayoutPaise,
+      payout.amountPaise,
+      tds,
+    );
+  }
+}
+
+/**
+ * #1470 — report a broken withholding identity. Called from the `.catch` of the
+ * transaction rather than from inside it: `recordSystemError` writes through the
+ * global Prisma client, and under PG_POOL_MAX=1 a global-client query issued
+ * while a `$transaction` holds the only connection deadlocks (see the HLD).
+ */
+async function reportOrgPayoutWithholdingMismatch(
+  err: OrgPayoutWithholdingMismatchError,
+  op: string,
+): Promise<void> {
+  const context = {
+    orgPayoutId: err.payoutId,
+    organizationId: err.organizationId,
+    netPayoutPaise: err.netPayoutPaise,
+    amountPaise: err.amountPaise,
+    tdsAmountPaise: err.tdsAmountPaise,
+  };
+  await recordSystemError({
+    organizationId: err.organizationId,
+    category: "PAYOUT",
+    summary: `${err.code} — org payout journal refused: amountPaise + tdsAmountPaise does not equal netPayoutPaise`,
+    err,
+    context,
+  }).catch(() => {});
+  reportSentryError(err, {
+    subsystem: "payments",
+    op,
+    extra: context,
+  });
 }
 
 interface OrgPayoutEligibility {
@@ -233,237 +341,261 @@ export async function createOrgPayoutBatch(
   }
 
   try {
-    const result = await prisma.$transaction(
-      async (tx) => {
-        const payoutAccount = await tx.organizationPayoutAccount.findUnique({
-          where: { organizationId: orgId },
-        });
-        if (!payoutAccount) {
-          throw new PayoutValidationError(
-            "No payout account configured for this organization",
-            409,
-          );
-        }
-        if (payoutAccount.status !== "VERIFIED") {
-          throw new PayoutValidationError(
-            `Payout account is ${payoutAccount.status} — cannot create payouts until VERIFIED`,
-            409,
-          );
-        }
+    const result = await withSerializableRetry(
+      () =>
+        prisma.$transaction(
+          async (tx) => {
+            const payoutAccount = await tx.organizationPayoutAccount.findUnique(
+              {
+                where: { organizationId: orgId },
+              },
+            );
+            if (!payoutAccount) {
+              throw new PayoutValidationError(
+                "No payout account configured for this organization",
+                409,
+              );
+            }
+            if (payoutAccount.status !== "VERIFIED") {
+              throw new PayoutValidationError(
+                `Payout account is ${payoutAccount.status} — cannot create payouts until VERIFIED`,
+                409,
+              );
+            }
 
-        // Race-safe claim: create placeholder, then atomically claim
-        // READY earnings into it. Same proven pattern as the
-        // /api/organizations/[orgId]/payouts route.
-        const created = await tx.organizationPayout.create({
-          data: {
-            organizationId: orgId,
-            amountPaise: 0,
-            currency: "INR",
-            status: "PENDING",
-            paymentGateway: opts.paymentGateway ?? "RAZORPAY",
-            periodStart,
-            periodEnd,
-            grossRevenuePaise: 0,
-            platformFeePaise: 0,
-            refundsPaise: 0,
-            netPayoutPaise: 0,
-            // #1093 §3 — never null: a keyless manual payout had no replay guard.
-            idempotencyKey: opts.idempotencyKey ?? globalThis.crypto.randomUUID(),
-            // mustPayByDate, tdsSectionApplied, tdsAmountPaise,
-            // dtaaRateApplied are derived after we resolve the org's
-            // MSME + PAN fields below and persisted via the second
-            // update (alongside the post-TDS amount). Form 15 / FIRC
-            // still populated manually until cross-border crons land.
-          },
-        });
+            // Race-safe claim: create placeholder, then atomically claim
+            // READY earnings into it. Same proven pattern as the
+            // /api/organizations/[orgId]/payouts route.
+            const created = await tx.organizationPayout.create({
+              data: {
+                organizationId: orgId,
+                amountPaise: 0,
+                currency: "INR",
+                status: "PENDING",
+                paymentGateway: opts.paymentGateway ?? "RAZORPAY",
+                periodStart,
+                periodEnd,
+                grossRevenuePaise: 0,
+                platformFeePaise: 0,
+                refundsPaise: 0,
+                netPayoutPaise: 0,
+                // #1093 §3 — never null: a keyless manual payout had no replay guard.
+                idempotencyKey:
+                  opts.idempotencyKey ?? globalThis.crypto.randomUUID(),
+                // mustPayByDate, tdsSectionApplied, tdsAmountPaise,
+                // dtaaRateApplied are derived after we resolve the org's
+                // MSME + PAN fields below and persisted via the second
+                // update (alongside the post-TDS amount). Form 15 / FIRC
+                // still populated manually until cross-border crons land.
+              },
+            });
 
-        const claim = await tx.organizationEarnings.updateMany({
-          where: {
-            organizationId: orgId,
-            status: "READY",
-            orgPayoutId: null,
-            createdAt: { gte: periodStart, lt: periodEnd },
-          },
-          data: { orgPayoutId: created.id },
-        });
-        if (claim.count === 0) {
-          throw new PayoutValidationError(
-            "No READY earnings in the requested window",
-            409,
-          );
-        }
+            const claim = await tx.organizationEarnings.updateMany({
+              where: {
+                organizationId: orgId,
+                status: "READY",
+                orgPayoutId: null,
+                createdAt: { gte: periodStart, lt: periodEnd },
+              },
+              data: { orgPayoutId: created.id },
+            });
+            if (claim.count === 0) {
+              throw new PayoutValidationError(
+                "No READY earnings in the requested window",
+                409,
+              );
+            }
 
-        const readyEarnings = await tx.organizationEarnings.findMany({
-          where: { orgPayoutId: created.id },
-          select: {
-            id: true,
-            grossAmountPaise: true,
-            platformFeePaise: true,
-            orgSharePaise: true,
-            refundedAmountPaise: true,
-            currency: true,
-          },
-        });
-        const first = readyEarnings[0];
-        if (!first) {
-          throw new PayoutValidationError(
-            "No READY earnings in the requested window",
-            409,
-          );
-        }
-        const mixedCurrency = readyEarnings.some(
-          (e) => e.currency !== first.currency,
-        );
-        if (mixedCurrency) {
-          throw new PayoutValidationError(
-            "Cannot roll earnings in mixed currencies into a single payout. Split the window.",
-            409,
-          );
-        }
+            const readyEarnings = await tx.organizationEarnings.findMany({
+              where: { orgPayoutId: created.id },
+              select: {
+                id: true,
+                grossAmountPaise: true,
+                platformFeePaise: true,
+                orgSharePaise: true,
+                refundedAmountPaise: true,
+                currency: true,
+              },
+            });
+            const first = readyEarnings[0];
+            if (!first) {
+              throw new PayoutValidationError(
+                "No READY earnings in the requested window",
+                409,
+              );
+            }
+            const mixedCurrency = readyEarnings.some(
+              (e) => e.currency !== first.currency,
+            );
+            if (mixedCurrency) {
+              throw new PayoutValidationError(
+                "Cannot roll earnings in mixed currencies into a single payout. Split the window.",
+                409,
+              );
+            }
 
-        const totals = readyEarnings.reduce(
-          (acc, e) => {
-            acc.gross += e.grossAmountPaise;
-            acc.platformFeePaise += e.platformFeePaise;
-            acc.orgShare += e.orgSharePaise;
-            acc.refunds += e.refundedAmountPaise;
-            return acc;
-          },
-          { gross: 0, platformFeePaise: 0, orgShare: 0, refunds: 0 },
-        );
-        const netPayout = totals.orgShare - totals.refunds;
-        if (netPayout <= 0) {
-          throw new PayoutValidationError(
-            `Net payout would be ${netPayout} paise — refunds exceed earnings. Reconcile first.`,
-            409,
-          );
-        }
+            const totals = readyEarnings.reduce(
+              (acc, e) => {
+                acc.gross += e.grossAmountPaise;
+                acc.platformFeePaise += e.platformFeePaise;
+                acc.orgShare += e.orgSharePaise;
+                acc.refunds += e.refundedAmountPaise;
+                return acc;
+              },
+              { gross: 0, platformFeePaise: 0, orgShare: 0, refunds: 0 },
+            );
+            const netPayout = totals.orgShare - totals.refunds;
+            if (netPayout <= 0) {
+              throw new PayoutValidationError(
+                `Net payout would be ${netPayout} paise — refunds exceed earnings. Reconcile first.`,
+                409,
+              );
+            }
 
-        // Resolve the org's India statutory metadata in one fetch and
-        // use it for both TDS (PAN, residency) and the MSME payment
-        // deadline (msmeStatus, writtenAgreement).
-        //
-        // TDS: the marketplace e-commerce-operator rate (the old §194-O,
-        // now §393 of the Income-tax Act 2025 in force since 1-Apr-2026)
-        // is the default for payouts to host orgs; the no-PAN higher-rate
-        // fallback (old §206AA, now §397(2)) applies when PAN is missing
-        // or malformed. Computed on `netPayout` (= orgShare − refunds),
-        // then deducted from what we send through the gateway. The withheld
-        // amount is deposited with the govt and reported quarterly on the
-        // return that succeeds Form 26Q (separate cron — see
-        // lib/compliance/tds.ts module docblock).
-        //
-        // MSME: when the host org is MICRO / SMALL we owe payment within
-        // 15 / 45 days under MSMED Act §15 (the deduction-disallowance
-        // teeth moved from Income-tax §43B(h) to §37(2)(g) under the 2025
-        // Act); fall through to contract.paymentTermsDays for MEDIUM / NONE.
-        //
-        // All host orgs are assumed RESIDENT in v1. When the first
-        // non-resident host org ships, extend Organization with
-        // `residencyStatus` + `tdsSection` overrides and thread them in.
-        const orgForCompliance = await tx.organization.findUnique({
-          where: { id: orgId },
-          select: {
-            taxInfo: { select: { panEncrypted: true } },
-            msmeInfo: {
-              select: { msmeStatus: true, msmeWrittenAgreementOnFile: true },
-            },
-          },
-        });
-        const tds = computeTdsForPayout({
-          grossAmountPaise: netPayout,
-          consultant: {
-            // #768 — PAN at rest is encrypted. TDS rate derivation only
-            // needs to know whether a PAN is on file (treats null as
-            // higher-rate). Plaintext decrypt is deferred to Form 26Q
-            // filing (admin-only flow).
-            // #785 — PAN at rest is encrypted; signal presence via panOnFile
-            // (passing the ciphertext as panNumber fails isValidPan → wrong 5%).
-            panNumber: null,
-            panOnFile: !!orgForCompliance?.taxInfo?.panEncrypted,
-            residencyStatus: "RESIDENT",
-            tdsSection: null,
-            tdsRateBps: null,
-            tdsLowerRateCert: null,
-            providerCountry: null,
-          },
-        });
-        const amountAfterTds = netPayout - tds.tdsAmountPaise;
-        const mustPayByDate = computeMsmePaymentDeadline({
-          invoiceDate: new Date(),
-          counterpartyMsmeStatus:
-            orgForCompliance?.msmeInfo?.msmeStatus ?? "NONE",
-          writtenAgreement:
-            orgForCompliance?.msmeInfo?.msmeWrittenAgreementOnFile ?? false,
-        });
+            // Resolve the org's India statutory metadata in one fetch and
+            // use it for both TDS (PAN, residency) and the MSME payment
+            // deadline (msmeStatus, writtenAgreement).
+            //
+            // TDS: the marketplace e-commerce-operator rate (the old §194-O,
+            // now §393 of the Income-tax Act 2025 in force since 1-Apr-2026)
+            // is the default for payouts to host orgs; the no-PAN higher-rate
+            // fallback (old §206AA, now §397(2)) applies when PAN is missing
+            // or malformed. Computed on `netPayout` (= orgShare − refunds),
+            // then deducted from what we send through the gateway. The withheld
+            // amount is deposited with the govt and reported quarterly on the
+            // return that succeeds Form 26Q (separate cron — see
+            // lib/compliance/tds.ts module docblock).
+            //
+            // MSME: when the host org is MICRO / SMALL we owe payment within
+            // 15 / 45 days under MSMED Act §15 (the deduction-disallowance
+            // teeth moved from Income-tax §43B(h) to §37(2)(g) under the 2025
+            // Act); fall through to contract.paymentTermsDays for MEDIUM / NONE.
+            //
+            // All host orgs are assumed RESIDENT in v1. When the first
+            // non-resident host org ships, extend Organization with
+            // `residencyStatus` + `tdsSection` overrides and thread them in.
+            const orgForCompliance = await tx.organization.findUnique({
+              where: { id: orgId },
+              select: {
+                taxInfo: { select: { panEncrypted: true } },
+                msmeInfo: {
+                  select: {
+                    msmeStatus: true,
+                    msmeWrittenAgreementOnFile: true,
+                  },
+                },
+              },
+            });
+            const tds = computeTdsForPayout({
+              grossAmountPaise: netPayout,
+              consultant: {
+                // #768 — PAN at rest is encrypted. TDS rate derivation only
+                // needs to know whether a PAN is on file (treats null as
+                // higher-rate). Plaintext decrypt is deferred to Form 26Q
+                // filing (admin-only flow).
+                // #785 — PAN at rest is encrypted; signal presence via panOnFile
+                // (passing the ciphertext as panNumber fails isValidPan → wrong 5%).
+                panNumber: null,
+                panOnFile: !!orgForCompliance?.taxInfo?.panEncrypted,
+                residencyStatus: "RESIDENT",
+                tdsSection: null,
+                tdsRateBps: null,
+                tdsLowerRateCert: null,
+                providerCountry: null,
+              },
+            });
+            const amountAfterTds = netPayout - tds.tdsAmountPaise;
+            const mustPayByDate = computeMsmePaymentDeadline({
+              invoiceDate: new Date(),
+              counterpartyMsmeStatus:
+                orgForCompliance?.msmeInfo?.msmeStatus ?? "NONE",
+              writtenAgreement:
+                orgForCompliance?.msmeInfo?.msmeWrittenAgreementOnFile ?? false,
+            });
 
-        await tx.organizationPayout.update({
-          where: { id: created.id },
-          data: {
-            amountPaise: amountAfterTds,
-            currency: first.currency,
-            grossRevenuePaise: totals.gross,
-            platformFeePaise: totals.platformFeePaise,
-            refundsPaise: totals.refunds,
-            netPayoutPaise: netPayout,
-            tdsSectionApplied: tds.tdsSection,
-            tdsAmountPaise: tds.tdsAmountPaise,
-            dtaaRateApplied:
-              tds.dtaaRateApplied !== null
-                ? new Prisma.Decimal(tds.dtaaRateApplied)
-                : null,
-            mustPayByDate,
-          },
-        });
+            await tx.organizationPayout.update({
+              where: { id: created.id },
+              data: {
+                amountPaise: amountAfterTds,
+                currency: first.currency,
+                grossRevenuePaise: totals.gross,
+                platformFeePaise: totals.platformFeePaise,
+                refundsPaise: totals.refunds,
+                netPayoutPaise: netPayout,
+                tdsSectionApplied: tds.tdsSection,
+                tdsAmountPaise: tds.tdsAmountPaise,
+                // #1354 — the RATE is pinned here because this is the rate
+                // actually withheld from the disbursement; rate cards are
+                // effective-dated, so re-deriving it at completion could file a
+                // row that disagrees with the money. `tdsRate` is a decimal
+                // fraction (0.10 = 10%) and always present on a computation.
+                tdsRateAppliedBps: Math.round(tds.tdsRate * 10_000),
+                // The PERIOD is a different question, and this column is only
+                // the batch-time audit stamp of when the batch was built. The
+                // TDSRecord dates itself at the completion instant instead —
+                // see markOrgPayoutCompleted.
+                tdsFinancialYear: getIndianFinancialYear(),
+                dtaaRateApplied:
+                  tds.dtaaRateApplied !== null
+                    ? new Prisma.Decimal(tds.dtaaRateApplied)
+                    : null,
+                mustPayByDate,
+              },
+            });
 
-        // #837 E-03/E-04 — batch creation only STAGES the earnings; cash has
-        // not left. Mark BATCHED, not PAID. The PAID flip moves to
-        // markOrgPayoutCompleted (PROCESSING → COMPLETED), so a batch built
-        // with ENABLE_LIVE_PAYOUTS off never reads as paid to auditors.
-        await tx.organizationEarnings.updateMany({
-          where: { orgPayoutId: created.id, status: "READY" },
-          data: { status: "BATCHED" },
-        });
+            // #837 E-03/E-04 — batch creation only STAGES the earnings; cash has
+            // not left. Mark BATCHED, not PAID. The PAID flip moves to
+            // markOrgPayoutCompleted (PROCESSING → COMPLETED), so a batch built
+            // with ENABLE_LIVE_PAYOUTS off never reads as paid to auditors.
+            await tx.organizationEarnings.updateMany({
+              where: { orgPayoutId: created.id, status: "READY" },
+              data: { status: "BATCHED" },
+            });
 
-        await tx.orgAuditLog.create({
-          data: {
-            organizationId: orgId,
-            actorMembershipId: opts.actorMembershipId ?? null,
-            category: "PAYOUT",
-            action: AUDIT_ACTIONS.PAYOUT.PAYOUT_INITIATED,
-            description: `Payout batch created: ${readyEarnings.length} earnings, ${amountAfterTds} paise ${first.currency} (after ${tds.tdsAmountPaise} paise TDS ${tds.tdsSection})`,
-            details: {
+            await tx.orgAuditLog.create({
+              data: {
+                organizationId: orgId,
+                actorMembershipId: opts.actorMembershipId ?? null,
+                category: "PAYOUT",
+                action: AUDIT_ACTIONS.PAYOUT.PAYOUT_INITIATED,
+                description: `Payout batch created: ${readyEarnings.length} earnings, ${amountAfterTds} paise ${first.currency} (after ${tds.tdsAmountPaise} paise TDS ${tds.tdsSection})`,
+                details: {
+                  payoutId: created.id,
+                  earningsCount: readyEarnings.length,
+                  netPayoutPaise: netPayout,
+                  amountAfterTdsPaise: amountAfterTds,
+                  grossPaise: totals.gross,
+                  platformFeePaise: totals.platformFeePaise,
+                  refundsPaise: totals.refunds,
+                  tdsSection: tds.tdsSection,
+                  tdsRate: tds.tdsRate,
+                  // #1354 — the integer form is what the TDSRecord files under;
+                  // the decimal above cannot be compared to it without rounding.
+                  tdsRateBps: Math.round(tds.tdsRate * 10_000),
+                  tdsAmountPaise: tds.tdsAmountPaise,
+                  tdsFallback: tds.fallbackApplied,
+                  tdsReason: tds.reason,
+                  // #1093 §3 — echo the payout's own key; a fresh mint here would
+                  // stamp the audit row with a UUID matching no payout.
+                  idempotencyKey: created.idempotencyKey,
+                },
+              },
+            });
+
+            return {
               payoutId: created.id,
+              amountPaise: amountAfterTds,
               earningsCount: readyEarnings.length,
-              netPayoutPaise: netPayout,
-              amountAfterTdsPaise: amountAfterTds,
-              grossPaise: totals.gross,
-              platformFeePaise: totals.platformFeePaise,
-              refundsPaise: totals.refunds,
-              tdsSection: tds.tdsSection,
-              tdsRate: tds.tdsRate,
-              tdsAmountPaise: tds.tdsAmountPaise,
-              tdsFallback: tds.fallbackApplied,
-              tdsReason: tds.reason,
-              // #1093 §3 — echo the payout's own key; a fresh mint here would
-              // stamp the audit row with a UUID matching no payout.
-              idempotencyKey: created.idempotencyKey,
-            },
+              periodStart,
+              periodEnd,
+            };
           },
-        });
-
-        return {
-          payoutId: created.id,
-          amountPaise: amountAfterTds,
-          earningsCount: readyEarnings.length,
-          periodStart,
-          periodEnd,
-        };
-      },
-      {
-        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-        timeout: 25_000,
-      },
+          {
+            isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+            timeout: 25_000,
+          },
+        ),
+      1, // #1319 review — PAYOUT_LOCK_TTL_MS is 60 s: two 25 s attempts fit under it, four do not
     );
 
     return result;
@@ -515,9 +647,7 @@ export async function createOrgPayoutBatch(
  * Idempotent: if the payout is not in PENDING the function logs and
  * returns the current status without throwing.
  */
-export async function processOrgPayout(
-  payoutId: string,
-): Promise<{
+export async function processOrgPayout(payoutId: string): Promise<{
   status: PayoutStatus;
   submittedToGateway: boolean;
   /** True only when THIS invocation won the PENDING→PROCESSING claim —
@@ -544,6 +674,36 @@ export async function processOrgPayout(
         }
         return {
           status: current.status,
+          submittedToGateway: false,
+          claimed: false,
+        };
+      }
+
+      // #1020 — a payout whose earnings sit on a disputed payment must not
+      // leave the building. Checked inside the claim tx (READ COMMITTED —
+      // race-safety comes from the CAS claim below per ADR 13, and the
+      // residual window to gateway submit is backstopped by the LOST
+      // clawback); returning unclaimed keeps
+      // the row PENDING so a later cron run advances it once the dispute
+      // resolves. Residual window to gateway submit is backstopped by the
+      // LOST-handler clawback (#1020-2).
+      const disputedOrgEarning = await tx.organizationEarnings.findFirst({
+        where: {
+          orgPayoutId: payoutId,
+          payment: {
+            disputes: {
+              some: { status: { notIn: DISPUTE_INACTIVE_FOR_GATING } },
+            },
+          },
+        },
+        select: { id: true },
+      });
+      if (disputedOrgEarning) {
+        console.warn(
+          `[OrgPayoutService] payout ${payoutId} blocked — an earning's payment has a live dispute`,
+        );
+        return {
+          status: "PENDING" as PayoutStatus,
           submittedToGateway: false,
           claimed: false,
         };
@@ -709,6 +869,15 @@ async function submitOrgPayoutToGateway(payoutId: string): Promise<void> {
     throw new PayoutValidationError(
       `Payout ${payoutId}: organization has no razorpayFundAccountId on its payout account`,
       400,
+    );
+  }
+  // CR #1234 r3.5 — a fund-account ID alone is not consent to move money:
+  // the PUT flow replaces ids while a fresh penny-drop is still in flight
+  // (row back at PENDING_VERIFICATION). Only a VERIFIED account may submit.
+  if (account?.status !== "VERIFIED") {
+    throw new PayoutValidationError(
+      `Payout ${payoutId}: organization payout account is ${account?.status ?? "missing"}, not VERIFIED — refusing to submit`,
+      409,
     );
   }
 
@@ -944,8 +1113,19 @@ async function redriveStaleProcessingOrgPayouts(): Promise<OrgProcessingResult> 
           break;
       }
     } catch (err) {
-      reportSentryError(err, { subsystem: "payments" });
+      // #1205-triage — PERMANENT rejections must terminate the row, not sit
+      // in PROCESSING forever: the redrive would retry a data rejection
+      // every hour indefinitely while its BATCHED earnings stay locked.
       const message = err instanceof Error ? err.message : String(err);
+      if (
+        classifyGatewaySubmissionError(err) === "PERMANENT_4XX" ||
+        err instanceof PayoutValidationError
+      ) {
+        await markOrgPayoutFailed(p.id, `redrive rejected: ${message}`);
+        result.advanced++;
+        continue;
+      }
+      reportSentryError(err, { subsystem: "payments" });
       result.errors.push(`OrgPayout redrive ${p.id}: ${message}`);
     }
   }
@@ -972,7 +1152,10 @@ export async function markOrgPayoutCompleted(payoutId: string): Promise<{
   wasNoOp: boolean;
   status: PayoutStatus;
 }> {
-  const result = await prisma.$transaction(async (tx) => {
+  // #1470 — the promise is held in a local so the `.catch` below is a separate
+  // statement: chaining it onto `prisma.$transaction(...)` re-indents the whole
+  // callback and buries the money change in whitespace.
+  const completion = prisma.$transaction(async (tx) => {
     const claim = await tx.organizationPayout.updateMany({
       where: { id: payoutId, status: "PROCESSING" },
       data: { status: "COMPLETED", processedAt: new Date() },
@@ -988,7 +1171,12 @@ export async function markOrgPayoutCompleted(payoutId: string): Promise<{
       console.log(
         `[OrgPayoutService] markOrgPayoutCompleted no-op: payout ${payoutId} status=${current.status}`,
       );
-      return { wasNoOp: true, status: current.status, notify: null };
+      return {
+        wasNoOp: true,
+        status: current.status,
+        notify: null,
+        missingTdsRate: null,
+      };
     }
 
     const payout = await tx.organizationPayout.findUniqueOrThrow({
@@ -997,7 +1185,15 @@ export async function markOrgPayoutCompleted(payoutId: string): Promise<{
         id: true,
         organizationId: true,
         netPayoutPaise: true,
+        // #1470 — the CASH leg is sized from what the rail actually sent, which
+        // is this column, not netPayoutPaise.
+        amountPaise: true,
         tdsAmountPaise: true,
+        // #1354 — the rate and section the completion-time TDSRecord files
+        // under, both pinned at batch time (see createOrgPayoutBatch). The
+        // period is NOT read from the payout; see below.
+        tdsRateAppliedBps: true,
+        tdsSectionApplied: true,
         currency: true,
         organization: { select: { name: true } },
       },
@@ -1027,8 +1223,15 @@ export async function markOrgPayoutCompleted(payoutId: string): Promise<{
     });
 
     // #771 D1/D5 — double-entry (dual-write): settle the host org's payable.
-    //   Dr ORG_PAYABLE (gross)   Cr CASH (paid)   Cr TDS_PAYABLE (withheld)
+    //   Dr ORG_PAYABLE (pre-withholding share, netPayoutPaise)
+    //     Cr CASH (what the rail transferred, amountPaise)
+    //     Cr TDS_PAYABLE (withheld, tdsAmountPaise)
+    // #1470 — this used to debit `netPayoutPaise + tds` and credit CASH
+    // `netPayoutPaise`. That balances, so the trigger accepted it, but it
+    // cleared the payable and credited cash by one TDS amount too much on every
+    // org payout. The identity below is what makes the three legs tie out.
     const orgTds = payout.tdsAmountPaise ?? 0;
+    assertOrgPayoutWithholdingIdentity(payout);
     if (payout.netPayoutPaise > 0) {
       // #783 — ledger is INR-only; never key accounts by the payout's settlement
       // currency (would orphan INR paise in a foreign-labelled account). Matches
@@ -1040,12 +1243,12 @@ export async function markOrgPayoutCompleted(payoutId: string): Promise<{
             organizationId: payout.organizationId,
           },
           direction: "DEBIT",
-          amountPaise: payout.netPayoutPaise + orgTds,
+          amountPaise: payout.netPayoutPaise,
         },
         {
           account: { kind: "CASH" },
           direction: "CREDIT",
-          amountPaise: payout.netPayoutPaise,
+          amountPaise: payout.amountPaise,
         },
       ];
       if (orgTds > 0) {
@@ -1063,6 +1266,70 @@ export async function markOrgPayoutCompleted(payoutId: string): Promise<{
       });
     }
 
+    // #1354 — the statutory audit row is written HERE and nowhere else. #837
+    // E-03/E-04: a batch that never completes never withheld anything, so a
+    // TDSRecord created at batch time would put money on the quarterly return
+    // that the government was never paid.
+    // #1354 — `tdsRateAppliedBps` is nullable only because it was added after
+    // some payouts had already been batched, and those rows are its entire
+    // population; pre-MVP data is reset before launch so nothing is backfilled,
+    // and every payout batched from this PR onwards carries the rate. Rather
+    // than let `TDSRecord.tdsRateBps` go nullable (or reconstruct the rate from
+    // tdsAmountPaise/gross, which cannot invert the floor in computeTdsForPayout)
+    // the missed filing row is reported loudly below — a durable guard that
+    // costs the schema nothing.
+    const orgTdsRateBps = payout.tdsRateAppliedBps;
+    const hasOrgTdsRate = orgTdsRateBps !== null && orgTdsRateBps > 0;
+    if (orgTds > 0 && hasOrgTdsRate) {
+      // Delete-then-write, matching the consultant rail: a payout can go
+      // COMPLETED after having been FAILED and re-batched, and the org unique
+      // (organizationId, FY, quarter, orgPayoutId, isReversal) would otherwise
+      // reject the second insert. Reversal rows are keyed isReversal=true and
+      // are not touched by an unqualified delete on a fresh completion.
+      await tx.tDSRecord.deleteMany({
+        where: { orgPayoutId: payoutId, isReversal: false },
+      });
+
+      // #1354 — TDS on a payout is dated at PAYMENT, so both halves of the
+      // period come from the completion instant. Taking the year from the
+      // batch-time stamp and the quarter from "now" is how a late-March batch
+      // that settles in April files FY 2025-26 quarter 1, a period that does
+      // not exist. `OrganizationPayout.tdsFinancialYear` stays what it is: an
+      // audit stamp of when the batch was built.
+      const financialYear = getIndianFinancialYear();
+      const quarter = getIndianFYQuarter();
+      const { start, end } = getFYDateRange(financialYear);
+      // The return reports the GROSS amount credited, not the cash that left.
+      // #1470 — `netPayoutPaise` IS that gross figure: it is the org share
+      // before withholding, and it is the base `computeTdsForPayout` was given.
+      // Adding `tdsAmountPaise` on top (as this did) counted the withholding
+      // twice. So: sum of `netPayoutPaise` over every other COMPLETED payout to
+      // this org in the FY, plus this one's.
+      const priorCompleted = await tx.organizationPayout.aggregate({
+        where: {
+          organizationId: payout.organizationId,
+          status: "COMPLETED",
+          processedAt: { gte: start, lt: end },
+          id: { not: payoutId },
+        },
+        _sum: { netPayoutPaise: true },
+      });
+      const cumulativeAmountCredited =
+        sumPaise(priorCompleted._sum.netPayoutPaise) + payout.netPayoutPaise;
+
+      await recordOrgTDSDeduction({
+        organizationId: payout.organizationId,
+        financialYear,
+        tdsDeducted: orgTds,
+        tdsRateBps: orgTdsRateBps,
+        cumulativeAmountCredited,
+        orgPayoutId: payoutId,
+        quarter,
+        tdsSection: payout.tdsSectionApplied ?? undefined,
+        db: tx,
+      });
+    }
+
     return {
       wasNoOp: false,
       status: "COMPLETED" as PayoutStatus,
@@ -1072,8 +1339,49 @@ export async function markOrgPayoutCompleted(payoutId: string): Promise<{
         netPayoutPaise: payout.netPayoutPaise,
         currency: payout.currency,
       },
+      // Reported AFTER the commit: the withholding is already deposited to
+      // TDS_PAYABLE and the completion must stand, so this is an alert, never
+      // a rollback.
+      missingTdsRate:
+        orgTds > 0 && !hasOrgTdsRate
+          ? { organizationId: payout.organizationId, tdsAmountPaise: orgTds }
+          : null,
     };
   });
+  // #1470 — the withholding-identity guard fires INSIDE the transaction so the
+  // CAS rolls back; the durable report has to happen out here, after the
+  // connection is free (PG_POOL_MAX=1).
+  const result = await completion.catch(async (err: unknown) => {
+    if (err instanceof OrgPayoutWithholdingMismatchError) {
+      await reportOrgPayoutWithholdingMismatch(err, "markOrgPayoutCompleted");
+    }
+    throw err;
+  });
+
+  if (result.missingTdsRate) {
+    const summary =
+      "org payout completed with withheld TDS but no applied rate; TDSRecord not written";
+    const context = {
+      orgPayoutId: payoutId,
+      organizationId: result.missingTdsRate.organizationId,
+      tdsAmountPaise: result.missingTdsRate.tdsAmountPaise,
+    };
+    // Never throws by contract, and the `.catch` keeps a failed sink from
+    // turning a settled payout into an error for the webhook caller.
+    await recordSystemError({
+      organizationId: result.missingTdsRate.organizationId,
+      category: "PAYOUT",
+      summary: `ORG_PAYOUT_TDS_RATE_MISSING — ${summary}`,
+      err: new Error(summary),
+      context,
+    }).catch(() => {});
+    reportSentryMessage(summary, {
+      subsystem: "payments",
+      op: "markOrgPayoutCompleted",
+      level: "warning",
+      extra: context,
+    });
+  }
 
   if (result.notify) {
     await notifyOrgPayoutCompleted(result.notify.organizationId, {
@@ -1129,6 +1437,18 @@ async function markOrgPayoutFailedInternal(
     await tx.organizationEarnings.updateMany({
       where: { orgPayoutId: payoutId, status: "BATCHED" },
       data: { status: "READY", orgPayoutId: null },
+    });
+
+    // #1354 — defensive: a PROCESSING→FAILED payout never disbursed, so it
+    // never withheld. Nothing should have written a deduction row yet, because
+    // that happens only at COMPLETED, but if one somehow exists it must not
+    // reach the quarterly return, so delete it here.
+    // The tdsAmountPaise/tdsRateAppliedBps/tdsFinancialYear columns are
+    // deliberately LEFT SET (the consultant rail clears its equivalents): they
+    // are the batch-time record of what was computed, and markOrgPayoutReversed
+    // sizes its reversing ledger posting from tdsAmountPaise.
+    await tx.tDSRecord.deleteMany({
+      where: { orgPayoutId: payoutId, isReversal: false },
     });
 
     const payout = await tx.organizationPayout.findUniqueOrThrow({
@@ -1219,7 +1539,7 @@ export async function markOrgPayoutReversed(
   //     claims PROCESSING): the payable stayed cleared, the cash stayed out, the
   //     earnings stayed PAID. We now post a REVERSING ORG_PAYOUT (the exact
   //     inverse of the original), re-open the earnings, and set REVERSED.
-  const completedResult = await prisma.$transaction(async (tx) => {
+  const reversalCompletion = prisma.$transaction(async (tx) => {
     const claim = await tx.organizationPayout.updateMany({
       where: { id: payoutId, status: "COMPLETED" },
       data: {
@@ -1236,6 +1556,9 @@ export async function markOrgPayoutReversed(
         id: true,
         organizationId: true,
         netPayoutPaise: true,
+        // #1470 — the CASH leg of the original posting was sized from this, so
+        // the mirror must be too.
+        amountPaise: true,
         tdsAmountPaise: true,
         currency: true,
         organization: { select: { name: true } },
@@ -1248,12 +1571,17 @@ export async function markOrgPayoutReversed(
       data: { status: "READY", orgPayoutId: null },
     });
 
-    // Reverse the ORG_PAYOUT posting exactly: the original was
-    //   Dr ORG_PAYABLE (net + tds)  Cr CASH (net)  Cr TDS_PAYABLE (tds)
+    // Reverse the ORG_PAYOUT posting exactly: the original is
+    //   Dr ORG_PAYABLE (netPayoutPaise)  Cr CASH (amountPaise)
+    //   Cr TDS_PAYABLE (tdsAmountPaise)
     // so the reversal brings the cash back and re-opens the payable. (The TDS
     // *remittance* to the government is a separate flow; reversing TDS_PAYABLE
     // here only un-does this payout's accrual, which is correct for a bounce.)
+    // #1470 — this mirror was written against the old, wrong completion legs,
+    // which is why a reversal still netted to zero while a payout that stayed
+    // COMPLETED kept the overstatement.
     const orgTds = payout.tdsAmountPaise ?? 0;
+    assertOrgPayoutWithholdingIdentity(payout);
     if (payout.netPayoutPaise > 0) {
       // #783 — INR-only ledger; the reversal keys the same INR accounts as the
       // original posting (which now omits currency) so the pair nets to zero.
@@ -1261,7 +1589,7 @@ export async function markOrgPayoutReversed(
         {
           account: { kind: "CASH" },
           direction: "DEBIT",
-          amountPaise: payout.netPayoutPaise,
+          amountPaise: payout.amountPaise,
         },
         {
           account: {
@@ -1269,7 +1597,7 @@ export async function markOrgPayoutReversed(
             organizationId: payout.organizationId,
           },
           direction: "CREDIT",
-          amountPaise: payout.netPayoutPaise + orgTds,
+          amountPaise: payout.netPayoutPaise,
         },
       ];
       if (orgTds > 0) {
@@ -1286,6 +1614,17 @@ export async function markOrgPayoutReversed(
         postings: reversal,
       });
     }
+
+    // #1354 — the bank returned the money, so the withholding that rode on it
+    // never happened either. Net it out of the quarter with a negative
+    // TDSRecord + the TdsAdjustment the return exports as a revised line; the
+    // helper caps against prior reversals so a redelivered webhook cannot
+    // reverse twice.
+    await recordOrgTdsReversal(tx, {
+      orgPayoutId: payoutId,
+      organizationId: payout.organizationId,
+      reversalBasis: { kind: "FULL" },
+    });
 
     await tx.orgAuditLog.create({
       data: {
@@ -1313,6 +1652,17 @@ export async function markOrgPayoutReversed(
       },
     };
   });
+  // #1470 — same shape as markOrgPayoutCompleted: the guard throws inside the
+  // transaction so the REVERSED claim rolls back, and the durable report runs
+  // once the single pooled connection is free.
+  const completedResult = await reversalCompletion.catch(
+    async (err: unknown) => {
+      if (err instanceof OrgPayoutWithholdingMismatchError) {
+        await reportOrgPayoutWithholdingMismatch(err, "markOrgPayoutReversed");
+      }
+      throw err;
+    },
+  );
 
   if (completedResult.claimed) {
     if (completedResult.notify) {

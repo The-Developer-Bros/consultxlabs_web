@@ -28,6 +28,15 @@ import { NextRequest } from "next/server";
 
 // ---- Mocks ------------------------------------------------------------
 
+// The route applies moneyOpsLimiter (10/min). Without this stub, the real
+// Upstash limiter 429s the later cases in CI — the same house mock every
+// other enterprise suite uses (see owner-role-escalation-guard.test.ts).
+jest.mock("../../lib/rate-limit", () => ({
+  __esModule: true,
+  applyRateLimit: jest.fn().mockResolvedValue(null),
+  moneyOpsLimiter: {},
+}));
+
 jest.mock("../../lib/prisma", () => ({
   __esModule: true,
   default: {
@@ -202,6 +211,10 @@ function setupActivePo(orgId = "org-1") {
   mockedPrisma.purchaseOrder.findUnique.mockResolvedValue({
     organizationId: orgId,
     status: "ACTIVE",
+    // #1396 — the route now compares the PO's currency against the invoice's
+    // before it claims any balance, and repeats the comparison in the CAS
+    // predicate, so the pre-flight read has to carry it.
+    currency: "INR",
   });
 }
 
@@ -242,6 +255,7 @@ describe("POST /api/organizations/[orgId]/billing-account/invoices — PO balanc
         id: "po-1",
         organizationId: "org-1",
         status: "ACTIVE",
+        currency: "INR",
         remainingAmountPaise: { gte: 5000 },
       },
       data: { remainingAmountPaise: { decrement: 5000 } },

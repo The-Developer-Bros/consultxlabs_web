@@ -56,37 +56,53 @@ import { listRefunds, getRefund } from "../../lib/payments";
 import { reportSentryMessage } from "../../lib/observability/report";
 import { reconcilePendingRefunds } from "../../scripts/refunds/reconcile-pending-refunds";
 
-const refundTable = (
-  prisma as unknown as {
-    refund: {
-      findMany: jest.Mock;
-      findUnique: jest.Mock;
-      update: jest.Mock;
-      delete: jest.Mock;
-    };
-  }
-).refund;
+/** The Prisma refund surface the reconcile core touches. */
+interface ReconcileRefundMock {
+  findMany: jest.Mock;
+  findUnique: jest.Mock;
+  update: jest.Mock;
+  delete: jest.Mock;
+}
+interface ReconcilePrismaMock {
+  refund: ReconcileRefundMock;
+}
+
+// Single seam over the generated client (repo-wide mock idiom).
+const refundTable = (prisma as unknown as ReconcilePrismaMock).refund;
 const mockList = listRefunds as jest.Mock;
 const mockGet = getRefund as jest.Mock;
 const mockPage = reportSentryMessage as jest.Mock;
 
 const HOUR = 60 * 60 * 1000;
 
-function placeholderRow(overrides: Record<string, unknown> = {}) {
-  const ageHours = typeof overrides.ageHours === "number" ? overrides.ageHours : 2;
-  const createdAt = new Date(Date.now() - ageHours * HOUR);
+/** A stale placeholder row as the reconcile core's selector sees it. */
+interface PlaceholderRow {
+  id: string;
+  refundId: string;
+  status: "PENDING";
+  amountPaise: number;
+  createdAt: Date;
+  metadata: Record<string, string>;
+  payment: { paymentIntent: string; paymentGateway: "RAZORPAY" | "STRIPE" };
+  ageHours?: number;
+}
+
+function placeholderRow(overrides: Partial<PlaceholderRow> = {}): PlaceholderRow {
+  const ageHours = overrides.ageHours ?? 2;
+  const { ageHours: _ignored, ...rest } = overrides;
+  void _ignored;
   return {
     id: "res_1",
     refundId: "pending_uuid-1",
     status: "PENDING",
     amountPaise: 10_000,
-    createdAt,
+    createdAt: new Date(Date.now() - ageHours * HOUR),
     metadata: {},
     payment: {
       paymentIntent: "order_1",
       paymentGateway: "RAZORPAY",
     },
-    ...overrides,
+    ...rest,
   };
 }
 
@@ -247,5 +263,36 @@ describe("reconcilePendingRefunds real-id PENDING polling", () => {
 
     expect(result.failedCount).toBe(0);
     expect(refundTable.update).not.toHaveBeenCalled();
+  });
+
+  // #1458 — with STRIPE_ENABLED unset, the Stripe client is never built, so
+  // getRefund threw for every Stripe row, the error list filled up and the whole
+  // run reported success:false — the cleanup route answered 500 for what is
+  // deliberate configuration.
+  test("a fenced STRIPE refund is skipped and counted, not failed", async () => {
+    const previous = process.env.STRIPE_ENABLED;
+    delete process.env.STRIPE_ENABLED;
+    try {
+      refundTable.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([
+        {
+          id: "row_stripe",
+          refundId: "re_real",
+          status: "PENDING",
+          amountPaise: 10_000,
+          createdAt: new Date(Date.now() - 3 * HOUR),
+          payment: { paymentGateway: "STRIPE" },
+        },
+      ]);
+
+      const result = await reconcilePendingRefunds();
+
+      expect(mockGet).not.toHaveBeenCalled();
+      expect(result.skippedFenced).toBe(1);
+      expect(result.success).toBe(true);
+      expect(result.errors).toEqual([]);
+    } finally {
+      if (previous === undefined) delete process.env.STRIPE_ENABLED;
+      else process.env.STRIPE_ENABLED = previous;
+    }
   });
 });

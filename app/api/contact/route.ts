@@ -11,8 +11,11 @@
  * through to the FailedEmail retry worker rather than being swallowed.
  */
 
+import { createHash } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
+import prisma from "@/lib/prisma";
 import { sendContactInquiryEmail } from "@/lib/email";
 import { applyRateLimit, getClientIp, spamLimiter } from "@/lib/rate-limit";
 import { INQUIRY_CATEGORIES } from "@/app/(pages)/constants";
@@ -71,6 +74,61 @@ export async function POST(req: NextRequest) {
   // no signal, but do not send anything.
   if (parsed.data.website) {
     return NextResponse.json({ ok: true }, { status: 202 });
+  }
+
+  // #1230 wave-4b — enterprise funnel persistence. The #1132 blocker-6
+  // class was "email is the only record": a Resend outage discarded the
+  // deal entirely. Enterprise/team-training inquiries now land in the Lead
+  // table FIRST; the email is notification, not the system of record.
+  const LEAD_CATEGORIES = new Set(["enterprise", "team-training"]);
+  if (LEAD_CATEGORIES.has(parsed.data.category ?? "")) {
+    // CR #1243 — idempotent lead capture. The key is a digest of the
+    // submission content itself, so a user retrying after a 502 (or a
+    // double-click) lands on the unique constraint and answers 202 against
+    // the EXISTING row — no duplicate sales records, no client changes.
+    // Canonical JSON of EVERY persisted field + a UTC day bucket: unambiguous
+    // (no delimiter collisions) and time-scoped, so a genuine follow-up days
+    // later creates a fresh lead while transport retries stay idempotent.
+    const dayBucket = new Date().toISOString().slice(0, 10);
+    const submissionKey = createHash("sha256")
+      .update(
+        JSON.stringify([
+          dayBucket,
+          parsed.data.email.toLowerCase(),
+          parsed.data.firstName,
+          parsed.data.lastName,
+          parsed.data.phone ?? "",
+          parsed.data.subject,
+          parsed.data.message,
+          parsed.data.category ?? "",
+        ]),
+      )
+      .digest("hex");
+    try {
+      await prisma.lead.create({
+        data: {
+          submissionKey,
+          sourceCategory: parsed.data.category ?? "",
+          companyName: null,
+          contactName: `${parsed.data.firstName} ${parsed.data.lastName}`.trim(),
+          contactEmail: parsed.data.email,
+          phone: parsed.data.phone || null,
+          subject: parsed.data.subject,
+          message: parsed.data.message,
+        },
+      });
+    } catch (err) {
+      if (
+        !(
+          err instanceof Prisma.PrismaClientKnownRequestError &&
+          err.code === "P2002"
+        )
+      ) {
+        throw err;
+      }
+      // Duplicate of an existing lead — still answer success so the retry
+      // loop terminates.
+    }
   }
 
   const result = await sendContactInquiryEmail({

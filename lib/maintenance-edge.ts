@@ -179,12 +179,17 @@ export function isMaintenanceExempt(pathname: string): boolean {
 
 // Transactional write routes to block during DEGRADED maintenance.
 // Read-only methods (GET, HEAD, OPTIONS) are always allowed.
-// Patterns support a single '*' wildcard segment (e.g. /api/bookings/*/allocate).
+// Every pattern matches by PREFIX: naming a route also blocks everything
+// nested under it. A single '*' stands for exactly one path segment.
 const WRITE_BLOCKED_IN_DEGRADED = [
   "/api/checkout",
   "/api/appointments/*/cancel",
+  // Prefix semantics cover /respond and /withdraw, which the old endsWith
+  // matcher left writable for the whole life of the write-block.
   "/api/appointments/*/reschedule",
   "/api/appointments/*/documents",
+  "/api/appointments/*/feedback",
+  "/api/appointments/*/support",
   "/api/bookings/consultations",
   "/api/bookings/subscriptions",
   "/api/bookings/webinars",
@@ -197,15 +202,66 @@ const WRITE_BLOCKED_IN_DEGRADED = [
   "/api/verification/documents", // Block verification document uploads
   "/api/verification/submit", // Block verification submission
   "/api/verification/resubmit", // Block verification resubmission
-  "/api/slots/appointments", // Block direct appointment creation/mutation
+  "/api/slots/request-for-approval", // Block new approval-rail bookings
+  // Weekly, custom and per-id availability writes; the sibling
+  // /api/slots/availability-with-allocation is a different prefix and is GET.
+  "/api/slots/availability",
   "/api/waitlist", // Block newsletter signups
   "/api/referrals", // Block referral code creation
   "/api/collaborators", // Block collaborator management
   "/api/payments/disputes", // Block dispute handling mutations
   "/api/admin/payouts", // Block admin payout mutations
+  // Org money rails. Nothing under /api/organizations was blocked before, so
+  // an org could top up a wallet, issue an invoice or move a payout while the
+  // deployment was half-applied. Prefix semantics mean `programs` also covers
+  // programs/*/assignments and programs/*/auto-enroll, and `contracts` covers
+  // contracts/*/supersede.
+  "/api/organizations/*/billing-account/wallet/top-ups",
+  "/api/organizations/*/billing-account/invoices",
+  "/api/organizations/*/billing-account/purchase-orders",
+  "/api/organizations/*/programs",
+  "/api/organizations/*/contracts",
+  "/api/organizations/*/rate-cards",
+  "/api/organizations/*/payouts",
+  "/api/organizations/*/payout-account",
+  // Seat changes meter the licences the checkout entitlement resolver reads.
+  "/api/organizations/*/members",
+  "/api/organizations/*/invitations",
 ];
 
 const READ_ONLY_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+/**
+ * Match one pattern against a path, PREFIX-wise.
+ *
+ * The wildcard used to be matched as `startsWith(prefix) && endsWith(suffix)`,
+ * which pinned the match to the END of the path: the appointments reschedule pattern
+ * blocked `/reschedule` and nothing under it, so `/reschedule/respond` and
+ * `/reschedule/withdraw` — the two routes that actually move a booking — wrote
+ * straight through DEGRADED. Naming a route now blocks its whole subtree, which
+ * is what every entry in the list above was always read as meaning.
+ *
+ * The wildcard still stands for exactly one non-empty segment, so
+ * the bookings allocate pattern cannot be satisfied by `/api/bookings/allocate`.
+ */
+function matchesBlockedPattern(pathname: string, pattern: string): boolean {
+  const star = pattern.indexOf("*");
+  if (star === -1) {
+    return pathname === pattern || pathname.startsWith(pattern + "/");
+  }
+
+  const prefix = pattern.slice(0, star);
+  const suffix = pattern.slice(star + 1);
+  if (!pathname.startsWith(prefix)) return false;
+
+  const rest = pathname.slice(prefix.length);
+  const slash = rest.indexOf("/");
+  const segment = slash === -1 ? rest : rest.slice(0, slash);
+  if (segment.length === 0) return false;
+
+  const tail = slash === -1 ? "" : rest.slice(slash);
+  return tail === suffix || tail.startsWith(suffix + "/");
+}
 
 /**
  * Returns true if the route+method combination should be blocked in DEGRADED mode.
@@ -218,19 +274,9 @@ export function isWriteBlockedInDegraded(
 ): boolean {
   if (READ_ONLY_METHODS.has(method.toUpperCase())) return false;
 
-  return WRITE_BLOCKED_IN_DEGRADED.some((pattern) => {
-    if (!pattern.includes("*")) {
-      // Exact prefix match
-      return pathname === pattern || pathname.startsWith(pattern + "/");
-    }
-    // Wildcard: split on '*' and check prefix + suffix with length guard
-    const [prefix, suffix] = pattern.split("*");
-    return (
-      pathname.length >= prefix.length + suffix.length &&
-      pathname.startsWith(prefix) &&
-      pathname.endsWith(suffix)
-    );
-  });
+  return WRITE_BLOCKED_IN_DEGRADED.some((pattern) =>
+    matchesBlockedPattern(pathname, pattern),
+  );
 }
 
 /**

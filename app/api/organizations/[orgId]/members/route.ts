@@ -24,6 +24,7 @@ import type { MemberRole, MemberStatus } from "@prisma/client";
 import { AUDIT_ACTIONS } from "@/lib/enterprise/audit-actions";
 import { dispatchWebhookEvent } from "@/lib/enterprise/outbound-webhooks/dispatch";
 import { isBlockedRoleTransition } from "@/lib/enterprise/role-transitions";
+import { transitionMembership } from "@/lib/enterprise/transitions";
 import {
   applyMembershipRoleEffects,
   bumpUserSessionGeneration,
@@ -344,16 +345,23 @@ export async function POST(
 
       // REMOVED → ACTIVE reactivation. Keep the same membership row so
       // downstream FKs (ProgramAssignment, audit trail, etc.) stay intact.
-      const reactivated = await tx.membership.update({
-        where: { id: existing.id },
+      // Routed through the central FSM (#1132 follow-up): its CAS where-clause
+      // refuses ERASED rows, so a tombstone can never be resurrected even if
+      // the pre-transaction `existing` read above went stale concurrently
+      // with an erasure run. Throws IllegalTransitionError (409) on loss.
+      await transitionMembership(tx, {
+        to: "ACTIVE",
+        where: { id: existing.id, organizationId: orgId },
         data: {
           role,
-          status: "ACTIVE",
           departmentLabel: departmentLabel ?? null,
           consulteeProfileId: roleEffects.consulteeProfileId,
           consultantProfileId: roleEffects.consultantProfileId,
           payoutRecipient: roleEffects.payoutRecipient,
         },
+      });
+      const reactivated = await tx.membership.findUniqueOrThrow({
+        where: { id: existing.id },
       });
       await tx.orgAuditLog.create({
         data: {

@@ -3,11 +3,8 @@
 import { useState } from "react";
 import * as Sentry from "@sentry/nextjs";
 import { useToast } from "@/hooks/use-toast";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
-import { getGlobalVideoClient } from "@/lib/stream/disconnect";
-import { getOrCreateAppointmentMeeting } from "@/lib/meeting";
-import type { TAppointment } from "@/types/appointment";
 import type { SlotOfAppointment } from "@prisma/client";
 import {
   CONSULTEE_JOIN_WINDOW_MS,
@@ -17,7 +14,6 @@ import type { SlotPreference } from "@/components/scheduling/slot-picker-policy"
 
 interface UseEventActionsOptions {
   appointmentId?: string;
-  appointment?: TAppointment;
   rawSlots: SlotOfAppointment[];
   title: string;
   consultant: string;
@@ -66,13 +62,14 @@ function rescheduleOutcomeToast(outcome: {
 type CancelRefund = {
   amountRefundedPaise: number;
   refundPct: number;
-  status?:
-    | "REFUNDED"
-    | "FAILED"
-    | "NOTHING_REFUNDABLE"
-    | "POLICY_ZERO"
-    | "MANUAL_REVIEW";
+  status?: "REFUNDED" | "FAILED" | "NOTHING_REFUNDABLE" | "POLICY_ZERO";
   requiresManualReview?: boolean;
+  /**
+   * Which rail returned the money. The cancel route has answered this since
+   * #1325 and the toast ignored it, so an org-funded learner — whose card was
+   * never charged — was told a refund was on its way back to them.
+   */
+  rail?: "GATEWAY" | "INTERNAL" | "CREDITS";
 } | null;
 
 function describeRefund(refund: CancelRefund): string {
@@ -83,8 +80,6 @@ function describeRefund(refund: CancelRefund): string {
   // equally "the policy owes nothing", "the balance was already exhausted" and
   // "the gateway refused", and only one of those deserves an apology.
   switch (refund.status) {
-    case "MANUAL_REVIEW":
-      return "Because sessions had already been delivered, our team is reviewing your refund and will be in touch.";
     case "FAILED":
       return "We could not complete your refund automatically — our team has been alerted and will sort it out.";
     case "NOTHING_REFUNDABLE":
@@ -94,6 +89,21 @@ function describeRefund(refund: CancelRefund): string {
       return "No refund applies under the cancellation policy for this booking.";
     default:
       break;
+  }
+
+  // An org-funded booking reverses in the ledger against the org's wallet,
+  // invoice or licence — the learner's card was never charged, so "on its way
+  // back to you" is a promise nobody kept. Checked before the credit sentence so
+  // an internal reversal can never be described as a referral credit.
+  if (refund.rail === "INTERNAL") {
+    return "The refund goes back to your organisation's account.";
+  }
+
+  // #1500 — a credit-funded booking settles as a REFUNDED restoration that moves no
+  // gateway money, so the amount is legitimately zero and the sentence has to come
+  // from the status rather than the number.
+  if (refund.status === "REFUNDED" && refund.amountRefundedPaise === 0) {
+    return "Your referral credit has been restored in full.";
   }
 
   if (refund.amountRefundedPaise > 0) {
@@ -107,7 +117,6 @@ function describeRefund(refund: CancelRefund): string {
 
 export function useEventActions({
   appointmentId,
-  appointment,
   rawSlots,
   title,
   consultant: _consultant,
@@ -115,7 +124,6 @@ export function useEventActions({
   consulteeId: consulteeIdOverride,
 }: UseEventActionsOptions) {
   const { toast } = useToast();
-  const router = useRouter();
   const queryClient = useQueryClient();
   const params = useParams<{ consulteeId: string }>();
   // Caller's resolved id first: on the org detail route the param is absent,
@@ -146,7 +154,6 @@ export function useEventActions({
   };
 
   const [isLoading, setIsLoading] = useState(false);
-  const [isJoining, setIsJoining] = useState(false);
   const [showRescheduleDialog, setShowRescheduleDialog] = useState(false);
   const [showConfirmReschedule, setShowConfirmReschedule] = useState(false);
   const [showReportDialog, setShowReportDialog] = useState(false);
@@ -204,9 +211,7 @@ export function useEventActions({
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: Object.keys(payload).length
-          ? JSON.stringify(payload)
-          : undefined,
+        body: Object.keys(payload).length ? JSON.stringify(payload) : undefined,
       });
 
       const data = await response.json();
@@ -319,62 +324,8 @@ export function useEventActions({
     }
   };
 
-  const handleJoinSession = async (forceSlot?: SlotOfAppointment) => {
-    const slotToUse = forceSlot || getJoinableSlot();
-
-    // Singleton at click time: the SDK context is scoped to /meetings now, and
-    // this is the same instance <StreamVideo> would return (#248 idiom).
-    const client = getGlobalVideoClient();
-    if (!client) {
-      toast({
-        title: "Not signed in",
-        description:
-          "Video client not initialized. Please sign in to join the meeting.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    if (!appointment || !slotToUse) {
-      toast({
-        title: "Unable to join",
-        description: "Meeting information is not available.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    setIsJoining(true);
-    try {
-      const meetingId = await getOrCreateAppointmentMeeting(
-        client,
-        appointment,
-        slotToUse,
-      );
-      toast({
-        title: "Joining meeting",
-        description: "You will now be redirected to the meeting room.",
-      });
-      router.push(`/meetings/${meetingId}`);
-    } catch (error) {
-      Sentry.captureException(
-        error instanceof Error ? error : new Error(String(error)),
-        { tags: { subsystem: "client" } },
-      );
-      console.error("Error joining meeting:", error);
-      toast({
-        title: "Error joining meeting",
-        description:
-          error instanceof Error ? error.message : "Unknown error occurred",
-        variant: "destructive",
-      });
-      setIsJoining(false);
-    }
-  };
-
   return {
     isLoading,
-    isJoining,
     joinableSlot: getJoinableSlot(),
     showRescheduleDialog,
     setShowRescheduleDialog,
@@ -388,6 +339,5 @@ export function useEventActions({
     handleReschedule,
     handleCancelClick,
     handleCancelConfirm,
-    handleJoinSession,
   };
 }

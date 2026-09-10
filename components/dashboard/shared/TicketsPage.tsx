@@ -60,11 +60,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
-import type {
-  Ticket,
-  TicketCounts,
-  TicketListResponse,
-} from "@/types/tickets";
+import type { Ticket, TicketCounts, TicketListResponse } from "@/types/tickets";
+import { ticketLabel } from "@/utils/supportTicketUrl";
 
 const EMPTY_COUNTS: TicketCounts = {
   total: 0,
@@ -291,7 +288,9 @@ export function TicketsPage() {
     onSuccess: (_data, variables) => {
       toast({
         title: "Success",
-        description: variables.isInternal ? "Internal note added" : "Reply sent",
+        description: variables.isInternal
+          ? "Internal note added"
+          : "Reply sent",
       });
       setReplyText("");
       setIsInternalNote(false);
@@ -330,24 +329,18 @@ export function TicketsPage() {
       action: string;
     }) => {
       if (action === "close") {
-        const response = await fetch(
-          `/api/staff/support-tickets/${ticketId}`,
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ status: "CLOSED" }),
-          },
-        );
+        const response = await fetch(`/api/staff/support-tickets/${ticketId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "CLOSED" }),
+        });
         if (!response.ok) throw new Error("Failed to close ticket");
       } else if (action === "resolve") {
-        const response = await fetch(
-          `/api/staff/support-tickets/${ticketId}`,
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ status: "RESOLVED" }),
-          },
-        );
+        const response = await fetch(`/api/staff/support-tickets/${ticketId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "RESOLVED" }),
+        });
         if (!response.ok) throw new Error("Failed to resolve ticket");
       }
       return action;
@@ -387,7 +380,7 @@ export function TicketsPage() {
       key: "ticketId",
       header: "Ticket ID",
       className: "font-mono text-xs text-muted-foreground",
-      cell: (ticket) => ticket.id.slice(0, 8).toUpperCase(),
+      cell: (ticket) => ticketLabel(ticket),
     },
     {
       key: "subject",
@@ -532,7 +525,11 @@ export function TicketsPage() {
             value: counts.resolved,
             color: "text-green-600 dark:text-green-400",
           },
-          { label: "Closed", value: counts.closed, color: "text-muted-foreground" },
+          {
+            label: "Closed",
+            value: counts.closed,
+            color: "text-muted-foreground",
+          },
           {
             label: "Total",
             value: counts.total,
@@ -693,7 +690,7 @@ export function TicketsPage() {
                     {ticketDetail.title}
                   </ResponsiveModalTitle>
                   <ResponsiveModalDescription>
-                    {ticketDetail.id.slice(0, 8).toUpperCase()} • Created{" "}
+                    {ticketLabel(ticketDetail)} • Created{" "}
                     {formatDate(ticketDetail.createdAt)}
                     {ticketDetail.issueType && (
                       <> • {formatIssueType(ticketDetail.issueType)}</>

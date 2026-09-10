@@ -191,6 +191,8 @@ export async function POST(request: NextRequest) {
         targetAudience: validatedData.targetAudience,
         whatsIncluded: validatedData.whatsIncluded,
         faqs: faqCreateNested(validatedData.faqs),
+        recordingEnabled: validatedData.recordingEnabled,
+        recordingStoragePolicy: validatedData.recordingStoragePolicy,
         trialEnabled,
         trialDurationMinutes,
         trialPriceInPaise,

@@ -14,6 +14,13 @@ import { GET } from "../../app/api/admin/refunds/route";
 import { requirePrivilegedAuth } from "@/lib/auth-helpers";
 import prisma from "@/lib/prisma";
 
+// Same-process limiter-store isolation (see admin-refund-error-mapping).
+jest.mock("../../lib/rate-limit", () => ({
+  __esModule: true,
+  applyRateLimit: jest.fn().mockResolvedValue(null),
+  moneyOpsLimiter: { limit: jest.fn() },
+}));
+
 jest.mock("../../lib/auth-helpers", () => ({
   __esModule: true,
   requirePrivilegedAuth: jest.fn(),

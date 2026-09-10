@@ -23,7 +23,13 @@ import {
   type AccountRef,
   type Posting,
 } from "@/lib/payments/ledger/post";
-import { EarningRole, EarningStatus, Payment, Prisma } from "@prisma/client";
+import {
+  EarningRole,
+  EarningStatus,
+  Payment,
+  Prisma,
+  type CoveredPlanType,
+} from "@prisma/client";
 import { PAYOUT_CONSTANTS, AppointmentType } from "./constants";
 import { calculateRevenueSplit } from "@/lib/collaborators/service";
 import { recordTdsReversal } from "@/lib/payments/tax/tds-service";
@@ -131,6 +137,62 @@ import { prorate, sumPaise } from "@/lib/payments/utils/money";
 // ============================================
 
 /**
+ * #1335 — the rate card's plan vocabulary, keyed by the settlement's own.
+ *
+ * Written as an exhaustive `Record` rather than a cast so a new
+ * `AppointmentType` or a renamed `CoveredPlanType` member is a compile error
+ * here instead of a booking that silently settles on the wrong card.
+ */
+const RATE_CARD_PLAN_TYPE: Record<AppointmentType, CoveredPlanType> = {
+  CONSULTATION: "CONSULTATION",
+  WEBINAR: "WEBINAR",
+  SUBSCRIPTION: "SUBSCRIPTION",
+  CLASS: "CLASS",
+};
+
+/**
+ * #1335 — the Contract governing this booking's settlement, or null.
+ *
+ * The only link a settling payment has to a `Contract` is the org-funded one:
+ * `BookingUtilization` (unique on `paymentId`) → `ProgramAssignment` →
+ * `Program` → `Contract`. A marketplace or self-funded booking has no contract
+ * at all, and a SUBSCRIPTION meters its utilization at slot-allocation time,
+ * which is after settlement, so it has none yet either. Both cases resolve
+ * null and fall through to org scope.
+ *
+ * The contract is forwarded ONLY when it belongs to the settling org. A
+ * contract-scoped card is created under `POST /organizations/{orgId}/rate-cards`
+ * with the contract checked against that org, so `ownerContractId` alone
+ * identifies its owner — and `resolveEffectiveRateCard` matches
+ * `ownerContractId` without re-asserting the org. Forwarding a sponsor's
+ * contract into a different host org's settlement would therefore pay one
+ * tenant's booking on another tenant's negotiated split. The guard can only
+ * ever select fewer cards, never a wrong-tenant one.
+ */
+async function resolveSettlementContractId(
+  tx: Tx,
+  paymentId: string,
+  orgId: string,
+): Promise<string | null> {
+  const utilization = await tx.bookingUtilization.findUnique({
+    where: { paymentId },
+    select: {
+      programAssignment: {
+        select: {
+          program: {
+            select: {
+              contract: { select: { id: true, organizationId: true } },
+            },
+          },
+        },
+      },
+    },
+  });
+  const contract = utilization?.programAssignment.program.contract;
+  return contract?.organizationId === orgId ? contract.id : null;
+}
+
+/**
  * Determine if a consultant's payment should use a 3-way org split.
  *
  * Returns an OrgEarningsSplit if the consultant is an active EXPERT
@@ -162,6 +224,14 @@ async function resolveOrgSplit(
    *  inside this transaction rather than by the caller, so plan ownership and
    *  the earnings rows it decides are read and written under one snapshot. */
   plan: { id: string; kind: "webinar" | "class" } | null = null,
+  /** #1335 — the booking this split settles, used only to widen the rate-card
+   *  lookup beyond org scope when `RATE_CARD_SCOPED_RESOLUTION` is on. Null on
+   *  the collaborator leg: ADR 18 makes collaborations org-blind, so the
+   *  seller's contract and plan must not reach a collaborator's own org card. */
+  booking: {
+    paymentId: string;
+    appointmentType: AppointmentType;
+  } | null = null,
 ): Promise<OrgEarningsSplit | null> {
   if (!ENABLE_HOST_ORGS) return null;
 
@@ -219,12 +289,35 @@ async function resolveOrgSplit(
   const orgId = membership.organization.id;
   const payoutRecipient = membership.payoutRecipient;
 
-  const { resolveEffectiveRateCard } =
+  const { resolveEffectiveRateCard, isScopedRateCardResolutionEnabled } =
     await import("@/lib/api/organizations/rate-card");
+
+  // #1335 — the resolver has always ranked contract- and plan-scoped cards
+  // above the org default, but settlement only ever handed it the org, so
+  // those tiers were unreachable and a scoped card could be created and never
+  // chosen. Forwarding the scope changes which card settles live money, so it
+  // is gated: off, this is the pre-#1335 call verbatim.
+  const scoped =
+    booking && isScopedRateCardResolutionEnabled()
+      ? {
+          contractId: await resolveSettlementContractId(
+            tx,
+            booking.paymentId,
+            orgId,
+          ),
+          planType: RATE_CARD_PLAN_TYPE[booking.appointmentType],
+          // Only Webinar and Class carry a plan id into settlement. A
+          // consultation- or subscription-plan-scoped card therefore still
+          // resolves at planType granularity, not plan granularity.
+          planId: plan?.id ?? null,
+        }
+      : {};
+
   const resolved = await resolveEffectiveRateCard(tx, {
     orgId,
     membershipOverrideId: membership.rateCardOverrideId,
     at,
+    ...scoped,
   });
 
   // Integer paise × basis-point math, no float drift.
@@ -286,6 +379,116 @@ async function resolveOrgSplit(
 // Earnings Service Functions
 // ============================================
 
+const EARNINGS_APPOINTMENT_TYPE_MAP: Record<string, AppointmentType> = {
+  CONSULTATION: "CONSULTATION",
+  SUBSCRIPTION: "SUBSCRIPTION",
+  WEBINAR: "WEBINAR",
+  CLASS: "CLASS",
+};
+
+export interface ResolvedEarningsPayment {
+  paymentForEarnings: CreateEarningsParams["payment"];
+  earningsAppointmentType: AppointmentType;
+  consultantProfileId: string;
+}
+
+/**
+ * #1439 — the webhook success path and the checkout mock/zero/sponsored path
+ * both create earnings straight after confirming a payment, and both need
+ * the same appointment -> consultantProfile resolution across the four plan
+ * kinds. Shared here so the include and the profile-selection precedence
+ * can't drift between the two call sites. Returns null when there is no
+ * appointment or no resolvable consultant profile — the caller skips
+ * earnings creation in that case, same as before this was extracted.
+ */
+export async function resolvePaymentForEarnings(
+  where: Prisma.PaymentWhereUniqueInput,
+  rawAppointmentType: string,
+): Promise<ResolvedEarningsPayment | null> {
+  const paymentWithAppointment = await prisma.payment.findUnique({
+    where,
+    include: {
+      appointment: {
+        include: {
+          consultation: {
+            include: {
+              consultationPlan: {
+                include: { consultantProfile: true },
+              },
+            },
+          },
+          subscription: {
+            include: {
+              subscriptionPlan: {
+                include: { consultantProfile: true },
+              },
+            },
+          },
+          webinar: {
+            select: {
+              id: true,
+              webinarPlanId: true,
+              webinarPlan: {
+                include: { consultantProfile: true },
+              },
+            },
+          },
+          class: {
+            select: {
+              id: true,
+              classPlanId: true,
+              classPlan: {
+                include: { consultantProfile: true },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!paymentWithAppointment?.appointment) return null;
+
+  const consultantProfile =
+    paymentWithAppointment.appointment.consultation?.consultationPlan
+      ?.consultantProfile ||
+    paymentWithAppointment.appointment.subscription?.subscriptionPlan
+      ?.consultantProfile ||
+    paymentWithAppointment.appointment.webinar?.webinarPlan
+      ?.consultantProfile ||
+    paymentWithAppointment.appointment.class?.classPlan?.consultantProfile;
+
+  if (!consultantProfile) return null;
+
+  const earningsAppointmentType =
+    EARNINGS_APPOINTMENT_TYPE_MAP[rawAppointmentType] || "CONSULTATION";
+
+  const paymentForEarnings = {
+    ...paymentWithAppointment,
+    appointment: {
+      ...paymentWithAppointment.appointment,
+      consultantProfile: { id: consultantProfile.id },
+      webinar: paymentWithAppointment.appointment.webinar
+        ? {
+            webinarPlanId:
+              paymentWithAppointment.appointment.webinar.webinarPlanId,
+          }
+        : null,
+      class: paymentWithAppointment.appointment.class
+        ? {
+            classPlanId: paymentWithAppointment.appointment.class.classPlanId,
+          }
+        : null,
+    },
+  } as CreateEarningsParams["payment"];
+
+  return {
+    paymentForEarnings,
+    earningsAppointmentType,
+    consultantProfileId: consultantProfile.id,
+  };
+}
+
 /**
  * Create earnings record from a successful payment
  * Called from payment success webhook
@@ -326,7 +529,6 @@ export async function createEarningsFromPayment({
     planId = payment.appointment.class.classPlanId;
   }
 
-
   // FIX #9: Wrap earnings creation + balance updates in a transaction for atomicity.
   // Also handles P2002 unique constraint violations gracefully for idempotency.
   // #896 — Serializable isolation + P2034 retry so the waiver eligibility count()
@@ -358,6 +560,7 @@ export async function createEarningsFromPayment({
             grossAmount,
             payment.createdAt,
             planId && planType ? { id: planId, kind: planType } : null,
+            { paymentId: payment.id, appointmentType },
           );
 
           // #687 E-01/E-02 — the PENDING_TRUST park keys on the SPONSORING org
@@ -447,7 +650,9 @@ export async function createEarningsFromPayment({
               // and "each collaborator's earnings resolve to their own org
               // independently". A collaborator on someone else's org-owned plan
               // is not that org's expert, so their share settles to THEIR host
-              // org, not the seller's.
+              // org, not the seller's. #1335 — no booking scope either, for the
+              // same reason: the seller's contract and plan must not reach a
+              // card owned by the collaborator's org.
               const collabOrgSplit = await resolveOrgSplit(
                 tx,
                 split.consultantProfileId,
@@ -663,6 +868,10 @@ export async function createEarningsFromPayment({
                 select: { source: true, amountPaise: true },
               });
               const orgId = payment.organizationId ?? null;
+              // #1458 — tracked separately from `receivable` so the credit side
+              // can ask "was a CHARGE_ORG overage funded through this payment?"
+              // without a second leg query. See the surcharge credit below.
+              let overageAccrualPaise = 0;
               const debits: Posting[] = [];
               const pushDebit = (account: AccountRef, amountPaise: number) => {
                 if (amountPaise > 0)
@@ -683,8 +892,11 @@ export async function createEarningsFromPayment({
                       wallet += leg.amountPaise;
                       break;
                     case "INVOICE_ACCRUAL":
+                      receivable += leg.amountPaise;
+                      break;
                     case "OVERAGE_INVOICE_ACCRUAL":
                       receivable += leg.amountPaise;
+                      overageAccrualPaise += leg.amountPaise;
                       break;
                     case "REFERRAL_CREDIT":
                       promo += leg.amountPaise;
@@ -759,6 +971,38 @@ export async function createEarningsFromPayment({
               let platformFeeCreditPaise = platformFeePaise;
               for (const s of Array.from(collabSettlements.values())) {
                 platformFeeCreditPaise += s.orgSplit.platformFeePaise;
+              }
+              // #1458 (Sentry FAMILIARISE_WEB-28) — every credit above is
+              // derived from `payment.originalAmount`, the nominal price, while
+              // the debits are the funding legs. A CHARGE_ORG overage surcharge
+              // is the one funding amount that is NOT inside the nominal price:
+              // the base carve keeps `basePaise` in, but `marginal = base +
+              // surcharge` bumps both the accrual leg and `Payment.amount` by
+              // the surcharge. Without this credit the posting was short by
+              // exactly `surchargePaise`, threw LedgerImbalanceError, and the
+              // booking committed with no journal entry at all.
+              //
+              // PLATFORM_FEE is the right account and no new one is needed: an
+              // over-cap surcharge is a markup the platform charges the org for
+              // exceeding its own cap, not consultant income — the consultant is
+              // paid out of `originalAmount`, which the surcharge sits outside
+              // of. (The surcharge is booked gross of GST; `Payment.taxAmount`
+              // is computed on the nominal price and is not re-derived for an
+              // overage, which is the same limitation the invoice rollup has.)
+              //
+              // Only read when an OVERAGE_INVOICE_ACCRUAL leg actually funded
+              // this payment: on the wallet rail the marginal is inside the
+              // wallet debit and no such leg exists, and a CHARGE_MEMBER
+              // surcharge rides the member's side-payment, not this journal.
+              if (overageAccrualPaise > 0) {
+                const orgOverage = await tx.overageEvent.findFirst({
+                  where: {
+                    bookingUtilization: { paymentId: payment.id },
+                    overageBehavior: "CHARGE_ORG",
+                  },
+                  select: { surchargePaise: true },
+                });
+                platformFeeCreditPaise += sumPaise(orgOverage?.surchargePaise);
               }
               pushCredit({ kind: "PLATFORM_FEE" }, platformFeeCreditPaise);
               if (splits.length > 0) {
@@ -849,7 +1093,10 @@ export async function createEarningsFromPayment({
               } else {
                 // Lost SSI race — withSerializableRetry re-runs the whole txn.
                 // Modelled outcome, reported at low volume/info only.
-                reportSentryError(err, { subsystem: "payments", expected: true });
+                reportSentryError(err, {
+                  subsystem: "payments",
+                  expected: true,
+                });
               }
               throw err;
             }
@@ -883,41 +1130,12 @@ export async function createEarningsFromPayment({
   }
 }
 
-/**
- * Release earnings from hold period
- * Called by cron job hourly
- */
-export async function releaseEarningsFromHold(): Promise<number> {
-  const now = new Date();
-
-  // Release consultant earnings
-  const consultantResult = await prisma.consultantEarnings.updateMany({
-    where: {
-      status: EarningStatus.PENDING,
-      holdUntil: { lte: now },
-    },
-    data: {
-      status: EarningStatus.READY,
-    },
-  });
-
-  // Release org earnings in parallel
-  const orgResult = await prisma.organizationEarnings.updateMany({
-    where: {
-      status: EarningStatus.PENDING,
-      holdUntil: { lte: now },
-    },
-    data: {
-      status: EarningStatus.READY,
-    },
-  });
-
-  const total = consultantResult.count + orgResult.count;
-  console.log(
-    `Released ${consultantResult.count} consultant + ${orgResult.count} org earnings from hold`,
-  );
-  return total;
-}
+// #1471 — `releaseEarningsFromHold` used to live here as a second, unlocked
+// implementation that nothing called: every scheduled entry point imports
+// `scripts/earnings/release-earnings.ts` instead. It was the only copy that
+// released `OrganizationEarnings`, which is why the org arm looked implemented
+// while being dead. The behaviour has moved into the script (locked, bounded,
+// Serializable) and the dead copy is deleted rather than kept as a trap.
 
 /**
  * Get consultant earnings summary.
@@ -933,8 +1151,8 @@ export async function getConsultantEarningsSummary(
 ): Promise<EarningsSummary> {
   const orgFilter =
     organizationId !== undefined ? { payment: { organizationId } } : {};
-  const [pending, ready, batched, paid, held, pendingTrust] =
-    await Promise.all([
+  const [pending, ready, batched, paid, held, pendingTrust] = await Promise.all(
+    [
       prisma.consultantEarnings.aggregate({
         where: {
           consultantProfileId,
@@ -983,16 +1201,15 @@ export async function getConsultantEarningsSummary(
         },
         _sum: { consultantSharePaise: true },
       }),
-    ]);
+    ],
+  );
 
   const pendingEarnings = sumPaise(pending._sum.consultantSharePaise);
   const readyEarnings = sumPaise(ready._sum.consultantSharePaise);
   const batchedEarnings = sumPaise(batched._sum.consultantSharePaise);
   const paidEarnings = sumPaise(paid._sum.consultantSharePaise);
   const heldEarnings = sumPaise(held._sum.consultantSharePaise);
-  const pendingTrustEarnings = sumPaise(
-    pendingTrust._sum.consultantSharePaise,
-  );
+  const pendingTrustEarnings = sumPaise(pendingTrust._sum.consultantSharePaise);
 
   return {
     consultantProfileId,

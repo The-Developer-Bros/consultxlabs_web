@@ -26,7 +26,7 @@ export async function GET(
     // funding source without a second round-trip. taxInfo (#777 §B)
     // hydrates the Tax & compliance section — non-secret fields only;
     // panEncrypted never leaves the server.
-    const [organization, billingAccount, taxInfo] = await Promise.all([
+    const [organization, billingAccount, taxInfo, msmeInfo] = await Promise.all([
       prisma.organization.findUnique({
         where: { id: orgId },
         select: {
@@ -49,6 +49,15 @@ export async function GET(
           panLast4: true,
         },
       }),
+      // #1230 wave-4 — MSME declaration hydrates the settings card; the
+      // payout-deadline engine reads the same satellite.
+      prisma.organizationMsmeInfo.findUnique({
+        where: { organizationId: orgId },
+        select: {
+          msmeStatus: true,
+          msmeWrittenAgreementOnFile: true,
+        },
+      }),
     ]);
 
     return NextResponse.json({
@@ -64,6 +73,7 @@ export async function GET(
         ...access.org,
         billingAccount,
         taxInfo,
+        msmeInfo,
       },
     });
   } catch (error) {

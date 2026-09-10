@@ -39,14 +39,18 @@ export default function AuthSyncProvider() {
     if (isPending) return;
 
     const authed = !!session?.user;
-    // Prefer the cross-tab flag (a reload of an already-authed user matches it
-    // and stays silent; a genuine login — incl. the OAuth/SSO redirect, which
-    // has no client fetch hook — flips it and pings peers). Fall back to the
-    // in-memory ref when the flag is unavailable, so broadcasting isn't gated
-    // off entirely when localStorage is blocked. Undefined previous = first
-    // observed state this load, so we never ping without a real before-state.
-    const previous = readAuthedFlag() ?? previousAuthedRef.current;
-    if (previous !== undefined && previous !== authed) {
+    // Prefer THIS tab's last observed state: the wrapped `signOut` clears the
+    // localStorage flag BEFORE the network call (shared-device fail-safe), so
+    // by the time the session resolves null the flag already reads `false` and
+    // flag-first comparison would swallow the logout ping. The in-memory ref
+    // is immune to that pre-clear; it is undefined only on first resolution,
+    // where we fall back to the flag so an OAuth/SSO full-page redirect (new
+    // load, no client fetch hook) still pings peers.
+    const previous = previousAuthedRef.current ?? readAuthedFlag();
+    // typeof check: with storage blocked, readAuthedFlag() returns null —
+    // `null !== undefined` would treat "no known before-state" as a transition
+    // and fire a spurious login/logout ping on first resolution.
+    if (typeof previous === "boolean" && previous !== authed) {
       postAuthSync({ type: authed ? "login" : "logout" });
     }
     previousAuthedRef.current = authed;

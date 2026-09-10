@@ -117,7 +117,7 @@ const ConsulteeAgreementForm: React.FC<Props> = ({
           disabled={!termsAccepted || !privacyAccepted}
           className="flex-1"
         >
-          Continue to Review
+          Complete Registration
         </Button>
       </div>
     </div>

@@ -28,6 +28,7 @@ import "dotenv/config";
 import prisma from "@/lib/prisma";
 import { EarningStatus } from "@prisma/client";
 import { withCronLock } from "@/lib/cron/with-cron-lock";
+import { abortIfMaintenance } from "@/lib/maintenance-cron";
 import * as Sentry from "@sentry/nextjs";
 import { runJob } from "@/lib/observability/job-sentry";
 
@@ -132,19 +133,26 @@ async function runReleasePendingTrustEarningsUnlocked(): Promise<ReleasePendingT
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     result.errors.push(message);
-    Sentry.captureException(err, { tags: { subsystem: "jobs", job: "release-pending-trust-earnings" } });
+    Sentry.captureException(err, {
+      tags: { subsystem: "jobs", job: "release-pending-trust-earnings" },
+    });
   }
 
   console.log(
     `[release-pending-trust-earnings] scanned=${result.scanned} released=${result.released} errors=${result.errors.length}`,
   );
-  Sentry.logger.info("job:release-pending-trust-earnings finished", { scanned: result.scanned, released: result.released, errors: result.errors.length });
+  Sentry.logger.info("job:release-pending-trust-earnings finished", {
+    scanned: result.scanned,
+    released: result.released,
+    errors: result.errors.length,
+  });
   return result;
 }
 
 // CLI entry — `npx tsx jobs/cleanup/release-pending-trust-earnings.ts`
 if (require.main === module) {
   runJob("release-pending-trust-earnings", async () => {
+    await abortIfMaintenance("release-pending-trust-earnings");
     try {
       const r = await runReleasePendingTrustEarnings();
       if (r.errors.length > 0) process.exitCode = 1;

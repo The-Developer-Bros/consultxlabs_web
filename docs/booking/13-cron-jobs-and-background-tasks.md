@@ -27,13 +27,13 @@ Both paths call the same core function exported from `scripts/appointments/`. Th
 
 | Job                                 | Cron Expression | Human-Readable          | Source Script                                                 | API Route                                  |
 | ----------------------------------- | --------------- | ----------------------- | ------------------------------------------------------------- | ------------------------------------------ |
-| Auto-complete appointments          | `0 * * * *`     | Every hour, on the hour | `scripts/appointments/auto-complete-appointments.ts`          | `/api/cleanup/auto-complete-appointments`  |
+| Auto-complete appointments          | `7 * * * *`     | Every hour, at :07      | `scripts/appointments/auto-complete-appointments.ts`          | `/api/cleanup/auto-complete-appointments`  |
 | Cleanup tentative slots             | `0 */2 * * *`   | Every 2 hours           | `scripts/appointments/cleanup-tentative-slots.ts`             | `/api/cleanup/tentative-slots`             |
 | Cleanup stale pending consultations | `30 * * * *`    | Every hour, at :30      | `scripts/appointments/cleanup-stale-pending-consultations.ts` | `/api/cleanup/stale-pending-consultations` |
 | Cleanup invalid appointments        | `0 * * * *`     | Every hour, on the hour | `scripts/appointments/cleanup-invalid-appointments.ts`        | `/api/cleanup/invalid-appointments`        |
 | Expire stale requests               | `10 * * * *`    | Every hour, at :10      | `scripts/appointments/expire-stale-requests.ts`               | `/api/cleanup/expire-stale-requests`       |
 | Reconcile slot availability         | `15 * * * *`    | Every hour, at :15      | `scripts/appointments/reconcile-slot-availability.ts`         | `/api/cleanup/reconcile-slot-availability` |
-| Detect consultant no-shows          | `17 * * * *`    | Every hour, at :17      | `scripts/appointments/detect-consultant-no-shows.ts`          | N/A (GitHub Actions only)                  |
+| Detect consultant no-shows          | `57 * * * *`    | Every hour, at :57      | `scripts/appointments/detect-consultant-no-shows.ts`          | N/A (GitHub Actions only)                  |
 
 ---
 
@@ -48,8 +48,8 @@ models what actually matters — concurrent load on the Supabase pool.
 runtime anywhere in the file with a comment:
 
 ```yaml
-    - cron: "32 * * * *"
-    # cron-runtime-minutes: 8
+- cron: "32 * * * *"
+# cron-runtime-minutes: 8
 ```
 
 The value covers the job's database-active window (the `tsx` step), not the
@@ -82,7 +82,7 @@ real numbers whenever a heavy one wants in.
 
 | Field              | Value                                                 |
 | ------------------ | ----------------------------------------------------- |
-| **Schedule**       | `0 * * * *` -- every hour, on the hour                |
+| **Schedule**       | `7 * * * *` -- every hour, at :07                     |
 | **Source**         | `scripts/appointments/auto-complete-appointments.ts`  |
 | **API**            | `app/api/cleanup/auto-complete-appointments/route.ts` |
 | **GitHub Actions** | `.github/workflows/auto-complete-appointments.yml`    |
@@ -98,11 +98,19 @@ real numbers whenever a heavy one wants in.
 | ------------ | -------------------------- | ------------- | ------------------------------------------------------------------------------------ |
 | Webinar      | `SCHEDULED`, `IN_PROGRESS` | `COMPLETED`   | All slots ended > 1h ago                                                             |
 | Class        | `SCHEDULED`, `IN_PROGRESS` | `COMPLETED`   | All slots across all appointments ended > 1h ago                                     |
-| Consultation | `APPROVED`, `SCHEDULED`    | `COMPLETED`   | All slots ended > 1h ago                                                             |
+| Consultation | `APPROVED`, `SCHEDULED`    | `COMPLETED`   | All slots ended > 1h ago, unless the consultant never joined (see below)             |
 | Subscription | `APPROVED`, `SCHEDULED`    | `COMPLETED`   | All slots across all appointments ended > 1h ago                                     |
 | TrialSession | `SCHEDULED`                | `COMPLETED`   | All slots ended > 1h ago; also sets `completedAt` and creates an `ActivityLog` entry |
 
+**The consultant no-show handoff (#1504).** A consultation that the consultant never joined is not this job's to close. The only path that cancels such a booking and refunds the consultee in full is the no-show detector described in section g, and that detector only considers bookings that are still `APPROVED` or `SCHEDULED`. Because this job's buffer is one hour and the detector's grace window is two, this job used to reach every unattended consultation first and mark it `COMPLETED`, which removed it from the detector's candidate set permanently; the platform's promised refund could therefore never fire in production.
+
+Both jobs now read the same predicate from `lib/booking/attendance.ts`, which classifies a booking from the `MeetingAttendance` rows as one of three shapes. When the consultant has a recorded join, this job completes the booking as it always did. When the consultee has a join and the consultant does not, this job defers: it skips the booking and leaves it live for the detector. When there is no session at all, or nobody joined, the booking is not a consultant-fault refund and this job completes it, because the detector's remedy in that case is a support ticket rather than a status change.
+
+The deferral is bounded. The detector declines candidates it cannot decide — Stream's own call report contradicts our attendance rows, the session has no Stream call to ask about, or the run failed — and it leaves those bookings untouched. `NO_SHOW_HANDOFF_MINUTES` (the grace window plus two hours) is the point at which this job stops waiting and completes the booking anyway, so that the hourly detector has had at least one and normally two full runs in which the booking was visible to it. A booking that neither job would ever claim would sit live forever, which is a worse outcome than completing it.
+
 **Safety**: Per-record `try/catch`. A failure on one record does not prevent processing of others. All errors are collected into a result array and returned. The activity log write for trial sessions has its own nested `try/catch` so a logging failure does not block the completion update.
+
+**Trial sessions have no separate job.** A second endpoint, `/api/cleanup/auto-complete-trials`, used to complete trials on its own. It had no `jobs/` wrapper, no GitHub Actions workflow and no Netlify schedule, so nothing ever invoked it, and it completed a trial as soon as any one of its slot rows had ended, with no buffer. It was a redundant twin of the TrialSession row in the table above and was deleted in #1278. Trials are completed here, by the hourly job, which requires the full one-hour buffer and an `every` clause over the appointment's slots, so a multi-slot trial only closes once all of its slots have ended.
 
 ---
 
@@ -194,11 +202,11 @@ real numbers whenever a heavy one wants in.
 
 **Purpose**: Expires consultation and subscription requests that have been ignored or abandoned at the request stage. This covers three distinct scenarios:
 
-| Scenario                           | Source Status              | Threshold                                                                        | Target Status |
-| ---------------------------------- | -------------------------- | ------------------------------------------------------------------------------- | ------------- |
-| Consultant never responded         | `PENDING` (consultation)   | 48 hours since `requestedAt` (`PENDING_CONSULTATION_EXPIRATION_HOURS = 48`)      | `EXPIRED`     |
-| Consultant never responded         | `PENDING` (subscription)   | 30 days since `requestedAt` (`PENDING_EXPIRATION_DAYS = 30`)                     | `EXPIRED`     |
-| Approved but payment never started | `APPROVED_PENDING_PAYMENT` | 7 days since `updatedAt` (`PAYMENT_PENDING_EXPIRATION_DAYS = 7`)                 | `EXPIRED`     |
+| Scenario                           | Source Status              | Threshold                                                                   | Target Status |
+| ---------------------------------- | -------------------------- | --------------------------------------------------------------------------- | ------------- |
+| Consultant never responded         | `PENDING` (consultation)   | 48 hours since `requestedAt` (`PENDING_CONSULTATION_EXPIRATION_HOURS = 48`) | `EXPIRED`     |
+| Consultant never responded         | `PENDING` (subscription)   | 30 days since `requestedAt` (`PENDING_EXPIRATION_DAYS = 30`)                | `EXPIRED`     |
+| Approved but payment never started | `APPROVED_PENDING_PAYMENT` | 7 days since `updatedAt` (`PAYMENT_PENDING_EXPIRATION_DAYS = 7`)            | `EXPIRED`     |
 
 **Action**:
 
@@ -208,7 +216,7 @@ real numbers whenever a heavy one wants in.
 - **Refunds (PR 2c money fix, audit gap #1)**: every expired consultation/subscription with SUCCEEDED payments is refunded via the booking front door (`refundBookingPayment`, full remaining balance). Failures are counted + logged, never thrown — one bad gateway call must not stall the cohort drain.
 - APPROVED_PENDING_PAYMENT requests: Bulk `updateMany` to `EXPIRED` and clears `pendingPaymentUrl` to invalidate stale payment links.
 
-**Safety**: Three separate operations (PENDING consultations, PENDING subscriptions, payment-pending requests), each with its own `try/catch`. Uses bulk `updateMany` rather than per-record updates for efficiency. Hourly cadence bounds worst-case hold lifetime at ~49h.
+**Safety**: Three separate operations (PENDING consultations, PENDING subscriptions, payment-pending requests), each with its own `try/catch`. Uses bulk `updateMany` rather than per-record updates for efficiency. Hourly cadence bounds worst-case hold lifetime at ~49h. Because two of those operations refund SUCCEEDED payments through `refundPaymentsForExpired`, this job is in `FINANCIAL_JOB_NAMES` and is held during DEGRADED maintenance as well as OFFLINE (#1506).
 
 ---
 
@@ -241,21 +249,21 @@ real numbers whenever a heavy one wants in.
 
 ### g. Detect Consultant No-Shows
 
-| Field              | Value                                                 |
-| ------------------ | ----------------------------------------------------- |
-| **Schedule**       | `17 * * * *` -- every hour, at :17                    |
-| **Source**         | `scripts/appointments/detect-consultant-no-shows.ts`  |
-| **API**            | N/A -- runs via GitHub Actions only                   |
-| **GitHub Actions** | `.github/workflows/detect-consultant-no-shows.yml`    |
-| **HTTP Methods**   | N/A                                                   |
+| Field              | Value                                                |
+| ------------------ | ---------------------------------------------------- |
+| **Schedule**       | `57 * * * *` -- every hour, at :57                   |
+| **Source**         | `scripts/appointments/detect-consultant-no-shows.ts` |
+| **API**            | N/A -- runs via GitHub Actions only                  |
+| **GitHub Actions** | `.github/workflows/detect-consultant-no-shows.yml`   |
+| **HTTP Methods**   | N/A                                                  |
 
 **Purpose**: Closes the loop on the platform's promise of a full refund when the consultant fails to attend a paid session. The job scans confirmed `CONSULTATION` bookings whose session ended at least the grace window ago, uses the per-attendee `MeetingAttendance` records (stamped by the Stream session handlers) to identify the ones the consultant never joined, and for each such no-show it auto-refunds the consultee via `refundPayment`, marks the booking cancelled, and notifies both parties.
 
 **Scope**: Consultations only. A consultation is a single-session, single-consultant exclusive booking where a full refund of the one payment is the correct remedy. Subscriptions are multi-session, so a per-session consultant no-show is a partial refund of one session out of many and needs its own design; it is not yet handled.
 
-**Grace window**: A session must have ended at least 120 minutes ago (`NO_SHOW_GRACE_MINUTES = 120`) before a missing consultant is treated as a no-show, so a late join or a delayed Stream participant webhook cannot trigger a false-positive refund.
+**Grace window**: A session must have ended at least 120 minutes ago (`NO_SHOW_GRACE_MINUTES = 120`) before a missing consultant is treated as a no-show, so a late join or a delayed Stream participant webhook cannot trigger a false-positive refund. The constant lives in `lib/booking/attendance.ts` alongside the attendance predicate, because the auto-completion job in section a has to honour the same window: it defers a booking in the no-show shape rather than completing it out from under this job (#1504).
 
-**Safety**: The job runs under a fail-closed cron lock. Because it moves money, it refuses to run without a real Redis lock rather than risk a silent unlocked double-run, and `refundPayment`'s refundable-balance guard remains the correctness backstop.
+**Safety**: The job runs under a fail-closed cron lock. Because it moves money, it refuses to run without a real Redis lock rather than risk a silent unlocked double-run, and `refundPayment`'s refundable-balance guard remains the correctness backstop. It is also in `FINANCIAL_JOB_NAMES`, so it is held during DEGRADED maintenance as well as OFFLINE (#1506).
 
 ---
 

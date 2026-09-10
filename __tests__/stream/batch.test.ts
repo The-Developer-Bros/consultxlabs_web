@@ -12,10 +12,15 @@
  */
 
 import {
+  addRemainingMembers,
   chunk,
+  createMemberChunk,
   forEachChunk,
+  queryChannelsPaged,
   STREAM_BATCH_LIMIT,
   STREAM_CONCURRENCY_LIMIT,
+  STREAM_QUERY_CHANNELS_LIMIT,
+  STREAM_QUERY_CHANNELS_MAX_OFFSET,
 } from "@/lib/stream/batch";
 
 describe("chunk", () => {
@@ -115,5 +120,141 @@ describe("payload ceiling vs fan-out width", () => {
     expect(() => chunk([1, 2, 3], 2.5)).toThrow(/positive integer/);
     expect(() => chunk([1, 2, 3], 0)).toThrow(/positive integer/);
     expect(() => chunk([1, 2, 3], -1)).toThrow(/positive integer/);
+  });
+});
+
+describe("queryChannelsPaged", () => {
+  /**
+   * Stand-in for Stream: holds `total` channels and returns at most
+   * STREAM_QUERY_CHANNELS_LIMIT of them per call, no matter what limit is
+   * asked for. That trimming is the whole defect (#1270).
+   */
+  const streamLike = (total: number) => {
+    const calls: { limit: number; offset: number }[] = [];
+    const fetchPage = async ({
+      limit,
+      offset,
+    }: {
+      limit: number;
+      offset: number;
+    }) => {
+      calls.push({ limit, offset });
+      const served = Math.min(limit, STREAM_QUERY_CHANNELS_LIMIT);
+      return Array.from({ length: total }, (_, i) => `ch-${i}`).slice(
+        offset,
+        offset + served,
+      );
+    };
+    return { calls, fetchPage };
+  };
+
+  it("pages at Stream's real cap, not at the requested limit", () => {
+    // The constant IS the assertion. Asking for 100 and receiving 30 is what
+    // made `while (page.length === PAGE_SIZE)` exit after one page.
+    expect(STREAM_QUERY_CHANNELS_LIMIT).toBe(30);
+  });
+
+  it("asks for a second page when the first comes back exactly full", async () => {
+    const { calls, fetchPage } = streamLike(45);
+
+    const { channels, truncated } = await queryChannelsPaged(fetchPage);
+
+    // The regression this pins: 30 rows back must NOT read as "that is all".
+    expect(calls).toHaveLength(2);
+    expect(channels).toHaveLength(45);
+    expect(truncated).toBe(false);
+  });
+
+  it("sees a stale channel sitting past the first page", async () => {
+    const { fetchPage } = streamLike(60);
+    const stale = async (opts: { limit: number; offset: number }) => {
+      const page = await fetchPage(opts);
+      return page.map((id) => (id === "ch-41" ? "stale-dm" : id));
+    };
+
+    const { channels } = await queryChannelsPaged(stale);
+
+    // Position 41 is the DM revocation leak: the old walk stopped at 30, so
+    // reconciliation never classified this membership stale and never revoked
+    // it.
+    expect(channels).toContain("stale-dm");
+  });
+
+  it("advances by the rows returned, never by the requested limit", async () => {
+    const { calls, fetchPage } = streamLike(90);
+
+    await queryChannelsPaged(fetchPage);
+
+    // `offset += 100` would have jumped 0 -> 100 and skipped 70 channels.
+    expect(calls.map((c) => c.offset)).toEqual([0, 30, 60, 90]);
+  });
+
+  it("stops on a short page without a wasted extra request", async () => {
+    const { calls, fetchPage } = streamLike(12);
+
+    const { channels, truncated } = await queryChannelsPaged(fetchPage);
+
+    expect(calls).toHaveLength(1);
+    expect(channels).toHaveLength(12);
+    expect(truncated).toBe(false);
+  });
+
+  it("treats an empty first page as an empty answer, not a truncated one", async () => {
+    // This is the circuit-breaker degrade path: breaker-open hands back [].
+    const { channels, truncated } = await queryChannelsPaged(async () => []);
+
+    expect(channels).toEqual([]);
+    expect(truncated).toBe(false);
+  });
+
+  it("stops at Stream's offset ceiling and says the answer is partial", async () => {
+    const { calls, fetchPage } = streamLike(5000);
+
+    const { channels, truncated } = await queryChannelsPaged(fetchPage);
+
+    // Silent truncation would let a partial reconcile report a clean sweep.
+    expect(truncated).toBe(true);
+    expect(channels.length).toBeGreaterThan(STREAM_QUERY_CHANNELS_MAX_OFFSET);
+    expect(
+      calls.every((c) => c.offset <= STREAM_QUERY_CHANNELS_MAX_OFFSET),
+    ).toBe(true);
+  });
+});
+
+describe("createMemberChunk / addRemainingMembers", () => {
+  const roster = (n: number) => Array.from({ length: n }, (_, i) => `u${i}`);
+
+  it("passes a small roster through whole, with no follow-up request", async () => {
+    const channel = { addMembers: jest.fn().mockResolvedValue({}) };
+
+    expect(createMemberChunk(roster(2))).toEqual(["u0", "u1"]);
+    await addRemainingMembers(channel, roster(2));
+
+    expect(channel.addMembers).not.toHaveBeenCalled();
+  });
+
+  it("caps the create() roster and adds the rest in bounded batches", async () => {
+    const channel = { addMembers: jest.fn().mockResolvedValue({}) };
+    const members = roster(250);
+
+    const first = createMemberChunk(members);
+    await addRemainingMembers(channel, members);
+
+    // A 250-seat webinar used to hand all 250 to create() and be rejected.
+    expect(first).toHaveLength(STREAM_BATCH_LIMIT);
+    expect(first[0]).toBe("u0");
+    expect(channel.addMembers).toHaveBeenCalledTimes(2);
+
+    const sent = channel.addMembers.mock.calls.map(([batch]) => batch);
+    expect(sent.map((b: string[]) => b.length)).toEqual([100, 50]);
+    // Nobody is dropped and nobody is added twice.
+    expect([...first, ...sent.flat()]).toEqual(members);
+  });
+
+  it("keeps the head of the roster in the atomic create", () => {
+    // Callers order host and joiner first precisely so they cannot land in a
+    // follow-up request that fails on its own.
+    const members = ["host", "joiner", ...roster(500)];
+    expect(createMemberChunk(members).slice(0, 2)).toEqual(["host", "joiner"]);
   });
 });

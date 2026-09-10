@@ -15,7 +15,6 @@ import {
   buildOccupiedAppointmentFilter,
 } from "@/utils/slotAllocation/occupancyPolicy";
 import { isOccupiedByLiveAppointment } from "@/utils/slotAllocation/SlotValidationService";
-import { minuteUtcToDate } from "@/utils/slotAllocation/slotTimeUtils";
 import { getSession } from "@/lib/auth-server";
 import {
   buildOverlapMetaIndex,
@@ -24,6 +23,11 @@ import {
   type AppointmentForOverlapMeta,
 } from "@/lib/booking/overlap-meta";
 import { isPrivileged } from "@/lib/auth-helpers";
+import {
+  availabilityGridEtag,
+  ifNoneMatchSatisfied,
+  readAvailabilityGridMarker,
+} from "@/lib/scheduling/availabilityGridMarker";
 import type { TSlotTiming } from "@/types/slots";
 import type { BookingStatus } from "@/utils/timeSlotsProcessing";
 
@@ -33,6 +37,14 @@ type SlotTimingWithOverlap = TSlotTiming & {
   overlappingAppointments?: OverlapAppointmentMeta[];
 };
 
+// #1164 — browser-only cache for the polling grid. `private`, not the sibling's
+// `public, s-maxage`: the same URL answers differently by session (the
+// includeAppointmentDetails/consulteeUserId gates below), so a shared cache
+// would cross identities. Bounded staleness is safe — allocation re-validates
+// server-side — and the one caller that must never see it, the post-allocation
+// refetch, asks for `cache: "no-store"` (AllocationService, #1164).
+// No SWR: the 60s poll and return-tick must repaint fresh, not one-interval-old.
+const GRID_CACHE_CONTROL = "private, max-age=30";
 
 // An org OWNER/MAINTAINER acting for a member consultant (RequestSlotAllocationTab
 // mounts mode="allocate" for org admins allocating on a consultant's behalf)
@@ -147,7 +159,10 @@ export async function GET(
 
       if (!maySeeCalendar) {
         return NextResponse.json(
-          { error: "Forbidden: appointment details require consultant ownership" },
+          {
+            error:
+              "Forbidden: appointment details require consultant ownership",
+          },
           { status: 403 },
         );
       }
@@ -203,6 +218,41 @@ export async function GET(
         { error: "Dates must be in UTC ISO format" },
         { status: 400 },
       );
+    }
+
+    // #1319 PR 9 — conditional GET, computed BEFORE the heavy reads.
+    //
+    // Every open calendar re-asks this endpoint once a minute (ADR 16: polling,
+    // not Realtime) and the answer is almost always the one it already has. One
+    // indexed marker read decides that in a single statement, against the 8
+    // statements the public grid costs and the 18 the detail grid costs (#997,
+    // docs/booking/20-availability-grid-cost.md).
+    //
+    // Placed after the authorization gates on purpose: a caller who has since
+    // lost access is refused up there, so a 304 can never serve stale
+    // permission. The resolved (not requested) detail flag and the consultee id
+    // are hashed into the tag, so the two payload shapes cannot collide.
+    const marker = await readAvailabilityGridMarker(
+      prisma,
+      consultantId,
+      consulteeUserId,
+    );
+    // No marker = no such consultant; fall through so the 404 below still answers.
+    const etag = marker
+      ? availabilityGridEtag(marker, {
+          consultantId,
+          startIso: startDate.toISOString(),
+          endIso: endDate.toISOString(),
+          timezone,
+          includeAppointmentDetails,
+          consulteeUserId,
+        })
+      : null;
+    if (etag && ifNoneMatchSatisfied(req.headers.get("if-none-match"), etag)) {
+      return new NextResponse(null, {
+        status: 304,
+        headers: { "Cache-Control": GRID_CACHE_CONTROL, ETag: etag },
+      });
     }
 
     // 1. Fetch consultant's availability
@@ -288,9 +338,9 @@ export async function GET(
     // live; without them isOccupiedByLiveAppointment cannot drop an expired
     // APPROVED_PENDING_PAYMENT and the grid blanks out genuinely free time.
     const LIVE_OCCUPANCY_SELECT = {
-      consultation: { select: { status: true } },
-      subscription: { select: { status: true } },
-      payment: { select: { expiresAt: true } },
+      consultation: { select: { status: true, bookingSource: true } },
+      subscription: { select: { status: true, bookingSource: true } },
+      payment: { select: { expiresAt: true, paymentStatus: true } },
     } as const;
 
     // #997 Phase 2 — two separate queries (rather than one conditionally-built
@@ -349,6 +399,7 @@ export async function GET(
             consultation: {
               select: {
                 status: true,
+                bookingSource: true,
                 consultationPlan: { select: { title: true } },
                 requestedBy: { select: { user: { select: { name: true } } } },
               },
@@ -356,13 +407,14 @@ export async function GET(
             subscription: {
               select: {
                 status: true,
+                bookingSource: true,
                 subscriptionPlan: { select: { title: true } },
                 requestedBy: { select: { user: { select: { name: true } } } },
               },
             },
             webinar: { select: { webinarPlan: { select: { title: true } } } },
             class: { select: { classPlan: { select: { title: true } } } },
-            payment: { select: { expiresAt: true } },
+            payment: { select: { expiresAt: true, paymentStatus: true } },
           },
         }),
         consulteeOccupancy,
@@ -413,63 +465,63 @@ export async function GET(
     // Defensive Programming: Filter out corrupt appointment slots
     const appointmentSlots: AppointmentSlot[] = rawSlotsOfAppointment
       .filter((slot) => {
-          // Validate slot has required fields
-          if (!slot.startsAt || !slot.endsAt) {
-            console.warn(
-              `⚠️ Skipping appointment slot ${slot.id}: missing start or end time`,
-            );
-            return false;
-          }
+        // Validate slot has required fields
+        if (!slot.startsAt || !slot.endsAt) {
+          console.warn(
+            `⚠️ Skipping appointment slot ${slot.id}: missing start or end time`,
+          );
+          return false;
+        }
 
-          // Validate slot times are valid dates
-          const start = new Date(slot.startsAt);
-          const end = new Date(slot.endsAt);
-          if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-            console.warn(
-              `⚠️ Skipping appointment slot ${slot.id}: invalid date format`,
-            );
-            return false;
-          }
+        // Validate slot times are valid dates
+        const start = new Date(slot.startsAt);
+        const end = new Date(slot.endsAt);
+        if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+          console.warn(
+            `⚠️ Skipping appointment slot ${slot.id}: invalid date format`,
+          );
+          return false;
+        }
 
-          // Filter out invalid appointment slots (allow legitimate overnight slots)
-          if (!isValidOvernightSlot(start, end)) {
-            console.warn(
-              `⚠️ Skipping appointment slot ${slot.id}: end time ${end.toISOString()} <= start time ${start.toISOString()} (not a valid overnight slot)`,
-            );
-            return false;
-          }
+        // Filter out invalid appointment slots (allow legitimate overnight slots)
+        if (!isValidOvernightSlot(start, end)) {
+          console.warn(
+            `⚠️ Skipping appointment slot ${slot.id}: end time ${end.toISOString()} <= start time ${start.toISOString()} (not a valid overnight slot)`,
+          );
+          return false;
+        }
 
-          // Defensive: Filter out slots that are unreasonably far in the past (>10 years)
-          // This likely indicates data corruption
-          const tenYearsAgo = new Date();
-          tenYearsAgo.setFullYear(tenYearsAgo.getFullYear() - 10);
-          if (end < tenYearsAgo) {
-            console.warn(
-              `⚠️ Skipping appointment slot ${slot.id}: end time is more than 10 years in the past (${end.toISOString()}) - possible data corruption`,
-            );
-            return false;
-          }
+        // Defensive: Filter out slots that are unreasonably far in the past (>10 years)
+        // This likely indicates data corruption
+        const tenYearsAgo = new Date();
+        tenYearsAgo.setFullYear(tenYearsAgo.getFullYear() - 10);
+        if (end < tenYearsAgo) {
+          console.warn(
+            `⚠️ Skipping appointment slot ${slot.id}: end time is more than 10 years in the past (${end.toISOString()}) - possible data corruption`,
+          );
+          return false;
+        }
 
-          // Defensive: Filter out slots that are unreasonably far in the future (>10 years)
-          // This likely indicates data corruption
-          const tenYearsFromNow = new Date();
-          tenYearsFromNow.setFullYear(tenYearsFromNow.getFullYear() + 10);
-          if (start > tenYearsFromNow) {
-            console.warn(
-              `⚠️ Skipping appointment slot ${slot.id}: start time is more than 10 years in the future (${start.toISOString()}) - possible data corruption`,
-            );
-            return false;
-          }
+        // Defensive: Filter out slots that are unreasonably far in the future (>10 years)
+        // This likely indicates data corruption
+        const tenYearsFromNow = new Date();
+        tenYearsFromNow.setFullYear(tenYearsFromNow.getFullYear() + 10);
+        if (start > tenYearsFromNow) {
+          console.warn(
+            `⚠️ Skipping appointment slot ${slot.id}: start time is more than 10 years in the future (${start.toISOString()}) - possible data corruption`,
+          );
+          return false;
+        }
 
-          // Defensive: Filter out slots with duration > 24 hours (likely data corruption)
-          const durationHours =
-            (end.getTime() - start.getTime()) / (1000 * 60 * 60);
-          if (durationHours > 24) {
-            console.warn(
-              `⚠️ Skipping appointment slot ${slot.id}: duration is > 24 hours (${durationHours.toFixed(1)}h) - possible data corruption`,
-            );
-            return false;
-          }
+        // Defensive: Filter out slots with duration > 24 hours (likely data corruption)
+        const durationHours =
+          (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+        if (durationHours > 24) {
+          console.warn(
+            `⚠️ Skipping appointment slot ${slot.id}: duration is > 24 hours (${durationHours.toFixed(1)}h) - possible data corruption`,
+          );
+          return false;
+        }
 
         return true;
       })
@@ -480,7 +532,6 @@ export async function GET(
 
     // Convert to utility interfaces with defensive validation
     // Weekly slots now use Int (minutes since midnight UTC 0-1439) instead of DateTime
-    const referenceDate = new Date("1970-01-05T00:00:00Z"); // Reference date for minuteUtcToDate
     const weeklySlots: WeeklySlot[] = consultant.slotsOfAvailabilityWeekly
       .filter((slot) => {
         // Defensive: Validate required fields exist
@@ -535,12 +586,18 @@ export async function GET(
 
         return true;
       })
+      // #1342 — the stored columns travel through as they are, including
+      // utcOffsetMinutes: the generator derives each occurrence's UTC weekday
+      // from the row's own frozen offset. Flattening the row onto a 1970
+      // reference date threw that offset away and left the grid matching rows
+      // against the viewer's weekday.
       .map((slot) => ({
         id: slot.id,
-        dayOfWeekforStartTimeInUTC: slot.startDay,
-        startsAt: minuteUtcToDate(slot.startTimeUtc, referenceDate),
-        dayOfWeekforEndTimeInUTC: slot.endDay,
-        endsAt: minuteUtcToDate(slot.endTimeUtc, referenceDate),
+        startDay: slot.startDay,
+        endDay: slot.endDay,
+        startTimeUtc: slot.startTimeUtc,
+        endTimeUtc: slot.endTimeUtc,
+        utcOffsetMinutes: slot.utcOffsetMinutes,
       }));
 
     const customSlots: CustomSlot[] = consultant.slotsOfAvailabilityCustom
@@ -684,7 +741,8 @@ export async function GET(
       // Re-sort days that received synthetic entries.
       for (const dateKey of Object.keys(slotsByDate)) {
         slotsByDate[dateKey].sort(
-          (a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime(),
+          (a, b) =>
+            new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime(),
         );
       }
     }
@@ -694,20 +752,17 @@ export async function GET(
       {
         status: 200,
         headers: {
-          // #1164 — browser-only cache for the polling grid. `private`, not
-          // the sibling's `public, s-maxage`: the same URL answers differently
-          // by session (includeAppointmentDetails/consulteeUserId gates
-          // above), so a shared cache would cross identities. Bounded
-          // staleness is safe — allocation re-validates server-side — and the
-          // one caller that must never see it, the post-allocation refetch,
-          // asks for `cache: "no-store"` (AllocationService, #1164).
-          // #1164 — no SWR: the 60s poll and return-tick must repaint fresh, not one-interval-old (adversarial review)
-          "Cache-Control": "private, max-age=30",
+          "Cache-Control": GRID_CACHE_CONTROL,
+          // #1319 PR 9 — what the next poll sends back as If-None-Match.
+          ...(etag ? { ETag: etag } : {}),
         },
       },
     );
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "scheduling" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "scheduling" } },
+    );
     console.error("Error fetching availability slots:", error);
     return NextResponse.json(
       { error: "An error occurred while fetching availability slots" },

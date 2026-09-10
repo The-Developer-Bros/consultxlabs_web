@@ -9,7 +9,7 @@
 import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import { RecordingService } from "@/lib/stream/recording-service";
-import { RecordingTransferService } from "@/lib/stream/recording-transfer-service";
+import { getBestRecordingUrl } from "@/lib/stream/recording-storage";
 import prisma from "@/lib/prisma";
 import { isPrivileged } from "@/lib/auth-helpers";
 
@@ -107,7 +107,7 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
       recordedAt: recording.recordedAt,
       status: recording.status,
       storageType: recording.storageType,
-      playbackUrl: await RecordingTransferService.getBestRecordingUrl(recording),
+      playbackUrl: await getBestRecordingUrl(recording),
       thumbnailUrl: recording.thumbnailUrl,
       resolution: recording.resolution,
       previewClipUrl: recording.previewClipUrl,

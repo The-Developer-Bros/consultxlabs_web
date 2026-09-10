@@ -10,10 +10,10 @@
  */
 import prisma from "@/lib/prisma";
 import { toPlain } from "@/lib/data/serialize";
-
-// #748-parity — 10-min join window matches JoinButton.getJoinState. Real join
-// (Stream client) lives on the consultee dashboard; the page links there.
-const JOIN_WINDOW_MS = 10 * 60 * 1000;
+// #1270 — the shared learner window, not a local copy of its value. Real join
+// (Stream client) lives on the consultee dashboard; the page links there, so
+// the two must agree on when the affordance appears.
+import { CONSULTEE_JOIN_WINDOW_MS } from "@/lib/appointments/slots";
 
 interface UpcomingSession {
   id: string;
@@ -134,7 +134,7 @@ export async function getMyProgramData(params: {
       const startMs = new Date(slot.startsAt).getTime();
       const endMs = new Date(slot.endsAt).getTime();
       const joinable =
-        !slot.isTentative && nowMs >= startMs - JOIN_WINDOW_MS && nowMs <= endMs;
+        !slot.isTentative && nowMs >= startMs - CONSULTEE_JOIN_WINDOW_MS && nowMs <= endMs;
       return {
         id: a.id,
         type: a.appointmentType,
@@ -171,7 +171,8 @@ export async function getMyProgramData(params: {
 
   // #777 §C.2 (SCHEMA-FREE) — active programs under the org's active contracts
   // this learner is NOT yet assigned to. Read-only discovery; assignment stays
-  // a MAINTAINER action (no enrollment-request model).
+  // a MAINTAINER action — single or bulk (#1230 wave-9 auto-enroll) — with no
+  // self-service enrollment-request model.
   const assignedProgramIds = new Set(assignments.map((a) => a.program.id));
   const eligiblePrograms = (
     await prisma.program.findMany({

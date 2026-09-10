@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -113,6 +113,15 @@ export function ReviewStep({
     null,
   );
   const [error, setError] = useState<string | null>(null);
+  // #1132 follow-up — launch is resumable within this mount. Creation is
+  // deferred to this step precisely so mid-wizard drop-off writes nothing,
+  // but that made a PARTIAL failure unrecoverable: the org row existed, a
+  // retry re-POSTed the same slug, and the server's SLUG_TAKEN 409 stranded
+  // a half-configured orphan with no path forward. Once POST succeeds the
+  // id is pinned here and retries skip straight to the failed follow-up
+  // step. (A full page reload still loses the pin — full cross-reload
+  // resume would need a server-side draft, deliberately out of scope.)
+  const createdOrgIdRef = useRef<string | null>(null);
 
   const emails = initialData.inviteEmails ?? [];
   const canSponsor = initialData.canSponsor ?? true;
@@ -140,36 +149,44 @@ export function ReviewStep({
       // Validate the outbound body before opening the network connection —
       // catches malformed wizard state (missing email, name too long, etc)
       // before the server returns a generic 400.
-      const createPayload = validateOutboundPayload(
-        CreateOrganizationPayloadSchema,
-        {
-          name: initialData.name,
-          billingEmail: initialData.billingEmail,
-          canSponsor,
-          canHost,
-          description: initialData.description || undefined,
-          industry: initialData.industry || undefined,
-          sizeBucket: initialData.sizeBucket || undefined,
-          website: initialData.website || undefined,
-          ...(canSponsor
-            ? {
-                fundingSource: initialData.fundingSource ?? "PERSONAL",
-                paymentTermsDays: initialData.paymentTermsDays ?? 60,
-              }
-            : {}),
-        },
-      );
-      const createRes = await fetch("/api/organizations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(createPayload),
-      });
-      const created = await parseJsonResponse(
-        createRes,
-        CreateOrganizationResponseSchema,
-        "Failed to create organization",
-      );
-      const orgId = created.organization.id;
+      //
+      // Idempotent on retry (#1132 follow-up): if a previous attempt already
+      // created the org, resume from the step that failed instead of
+      // re-POSTing into a permanent SLUG_TAKEN.
+      let orgId = createdOrgIdRef.current;
+      if (!orgId) {
+        const createPayload = validateOutboundPayload(
+          CreateOrganizationPayloadSchema,
+          {
+            name: initialData.name,
+            billingEmail: initialData.billingEmail,
+            canSponsor,
+            canHost,
+            description: initialData.description || undefined,
+            industry: initialData.industry || undefined,
+            sizeBucket: initialData.sizeBucket || undefined,
+            website: initialData.website || undefined,
+            ...(canSponsor
+              ? {
+                  fundingSource: initialData.fundingSource ?? "PERSONAL",
+                  paymentTermsDays: initialData.paymentTermsDays ?? 60,
+                }
+              : {}),
+          },
+        );
+        const createRes = await fetch("/api/organizations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(createPayload),
+        });
+        const created = await parseJsonResponse(
+          createRes,
+          CreateOrganizationResponseSchema,
+          "Failed to create organization",
+        );
+        orgId = created.organization.id;
+        createdOrgIdRef.current = orgId;
+      }
 
       // Step 2a — PATCH branding colors (org endpoint accepts these).
       const hasBranding =

@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { sendVerificationEmail, useSession } from "@/lib/auth-client";
+import { safeSameOriginPath } from "@/lib/safe-callback-url";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
@@ -36,13 +37,9 @@ function VerifyEmailContent() {
   const { data: session, isPending } = useSession();
   const error = errorMessage(searchParams.get("error"));
   // Preserve an upstream invite/deep-link destination through verification.
-  const rawCallbackUrl = searchParams.get("callbackUrl");
-  const safeCallbackUrl =
-    rawCallbackUrl &&
-    rawCallbackUrl.startsWith("/") &&
-    !rawCallbackUrl.startsWith("//")
-      ? rawCallbackUrl
-      : null;
+  // E2E-audit fix — hardened validator: the naive prefix check passed
+  // "/\attacker.example" (WHATWG backslash normalization → off-origin).
+  const safeCallbackUrl = safeSameOriginPath(searchParams.get("callbackUrl"));
   const onboardingUrl = safeCallbackUrl
     ? `/form/onboarding?callbackUrl=${encodeURIComponent(safeCallbackUrl)}`
     : "/form/onboarding";

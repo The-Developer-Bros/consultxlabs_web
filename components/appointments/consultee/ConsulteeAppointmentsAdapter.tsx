@@ -3,12 +3,13 @@
 import { useState } from "react";
 import * as Sentry from "@sentry/nextjs";
 import { useParams, useRouter } from "next/navigation";
-import { getGlobalVideoClient } from "@/lib/stream/disconnect";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { useToast } from "@/hooks/use-toast";
 import { useSession } from "@/lib/auth-client";
-import { getOrCreateAppointmentMeeting } from "@/lib/meeting";
+// #248: the shared hook reads the connected client singleton at click time and
+// lazy-imports lib/meeting, so the Stream SDK stays off this bundle.
+import { useLazyJoinMeeting } from "@/hooks/scheduling/useLazyJoinMeeting";
 import type { SlotOfAppointment } from "@prisma/client";
 import type {
   AppointmentActionAdapter,
@@ -38,7 +39,7 @@ import type {
 } from "@/lib/appointments/view-model";
 import { useEventActions } from "@/components/appointments/consultee/useEventActions";
 import { CancelConfirmationDialog } from "@/components/appointments/consultee/CancelConfirmationDialog";
-import { ReportIssueDialog } from "@/components/appointments/consultee/ReportIssueDialog";
+import { SupportThreadSheet } from "@/components/support/SupportThreadSheet";
 import { DocumentUpload } from "@/components/appointments/DocumentUpload";
 
 type DialogKind = "cancel" | "leave" | "report" | "documents";
@@ -121,18 +122,6 @@ const KIND_TO_TYPE: Record<
   TRIAL: "Trial",
 };
 
-const KIND_TO_REPORT_TYPE: Record<
-  AppointmentVM["kind"],
-  "CONSULTATION" | "SUBSCRIPTION" | "WEBINAR" | "CLASS"
-> = {
-  CONSULTATION: "CONSULTATION",
-  // Trials belong to subscription plans — the support flow has no TRIAL kind.
-  TRIAL: "SUBSCRIPTION",
-  SUBSCRIPTION: "SUBSCRIPTION",
-  WEBINAR: "WEBINAR",
-  CLASS: "CLASS",
-};
-
 /**
  * @param options.consulteeId — Override when the URL has no `[consulteeId]`
  *   (org appointment detail). Falls back to the route param, then the session.
@@ -147,6 +136,7 @@ export function useConsulteeAppointmentsAdapter(options?: {
 }): AppointmentActionAdapter {
   const router = useRouter();
   const { toast } = useToast();
+  const joinMeeting = useLazyJoinMeeting();
   const { data: session } = useSession();
   const queryClient = useQueryClient();
   const params = useParams<{ consulteeId: string }>();
@@ -165,7 +155,6 @@ export function useConsulteeAppointmentsAdapter(options?: {
   const typeLabel = activeVm ? KIND_TO_TYPE[activeVm.kind] : "Consultation";
   const actions = useEventActions({
     appointmentId: activeVm?.appointmentId ?? undefined,
-    appointment: activeVm?.raw.appointment,
     rawSlots: (activeVm?.raw.rawSlots ?? []) as SlotOfAppointment[],
     title: activeVm?.title ?? "",
     consultant: activeVm?.counterpart.name ?? "",
@@ -181,22 +170,19 @@ export function useConsulteeAppointmentsAdapter(options?: {
     setDialog(kind);
   };
 
-  // Join can't go through useEventActions — its args follow activeVm state,
-  // which wouldn't be committed yet on a same-click join from a row.
+  /**
+   * Join can't go through useEventActions — its args follow activeVm state,
+   * which wouldn't be committed yet on a same-click join from a row.
+   *
+   * #1270 — this was a private, degraded copy of `useLazyJoinMeeting`. It read
+   * the video client SYNCHRONOUSLY, so a click that landed before the deferred
+   * connect finished was told "Not signed in" (destructive, and untrue) while
+   * every sibling surface awaits the client for up to four seconds and shows a
+   * retryable warning. It also cleared `joiningId` only in `catch`, so a
+   * successful join left the row spinning until the route changed. The shared
+   * hook already has the right contract and returns whether navigation began.
+   */
   const joinNow = async (vm: AppointmentVM, slot: SlotLike) => {
-    // Read the singleton at click time rather than via useStreamVideoClient:
-    // the SDK context is now scoped to /meetings, and this is the same instance
-    // <StreamVideo> would hand back. Matches the #248 lazy-join idiom.
-    const client = getGlobalVideoClient();
-    if (!client) {
-      toast({
-        title: "Not signed in",
-        description:
-          "Video client not initialized. Please sign in to join the meeting.",
-        variant: "destructive",
-      });
-      return;
-    }
     const appointment = vm.raw.appointment;
     if (!appointment) {
       toast({
@@ -207,36 +193,16 @@ export function useConsulteeAppointmentsAdapter(options?: {
       return;
     }
     setJoiningId(vm.id);
-    try {
-      // MeetingSlot is Date|string tolerant by design — pass the slot
-      // honestly instead of asserting a Prisma type it isn't.
-      const meetingId = await getOrCreateAppointmentMeeting(
-        client,
-        appointment,
-        {
-          id: slot.id,
-          startsAt: slot.startsAt,
-          endsAt: slot.endsAt ?? null,
-          isTentative: slot.isTentative,
-          appointmentId: slot.appointmentId ?? null,
-        },
-      );
-      toast({
-        title: "Joining meeting",
-        description: "You will now be redirected to the meeting room.",
-      });
-      router.push(`/meetings/${meetingId}`);
-    } catch (error) {
-      Sentry.captureException(error);
-      console.error("Error joining meeting:", error);
-      toast({
-        title: "Error joining meeting",
-        description:
-          error instanceof Error ? error.message : "Unknown error occurred",
-        variant: "destructive",
-      });
-      setJoiningId(null);
-    }
+    // MeetingSlot is Date|string tolerant by design — pass the slot honestly
+    // instead of asserting a Prisma type it isn't.
+    const navigating = await joinMeeting(appointment, {
+      id: slot.id,
+      startsAt: slot.startsAt,
+      endsAt: slot.endsAt ?? null,
+      isTentative: slot.isTentative,
+      appointmentId: slot.appointmentId ?? null,
+    });
+    if (!navigating) setJoiningId(null);
   };
 
   const isDev = process.env.NEXT_PUBLIC_ENABLE_DEV_TOOLS === "true";
@@ -352,6 +318,9 @@ export function useConsulteeAppointmentsAdapter(options?: {
         onClick: () => openDialog(vm, "report"),
       });
     }
+    // #1270 — additive by construction: a separately-labelled overflow entry
+    // that appears only where the real Join does not, never a relaxation of
+    // the primary action's gate.
     if (
       isDev &&
       vm.raw.appointment &&
@@ -481,9 +450,6 @@ export function useConsulteeAppointmentsAdapter(options?: {
   const renderDialogs = () => {
     if (!activeVm) return null;
     const isPendingPayment = isPendingPaymentStatus(activeVm.status);
-    const scheduledAt = activeVm.raw.rawSlots?.[0]
-      ? new Date(activeVm.raw.rawSlots[0].startsAt as Date | string).toISOString()
-      : undefined;
     const dialogMode = dialog === "leave" ? "leave" : "cancel";
 
     return (
@@ -498,20 +464,27 @@ export function useConsulteeAppointmentsAdapter(options?: {
           isLoading={actions.isLoading || actionLoading}
           isPendingPayment={isPendingPayment}
           mode={dialogMode}
+          // R13 — without this the quote is disabled for every consultee, which
+          // is the one side of the booking whose money the quote is about. The
+          // consultant adapter has always passed it.
+          appointmentId={activeVm.appointmentId}
         />
 
         {activeVm.appointmentId && dialog === "report" && (
-          <ReportIssueDialog
+          // #support-hub — "Report issue" now opens the per-appointment
+          // flowchart thread (same surface as the detail page) instead of the
+          // legacy raw-ticket dialog. One system, one data path: intents are
+          // stage-gated server-side, escalations land in the ops queue with
+          // session context.
+          <SupportThreadSheet
+            appointmentId={activeVm.appointmentId}
             open
             onOpenChange={(open) => !open && closeDialog()}
-            appointmentId={activeVm.appointmentId}
-            appointmentType={KIND_TO_REPORT_TYPE[activeVm.kind]}
-            appointmentStatus={
-              activeVm.status === "COMPLETED" ? "COMPLETED" : "UPCOMING"
+            appointmentHref={
+              activeVm.appointmentId && consulteeId
+                ? `/dashboard/consultee/${consulteeId}/appointments/${activeVm.appointmentId}`
+                : undefined
             }
-            consultantName={activeVm.counterpart.name}
-            scheduledAt={scheduledAt}
-            onSuccess={closeDialog}
           />
         )}
 

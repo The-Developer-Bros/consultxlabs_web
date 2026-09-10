@@ -32,6 +32,15 @@ const refundPayment = jest.fn();
  * point. They live inside the factory because jest hoists it above every
  * declaration in this file.
  */
+// #1237 follow-up — the route now applies moneyOpsLimiter per actor; in the
+// shared CI process the mock-redis store accumulates hits across suites and
+// these success-path POSTs start answering 429. Boundary-mock the limiter:
+// rate limiting is infrastructure, not the contract under test here.
+jest.mock("../../lib/rate-limit", () => ({
+  __esModule: true,
+  applyRateLimit: jest.fn().mockResolvedValue(null),
+  moneyOpsLimiter: { limit: jest.fn() },
+}));
 jest.mock("../../lib/payments/operations/refund", () => {
   class RefundValidationError extends Error {
     constructor(
@@ -57,6 +66,12 @@ jest.mock("../../lib/payments/operations/refund", () => {
     RefundGatewayError,
   };
 });
+
+// #1319 — the single-payment arm now goes through the booking front door so
+// org-funded intents reverse in-ledger; the same spy answers it.
+jest.mock("../../lib/payments/operations/booking-refund", () => ({
+  refundBookingPayment: (...args: unknown[]) => refundPayment(...args),
+}));
 
 const refundWholeEventPayments = jest.fn();
 jest.mock("../../lib/payments/operations/event-refunds", () => ({

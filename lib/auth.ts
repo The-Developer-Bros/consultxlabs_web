@@ -4,16 +4,11 @@ import { APIError } from "better-auth/api";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { nextCookies } from "better-auth/next-js";
 import { admin, customSession, organization } from "better-auth/plugins";
-import {
-  adminAc,
-  userAc,
-  defaultAc,
-} from "better-auth/plugins/admin/access";
+import { adminAc, userAc, defaultAc } from "better-auth/plugins/admin/access";
 import { sso } from "@better-auth/sso";
 import bcrypt from "bcrypt";
 import { Prisma } from "@prisma/client";
 import prisma from "@/lib/prisma";
-import { reportSentryError } from "@/lib/observability/report";
 import {
   sendWelcomeEmail,
   sendAccountLinkedEmail,
@@ -21,8 +16,14 @@ import {
   sendVerificationEmail,
 } from "@/lib/email";
 import { syncSubscriber } from "@/lib/novu/subscriber";
-import { shouldRejectSession, lookupEnforcedOrg } from "@/lib/sso/enforce-session";
+import {
+  shouldRejectSession,
+  lookupEnforcedOrg,
+} from "@/lib/sso/enforce-session";
 import { applyMembershipRoleEffects } from "@/lib/api/organizations/membership-transitions";
+import { UNVERIFIED_ORG_SEAT_CAP } from "@/lib/enterprise/governance";
+import { recordSystemEvent } from "@/lib/enterprise/system-events";
+import { withSerializableRetry } from "@/lib/db/serializable-retry";
 import { buildConsentArtifact } from "@/lib/compliance/dpdp";
 import { PURPOSE_CODES } from "@/lib/compliance/purpose-codes";
 
@@ -289,9 +290,14 @@ export const auth = betterAuth({
               // Fail open on consent stamping — the user-create hook
               // shouldn't sink a signup over an audit-trail glitch. The
               // /consent backfill cron (#701) re-creates missing rows.
-              console.error("[AUTH_HOOK] DPDP consent stamp error:", consentError);
+              console.error(
+                "[AUTH_HOOK] DPDP consent stamp error:",
+                consentError,
+              );
               Sentry.captureException(
-                consentError instanceof Error ? consentError : new Error(String(consentError)),
+                consentError instanceof Error
+                  ? consentError
+                  : new Error(String(consentError)),
                 { tags: { subsystem: "auth" }, level: "warning" },
               );
             }
@@ -334,11 +340,9 @@ export const auth = betterAuth({
     },
     // Server-side SSO veto (issue #673). Runs on every session creation path
     // — credential signin, OAuth signin, SSO signin, signup — just before the
-    // cookie is issued. Reading-time enforcement via `ssoEnforcementFailed`
-    // in `customSession` below is kept for defense-in-depth but is not the
-    // primary gate: a direct POST to `/api/auth/sign-in/email` that bypasses
-    // our signin UI would previously create a valid session and only set the
-    // flag reactively. This hook rejects such requests at the source.
+    // cookie is issued, making this THE enforcement gate: a direct POST to
+    // `/api/auth/sign-in/email` that bypasses our signin UI is rejected here
+    // at the source rather than flagged reactively.
     //
     // Legitimate first-time SSO users are allowed because the SSO plugin
     // creates the `account` row with `providerId = ssoProvider.providerId`
@@ -518,6 +522,9 @@ export const auth = betterAuth({
               organization: {
                 select: {
                   id: true,
+                  // #1132 follow-up — the auto-join gates below need the
+                  // lifecycle status; joining a SUSPENDED org must be refused.
+                  status: true,
                   ssoSettings: { select: { defaultRoleForAutoJoin: true } },
                 },
               },
@@ -540,33 +547,92 @@ export const auth = betterAuth({
       const bareMembers = currentUserRow?.members ?? [];
       for (const bm of bareMembers) {
         if (!bm.organization) continue;
+        // #1132 follow-up — governance gates for JIT auto-join. Without
+        // these, a stale IdP sync could regrow memberships into a
+        // SUSPENDED / DEACTIVATED org, or push a PENDING_VERIFICATION org
+        // past UNVERIFIED_ORG_SEAT_CAP. Skips are logged so ops can see an
+        // IdP that is out of sync with the platform's lifecycle state.
+        const orgStatus = bm.organization.status;
+        if (orgStatus === "SUSPENDED" || orgStatus === "DEACTIVATED") {
+          void recordSystemEvent({
+            organizationId: bm.organizationId,
+            category: "SSO",
+            severity: "WARN",
+            message: `JIT auto-join skipped: organization is ${orgStatus} and the lifecycle gate refused membership creation for user ${user.id}`,
+            context: {
+              userId: user.id,
+              betterAuthMemberId: bm.id,
+              organizationStatus: orgStatus,
+            },
+          });
+          continue;
+        }
         const defaultRole = bm.organization.ssoSettings?.defaultRoleForAutoJoin ?? "LEARNER";
         try {
           // Wrap the role-effect resolution + Membership create in a
           // transaction so the lazy-created profile (LEARNER →
           // ConsulteeProfile, EXPERT → ConsultantProfile) and the
           // Membership row commit atomically.
-          await prisma.$transaction(async (tx) => {
-            const roleEffects = await applyMembershipRoleEffects(tx, {
-              userId: user.id,
-              role: defaultRole,
-              // Pre-fetched at the top of customSession to avoid an
-              // N+1 across the bareMembers loop. Audit Phase B.7.
-              preloadedProfiles,
-            });
-            await tx.membership.create({
-              data: {
+          //
+          // CR #1234 — seat admission is now ATOMIC: for unverified orgs the
+          // active-seat count runs in the SAME Serializable transaction as
+          // the create, so two concurrent JIT sessions can no longer both
+          // observe sub-cap counts and overshoot UNVERIFIED_ORG_SEAT_CAP.
+          // Conflicts retry via the house helper; a persistent abort skips
+          // this join (the next session load repairs it — bareMembers only
+          // lists unrepaired rows).
+          const result = await withSerializableRetry(() =>
+            prisma.$transaction(
+              async (tx): Promise<{ skipped: boolean }> => {
+                if (orgStatus === "PENDING_VERIFICATION") {
+                  const activeMembers = await tx.membership.count({
+                    where: {
+                      organizationId: bm.organizationId,
+                      status: "ACTIVE",
+                    },
+                  });
+                  if (activeMembers >= UNVERIFIED_ORG_SEAT_CAP) {
+                    return { skipped: true };
+                  }
+                }
+                const roleEffects = await applyMembershipRoleEffects(tx, {
+                  userId: user.id,
+                  role: defaultRole,
+                  // Pre-fetched at the top of customSession to avoid an
+                  // N+1 across the bareMembers loop. Audit Phase B.7.
+                  preloadedProfiles,
+                });
+                await tx.membership.create({
+                  data: {
+                    userId: user.id,
+                    organizationId: bm.organizationId,
+                    role: defaultRole,
+                    status: "ACTIVE",
+                    consulteeProfileId: roleEffects.consulteeProfileId,
+                    consultantProfileId: roleEffects.consultantProfileId,
+                    payoutRecipient: roleEffects.payoutRecipient,
+                    betterAuthMemberId: bm.id,
+                  },
+                });
+                return { skipped: false };
+              },
+              { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+            ),
+          );
+          if (result.skipped) {
+            void recordSystemEvent({
+              organizationId: bm.organizationId,
+              category: "SSO",
+              severity: "WARN",
+              message: `JIT auto-join skipped: organization is ${orgStatus} and the seat/cap gate refused membership creation for user ${user.id}`,
+              context: {
                 userId: user.id,
-                organizationId: bm.organizationId,
-                role: defaultRole,
-                status: "ACTIVE",
-                consulteeProfileId: roleEffects.consulteeProfileId,
-                consultantProfileId: roleEffects.consultantProfileId,
-                payoutRecipient: roleEffects.payoutRecipient,
                 betterAuthMemberId: bm.id,
+                organizationStatus: orgStatus,
               },
             });
-          });
+            continue;
+          }
         } catch (err) {
           // Narrow to P2002 (unique-constraint violation) ONLY. The
           // prior bare `catch {}` swallowed every error during the JIT
@@ -644,56 +710,20 @@ export const auth = betterAuth({
           walletBalance: m.organization.billingAccount?.walletBalance ?? null,
         }));
 
-      // SSO enforcement: mark sessions that bypassed SSO for enforced
-      // domains. Read-time defense-in-depth; the primary gate is in
-      // `databaseHooks.session.create.before` (above). Keeping a single
-      // enforcement path via the shared `lookupEnforcedOrg` helper
-      // means credential-signin and read-time reconciliation can't
-      // disagree on who counts as "enforced" — historically this was
-      // issue #673.
+      // SSO enforcement: the primary gate lives in
+      // `databaseHooks.session.create.before` (above) — every session-creation
+      // path (credential, OAuth, SSO, signup) is vetoed there when the user's
+      // email domain is under an enforced org without a linked provider
+      // account (issue #673).
       //
-      // An account satisfies enforcement only if `account.providerId`
-      // matches one of the `ssoProvider.providerId` rows registered
-      // for the enforcing org. Checking against `providerId != "credential"`
-      // is NOT enough — that would treat a personal Google or GitHub
-      // OAuth account as a valid SSO sign-in, bypassing the policy.
-      let ssoEnforcementFailed = false;
-      try {
-        const email = user.email;
-        const domain = email?.split("@")[1]?.toLowerCase();
-        if (domain) {
-          const enforced = await lookupEnforcedOrg(prisma, domain);
-          // `lookupEnforcedOrg` returns null when enforcement doesn't
-          // apply (unverified claim, inactive org, allowlist mismatch,
-          // enforceSSO=false). It also returns an empty
-          // `registeredProviderIds` array when the org has flipped
-          // enforceSSO on but hasn't added a provider yet — fail-open
-          // there, matching `shouldRejectSession`'s behaviour, so a
-          // half-configured org doesn't flag every session as failed.
-          if (enforced && enforced.registeredProviderIds.length > 0) {
-            const linkedViaSSO = await prisma.account.findFirst({
-              where: {
-                userId: user.id,
-                providerId: { in: enforced.registeredProviderIds },
-              },
-              select: { id: true },
-            });
-            if (!linkedViaSSO) ssoEnforcementFailed = true;
-          }
-        }
-      } catch (error) {
-        // Still non-fatal — a session read must not 500 because a lookup
-        // blipped — but note WHICH way it fails: `ssoEnforcementFailed` stays
-        // false, so the session passes enforcement. Unlike the two fail-opens
-        // reasoned about above, that one was never a decision, and it was
-        // silent. An enforced org's policy going unenforced is exactly the
-        // event someone needs to see. (#1125)
-        reportSentryError(error, {
-          subsystem: "sso",
-          op: "customSession.enforcementRecheck",
-          extra: { userId: user.id },
-        });
-      }
+      // A read-time recheck that flagged bypassed sessions via
+      // `ssoEnforcementFailed` used to live here. It was removed: no layout,
+      // guard, or component ever consumed the flag (docs claimed layouts
+      // redirect on it — none did), so it cost two DB round-trips
+      // (lookupEnforcedOrg + account probe) on EVERY session resolution —
+      // the hottest read in the app — for a value nobody read. Re-introduce
+      // enforcement-at-read-time only with an actual consumer; see the SSO
+      // enforcement lifecycle issue for the full plan.
 
       return {
         user: {
@@ -713,7 +743,6 @@ export const auth = betterAuth({
           sessionGeneration: liveSessionGeneration,
           banned: effectivelyBanned,
           organizationMemberships,
-          ssoEnforcementFailed,
         },
         session,
       };

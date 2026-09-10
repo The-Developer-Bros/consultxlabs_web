@@ -17,7 +17,7 @@ OAuth is the lighter-weight cousin of SSO — it authenticates individual users 
 
 ### 2.1 Provider Configuration
 
-Defined in [`lib/auth.ts`](file:///Users/kaustavghosh/Desktop/familiarise_web/lib/auth.ts#L57-L70):
+Defined in [`lib/auth.ts`](../../../../lib/auth.ts#L57-L70):
 
 ```typescript
 socialProviders: {
@@ -47,7 +47,7 @@ When a user signs in via OAuth with an email that already exists (from a credent
 
 ### 2.3 UI Configuration
 
-[`lib/auth-providers.ts`](file:///Users/kaustavghosh/Desktop/familiarise_web/lib/auth-providers.ts) centralizes the button labels, CSS classes, and type-safe IDs:
+[`lib/auth-providers.ts`](../../../../lib/auth-providers.ts) centralizes the button labels, CSS classes, and type-safe IDs:
 
 ```typescript
 export const AUTH_PROVIDERS = [

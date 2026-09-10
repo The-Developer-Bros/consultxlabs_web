@@ -1,6 +1,16 @@
 "use client";
 
 import * as Sentry from "@sentry/nextjs";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -514,6 +524,8 @@ export function UnifiedCalendar({
     manualAllocate,
     autoAllocate,
     allocateRequestedSlots,
+    partialOffer,
+    dismissPartialOffer,
     slotLimits,
   } = useEventSlotAllocation({
     eventType,
@@ -545,6 +557,14 @@ export function UnifiedCalendar({
     onSuccess: handleAllocationSuccess,
     onConflict: onAllocationConflict,
   });
+
+  // Radix keeps AlertDialogContent mounted for its exit animation, and both
+  // answers clear `partialOffer` before that finishes — so reading the counts
+  // straight off it blanked the title to "Only of sessions fit" on the way out.
+  // Hold the last offer for the render; `open` still tracks the live value.
+  const lastPartialOffer = useRef(partialOffer);
+  if (partialOffer) lastPartialOffer.current = partialOffer;
+  const offer = partialOffer ?? lastPartialOffer.current;
 
   // PERFORMANCE: Pre-compute a Set of event slot timestamps (rounded to seconds)
   // for O(1) lookups. Replaces O(n) .some() scan that ran 336× per render.
@@ -1597,6 +1617,51 @@ export function UnifiedCalendar({
           </Button>
         </div>
       )}
+
+      {/* #1206 — auto-allocation found room for only part of the plan. The
+          consultant decides between placing those sessions now and leaving the
+          request unallocated until more availability exists; nothing is
+          scheduled without this answer. */}
+      <AlertDialog
+        open={!!partialOffer}
+        onOpenChange={(open) => {
+          if (!open) dismissPartialOffer();
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Only {offer?.placeableSessions} of {offer?.requiredSessions}{" "}
+              sessions fit
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Your published availability in this scheduling period can hold{" "}
+              {offer?.placeableSessions} session
+              {offer?.placeableSessions === 1 ? "" : "s"}. Schedule those now
+              and leave the remaining{" "}
+              {(offer?.requiredSessions ?? 0) - (offer?.placeableSessions ?? 0)}{" "}
+              pending? The consultee is told how many are booked, and you can
+              allocate the rest once you open up more time.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isAllocating}>
+              Not now
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isAllocating}
+              onClick={(event) => {
+                // The dialog must stay under the hook's control: closing it
+                // here would drop the in-flight state the retry reports into.
+                event.preventDefault();
+                void autoAllocate(availableSlots, { allowPartial: true });
+              }}
+            >
+              Schedule {offer?.placeableSessions} now
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

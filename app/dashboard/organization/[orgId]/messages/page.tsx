@@ -47,7 +47,7 @@ export default async function OrgMessagesPage({
       />
       {/* Full-bleed: cancel the scaffold padding so the chat fills the column
           under the context bar, matching the personal Messages tabs. */}
-      <div className="-mx-4 h-[calc(100dvh-3.5rem-4rem)] overflow-hidden border-border bg-card sm:-mx-6 md:h-[calc(100dvh-3.5rem)] lg:-mx-8">
+      <div className="-mx-4 h-[calc(100dvh-3.5rem-4rem-var(--maintenance-banner-height,0px))] overflow-hidden border-border bg-card sm:-mx-6 md:h-[calc(100dvh-3.5rem-var(--maintenance-banner-height,0px))] lg:-mx-8">
         <StreamProvider userId={userId} enableChat={true} enableVideo={false}>
           <MessagesClient />
         </StreamProvider>

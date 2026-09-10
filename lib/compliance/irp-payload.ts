@@ -64,6 +64,19 @@ export interface BuildIrpPayloadInput {
   lineItems: IrpPayloadLineItem[];
   buyer: IrpPayloadBuyer;
   seller: IrpPayloadSeller;
+  /**
+   * #1230 — document type for the IRP DocDtls. "INV" (default) is the
+   * historical behavior; "CRN" marks a CGST s.34 credit note, which the
+   * NIC schema requires to carry OrigDocDtls referencing the original
+   * invoice. Credit notes were previously invisible to e-invoicing
+   * entirely — the uploader scanned invoices only and this field was
+   * hard-wired to "INV".
+   */
+  docType?: "INV" | "CRN";
+  /** Required when docType === "CRN": the adjusted invoice's number. */
+  originalInvoiceNumber?: string;
+  /** Required when docType === "CRN": the adjusted invoice's date. */
+  originalInvoiceDate?: Date;
 }
 
 export type BuildIrpPayloadResult =
@@ -88,6 +101,15 @@ export function buildIrpPayload(
   input: BuildIrpPayloadInput,
 ): BuildIrpPayloadResult {
   const { invoice, lineItems, buyer, seller } = input;
+  const docType = input.docType ?? "INV";
+
+  // CRN payloads must reference the adjusted document (NIC v1.1 OrigDocDtls).
+  if (docType === "CRN" && (!input.originalInvoiceNumber || !input.originalInvoiceDate)) {
+    return {
+      ok: false,
+      reason: "docType CRN requires originalInvoiceNumber and originalInvoiceDate",
+    };
+  }
 
   // B2B e-invoice requires the buyer GSTIN (the whole point of the IRP).
   if (!buyer.gstin) {
@@ -209,10 +231,18 @@ export function buildIrpPayload(
       RegRev: invoice.reverseCharge ? "Y" : "N",
     },
     DocDtls: {
-      Typ: "INV",
+      Typ: docType,
       No: invoice.invoiceNumber,
       Dt: formatDocDate(invoice.issuedAt),
     },
+    ...(docType === "CRN" && input.originalInvoiceDate
+      ? {
+          OrigDocDtls: {
+            No: input.originalInvoiceNumber,
+            Dt: formatDocDate(input.originalInvoiceDate),
+          },
+        }
+      : {}),
     SellerDtls: {
       Gstin: seller.gstin,
       LglNm: seller.legalName,

@@ -30,8 +30,27 @@ export const AppointmentSearchResultSchema = z.object({
   id: z.string(),
   type: StreamSearchKindSchema,
   name: z.string(),
-  consultantName: z.string(),
-  consultantImage: z.string().optional(),
+  /**
+   * The OTHER party, relative to the caller — not the consultant.
+   *
+   * These replace `consultantName`/`consultantImage`, which named the
+   * consultant unconditionally. On a consultant's own dashboard that is the
+   * consultant themselves, so every row in their search read as a conversation
+   * with themselves. The name is now resolved per-caller in the handler.
+   *
+   * For a group event there is no single counterparty, so this is the host.
+   */
+  counterpartyName: z.string(),
+  counterpartyImage: z.string().optional(),
+  /**
+   * Present only for 1:1 rows. The client sends this to
+   * `POST /api/stream/channels/open`, which re-derives the channel id
+   * server-side — the id below is for display and cache lookup, never the
+   * authority on which channel gets opened.
+   */
+  counterpartyUserId: z.string().optional(),
+  /** Funding context, part of the DM key. Null/absent = personal. */
+  organizationId: z.string().nullable().optional(),
   channelId: z.string(),
 });
 

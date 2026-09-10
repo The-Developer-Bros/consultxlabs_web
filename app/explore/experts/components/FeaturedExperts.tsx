@@ -133,7 +133,7 @@ function FeaturedExpertsImpl({ experts, isLoading }: FeaturedExpertsProps) {
 
                       {/* Rating */}
                       <div className="flex justify-center mb-3">
-                        {renderRating(expert.rating)}
+                        {expert.rating !== null && renderRating(expert.rating)}
                       </div>
 
                       {/* Headline */}

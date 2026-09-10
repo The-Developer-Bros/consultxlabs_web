@@ -8,7 +8,7 @@ color: red
 
 ## Before you start
 
-**Read these first, under `.claude/skills/razorpay/`: references/local-testing.md and references/webhooks.md.** Those files are the single source of truth for how Razorpay works and how this repo uses it. Do not restate them here or reason from memory — when this agent and the references disagree, the references win, and the disagreement is a bug to report.
+**Read these first, under `.claude/skills/finance/references/razorpay/`: references/local-testing.md and references/webhooks.md.** Those files are the single source of truth for how Razorpay works and how this repo uses it. Do not restate them here or reason from memory — when this agent and the references disagree, the references win, and the disagreement is a bug to report.
 
 Facts that override generic Razorpay advice in this repo:
 

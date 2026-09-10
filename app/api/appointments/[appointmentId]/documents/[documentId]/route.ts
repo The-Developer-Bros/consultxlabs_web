@@ -1,10 +1,17 @@
 import * as Sentry from "@sentry/nextjs";
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import prisma from "@/lib/prisma";
-import { deleteAppointmentDocument } from "@/lib/supabase";
 import { Prisma } from "@prisma/client";
 
 import { getSession } from "@/lib/auth-server";
+import { applyRateLimit, documentReviewLimiter } from "@/lib/rate-limit";
+import {
+  isReviewTransitionAllowed,
+  type ReviewStatus,
+} from "@/lib/documents/document-review";
+import { notifyDocumentReviewed } from "@/lib/novu/service";
+import { notificationScope } from "@/lib/novu/workflows";
+import { scopedHref } from "@/lib/novu/resolve-href";
 // GET - Get specific document details
 export async function GET(
   request: NextRequest,
@@ -150,6 +157,15 @@ export async function PATCH(
     const body = await request.json();
     const { reviewStatus, reviewNotes } = body;
 
+    // Review decisions mutate consultee-visible state; throttle like uploads.
+    if (session?.user?.id) {
+      const rateLimited = await applyRateLimit(
+        documentReviewLimiter,
+        session.user.id,
+      );
+      if (rateLimited) return rateLimited;
+    }
+
     // In development mode with explicit bypass flag, allow any user to review documents for testing
     // Requires both NODE_ENV=development AND DEV_BYPASS_AUTH=true for safety
     const isDevelopment =
@@ -160,6 +176,9 @@ export async function PATCH(
     const whereClause: Prisma.AppointmentDocumentWhereInput = {
       id: documentId,
       appointmentId,
+      // Tombstoned rows are awaiting nightly purge — reviewing a deleted
+      // document would resurrect it into the consultee's history.
+      deletedAt: null,
     };
 
     if (!isDevelopment) {
@@ -226,6 +245,26 @@ export async function PATCH(
       );
     }
 
+    // Transition guard — APPROVED/REJECTED are terminal. Reopening a decided
+    // review would rewrite history the consultee was already notified about;
+    // corrections go through a threaded upload instead.
+    if (
+      reviewStatus &&
+      !isReviewTransitionAllowed(
+        document.reviewStatus as ReviewStatus,
+        reviewStatus as ReviewStatus,
+      )
+    ) {
+      return NextResponse.json(
+        {
+          error: "Invalid transition",
+          message: `A ${document.reviewStatus.toLowerCase()} document can no longer move to ${reviewStatus}. Upload or request a threaded revision instead.`,
+          code: "INVALID_REVIEW_TRANSITION",
+        },
+        { status: 409 },
+      );
+    }
+
     // Update document review status
     const updatedDocument = await prisma.appointmentDocument.update({
       where: {
@@ -238,6 +277,76 @@ export async function PATCH(
         ...(reviewStatus && { reviewedById: session.user.id }), // A8 — FK scalar (#676)
       },
     });
+
+    // Tell the consultee their submission moved. One recipient, known side →
+    // scopedHref links straight at the right dashboard.
+    const appointmentInfo = await prisma.appointment.findUnique({
+      where: { id: appointmentId },
+      select: {
+        organizationId: true,
+        consultation: {
+          select: {
+            requestedBy: {
+              select: { id: true, user: { select: { id: true } } },
+            },
+            consultationPlan: {
+              select: {
+                consultantProfile: { select: { user: { select: { name: true } } } },
+              },
+            },
+          },
+        },
+        subscription: {
+          select: {
+            requestedBy: {
+              select: { id: true, user: { select: { id: true } } },
+            },
+            subscriptionPlan: {
+              select: {
+                consultantProfile: { select: { user: { select: { name: true } } } },
+              },
+            },
+          },
+        },
+      },
+    });
+    const recipientId =
+      appointmentInfo?.consultation?.requestedBy?.user?.id ||
+      appointmentInfo?.subscription?.requestedBy?.user?.id;
+    const consulteeProfileId =
+      appointmentInfo?.consultation?.requestedBy?.id ||
+      appointmentInfo?.subscription?.requestedBy?.id;
+    const reviewerName =
+      appointmentInfo?.consultation?.consultationPlan?.consultantProfile?.user
+        ?.name ||
+      appointmentInfo?.subscription?.subscriptionPlan?.consultantProfile?.user
+        ?.name ||
+      "The consultant";
+
+    if (recipientId && reviewStatus) {
+      after(() =>
+        notifyDocumentReviewed(recipientId, {
+          ...notificationScope(appointmentInfo?.organizationId),
+          appointmentId,
+          documentId,
+          reviewStatus: reviewStatus as ReviewStatus,
+          reviewNotes: reviewNotes || undefined,
+          originalName: document.originalName,
+          consultantName: reviewerName,
+          dashboardUrl: scopedHref({
+            organizationId: appointmentInfo?.organizationId,
+            surface: "appointments",
+            personal:
+              consulteeProfileId
+                ? { kind: "consultee", profileId: consulteeProfileId }
+                : undefined,
+          }),
+        }).catch((notifyError) => {
+          console.error("Failed to notify consultee of review", notifyError);
+          Sentry.captureException(notifyError instanceof Error ? notifyError : new Error(String(notifyError)), { tags: { subsystem: "novu" } });
+        }),
+      );
+    }
 
     // In development mode, log review action
     if (isDevelopment) {
@@ -290,6 +399,7 @@ export async function DELETE(
       id: documentId,
       appointmentId,
       reviewStatus: "PENDING", // Only allow deletion of pending documents
+      deletedAt: null, // Already-tombstoned rows are invisible to deletion
     };
 
     if (!isDevelopment) {
@@ -337,27 +447,24 @@ export async function DELETE(
       );
     }
 
-    // Delete from Supabase storage
-    const storageDeleted = await deleteAppointmentDocument(
-      document.storagePath,
-    );
-    if (!storageDeleted) {
-      console.warn(
-        `Failed to delete document from storage: ${document.storagePath}`,
-      );
-    }
-
-    // Delete from database
-    await prisma.appointmentDocument.delete({
+    // Soft delete — tombstone the row; the nightly cleanup job removes the
+    // storage object after a grace window, then hard-deletes. Immediate
+    // storage deletion here used to make an accidental click unrecoverable
+    // and raced the reconcile job's storage-missing detection.
+    await prisma.appointmentDocument.update({
       where: {
         id: documentId,
+      },
+      data: {
+        deletedAt: new Date(),
+        ...(session.user?.id ? { deletedById: session.user.id } : {}),
       },
     });
 
     // In development mode, log deletion
     if (isDevelopment) {
       console.log(
-        `[DEV MODE] Document deleted: ${documentId} from appointment ${appointmentId}`,
+        `[DEV MODE] Document soft-deleted: ${documentId} from appointment ${appointmentId}`,
       );
     }
 

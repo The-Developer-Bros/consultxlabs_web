@@ -38,7 +38,7 @@ export function PageSkeleton() {
  */
 export function ChatSkeleton() {
   return (
-    <div className="-m-4 flex h-[calc(100dvh-3.5rem-4rem)] overflow-hidden border-border bg-card sm:-m-6 md:h-[calc(100dvh-3.5rem)] lg:-m-8">
+    <div className="-m-4 flex h-[calc(100dvh-3.5rem-4rem-var(--maintenance-banner-height,0px))] overflow-hidden border-border bg-card sm:-m-6 md:h-[calc(100dvh-3.5rem-var(--maintenance-banner-height,0px))] lg:-m-8">
       <ChatSkeletonPanes />
     </div>
   );

@@ -106,3 +106,9 @@ node-payment-main/
 .claude/worktrees/
 screens/
 prompts/
+
+# Pre-images written by scripts/stream/*.ts before they mutate the live Stream
+# app. These are snapshots of production configuration (role grants, channel
+# rosters) and rollback material for an operator's machine — not source.
+.stream-backups/
+opencode.json

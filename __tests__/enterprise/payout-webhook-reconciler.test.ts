@@ -283,4 +283,25 @@ describe("handleRazorpayPayoutWebhook — OrganizationPayout reconciliation", ()
       "Beneficiary blocked",
     );
   });
+
+  // #1451 — `failed` was missing from the consultant status map, so a bank
+  // failure fell through to the PENDING default and the payout stayed in
+  // flight with its earnings BATCHED. FAILED is what un-batches them.
+  it("consultant payout.failed → handlePayoutWebhook with FAILED, not the PENDING default", async () => {
+    mockedPrisma.organizationPayout.findUnique.mockResolvedValue(null);
+
+    await handleRazorpayPayoutWebhook("payout.failed", {
+      id: "pout_consultant",
+      status: "failed",
+      failure_reason: "Insufficient bank balance",
+    });
+
+    expect(mockedHandlePayoutWebhook).toHaveBeenCalledWith(
+      "RAZORPAY",
+      "pout_consultant",
+      "FAILED",
+      "Insufficient bank balance",
+      undefined,
+    );
+  });
 });

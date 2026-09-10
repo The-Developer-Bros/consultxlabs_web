@@ -11,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "components/ui/select";
+import { SHORT_FORM_TEXT_MAX } from "@/schemas/user";
 import { Separator } from "components/ui/separator";
 import { Textarea } from "components/ui/textarea";
 import { useState, useEffect, type Dispatch, type SetStateAction } from "react";
@@ -226,7 +227,12 @@ export function ProfileSection({
                     onChange={onInputChange}
                     placeholder="Describe how you approach mentoring sessions (e.g., hands-on, structured, conversational...)"
                     className="mt-1 resize-none h-24"
+                    maxLength={SHORT_FORM_TEXT_MAX}
                   />
+                  <p className="text-xs text-zinc-400 mt-1">
+                    {formData.mentoringStyle?.length || 0}/{SHORT_FORM_TEXT_MAX}{" "}
+                    characters
+                  </p>
                 </div>
 
                 <div>

@@ -374,6 +374,8 @@ flowchart TD
 4. **Next batch** → Earnings included again
 5. **New payout created** → Fresh retry
 
+The stuck-payout handler re-arms a payout for retry through a compare-and-set, not a bare update (#1407). `scripts/payouts/handle-stuck-payouts.ts` reads its cohort of `PROCESSING` payouts once and then spends a gateway HTTP round-trip on each one in turn, which leaves a wide window in which a concurrent `process-payouts` run or an inbound payout webhook can move a row that the handler has already read. The reset to `APPROVED` therefore carries the state it expects to find in its `WHERE` clause — `status = PROCESSING` and `providerPayoutId IS NULL` — so a row that something else has advanced in the meantime is no longer matched. When the update affects zero rows the handler counts the payout as skipped and logs that it raced; it neither throws nor retries, because whichever writer moved the row now owns it. Without that guard the handler would stamp a payout back to `APPROVED` after a webhook had already completed it, and the next weekly batch would disburse the same money a second time.
+
 ---
 
 ## Payout Database Schema

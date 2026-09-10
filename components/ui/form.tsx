@@ -80,7 +80,18 @@ const FormItem = React.forwardRef<
 
   return (
     <FormItemContext.Provider value={{ id }}>
-      <div ref={ref} className={cn("space-y-2", className)} {...props} />
+      {/*
+        `relative` makes this field the containing block for absolutely
+        positioned descendants. Radix Select renders a visually-hidden native
+        <select> (BubbleSelect) beside its trigger with position:absolute and
+        no top/left pin (radix-ui/primitives#3875, unfixed in 2.2.6); with no
+        positioned ancestor it anchors to the document and — inside the
+        dashboard's viewport-sized shell — landed ~620px below the fold,
+        extending document scrollHeight past the viewport as dead white
+        over-scroll (live-measured 1282px vs 662px viewport). Pinning it here
+        contains it inside its own field, app-wide, whatever Radix ships.
+      */}
+      <div ref={ref} className={cn("relative space-y-2", className)} {...props} />
     </FormItemContext.Provider>
   );
 });

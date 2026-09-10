@@ -78,6 +78,11 @@ export interface LinkedRefund {
 
 export interface Ticket {
   id: string;
+  /**
+   * #705 — the speakable reference (FAM-2026-000123). Null on tickets minted
+   * before the counter existed; surfaces fall back to a truncated id there.
+   */
+  referenceNumber?: string | null;
   title: string;
   description: string;
   priority: "LOW" | "MEDIUM" | "HIGH" | "URGENT";

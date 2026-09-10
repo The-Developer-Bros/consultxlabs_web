@@ -5,6 +5,15 @@
  * POST — Force-invalidates the in-memory cache, triggering a fresh fetch on next use
  *
  * Useful when FX markets move significantly within the 1-hour cache window.
+ *
+ * #1396 — read both verbs as instance-local, not global. The cache they act on
+ * is a module-level variable in lib/currency.ts, so it belongs to whichever
+ * serverless instance happened to serve this request. GET therefore reports one
+ * instance's age, and POST cannot flush production: every other warm instance
+ * keeps its own copy until that copy expires on its own, and the CDN cache in
+ * front of /api/currency is untouched by either call. Treat this as a
+ * development and diagnosis aid. The real staleness bound is MAX_STALE_AGE in
+ * lib/currency.ts, which refuses to serve anything older than a day.
  */
 
 import * as Sentry from "@sentry/nextjs";

@@ -9,8 +9,10 @@ import type { Db } from "@/lib/prisma";
 // #780 — payload types derive from the extended client (Prisma.Result), not
 // Prisma.RecordingGetPayload, so BigInt columns (fileSize, plan.price) type
 // as number — matching what the client actually returns.
-export type RecordingRow = Omit<Recording, "fileSize"> & {
+// listPricePaise (#366) is converted by the money extension map, same deal.
+export type RecordingRow = Omit<Recording, "fileSize" | "listPricePaise"> & {
   fileSize: number | null;
+  listPricePaise: number | null;
 };
 
 // ============================================================================

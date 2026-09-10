@@ -43,13 +43,15 @@ import {
   rejectPayout,
 } from "../../lib/payments/payouts/payout-service";
 
-const cp = (
-  prisma as unknown as {
-    consultantPayout: { findUnique: jest.Mock; updateMany: jest.Mock };
-    consultantEarnings: { updateMany: jest.Mock };
-    $transaction: jest.Mock;
-  }
-);
+/** The Prisma surface approve/reject touch in these tests. */
+interface ApprovalPrismaMock {
+  consultantPayout: { findUnique: jest.Mock; updateMany: jest.Mock };
+  consultantEarnings: { updateMany: jest.Mock };
+  $transaction: jest.Mock;
+}
+
+// Single seam over the generated client (repo-wide mock idiom).
+const cp = prisma as unknown as ApprovalPrismaMock;
 
 beforeEach(() => {
   jest.clearAllMocks();

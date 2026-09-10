@@ -29,6 +29,7 @@ import { Prisma } from "@prisma/client";
 import { withSerializableRetry } from "@/lib/db/serializable-retry";
 import { AUDIT_ACTIONS } from "@/lib/enterprise/audit-actions";
 import { withCronLock } from "@/lib/cron/with-cron-lock";
+import { abortIfMaintenance } from "@/lib/maintenance-cron";
 import * as Sentry from "@sentry/nextjs";
 import { runJob } from "@/lib/observability/job-sentry";
 
@@ -143,11 +144,14 @@ export async function runExpireContracts(): Promise<ExpireStats> {
 }
 
 async function main() {
+  await abortIfMaintenance("expire-contracts");
   Sentry.logger.info("job:expire-contracts started");
   console.log(`[expire-contracts] Starting at ${new Date().toISOString()}`);
+  // fail-closed since #1169 lists it as financial: expiry withdraws the
+  // sponsorship the checkout resolver reads.
   const stats = await withCronLock(
     "expire-contracts",
-    { failMode: "open" },
+    { failMode: "closed" },
     () => runExpireContracts(),
   );
   console.log(

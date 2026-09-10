@@ -4,9 +4,40 @@ import prisma from "lib/prisma";
 import { getSession } from "@/lib/auth-server";
 import { bookingOrgId, getDmChannelId } from "@/lib/stream-utils";
 import {
+  dmEligibleStatusFilter,
+  OPENABLE_EVENT_STATUSES,
+} from "@/lib/stream/dm-eligibility-statuses";
+import {
   AppointmentSearchResultSchema,
   type AppointmentSearchResult,
 } from "@/schemas/stream-search";
+
+/**
+ * The OTHER party, relative to whoever is signed in.
+ *
+ * Every row used to be labelled with the consultant, unconditionally. That is
+ * right on a consultee's dashboard and wrong on a consultant's, where it names
+ * the viewer — so a consultant searching two letters of their own name got back
+ * what looked like a conversation with themselves, subtitled with the booking
+ * kinds they hold. The channel id underneath was always correct and always
+ * pointed at the real consultee; only the label lied.
+ */
+function resolveCounterparty(
+  viewerUserId: string,
+  consultant: { id: string; name: string | null; image: string | null },
+  consultee: { id: string; name: string | null; image: string | null },
+): {
+  counterpartyUserId: string;
+  counterpartyName: string;
+  counterpartyImage?: string;
+} {
+  const other = consultant.id === viewerUserId ? consultee : consultant;
+  return {
+    counterpartyUserId: other.id,
+    counterpartyName: other.name || "Unknown",
+    counterpartyImage: other.image || undefined,
+  };
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -29,7 +60,18 @@ export async function GET(request: NextRequest) {
     const results: AppointmentSearchResult[] = [];
 
     // Search Consultations (by plan title OR consultant name)
-    const consultations = await prisma.consultation.findMany({
+    // The four searches are independent — none reads another's result — so they
+    // are issued together and awaited once. Sequential awaits made every
+    // keystroke pay the SUM of four round-trips to a remote database; this pays
+    // the slowest one.
+    //
+    // Each query also gains a deterministic `orderBy`. With `take: 10` and no
+    // ordering, Postgres returns an arbitrary ten of the matching rows and the
+    // `slice(0, 20)` below then cuts a set that can differ between two identical
+    // requests — the same search, run twice, returning different people.
+    // Newest-first is both stable and the more useful order.
+
+    const consultationsPromise = prisma.consultation.findMany({
       where: {
         AND: [
           {
@@ -56,16 +98,27 @@ export async function GET(request: NextRequest) {
                   },
                 },
               },
+              // Search by consultee name. Absent until now, so a consultant
+              // could not find a conversation by their own client's name —
+              // only by their own name or the plan title. On a consultant's
+              // dashboard the consultant arm above matches THEMSELVES, which is
+              // why searching a few letters of their own name returned a row
+              // that looked like a self-conversation.
+              {
+                requestedBy: {
+                  user: {
+                    name: {
+                      contains: query,
+                      mode: "insensitive",
+                    },
+                  },
+                },
+              },
             ],
           },
           {
             status: {
-              in: [
-                "APPROVED",
-                "APPROVED_PENDING_PAYMENT",
-                "SCHEDULED",
-                "COMPLETED",
-              ],
+              ...dmEligibleStatusFilter(),
             },
           },
           {
@@ -107,41 +160,18 @@ export async function GET(request: NextRequest) {
         requestedBy: {
           include: {
             user: {
-              select: { id: true },
+              select: { id: true, name: true, image: true },
             },
           },
         },
         // Needed to resolve which DM thread this hit belongs to.
         appointment: { select: { organizationId: true } },
       },
+      orderBy: [{ createdAt: "desc" }, { id: "asc" }],
       take: 10,
     });
 
-    for (const consultation of consultations) {
-      results.push({
-        id: consultation.id,
-        type: "consultation",
-        name: consultation.consultationPlan.title,
-        consultantName:
-          consultation.consultationPlan.consultantProfile.user.name ||
-          "Unknown",
-        consultantImage:
-          consultation.consultationPlan.consultantProfile.user.image ||
-          undefined,
-        // Funding context is part of the DM key, so a hit must resolve to the
-        // SAME channel the creator made. Shared resolver, because reading only
-        // the appointment sent org-hosted-plan bookings to a personal channel
-        // that was never created — clicking the result opened an empty thread.
-        channelId: getDmChannelId(
-          consultation.consultationPlan.consultantProfile.user.id,
-          consultation.requestedBy.user.id,
-          bookingOrgId(consultation),
-        ),
-      });
-    }
-
-    // Search Subscriptions (by plan title OR consultant name)
-    const subscriptions = await prisma.subscription.findMany({
+    const subscriptionsPromise = prisma.subscription.findMany({
       where: {
         AND: [
           {
@@ -168,16 +198,22 @@ export async function GET(request: NextRequest) {
                   },
                 },
               },
+              // Search by consultee name — see the consultation block.
+              {
+                requestedBy: {
+                  user: {
+                    name: {
+                      contains: query,
+                      mode: "insensitive",
+                    },
+                  },
+                },
+              },
             ],
           },
           {
             status: {
-              in: [
-                "APPROVED",
-                "APPROVED_PENDING_PAYMENT",
-                "SCHEDULED",
-                "COMPLETED",
-              ],
+              ...dmEligibleStatusFilter(),
             },
           },
           {
@@ -219,7 +255,7 @@ export async function GET(request: NextRequest) {
         requestedBy: {
           include: {
             user: {
-              select: { id: true },
+              select: { id: true, name: true, image: true },
             },
           },
         },
@@ -238,31 +274,11 @@ export async function GET(request: NextRequest) {
           take: 1,
         },
       },
+      orderBy: [{ createdAt: "desc" }, { id: "asc" }],
       take: 10,
     });
 
-    for (const subscription of subscriptions) {
-      results.push({
-        id: subscription.id,
-        type: "subscription",
-        name: subscription.subscriptionPlan.title,
-        consultantName:
-          subscription.subscriptionPlan.consultantProfile.user.name ||
-          "Unknown",
-        consultantImage:
-          subscription.subscriptionPlan.consultantProfile.user.image ||
-          undefined,
-        // Same resolver as createSubscriptionChannel.
-        channelId: getDmChannelId(
-          subscription.subscriptionPlan.consultantProfile.user.id,
-          subscription.requestedBy.user.id,
-          bookingOrgId(subscription),
-        ),
-      });
-    }
-
-    // Search Webinars
-    const webinars = await prisma.webinar.findMany({
+    const webinarsPromise = prisma.webinar.findMany({
       where: {
         AND: [
           {
@@ -275,7 +291,7 @@ export async function GET(request: NextRequest) {
           },
           {
             status: {
-              in: ["SCHEDULED", "IN_PROGRESS", "COMPLETED"],
+              in: [...OPENABLE_EVENT_STATUSES],
             },
           },
           {
@@ -316,26 +332,11 @@ export async function GET(request: NextRequest) {
           },
         },
       },
+      orderBy: [{ createdAt: "desc" }, { id: "asc" }],
       take: 10,
     });
 
-    for (const webinar of webinars) {
-      if (webinar.webinarPlan.consultantProfile) {
-        results.push({
-          id: webinar.id,
-          type: "webinar",
-          name: webinar.webinarPlan.title,
-          consultantName:
-            webinar.webinarPlan.consultantProfile.user.name || "Unknown",
-          consultantImage:
-            webinar.webinarPlan.consultantProfile.user.image || undefined,
-          channelId: `webinar-${webinar.id}`,
-        });
-      }
-    }
-
-    // Search Classes
-    const classes = await prisma.class.findMany({
+    const classesPromise = prisma.class.findMany({
       where: {
         AND: [
           {
@@ -348,7 +349,7 @@ export async function GET(request: NextRequest) {
           },
           {
             status: {
-              in: ["SCHEDULED", "IN_PROGRESS", "COMPLETED"],
+              in: [...OPENABLE_EVENT_STATUSES],
             },
           },
           {
@@ -391,8 +392,101 @@ export async function GET(request: NextRequest) {
           },
         },
       },
+      orderBy: [{ createdAt: "desc" }, { id: "asc" }],
       take: 10,
     });
+
+    const [consultations, subscriptions, webinars, classes] = await Promise.all(
+      [
+        consultationsPromise,
+        subscriptionsPromise,
+        webinarsPromise,
+        classesPromise,
+      ],
+    );
+
+    for (const consultation of consultations) {
+      // One bad row must not take the whole search down.
+      //
+      // `getDmChannelId` throws on a self-pair — deliberately, because a
+      // one-member DM is unusable and silently collapsing it was the original
+      // bug. But it is called here inside a loop over query results, so a
+      // single legacy self-booked row (checkout blocks these now; seeded and
+      // pre-guard data may still hold them) throws past this handler and the
+      // outer catch answers 500 for the ENTIRE search. The user sees "no
+      // results" for every query that happens to match that row.
+      if (
+        consultation.consultationPlan.consultantProfile.user.id ===
+        consultation.requestedBy.user.id
+      ) {
+        continue;
+      }
+      const organizationId = bookingOrgId(consultation);
+      results.push({
+        id: consultation.id,
+        type: "consultation",
+        name: consultation.consultationPlan.title,
+        ...resolveCounterparty(
+          userId,
+          consultation.consultationPlan.consultantProfile.user,
+          consultation.requestedBy.user,
+        ),
+        organizationId,
+        // Funding context is part of the DM key, so a hit must resolve to the
+        // SAME channel the creator made. Shared resolver, because reading only
+        // the appointment sent org-hosted-plan bookings to a personal channel
+        // that was never created — clicking the result opened an empty thread.
+        channelId: getDmChannelId(
+          consultation.consultationPlan.consultantProfile.user.id,
+          consultation.requestedBy.user.id,
+          organizationId,
+        ),
+      });
+    }
+
+    for (const subscription of subscriptions) {
+      // Same self-pair guard as the consultation loop above.
+      if (
+        subscription.subscriptionPlan.consultantProfile.user.id ===
+        subscription.requestedBy.user.id
+      ) {
+        continue;
+      }
+      const organizationId = bookingOrgId(subscription);
+      results.push({
+        id: subscription.id,
+        type: "subscription",
+        name: subscription.subscriptionPlan.title,
+        ...resolveCounterparty(
+          userId,
+          subscription.subscriptionPlan.consultantProfile.user,
+          subscription.requestedBy.user,
+        ),
+        organizationId,
+        // Same resolver as createSubscriptionChannel.
+        channelId: getDmChannelId(
+          subscription.subscriptionPlan.consultantProfile.user.id,
+          subscription.requestedBy.user.id,
+          organizationId,
+        ),
+      });
+    }
+
+    for (const webinar of webinars) {
+      if (webinar.webinarPlan.consultantProfile) {
+        results.push({
+          id: webinar.id,
+          type: "webinar",
+          name: webinar.webinarPlan.title,
+          // A group event has no single counterparty, so the host stands in.
+          counterpartyName:
+            webinar.webinarPlan.consultantProfile.user.name || "Unknown",
+          counterpartyImage:
+            webinar.webinarPlan.consultantProfile.user.image || undefined,
+          channelId: `webinar-${webinar.id}`,
+        });
+      }
+    }
 
     for (const classItem of classes) {
       if (classItem.classPlan.consultantProfile) {
@@ -400,9 +494,9 @@ export async function GET(request: NextRequest) {
           id: classItem.id,
           type: "class",
           name: classItem.classPlan.title,
-          consultantName:
+          counterpartyName:
             classItem.classPlan.consultantProfile.user.name || "Unknown",
-          consultantImage:
+          counterpartyImage:
             classItem.classPlan.consultantProfile.user.image || undefined,
           channelId: `class-${classItem.id}`,
         });

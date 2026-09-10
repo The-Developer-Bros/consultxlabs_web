@@ -39,8 +39,11 @@ import {
 import { getAppUrl } from "@/lib/url";
 import { Currency, OrgInvoiceStatus, Prisma } from "@prisma/client";
 import { withCronLock, LONG_JOB_TTL_MS } from "@/lib/cron/with-cron-lock";
+import { dispatchWebhookEvent } from "@/lib/enterprise/outbound-webhooks/dispatch";
 import * as Sentry from "@sentry/nextjs";
 import { runJob } from "@/lib/observability/job-sentry";
+import { reportSentryError } from "@/lib/observability/report";
+import { recordSystemEvent } from "@/lib/enterprise/system-events";
 
 // Reminder fires when nextInvoiceDate is within this many days. Once
 // per cycle (gated by BillingSubscription.renewalReminderSentAt).
@@ -60,6 +63,13 @@ export async function runGenerateSubscriptionInvoices(): Promise<{
       nextInvoiceDate: { lte: now },
       contract: {
         organization: { status: { in: BILLABLE_ORG_STATUSES } },
+        // E2E-audit P0 fix — only bill contracts that are ACTIVE and within
+        // their term. This cron used to filter on org status alone, so a
+        // TERMINATED / EXPIRED / superseded contract kept issuing invoices
+        // every cycle forever (its docstring even claimed the expire cron
+        // enforced this — it doesn't; that cron only stamps contract status).
+        status: "ACTIVE",
+        OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }],
       },
     },
     include: {
@@ -118,6 +128,11 @@ export async function runGenerateSubscriptionInvoices(): Promise<{
       nextEnd.setMonth(nextEnd.getMonth() + 3);
     else nextEnd.setFullYear(nextEnd.getFullYear() + 1);
 
+    // #1401 — held outside the transaction so the P2002 handler below can name
+    // the number that collided; the value is only meaningful once the claim has
+    // been won and the counter reserved.
+    let competingInvoiceNumber: string | undefined;
+
     try {
       const result = await prisma.$transaction(
         async (tx) => {
@@ -127,6 +142,12 @@ export async function runGenerateSubscriptionInvoices(): Promise<{
             where: {
               id: sub.id,
               nextInvoiceDate: { lte: now },
+              // Re-checked AT CLAIM TIME: the contract may have terminated
+              // (or its term ended) between the cohort read and this write.
+              contract: {
+                status: "ACTIVE",
+                OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }],
+              },
             },
             data: {
               currentCycleStart: nextStart,
@@ -151,6 +172,7 @@ export async function runGenerateSubscriptionInvoices(): Promise<{
             },
             now,
           );
+          competingInvoiceNumber = invoiceNumber;
 
           const invoice = await tx.organizationInvoice.create({
             data: {
@@ -225,6 +247,25 @@ export async function runGenerateSubscriptionInvoices(): Promise<{
         }).catch((err) =>
           console.error("[cron] notifyOrgInvoiceIssued failed:", err),
         );
+        // E2E-audit P1 fix — cron-issued invoices never emitted
+        // `invoice.issued`, so integrators (HRIS/ERP) only ever saw
+        // manually-created invoices. Same payload shape as the manual route.
+        void dispatchWebhookEvent({
+          prisma,
+          organizationId: orgId,
+          eventType: "invoice.issued",
+          payload: {
+            invoiceId: result.invoiceId,
+            invoiceNumber: result.invoiceNumber,
+            totalPaise: result.totalPaise,
+            displayCurrency: Currency.INR,
+            dueDate: dueDate.toISOString(),
+            purchaseOrderId: null,
+            contractId: sub.contract.id,
+          },
+        }).catch((err) =>
+          console.error("[cron] invoice.issued webhook failed:", err),
+        );
       } else {
         console.log(
           `[cron] Subscription ${sub.id} already claimed by another worker, skipping`,
@@ -243,6 +284,36 @@ export async function runGenerateSubscriptionInvoices(): Promise<{
         console.warn(
           `[cron] Duplicate invoiceNumber for subscription ${sub.id}; will retry next run`,
         );
+        // #1401 — no number burns: the counter reservation runs inside this
+        // same Serializable transaction, so the collision rolls the sequence
+        // back with it and the next run re-issues cleanly. What was missing is
+        // that nobody heard about it — a console.warn in a cron is not an
+        // alert, and a repeating collision means the claim UPDATE has stopped
+        // serialising the workers, which is worth waking someone for. Alerting
+        // only; the skip-and-retry behaviour is unchanged.
+        reportSentryError(err, {
+          subsystem: "jobs",
+          op: "generate-subscription-invoices",
+          level: "error",
+          extra: { subscriptionId: sub.id, competingInvoiceNumber },
+        });
+        // One capture, not two: recordSystemError escalates to Sentry itself,
+        // and its escalation drops `context`, so the collision extras would
+        // only survive on the reportSentryError event above. The durable row
+        // is written through recordSystemEvent directly instead. Awaited: the
+        // insert rides this job's Prisma client, and a fire-and-forget one
+        // loses the audit row to the `$disconnect()` at the end of `main`.
+        await recordSystemEvent({
+          organizationId: sub.contract.organization.id,
+          category: "INVOICE",
+          severity: "ERROR",
+          message: `Duplicate invoice number on subscription ${sub.id}: ${err.message}`,
+          context: {
+            subscriptionId: sub.id,
+            competingInvoiceNumber,
+            errorMessage: err.message,
+          },
+        }).catch(() => {});
         skipped++;
         continue;
       }

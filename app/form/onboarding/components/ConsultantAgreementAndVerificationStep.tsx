@@ -110,20 +110,12 @@ export default function ConsultantAgreementAndVerificationStep({
       return;
     }
 
-    // LinkedIn URL is required
-    if (!linkedinUrl) {
-      setError("LinkedIn profile URL is required for verification");
-      return;
-    }
-
-    // At least one document is required
-    const completedDocuments = documents.filter((d) => d.status === "uploaded");
-    if (completedDocuments.length === 0) {
-      setError(
-        "Please upload at least one supporting document (certification, degree, license, or ID)",
-      );
-      return;
-    }
+    // LinkedIn and documents are OPTIONAL at submission (#onboarding-ux):
+    // verification itself is asynchronous anyway, so blocking onboarding on it
+    // only adds drop-off. A deferred consultant lands on the dashboard with
+    // PENDING_VERIFICATION and finishes from Settings → Verification; the
+    // server enforces the same policy via shouldSubmitVerification().
+    // Format validation above still guards whatever was entered.
 
     // Merge all data and submit
     const finalData = {
@@ -132,7 +124,7 @@ export default function ConsultantAgreementAndVerificationStep({
       privacyAccepted: true,
       verificationLinkedinUrl: linkedinUrl,
       verificationNotes: notes,
-      verificationDocuments: documents,
+      verificationDocuments: documents.filter((d) => d.status === "uploaded"),
     };
 
     onNext(finalData);
@@ -155,16 +147,20 @@ export default function ConsultantAgreementAndVerificationStep({
             Profile Verification
           </AlertTitle>
           <AlertDescription className="text-muted-foreground">
-            To maintain platform quality, we verify all consultant profiles.
-            Your LinkedIn profile and at least one supporting document are
-            required.
+            We verify all consultant profiles before they appear in the
+            directory. You can add your LinkedIn URL and documents now, or
+            finish this later from your dashboard — your profile is saved either
+            way.
           </AlertDescription>
         </Alert>
 
         {/* LinkedIn URL */}
         <div className="space-y-2">
           <Label htmlFor="linkedinUrl" className="flex items-center gap-1">
-            LinkedIn Profile URL <span className="text-red-500">*</span>
+            LinkedIn Profile URL{" "}
+            <span className="text-muted-foreground/70 text-xs font-normal">
+              (needed to get listed)
+            </span>
           </Label>
           <Input
             id="linkedinUrl"
@@ -192,7 +188,10 @@ export default function ConsultantAgreementAndVerificationStep({
         {/* Document Upload */}
         <div className="space-y-2">
           <Label className="flex items-center gap-1">
-            Supporting Documents <span className="text-red-500">*</span>
+            Supporting Documents{" "}
+            <span className="text-muted-foreground/70 text-xs font-normal">
+              (needed to get listed)
+            </span>
           </Label>
           <div className="bg-muted p-1 rounded-lg border border-border mb-2">
             <div className="flex items-start gap-2 p-2 text-xs text-muted-foreground">
@@ -200,7 +199,7 @@ export default function ConsultantAgreementAndVerificationStep({
               <p>
                 Upload at least one document that verifies your expertise:
                 professional certifications, degrees, licenses, or government
-                ID.
+                ID. You can also add these after signing up.
               </p>
             </div>
           </div>
@@ -279,7 +278,8 @@ export default function ConsultantAgreementAndVerificationStep({
           </li>
         </ol>
         <p className="text-xs text-muted-foreground mt-2">
-          Verification typically takes 1-2 business days.
+          Verification typically takes 1-2 business days. Skipping it now keeps
+          your profile unlisted until you finish from Settings → Verification.
         </p>
       </div>
 

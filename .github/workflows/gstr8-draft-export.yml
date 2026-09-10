@@ -1,0 +1,49 @@
+name: GSTR-8 draft export
+
+# #1230 — monthly GST-TCS u/s 52 draft statement. workflow_dispatch-only
+# until TCS collection goes live (the accrual writer is pending the
+# money-path-hardening merge); scheduling it now would emit empty drafts.
+
+on:
+  workflow_dispatch:
+    inputs:
+      month_start:
+        description: "Period start, UTC (defaults to previous IST calendar month)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gstr8-draft-export-${{ github.event.inputs.month_start || 'default' }}
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies without lifecycle scripts
+        # S6505 — no arbitrary lifecycle scripts during install; the one
+        # artifact generation we need (Prisma client) is invoked explicitly
+        # from our pinned devDependency right after.
+        run: npm ci --ignore-scripts
+      - name: Generate Prisma client
+        run: npx --no-install prisma generate
+      - name: Build and print the draft
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          GSTR8_MONTH_START: ${{ github.event.inputs.month_start }}
+        # S8543/S6505 — run the locally-installed binary directly; no
+        # on-demand package resolution at execution time.
+        run: node_modules/.bin/tsx jobs/compliance/gstr8-draft-export.ts

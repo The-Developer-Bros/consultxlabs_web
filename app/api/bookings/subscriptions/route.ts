@@ -19,6 +19,7 @@ import {
   forbiddenResponse,
 } from "@/lib/auth-helpers";
 import { transitionSubscriptionRequest } from "@/lib/booking/transitions";
+import { refundRejectedRequest } from "@/lib/booking/rejection-refund";
 import { IllegalTransitionError } from "@/lib/enterprise/transitions";
 import { applyRateLimit, eventMutationLimiter } from "@/lib/rate-limit";
 import { resolveOrgScope, scopeOrgId } from "@/lib/api/scope/parse";
@@ -292,6 +293,20 @@ export async function PATCH(request: NextRequest) {
       );
     }
 
+    // #1004 — declining is the CONSULTANT's act. REJECTED is legal from
+    // PENDING and APPROVED_PENDING_PAYMENT, so without this guard a consultee
+    // could reject their own PAID booking and ride the consultant-initiated
+    // 100% refund tier on demand. Mirrors the consultations list PATCH.
+    if (
+      status === AppointmentStatus.REJECTED &&
+      !isConsultant &&
+      !isPrivileged(session.user.role)
+    ) {
+      return forbiddenResponse(
+        "Only the consultant can decline a request. Cancel it instead.",
+      );
+    }
+
     const startDate = new Date();
     const endDate = addMonths(
       startDate,
@@ -311,6 +326,18 @@ export async function PATCH(request: NextRequest) {
           },
         }),
       );
+
+      // #1004 — rejection refund through the front door, after commit.
+      const rejectionRefund =
+        status === AppointmentStatus.REJECTED
+          ? await refundRejectedRequest({
+              kind: "subscription",
+              requestId: id,
+              initiatedByUserId: session.user.id,
+              actor: isConsultant ? "CONSULTANT" : "PLATFORM",
+            })
+          : null;
+
       const subscription = await prisma.subscription.findUniqueOrThrow({
         where: { id },
         include: {
@@ -397,7 +424,7 @@ export async function PATCH(request: NextRequest) {
         }
       }
 
-      return NextResponse.json({ data: subscription });
+      return NextResponse.json({ data: subscription, rejectionRefund });
     } catch (error) {
       Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "bookings" } });
       console.error(

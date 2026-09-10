@@ -18,6 +18,8 @@
 import prisma from "@/lib/prisma";
 import { AppointmentsType, Prisma } from "@prisma/client";
 import { toPlain } from "@/lib/data/serialize";
+import type { Scope } from "@/lib/api/scope/parse";
+import { scopeToWhereOrgId } from "@/lib/api/scope/parse";
 
 type Participant = {
   id: string;
@@ -78,7 +80,13 @@ export type StaffAppointmentsParams = {
   search?: string | null;
   dateFrom?: string | null;
   dateTo?: string | null;
-  orgId?: string | null;
+  /**
+   * #674 defect 13 — required, not optional. This surface reads EVERY tenant
+   * by default, so "no scope passed" and "the operator deliberately wants the
+   * platform view" used to look identical at the call site. Naming
+   * `{ kind: "all" }` makes that a decision someone wrote down.
+   */
+  scope: Scope;
   page?: number;
   limit?: number;
 };
@@ -141,16 +149,16 @@ function buildStatusWhere(
  * SSR-dehydrated cache matches the client fetch verbatim.
  */
 export async function getStaffAppointments(
-  params: StaffAppointmentsParams = {},
+  params: StaffAppointmentsParams,
 ): Promise<StaffAppointmentsPayload> {
   const type = (params.type as AppointmentsType | null) ?? null;
   const status = params.status ?? null;
   const search = params.search ?? null;
   const dateFrom = params.dateFrom ?? null;
   const dateTo = params.dateTo ?? null;
-  // #674 comment 7 — optional org-scope filter for support staff drilling into
-  // a single tenant's appointments. Uses Appointment.organizationId.
-  const orgId = params.orgId ?? null;
+  // #674 comment 7 — org-scope filter for support staff drilling into a single
+  // tenant's appointments. Uses Appointment.organizationId.
+  const orgWhere = scopeToWhereOrgId(params.scope);
   const page = params.page ?? 1;
   const limit = params.limit ?? 20;
   const offset = (page - 1) * limit;
@@ -159,14 +167,10 @@ export async function getStaffAppointments(
   // derived value (per-type sub-entity status + payment presence), so it's
   // resolved to DB conditions and AND-ed in below, instead of post-filtering a
   // single page (which broke page sizes and totals).
-  const baseWhere: Prisma.AppointmentWhereInput = {};
+  const baseWhere: Prisma.AppointmentWhereInput = { ...orgWhere };
 
   if (type && Object.values(AppointmentsType).includes(type)) {
     baseWhere.appointmentType = type;
-  }
-
-  if (orgId) {
-    baseWhere.organizationId = orgId;
   }
 
   // Filter by date at the database level using slotsOfAppointment

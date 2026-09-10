@@ -3,10 +3,20 @@
 import { PlanLevel } from "@prisma/client";
 import { useCallback, useMemo } from "react";
 import { motion } from "framer-motion";
-import { GraduationCap, Video, Users, Sparkles } from "lucide-react";
+import {
+  GraduationCap,
+  Video,
+  Users,
+  Sparkles,
+  type LucideIcon,
+} from "lucide-react";
 import { useSession } from "@/lib/auth-client";
 import { useCurrency } from "@/hooks/useCurrency";
 import { type Program, type TopicWithCount } from "@/lib/explore/programs";
+import {
+  buildProgramHeroStats,
+  type ProgramStatKey,
+} from "@/lib/data/public-stats";
 import {
   useCuratedPrograms,
   useInfiniteScroll,
@@ -23,8 +33,9 @@ import StaticTopRows from "./components/StaticTopRows";
 import ProgramResults from "./components/ProgramResults";
 
 interface ProgramStats {
-  classCount: number;
-  webinarCount: number;
+  publishedClassCount: number;
+  publishedWebinarCount: number;
+  enrolledLearnerCount: number;
 }
 
 interface ProgramsInteractiveContentProps {
@@ -38,27 +49,16 @@ interface ProgramsInteractiveContentProps {
   availableLevels?: PlanLevel[];
 }
 
-const FALLBACK_STATS = [
-  { icon: GraduationCap, value: "500+", label: "Classes Available" },
-  { icon: Video, value: "200+", label: "Live Webinars" },
-  { icon: Users, value: "25K+", label: "Students Enrolled" },
-];
-
-function buildStatsFromData(data: ProgramStats) {
-  return [
-    {
-      icon: GraduationCap,
-      value: `${data.classCount || 0}`,
-      label: "Classes Available",
-    },
-    {
-      icon: Video,
-      value: `${data.webinarCount || 0}`,
-      label: "Live Webinars",
-    },
-    { icon: Users, value: "25K+", label: "Students Enrolled" },
-  ];
-}
+// #1490 — there is no FALLBACK_STATS any more. It rendered "500+ Classes
+// Available", "200+ Live Webinars" and "25K+ Students Enrolled" whenever the
+// stats read returned null, and the data path kept the "25K+" regardless, so
+// that one was fabricated even when the others were real. A figure now either
+// comes from the database or is not shown.
+const PROGRAM_STAT_ICONS: Record<ProgramStatKey, LucideIcon> = {
+  classes: GraduationCap,
+  webinars: Video,
+  learners: Users,
+};
 
 export default function ProgramsInteractiveContent({
   initialTrending,
@@ -87,10 +87,11 @@ export default function ProgramsInteractiveContent({
     clearAll: clearAllFilters,
   } = useProgramsFilters();
 
-  // Stats: render server-fetched value if present, otherwise marketing
-  // fallbacks. No client useEffect — the RSC paid that cost.
+  // Stats: server-fetched or absent. `null` means the read failed, and a hero
+  // with no numbers is the honest rendering of "we could not count them".
+  // No client useEffect — the RSC paid that cost.
   const stats = useMemo(
-    () => (initialStats ? buildStatsFromData(initialStats) : FALLBACK_STATS),
+    () => (initialStats ? buildProgramHeroStats(initialStats) : []),
     [initialStats],
   );
 
@@ -136,7 +137,11 @@ export default function ProgramsInteractiveContent({
     onLocalSearchChange("");
   }, [onLocalSearchChange]);
 
-  const { chips, removeChip, clearAll: clearAllChips } = useProgramFilterChips({
+  const {
+    chips,
+    removeChip,
+    clearAll: clearAllChips,
+  } = useProgramFilterChips({
     filters,
     topics: topicsWithCount,
     selectedLevel,
@@ -208,25 +213,34 @@ export default function ProgramsInteractiveContent({
               Learn at your own pace or join interactive sessions.
             </p>
 
-            <div className="flex flex-wrap justify-center gap-8 md:gap-16">
-              {stats.map((stat, index) => (
-                <motion.div
-                  key={stat.label}
-                  className="text-center"
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.5, delay: 0.2 + index * 0.1 }}
-                >
-                  <div className="w-12 h-12 mx-auto mb-3 rounded-xl bg-zinc-800/50 border border-zinc-700/50 flex items-center justify-center">
-                    <stat.icon className="w-6 h-6 text-white" />
-                  </div>
-                  <div className="text-2xl md:text-3xl font-bold text-white">
-                    {stat.value}
-                  </div>
-                  <div className="text-sm text-zinc-500">{stat.label}</div>
-                </motion.div>
-              ))}
-            </div>
+            {stats.length > 0 ? (
+              <div className="flex flex-wrap justify-center gap-8 md:gap-16">
+                {stats.map((stat, index) => {
+                  const Icon = PROGRAM_STAT_ICONS[stat.key];
+                  return (
+                    <motion.div
+                      key={stat.key}
+                      className="text-center"
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.5, delay: 0.2 + index * 0.1 }}
+                    >
+                      <div className="w-12 h-12 mx-auto mb-3 rounded-xl bg-zinc-800/50 border border-zinc-700/50 flex items-center justify-center">
+                        <Icon className="w-6 h-6 text-white" />
+                      </div>
+                      <div className="text-2xl md:text-3xl font-bold text-white">
+                        {stat.display}
+                      </div>
+                      <div className="text-sm text-zinc-500">{stat.label}</div>
+                    </motion.div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="text-sm text-zinc-500">
+                Check back for new classes and webinars.
+              </p>
+            )}
           </motion.div>
         </div>
       </section>

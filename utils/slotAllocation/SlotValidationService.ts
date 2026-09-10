@@ -7,7 +7,12 @@
 
 import { reportSentryError } from "@/lib/observability/report";
 import prisma, { type PrismaLike } from "@/lib/prisma";
-import { AppointmentStatus, ScheduleType } from "@prisma/client";
+import {
+  AppointmentStatus,
+  ScheduleType,
+  BookingSource,
+  PaymentStatus,
+} from "@prisma/client";
 import {
   EventType,
   ValidationResult,
@@ -36,9 +41,18 @@ const SLOT_DURATION_MS = 30 * 60 * 1000;
  * from disagreeing on expired APPROVED_PENDING_PAYMENT holds.
  */
 export interface LiveAppointmentOccupancy {
-  consultation?: { status?: AppointmentStatus | null } | null;
-  subscription?: { status?: AppointmentStatus | null } | null;
-  payment?: Array<{ expiresAt?: Date | null }> | null;
+  consultation?: {
+    status?: AppointmentStatus | null;
+    bookingSource?: BookingSource | null;
+  } | null;
+  subscription?: {
+    status?: AppointmentStatus | null;
+    bookingSource?: BookingSource | null;
+  } | null;
+  payment?: Array<{
+    expiresAt?: Date | null;
+    paymentStatus?: PaymentStatus | null;
+  }> | null;
 }
 
 /**
@@ -53,16 +67,41 @@ export function isOccupiedByLiveAppointment(
   appointment: LiveAppointmentOccupancy,
   now: Date = new Date(),
 ): boolean {
-  const pendingStatus =
-    appointment.consultation?.status ?? appointment.subscription?.status;
+  const request = appointment.consultation ?? appointment.subscription;
+  const pendingStatus = request?.status;
+  // #873 — free the slot only when EVERY payment row is dead; a later active
+  // retry row can still be live even if payment[0] lapsed. A row is dead when
+  // the sweep already marked it EXPIRED or its window has passed.
+  // A row is dead when the sweep marked it EXPIRED, the gateway FAILED it, or
+  // it is still PENDING past its window. Never by the clock alone: a
+  // SUCCEEDED row keeps its expiresAt, and its request can sit in PENDING
+  // until the confirmation write lands (#1319 review).
+  const payments = appointment.payment ?? [];
+  const allPaymentsDead =
+    payments.length > 0 &&
+    payments.every(
+      (p) =>
+        p.paymentStatus === PaymentStatus.EXPIRED ||
+        p.paymentStatus === PaymentStatus.FAILED ||
+        (p.paymentStatus === PaymentStatus.PENDING &&
+          !!p.expiresAt &&
+          new Date(p.expiresAt) < now),
+    );
+
   if (pendingStatus === AppointmentStatus.APPROVED_PENDING_PAYMENT) {
-    // #873 — free the slot only when EVERY payment row is expired; a later
-    // active retry row can still be live even if payment[0] lapsed.
-    const payments = appointment.payment ?? [];
-    const allPaymentsExpired =
-      payments.length > 0 &&
-      payments.every((p) => !!p.expiresAt && new Date(p.expiresAt) < now);
-    if (allPaymentsExpired) return false;
+    if (allPaymentsDead) return false;
+  }
+  // #1319 — a DIRECT_CHECKOUT hold sits in PENDING, not
+  // APPROVED_PENDING_PAYMENT (the consultant never approves it), so once its
+  // payment lapsed nothing here freed the slot: it stayed blocked until the
+  // 15-minute GitHub Actions sweep got round to it. A REQUEST_SUBMITTED
+  // PENDING is a different animal — it waits on a human, not a payment.
+  if (
+    pendingStatus === AppointmentStatus.PENDING &&
+    request?.bookingSource === BookingSource.DIRECT_CHECKOUT &&
+    allPaymentsDead
+  ) {
+    return false;
   }
   return true;
 }
@@ -488,10 +527,14 @@ export class SlotValidationService {
         );
       }
     } else {
-      // Custom schedule - validate using OVERLAP detection (same logic as calendar display)
-      // FIX: Previously only checked START times, which failed when consultant created
-      // larger slots (e.g., 1-hour slot from 16:30-17:30) that the calendar breaks down
-      // into multiple 30-minute display intervals (16:30-17:00 and 17:00-17:30)
+      // Custom schedule — CONTAINMENT, the same rule the weekly arm above
+      // applies via isMinuteWithinWeeklySlot. #1320: this used to test overlap
+      // (`slot < availableEnd && availableStart < slotEnd`), so a 30-minute
+      // atom hanging half outside a custom row passed manual allocation and
+      // was then rejected by checkout, which has always required the whole
+      // window to sit inside published availability. Containment still accepts
+      // the case the overlap test was introduced for — an atom the calendar
+      // broke out of a larger row — because such an atom is inside the row.
 
       let hasInvalidSlots = false;
       const invalidSlotsList: string[] = [];
@@ -499,17 +542,16 @@ export class SlotValidationService {
         // Calculate the end time of the requested slot (30-minute slots)
         const slotEnd = new Date(slot.getTime() + 30 * 60 * 1000);
 
-        // Check if this slot overlaps with ANY available custom slot
-        // Uses same overlap logic as calendar: intervalStart < slotEnd && slotStart < intervalEnd
-        const hasOverlap = consultant.slotsOfAvailabilityCustom.some(
+        // Check if this slot sits wholly inside ANY available custom slot
+        const isContained = consultant.slotsOfAvailabilityCustom.some(
           (availableSlot) => {
             const availableStart = new Date(availableSlot.startsAt);
             const availableEnd = new Date(availableSlot.endsAt);
-            return slot < availableEnd && availableStart < slotEnd;
+            return slot >= availableStart && slotEnd <= availableEnd;
           },
         );
 
-        if (!hasOverlap) {
+        if (!isContained) {
           hasInvalidSlots = true;
           invalidSlotsList.push(slot.toISOString());
         }
@@ -529,7 +571,7 @@ export class SlotValidationService {
           return consultant.slotsOfAvailabilityCustom.some((availableSlot) => {
             const availableStart = new Date(availableSlot.startsAt);
             const availableEnd = new Date(availableSlot.endsAt);
-            return slot < availableEnd && availableStart < slotEnd;
+            return slot >= availableStart && slotEnd <= availableEnd;
           });
         }).length;
         const isConsecutiveIssue =

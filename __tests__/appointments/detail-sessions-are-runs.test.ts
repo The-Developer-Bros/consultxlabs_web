@@ -38,6 +38,7 @@ interface SlotRow {
   meetingSession: {
     id: string;
     endedAt: Date | null;
+    endedReason: string | null;
     recordings: never[];
   } | null;
 }
@@ -245,6 +246,7 @@ describe("what a run carries from its rows", () => {
     rows[0].meetingSession = {
       id: "ms-1",
       endedAt: new Date("2026-08-01T07:40:00.000Z"),
+      endedReason: null,
       recordings: [],
     };
 

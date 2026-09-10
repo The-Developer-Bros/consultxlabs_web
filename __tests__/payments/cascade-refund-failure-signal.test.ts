@@ -46,10 +46,12 @@ describe("PM-34 — both consumers translate a failed run into their failure sig
   });
 
   it("HTTP shim returns non-2xx on a failed run", () => {
+    // #1319 — the shim is now the shared cleanupRoute factory; the route only
+    // supplies the status callback, not the response wiring itself.
     const routeSrc = read("app/api/cleanup/cascade-refund-earnings/route.ts");
 
     expect(routeSrc).toMatch(
-      /status:\s*cascadeRunFailed\(result\)\s*\?\s*500\s*:\s*200/,
+      /status:\s*\(result\)\s*=>\s*\(?\s*cascadeRunFailed\(result\)\s*\?\s*500\s*:\s*200/,
     );
   });
 });

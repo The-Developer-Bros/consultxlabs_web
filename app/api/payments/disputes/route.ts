@@ -7,6 +7,8 @@
 import { listDisputes, submitDisputeEvidence } from "@/lib/payments";
 import prisma from "@/lib/prisma";
 import { hasBackofficePermission } from "@/lib/auth/backoffice-permissions";
+import { applyRateLimit, moneyOpsLimiter } from "@/lib/rate-limit";
+import { evidenceDeadlinePassed } from "@/lib/payments/dispute-status";
 import { Prisma } from "@prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
@@ -176,6 +178,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // #677/PM-36 — evidence submission is an irreversible gateway push.
+    const limited = await applyRateLimit(
+      moneyOpsLimiter,
+      session.user.id,
+    );
+    if (limited) return limited;
+
     // Validate request
     const body = await req.json();
     const { disputeId: dbDisputeId, evidence } =
@@ -206,6 +215,28 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { error: "Dispute is already resolved and cannot accept new evidence" },
         { status: 400 },
+      );
+    }
+
+    // #677/PM-37 — enforce the evidence deadline LOCALLY. Late submissions
+    // used to fail only inside Stripe, surfacing as an untyped 500 after the
+    // operator had already composed the packet. A typed 410 up front lets
+    // the dashboard say "deadline passed" instead of "something broke".
+    if (
+      evidenceDeadlinePassed({
+        status: dispute.status,
+        dueBy: dispute.dueBy,
+        nowMs: Date.now(),
+      })
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "The evidence deadline for this dispute has passed. Contact payment-gateway support to resolve it manually.",
+          code: "EVIDENCE_DEADLINE_PASSED",
+          dueBy: dispute.dueBy?.toISOString() ?? null,
+        },
+        { status: 410 },
       );
     }
 

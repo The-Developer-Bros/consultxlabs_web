@@ -7,6 +7,14 @@ on:
     - cron: "0 3 * * *"
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+  # A second workflow_dispatch while one is already pending would replace it
+  # under the default single-pending-run policy; queue: max keeps every
+  # trigger instead of silently dropping one.
+  queue: max
+
 jobs:
   cleanup-old-stream-recordings:
     runs-on: ubuntu-latest
@@ -23,6 +31,18 @@ jobs:
       UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
       UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
       DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      # #1270 — `lib/supabase.ts` THROWS at module scope when either of these
+      # is unset, and this entrypoint reaches it transitively (job →
+      # RecordingTransferService → lib/supabase). The job therefore died during
+      # import, before a single row was read, on every run it has ever had.
+      # The anon key is required even where only the admin client is used: the
+      # module builds the public client first and throws before it gets there.
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+      # Deleting the Supabase object behind an expired recording needs the
+      # admin client; without it the delete silently fails RLS and the bytes
+      # outlive the retention window (the DPDP half of #1270).
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
     steps:
       - uses: actions/checkout@v5

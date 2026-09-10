@@ -120,49 +120,116 @@ const StreamProviderImpl = ({
   //  repeatedly and producing "Consecutive calls to connectUser" warnings)
   // Each token type has its own expiry to avoid one overwriting the other's validity window.
   const tokenCacheRef = useRef<{
+    userId?: string;
     chatToken?: string;
     chatExpiresAt?: number;
     videoToken?: string;
     videoExpiresAt?: number;
   }>({});
 
-  const isTokenValid = useCallback((type: "chat" | "video") => {
-    const cache = tokenCacheRef.current;
-    const token = type === "chat" ? cache.chatToken : cache.videoToken;
-    const expiresAt =
-      type === "chat" ? cache.chatExpiresAt : cache.videoExpiresAt;
-    if (!token || !expiresAt) return false;
-    // Check if token expires within next 5 minutes
-    return Date.now() < expiresAt - 5 * 60 * 1000;
-  }, []);
+  const isTokenValid = useCallback(
+    (type: "chat" | "video", forUserId: string) => {
+      const cache = tokenCacheRef.current;
+      // Identity-scoped: a token minted for a prior user must never satisfy
+      // this one, even while still unexpired.
+      if (cache.userId !== forUserId) return false;
+      const token = type === "chat" ? cache.chatToken : cache.videoToken;
+      const expiresAt =
+        type === "chat" ? cache.chatExpiresAt : cache.videoExpiresAt;
+      if (!token || !expiresAt) return false;
+      // Check if token expires within next 5 minutes
+      return Date.now() < expiresAt - 5 * 60 * 1000;
+    },
+    [],
+  );
+
+  // In-flight token requests, shared so concurrent callers (the prefetch
+  // effect below + the connect effects) get ONE server-action round trip
+  // instead of racing duplicates. Keyed by userId: a request minted for a
+  // prior identity must never resolve for the current one.
+  const tokenPromiseRef = useRef<{
+    userId?: string;
+    chat?: Promise<string>;
+    video?: Promise<string>;
+  }>({});
 
   const getCachedToken = useCallback(
     async (type: "chat" | "video"): Promise<string> => {
-      if (isTokenValid(type)) {
+      // A user switch invalidates both caches wholesale before any read.
+      if (
+        tokenCacheRef.current.userId !== userId ||
+        tokenPromiseRef.current.userId !== userId
+      ) {
+        tokenCacheRef.current = { userId };
+        tokenPromiseRef.current = { userId };
+      }
+
+      if (isTokenValid(type, userId)) {
         const cache = tokenCacheRef.current;
         return type === "chat" ? cache.chatToken! : cache.videoToken!;
       }
 
+      const existing = type === "chat" ? tokenPromiseRef.current.chat : tokenPromiseRef.current.video;
+      if (existing) return existing;
+
       // Generate new token
-      const newToken =
+      const request =
         type === "chat"
-          ? await chatTokenProvider(userId)
-          : await tokenProvider(userId);
+          ? chatTokenProvider(userId)
+          : tokenProvider(userId);
+      if (type === "chat") tokenPromiseRef.current.chat = request;
+      else tokenPromiseRef.current.video = request;
 
-      // Cache with 50-minute expiry (tokens usually last 1 hour)
-      const expiresAt = Date.now() + 50 * 60 * 1000;
-      if (type === "chat") {
-        tokenCacheRef.current.chatToken = newToken;
-        tokenCacheRef.current.chatExpiresAt = expiresAt;
-      } else {
-        tokenCacheRef.current.videoToken = newToken;
-        tokenCacheRef.current.videoExpiresAt = expiresAt;
-      }
+      void request.then(
+        (newToken) => {
+          // Cache with 50-minute expiry (tokens usually last 1 hour)
+          const expiresAt = Date.now() + 50 * 60 * 1000;
+          if (type === "chat") {
+            tokenCacheRef.current.chatToken = newToken;
+            tokenCacheRef.current.chatExpiresAt = expiresAt;
+          } else {
+            tokenCacheRef.current.videoToken = newToken;
+            tokenCacheRef.current.videoExpiresAt = expiresAt;
+          }
+        },
+        () => {},
+      );
+      // `.finally` returns a DERIVED promise that re-rejects when the request
+      // fails; left unattached that is an unhandled rejection on every failed
+      // mint. The catch swallows exactly that derived rejection — the original
+      // still propagates to `return request` callers.
+      void request.finally(() => {
+        if (tokenPromiseRef.current.userId !== userId) return;
+        if (type === "chat" && tokenPromiseRef.current.chat === request) {
+          delete tokenPromiseRef.current.chat;
+        }
+        if (type === "video" && tokenPromiseRef.current.video === request) {
+          delete tokenPromiseRef.current.video;
+        }
+      }).catch(() => {});
 
-      return newToken;
+      return request;
     },
     [userId, isTokenValid],
   );
+
+  // Prefetch both tokens at mount — BEFORE userDetails resolve. Token minting
+  // needs only `userId`, but connectUser used to wait for useUserData first and
+  // only THEN paid a server-action round trip for the token: two serial waits
+  // on the critical path of every dashboard/meetings load. Starting the fetch
+  // immediately lets it complete during the user-data query, so connectUser
+  // starts the WebSocket the moment its other inputs are ready. Fire-and-forget:
+  // failures are handled by the normal connect paths, which re-request via
+  // getCachedToken (cleared promise ref → fresh attempt).
+  useEffect(() => {
+    if (!apiKey || !userId) return;
+    if (enableChat && !isTokenValid("chat", userId)) {
+      void getCachedToken("chat").catch(() => {});
+    }
+    if (enableVideo && !isTokenValid("video", userId)) {
+      void getCachedToken("video").catch(() => {});
+    }
+  }, [userId, enableChat, enableVideo, getCachedToken, isTokenValid]);
 
   // Exponential backoff retry logic
   const getRetryDelay = useCallback((attempt: number) => {
@@ -497,7 +564,19 @@ const StreamProviderImpl = ({
       }
     };
 
-    // Defer the connect off the critical path (#248).
+    // Defer the connect off the critical path (#248) — but only briefly.
+    //
+    // The timeout was 2000ms, and on a cold load that is not a ceiling, it is
+    // the ACTUAL wait: the main thread is saturated by dashboard hydration and
+    // by evaluating the Stream Chat + Video chunk, so the browser never finds
+    // an idle period and fires at the deadline every time. Two seconds of the
+    // Messages skeleton were this line.
+    //
+    // The deferral still earns its place — it keeps the socket handshake from
+    // competing with first paint of the dashboard behind it — so it stays, at a
+    // budget that yields to hydration without becoming the dominant cost. If
+    // this ever needs tuning again, measure with `streamLogger.timing()` rather
+    // than guessing; it warns above 5s and currently has no callers.
     if (typeof window !== "undefined" && "requestIdleCallback" in window) {
       idleHandle = (
         window as Window & {
@@ -506,7 +585,7 @@ const StreamProviderImpl = ({
             opts?: { timeout: number },
           ) => number;
         }
-      ).requestIdleCallback(run, { timeout: 2000 });
+      ).requestIdleCallback(run, { timeout: 300 });
     } else {
       timeoutHandle = setTimeout(run, 0);
     }

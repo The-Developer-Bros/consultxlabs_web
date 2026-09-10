@@ -91,6 +91,7 @@ const ROUTE_PATTERNS = {
     "/api/user/reviews", // Public: consultant reviews
     "/api/plans/classes", // Public: browse and view class plans (sub-routes enforce their own auth)
     "/api/plans/webinars", // Public: browse and view webinar plans (sub-routes enforce their own auth)
+    "/api/explore/recordings", // Public: #366 recordings library listing (metadata only; playback is authed)
     "/api/slots/availability/", // Public: consultant availability for booking page
     "/api/slots/availability-with-allocation/", // Public: consultant availability with allocation info
   ],
@@ -295,6 +296,14 @@ const RATE_LIMIT_RULES: RateRule[] = [
   {
     label: "public: consultant search / explore",
     match: (p) => p.startsWith("/api/user/consultants"),
+    limiter: searchLimiter,
+    skipLocalhost: false,
+  },
+  {
+    // #1244 review — public + query-parameter-driven DB reads need a gate so
+    // `search`/`tag` variation can't hammer Postgres unauthenticated.
+    label: "public: recordings library browse",
+    match: (p) => p.startsWith("/api/explore/recordings"),
     limiter: searchLimiter,
     skipLocalhost: false,
   },

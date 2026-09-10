@@ -153,6 +153,8 @@ export async function getOperatorDashboardStats(): Promise<OperatorDashboardStat
 
 type StaffDashboardRecentTicket = {
   id: string;
+  /** #705 — the reference staff and the user name the ticket by. */
+  referenceNumber: string | null;
   subject: string;
   user: string;
   userImage: string | null;
@@ -243,6 +245,7 @@ export async function getStaffDashboardStats(): Promise<StaffDashboardStats> {
     resolvedToday,
     recentTickets: recentTickets.map((ticket) => ({
       id: ticket.id,
+      referenceNumber: ticket.referenceNumber,
       subject: ticket.title,
       user: ticket.user.name || ticket.user.email || "Unknown",
       userImage: ticket.user.image,

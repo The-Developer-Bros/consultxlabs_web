@@ -10,6 +10,7 @@
 import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import { RecordingService } from "@/lib/stream/recording-service";
+import { applyRateLimit, streamRecordingSyncLimiter } from "@/lib/rate-limit";
 
 import { getSession } from "@/lib/auth-server";
 export async function POST(_req: NextRequest) {
@@ -19,6 +20,18 @@ export async function POST(_req: NextRequest) {
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+
+    // #1270 — keyed on the user, after auth and before any Stream work. This
+    // route is one cheap POST that fans out a `listRecordings` call to Stream
+    // for every session the caller touches, so it was an unbounded, billable
+    // amplifier for any authenticated account. The edge `stream: api` rule
+    // covers the path but is IP-keyed at 60/min, which neither identifies the
+    // caller nor reflects what this endpoint costs to serve.
+    const limited = await applyRateLimit(
+      streamRecordingSyncLimiter,
+      `recordings-sync:${session.user.id}`,
+    );
+    if (limited) return limited;
 
     type SyncResult = {
       synced: number;

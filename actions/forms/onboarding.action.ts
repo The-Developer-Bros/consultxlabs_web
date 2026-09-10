@@ -52,7 +52,7 @@ const RoleHandoffRoleSchema = z.nativeEnum(UserRole);
 export async function updateOnboardingInformationAction(
   userId: string,
   body: unknown,
-): Promise<{ success: boolean; user?: Record<string, unknown>; error?: string; verificationWarning?: string }> {
+): Promise<{ success: boolean; user?: Record<string, unknown>; error?: string; verificationWarning?: string; verificationDeferred?: boolean }> {
   console.log(
     "Server Action: updateOnboardingInformationAction - Delegating to central utils",
   );

@@ -5,14 +5,20 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { signUp, useSession, sendVerificationEmail } from "@/lib/auth-client";
+import {
+  signUp,
+  useSession,
+  sendVerificationEmail,
+  getSession,
+} from "@/lib/auth-client";
+import { safeSameOriginPath } from "@/lib/safe-callback-url";
 import { setPendingReferral } from "@/lib/pending-referral";
 import { ssoSigninWithGuard } from "@/lib/sso/signin-with-toast";
 import { GlobeIcon } from "@/components/auth/auth-icons";
 import { SocialLoginButtons } from "@/components/auth/social-login-buttons";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { AuthFormSkeleton } from "../AuthFormSkeleton";
 
 export default function SignUp() {
@@ -45,12 +51,10 @@ function SignUpContent() {
   const [verificationSent, setVerificationSent] = useState(false);
   const [resending, setResending] = useState(false);
 
-  // Validate the callbackUrl once (relative paths only — prevents open-redirect)
-  // and reuse the safe value across onboarding, verification, and social login.
-  const safeCallbackUrl =
-    callbackUrl && callbackUrl.startsWith("/") && !callbackUrl.startsWith("//")
-      ? callbackUrl
-      : null;
+  // Validate the callbackUrl once and reuse the safe value across onboarding,
+  // verification, and social login. safeSameOriginPath rejects backslash /
+  // scheme-relative escapes that naive prefix checks let through.
+  const safeCallbackUrl = safeSameOriginPath(callbackUrl);
 
   // Build onboarding URL with optional callbackUrl passthrough (for org invite flow)
   const onboardingUrl = safeCallbackUrl
@@ -69,15 +73,42 @@ function SignUpContent() {
     ? `/auth/signin?callbackUrl=${encodeURIComponent(safeCallbackUrl)}`
     : "/auth/signin";
 
-  // Redirect authenticated users based on onboarding status
+  // Redirect authenticated users based on onboarding status.
+  //
+  // `useSession()` can serve the ≤5-min cookie-cache payload; acting on a
+  // stale `onboardingCompleted` sent the client one way while the server
+  // guard (always force-fresh) bounced the user back — an intermittent
+  // flicker. Re-verify with a force-fresh read before committing, and keep
+  // the navigation idempotent (single replace, never push: leaving /auth/*
+  // in history made Back from the dashboard ping-pong forward again).
+  const navigatedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!isPending && session?.user) {
-      if (session.user.onboardingCompleted) {
-        router.push(safeCallbackUrl || "/dashboard");
-      } else {
-        router.push(onboardingUrl);
-      }
-    }
+    if (isPending || !session?.user) return;
+
+    let cancelled = false;
+    const resolveAndGo = (completed: boolean) => {
+      if (cancelled) return;
+      const target = completed
+        ? safeCallbackUrl || "/dashboard"
+        : onboardingUrl;
+      if (navigatedRef.current === target) return;
+      navigatedRef.current = target;
+      router.replace(target);
+    };
+
+    getSession({ query: { disableCookieCache: true } })
+      .then(({ data }) => {
+        // Session revoked between paint and check — no protected redirect.
+        if (!data?.user) return;
+        resolveAndGo(!!data.user.onboardingCompleted);
+      })
+      .catch(() => {
+        resolveAndGo(!!session.user?.onboardingCompleted);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [session, isPending, router, safeCallbackUrl, onboardingUrl]);
 
   // Persist the referral code at first touch so it survives the OAuth redirect
@@ -109,7 +140,10 @@ function SignUpContent() {
   const handleResendVerification = async () => {
     setResending(true);
     try {
-      await sendVerificationEmail({ email, callbackURL: verificationCallbackUrl });
+      await sendVerificationEmail({
+        email,
+        callbackURL: verificationCallbackUrl,
+      });
       toast({
         title: "Verification email sent",
         description: `Check ${email} for the link.`,
@@ -164,14 +198,20 @@ function SignUpContent() {
     if (!email || !email.includes("@")) return;
     setSsoChecking(true);
     try {
-      const res = await fetch(`/api/auth/sso/domain-check?email=${encodeURIComponent(email)}`);
+      const res = await fetch(
+        `/api/auth/sso/domain-check?email=${encodeURIComponent(email)}`,
+      );
       if (res.ok) {
         const data = await res.json();
-        setSsoCheck(data.enforceSSO ? {
-          enforceSSO: true,
-          organizationName: data.organizationName,
-          ssoBody: data.ssoBody,
-        } : null);
+        setSsoCheck(
+          data.enforceSSO
+            ? {
+                enforceSSO: true,
+                organizationName: data.organizationName,
+                ssoBody: data.ssoBody,
+              }
+            : null,
+        );
       }
     } catch {
       // ignore — fall through to normal signup
@@ -209,15 +249,26 @@ function SignUpContent() {
     if (!raw) return "An unexpected error occurred. Please try again.";
     const lower = raw.toLowerCase();
     const issues: string[] = [];
-    if (lower.includes("email") && (lower.includes("invalid") || lower.includes("required")))
+    if (
+      lower.includes("email") &&
+      (lower.includes("invalid") || lower.includes("required"))
+    )
       issues.push("Please enter a valid email address.");
-    if (lower.includes("password") && (lower.includes("too small") || lower.includes(">=") || lower.includes("required")))
+    if (
+      lower.includes("password") &&
+      (lower.includes("too small") ||
+        lower.includes(">=") ||
+        lower.includes("required"))
+    )
       issues.push("Password must be at least 8 characters.");
     if (lower.includes("already") || lower.includes("exists"))
       return "An account with this email already exists. Try signing in instead.";
     if (issues.length > 0) return issues.join(" ");
     // Strip "[body.field]" prefixes for anything we didn't catch
-    return raw.replace(/\[body\.\w+\]\s*/g, "").trim() || "An unexpected error occurred.";
+    return (
+      raw.replace(/\[body\.\w+\]\s*/g, "").trim() ||
+      "An unexpected error occurred."
+    );
   };
 
   const handleSignUp = async (e: React.FormEvent) => {
@@ -262,7 +313,10 @@ function SignUpContent() {
         router.push(onboardingUrl);
       }
     } catch (error: unknown) {
-      Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "auth" } });
+      Sentry.captureException(
+        error instanceof Error ? error : new Error(String(error)),
+        { tags: { subsystem: "auth" } },
+      );
       console.error("Sign up error:", error);
       const message =
         error instanceof Error
@@ -405,7 +459,8 @@ function SignUpContent() {
           {ssoCheck?.enforceSSO && (
             <div className="mt-4 rounded-md border border-white/15 bg-white/5 p-4">
               <p className="mb-3 text-sm text-zinc-400">
-                Your organization requires SSO sign-in. Use the button below to authenticate.
+                Your organization requires SSO sign-in. Use the button below to
+                authenticate.
               </p>
               <Button
                 type="button"

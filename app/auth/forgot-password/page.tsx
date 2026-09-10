@@ -9,7 +9,7 @@ import { authClient, useSession } from "@/lib/auth-client";
 import { GlobeIcon } from "@/components/auth/auth-icons";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 export default function ForgotPassword() {
   const { toast } = useToast();
@@ -19,10 +19,15 @@ export default function ForgotPassword() {
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState("");
 
-  // Redirect authenticated users away from forgot-password
+  // Redirect authenticated users away from forgot-password. `replace` (not
+  // push) so /auth/* never lands in history — Back from the dashboard used to
+  // remount this page and bounce forward again. Idempotency ref keeps
+  // duplicate session-store emissions from queueing repeat navigations.
+  const navigatedRef = useRef(false);
   useEffect(() => {
-    if (!isPending && session?.user?.id) {
-      router.push("/dashboard");
+    if (!isPending && session?.user?.id && !navigatedRef.current) {
+      navigatedRef.current = true;
+      router.replace("/dashboard");
     }
   }, [isPending, session, router]);
 
@@ -51,7 +56,10 @@ export default function ForgotPassword() {
         toast({ title: "Request Sent", description: successMessage });
       }
     } catch (error: unknown) {
-      Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "auth" } });
+      Sentry.captureException(
+        error instanceof Error ? error : new Error(String(error)),
+        { tags: { subsystem: "auth" } },
+      );
       console.error("Forgot password error:", error);
       const errorMessage =
         error instanceof Error

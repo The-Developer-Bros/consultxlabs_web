@@ -32,7 +32,9 @@ import {
   UNVERIFIED_ORG_SEAT_CAP,
   hasVerifiedDomain,
 } from "@/lib/enterprise/governance";
+import { releaseSeatsForTerminatedAssignments } from "@/lib/api/organizations/seat-count";
 import { dispatchWebhookEvent } from "@/lib/enterprise/outbound-webhooks/dispatch";
+import { withSerializableRetry } from "@/lib/db/serializable-retry";
 import { resolveRoleFromGroupNames } from "./resource-user";
 
 export type ScimOperationError =
@@ -120,7 +122,10 @@ export async function createOrReprovisionScimUser(
   // COMMITTED. Serializable makes concurrent transactions that both read
   // the seat counts and insert fail one side at commit (P2034) instead of
   // both overshooting UNVERIFIED_ORG_SEAT_CAP.
-  return prisma.$transaction(async (tx) => {
+  // #1132 follow-up — P2034 is transient and now retried instead of
+  // surfacing as a SCIM 500 to the IdP.
+  return withSerializableRetry(() =>
+    prisma.$transaction(async (tx) => {
     const user = existingUser
       ? await tx.user.update({
           where: { id: existingUser.id },
@@ -283,7 +288,7 @@ export async function createOrReprovisionScimUser(
       role: created.role,
       status: created.status,
     } satisfies ScimUserOpResult;
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 
 /**
@@ -307,7 +312,11 @@ export async function deprovisionScimUser(
   });
   if (!membership) return { kind: "NOT_FOUND" };
 
-  return prisma.$transaction(async (tx) => {
+  // #1132 follow-up — retried on transient aborts like createUser above.
+  // Deliberately left at the default isolation level: this path is a single
+  // guarded CAS update, so no multi-row invariant needs Serializable.
+  return withSerializableRetry(() =>
+    prisma.$transaction(async (tx) => {
     // Guarded + idempotent: a deprovision retry on an already-SUSPENDED row is
     // a no-op, and a REMOVED/ERASED tombstone is never resurrected — the IdP
     // reads those as inactive either way.
@@ -315,6 +324,20 @@ export async function deprovisionScimUser(
       where: { id: membership.id, status: { in: ["PENDING", "ACTIVE"] } },
       data: { status: "SUSPENDED" },
     });
+    // E2E-audit P1 fix — a deprovisioned member's live ProgramAssignments
+    // used to keep counting against program caps AND against the contract's
+    // billed activeSeatCount. Terminate the live assignments (same cascade
+    // as member removal) and release the seats.
+    const now = new Date();
+    await tx.programAssignment.updateMany({
+      where: {
+        membershipId: membership.id,
+        periodEnd: { gte: now },
+        status: { in: ["ACTIVE", "PAUSED"] },
+      },
+      data: { periodEnd: now, status: "CANCELLED" },
+    });
+    await releaseSeatsForTerminatedAssignments(tx, [membership.id]);
     const updated = await tx.membership.findUniqueOrThrow({
       where: { id: membership.id },
     });
@@ -351,5 +374,5 @@ export async function deprovisionScimUser(
       role: updated.role,
       status: updated.status,
     };
-  });
+  }));
 }

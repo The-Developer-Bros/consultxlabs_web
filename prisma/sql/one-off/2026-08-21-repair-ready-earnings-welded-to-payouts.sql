@@ -16,6 +16,13 @@
 -- create-payout-batch.ts now writes BATCHED itself; this script repairs the
 -- historical rows. Run once per environment AFTER deploying the code fix.
 --
+-- ⚠️ OPS GATING (#1205 review): run with payout WRITERS stopped — pause the
+-- process-payouts workflow and hold the admin approve/process routes for the
+-- duration. The three UPDATEs below are not one locked payout-state snapshot:
+-- a payout completing between statement 1 and 3 would leave its earnings
+-- READY while its new COMPLETED status expects PAID, and the completion
+-- handler only promotes BATCHED rows.
+--
 -- Repair semantics (mirroring what the canonical paths would have done):
 --   * payout COMPLETED            → earnings PAID, paidAt = payout processedAt
 --                                   (fallback updatedAt), idempotent guard on

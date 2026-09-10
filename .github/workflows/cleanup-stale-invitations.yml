@@ -10,6 +10,14 @@ on:
     - cron: "40 2 * * *"
   workflow_dispatch: # allow manual trigger from the Actions tab
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+  # A second workflow_dispatch while one is already pending would replace it
+  # under the default single-pending-run policy; queue: max keeps every
+  # trigger instead of silently dropping one.
+  queue: max
+
 jobs:
   cleanup-stale-invitations:
     runs-on: ubuntu-latest

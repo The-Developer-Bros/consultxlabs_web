@@ -44,6 +44,7 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import { useCurrency, SUPPORTED_CURRENCIES } from "@/hooks/useCurrency";
+import { RATE_PROVIDER_NAME, RATE_PROVIDER_URL } from "@/lib/currency-codes";
 import { resolveAuthView, useRememberedAuth } from "@/hooks/useRememberedAuth";
 import { hasDarkHero, isChromeHidden } from "@/lib/navigation/public-chrome";
 import { useAnnouncementBar } from "@/providers/AnnouncementBarProvider";
@@ -369,13 +370,7 @@ function DesktopDropdownPanel({
           : undefined
       }
     >
-      <div
-        className={
-          isMega
-            ? `p-4 grid gap-2 ${panelGrid}`
-            : "p-2"
-        }
-      >
+      <div className={isMega ? `p-4 grid gap-2 ${panelGrid}` : "p-2"}>
         {group.columns.map((column) => (
           <div key={column.heading} className="min-w-0">
             {isMega && (
@@ -533,7 +528,7 @@ const Navbar = () => {
   const isAuthedView = authView.mode === "authed";
   const [isOpen, setIsOpen] = useState(false);
   const [isScrolled, setIsScrolled] = useState(false);
-  const { currency, symbol, setCurrency } = useCurrency();
+  const { currency, symbol, setCurrency, isEstimate } = useCurrency();
   const { isVisible: isAnnouncementVisible } = useAnnouncementBar();
 
   // Route lists live in lib/navigation/public-chrome.ts — they were duplicated
@@ -681,6 +676,27 @@ const Navbar = () => {
                 </DropdownMenuContent>
               </DropdownMenu>
 
+              {/* #1396 — ExchangeRate-API's Open Access licence requires this
+                  attribution wherever its rates are shown, and the switcher is
+                  where a visitor turns those rates on. Rendered only while the
+                  prices really are converted: `isEstimate` is false for INR and
+                  false during the no-rate degrade, when nothing on the page is
+                  the provider's work. */}
+              {isEstimate && (
+                <a
+                  href={RATE_PROVIDER_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={`hidden lg:inline text-[10px] leading-none whitespace-nowrap underline underline-offset-2 ${
+                    showDarkStyle
+                      ? "text-zinc-400 hover:text-zinc-200"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Rates by {RATE_PROVIDER_NAME}
+                </a>
+              )}
+
               {authView.mode === "unknown" ? (
                 <div className="flex items-center gap-3">
                   <Skeleton className="h-9 w-9 rounded-full" />
@@ -736,206 +752,217 @@ const Navbar = () => {
       </nav>
 
       {/* Mobile Drawer — CSS transitions only; framer-motion was pulled into
-          every public page via the root navbar for enter/exit polish. */}
+          every public page via the root navbar for enter/exit polish.
+          #1414 — both entrances are motion-safe: gated; with reduced motion
+          requested they render in their final position, unanimated. */}
       {isOpen && (
-          <>
-            {/* Backdrop — native button so keyboard/AT get a real interactive
+        <>
+          {/* Backdrop — native button so keyboard/AT get a real interactive
                 control (Sonar typescript:S6848 / S1082). */}
-            <button
-              type="button"
-              aria-label="Close menu"
-              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[1001] lg:hidden animate-in fade-in duration-150"
-              onClick={closeMenu}
-            />
+          <button
+            type="button"
+            aria-label="Close menu"
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[1001] lg:hidden motion-safe:animate-in motion-safe:fade-in motion-safe:duration-150"
+            onClick={closeMenu}
+          />
 
-            {/* Drawer */}
-            <div
-              className="lg:hidden fixed top-0 left-0 h-full w-[85%] max-w-sm bg-zinc-950 z-[1002] shadow-2xl safe-top safe-bottom safe-left animate-in slide-in-from-left duration-300"
-            >
-              {/* Drawer Header */}
-              <div className="flex justify-between items-center p-5 border-b border-zinc-800">
-                <div className="relative h-8 w-28">
-                  <Image
-                    src={familiariseLogoWhite}
-                    alt="Familiarise Logo"
-                    fill
-                    className="object-contain object-left"
-                    sizes="112px"
-                  />
-                </div>
-                <button
-                  onClick={closeMenu}
-                  className="w-9 h-9 flex items-center justify-center rounded-full bg-zinc-800 hover:bg-zinc-700 transition-colors text-white"
-                >
-                  <X className="w-5 h-5" />
-                </button>
+          {/* Drawer */}
+          <div className="lg:hidden fixed top-0 left-0 h-full w-[85%] max-w-sm bg-zinc-950 z-[1002] shadow-2xl safe-top safe-bottom safe-left motion-safe:animate-in motion-safe:slide-in-from-left motion-safe:duration-300">
+            {/* Drawer Header */}
+            <div className="flex justify-between items-center p-5 border-b border-zinc-800">
+              <div className="relative h-8 w-28">
+                <Image
+                  src={familiariseLogoWhite}
+                  alt="Familiarise Logo"
+                  fill
+                  className="object-contain object-left"
+                  sizes="112px"
+                />
               </div>
-
-              {/* Navigation — Accordion Sections */}
-              <div
-                className="flex flex-col p-5 overflow-y-auto"
-                style={{ maxHeight: "calc(100% - 10rem)" }}
+              <button
+                type="button"
+                aria-label="Close menu"
+                onClick={closeMenu}
+                className="w-9 h-9 flex items-center justify-center rounded-full bg-zinc-800 hover:bg-zinc-700 transition-colors text-white"
               >
-                {isAuthedView && (
-                  <Link
-                    href="/dashboard"
-                    className="flex items-center gap-3 px-4 py-3 rounded-xl text-white hover:bg-zinc-800 transition-colors mb-1"
-                    onClick={closeMenu}
-                  >
-                    <span className="font-medium">Dashboard</span>
-                  </Link>
-                )}
+                <X className="w-5 h-5" />
+              </button>
+            </div>
 
-                <Accordion type="multiple" className="w-full">
-                  {NAV_GROUPS.map((group) => (
-                    <AccordionItem
-                      key={group.label}
-                      value={group.label}
-                      className="border-b border-zinc-800"
-                    >
-                      <AccordionTrigger className="text-white hover:no-underline px-4 py-3">
-                        {group.label}
-                      </AccordionTrigger>
-                      <AccordionContent className="px-2 pb-2">
-                        <div className="space-y-1">
-                          {group.columns.map((column) => (
-                            <div key={column.heading}>
-                              {/* Column headings only earn their space when
-                                  there's more than one column to separate. */}
-                              {group.columns.length > 1 && (
-                                <p className="text-[10px] font-medium uppercase tracking-wider text-zinc-500 px-4 pt-2 pb-1">
-                                  {column.heading}
-                                </p>
-                              )}
-                              {column.items.map((item) => (
-                                <Link
-                                  key={item.href + item.label}
-                                  href={
-                                    item.disabled ? "/contactus" : item.href
-                                  }
-                                  onClick={closeMenu}
-                                  className={`block px-4 py-2.5 rounded-lg transition-colors ${
-                                    item.disabled
-                                      ? "opacity-50"
-                                      : "hover:bg-zinc-800"
-                                  }`}
-                                >
-                                  <span className="text-sm font-medium text-white flex items-center gap-2">
-                                    {item.label}
-                                    {item.disabled && (
-                                      <span className="text-[10px] uppercase tracking-wider text-zinc-500 bg-zinc-800 px-1.5 py-0.5 rounded">
-                                        Soon
-                                      </span>
-                                    )}
-                                  </span>
-                                  <span className="text-xs text-zinc-500 mt-0.5 block">
-                                    {item.description}
-                                  </span>
-                                </Link>
-                              ))}
-                            </div>
-                          ))}
-
-                          {/* Category chips on mobile */}
-                          {group.categoryChips &&
-                            group.categoryChips.length > 0 && (
-                              <div className="px-4 pt-2">
-                                <p className="text-[10px] font-medium uppercase tracking-wider text-zinc-500 mb-2">
-                                  By Category
-                                </p>
-                                <div className="flex flex-wrap gap-1.5">
-                                  {group.categoryChips.map((chip) => (
-                                    <Link
-                                      key={chip.href}
-                                      href={chip.href}
-                                      onClick={closeMenu}
-                                      className="text-xs px-2.5 py-1 rounded-full bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white transition-colors"
-                                    >
-                                      {chip.label}
-                                    </Link>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-                        </div>
-                      </AccordionContent>
-                    </AccordionItem>
-                  ))}
-                </Accordion>
-
-                {/* Pricing — flat link */}
+            {/* Navigation — Accordion Sections */}
+            <div
+              className="flex flex-col p-5 overflow-y-auto"
+              style={{ maxHeight: "calc(100% - 10rem)" }}
+            >
+              {isAuthedView && (
                 <Link
-                  href="/pricing"
-                  className="flex items-center gap-3 px-4 py-3 rounded-xl text-white hover:bg-zinc-800 transition-colors mt-1"
+                  href="/dashboard"
+                  className="flex items-center gap-3 px-4 py-3 rounded-xl text-white hover:bg-zinc-800 transition-colors mb-1"
                   onClick={closeMenu}
                 >
-                  <span className="font-medium">Pricing</span>
+                  <span className="font-medium">Dashboard</span>
                 </Link>
+              )}
 
-                {/* Mobile Currency Selector */}
-                <div className="px-4 pt-4 mt-2 border-t border-zinc-800">
-                  <span className="text-xs text-zinc-500 uppercase tracking-wide">
-                    Currency
-                  </span>
-                  <div className="flex flex-wrap gap-2 mt-2">
-                    {SUPPORTED_CURRENCIES.map((c) => (
-                      <button
-                        key={c.code}
-                        onClick={() => setCurrency(c.code)}
-                        className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
-                          currency === c.code
-                            ? "bg-white text-zinc-900 font-medium"
-                            : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
-                        }`}
-                      >
-                        {c.symbol} {c.code}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {/* User Section */}
-              <div className="absolute bottom-0 left-0 right-0 p-5 border-t border-zinc-800 bg-zinc-900 safe-bottom">
-                {authView.mode === "unknown" ? (
-                  <div className="flex items-center gap-3">
-                    <Skeleton className="h-10 w-10 rounded-full" />
-                    <Skeleton className="h-4 w-32 rounded" />
-                  </div>
-                ) : isAuthedView ? (
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <Avatar className="h-10 w-10 border border-zinc-700">
-                        <AvatarImage src={getUserImage()} alt="Profile" />
-                        <AvatarFallback className="bg-zinc-800 text-white">
-                          {authView.name?.charAt(0) ?? "U"}
-                        </AvatarFallback>
-                      </Avatar>
-                      <span className="text-white font-medium text-sm truncate max-w-[140px]">
-                        {authView.name}
-                      </span>
-                    </div>
-                    <Button
-                      variant="ghost"
-                      onClick={handleSignOut}
-                      className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
-                    >
-                      Sign out
-                    </Button>
-                  </div>
-                ) : (
-                  /* Mirrors the desktop bar: no marketing CTAs, sign in only. */
-                  <Button
-                    onClick={() => handleNavigation("/auth/signin")}
-                    className="w-full bg-white text-zinc-900 hover:bg-zinc-200"
+              <Accordion type="multiple" className="w-full">
+                {NAV_GROUPS.map((group) => (
+                  <AccordionItem
+                    key={group.label}
+                    value={group.label}
+                    className="border-b border-zinc-800"
                   >
-                    Sign in
-                  </Button>
+                    <AccordionTrigger className="text-white hover:no-underline px-4 py-3">
+                      {group.label}
+                    </AccordionTrigger>
+                    <AccordionContent className="px-2 pb-2">
+                      <div className="space-y-1">
+                        {group.columns.map((column) => (
+                          <div key={column.heading}>
+                            {/* Column headings only earn their space when
+                                  there's more than one column to separate. */}
+                            {group.columns.length > 1 && (
+                              <p className="text-[10px] font-medium uppercase tracking-wider text-zinc-500 px-4 pt-2 pb-1">
+                                {column.heading}
+                              </p>
+                            )}
+                            {column.items.map((item) => (
+                              <Link
+                                key={item.href + item.label}
+                                href={item.disabled ? "/contactus" : item.href}
+                                onClick={closeMenu}
+                                className={`block px-4 py-2.5 rounded-lg transition-colors ${
+                                  item.disabled
+                                    ? "opacity-50"
+                                    : "hover:bg-zinc-800"
+                                }`}
+                              >
+                                <span className="text-sm font-medium text-white flex items-center gap-2">
+                                  {item.label}
+                                  {item.disabled && (
+                                    <span className="text-[10px] uppercase tracking-wider text-zinc-500 bg-zinc-800 px-1.5 py-0.5 rounded">
+                                      Soon
+                                    </span>
+                                  )}
+                                </span>
+                                <span className="text-xs text-zinc-500 mt-0.5 block">
+                                  {item.description}
+                                </span>
+                              </Link>
+                            ))}
+                          </div>
+                        ))}
+
+                        {/* Category chips on mobile */}
+                        {group.categoryChips &&
+                          group.categoryChips.length > 0 && (
+                            <div className="px-4 pt-2">
+                              <p className="text-[10px] font-medium uppercase tracking-wider text-zinc-500 mb-2">
+                                By Category
+                              </p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {group.categoryChips.map((chip) => (
+                                  <Link
+                                    key={chip.href}
+                                    href={chip.href}
+                                    onClick={closeMenu}
+                                    className="text-xs px-2.5 py-1 rounded-full bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white transition-colors"
+                                  >
+                                    {chip.label}
+                                  </Link>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                      </div>
+                    </AccordionContent>
+                  </AccordionItem>
+                ))}
+              </Accordion>
+
+              {/* Pricing — flat link */}
+              <Link
+                href="/pricing"
+                className="flex items-center gap-3 px-4 py-3 rounded-xl text-white hover:bg-zinc-800 transition-colors mt-1"
+                onClick={closeMenu}
+              >
+                <span className="font-medium">Pricing</span>
+              </Link>
+
+              {/* Mobile Currency Selector */}
+              <div className="px-4 pt-4 mt-2 border-t border-zinc-800">
+                <span className="text-xs text-zinc-500 uppercase tracking-wide">
+                  Currency
+                </span>
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {SUPPORTED_CURRENCIES.map((c) => (
+                    <button
+                      key={c.code}
+                      onClick={() => setCurrency(c.code)}
+                      className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
+                        currency === c.code
+                          ? "bg-white text-zinc-900 font-medium"
+                          : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
+                      }`}
+                    >
+                      {c.symbol} {c.code}
+                    </button>
+                  ))}
+                </div>
+                {/* Same licence term as the desktop switcher above. */}
+                {isEstimate && (
+                  <a
+                    href={RATE_PROVIDER_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-2 inline-block text-[10px] text-zinc-500 underline underline-offset-2 hover:text-zinc-300"
+                  >
+                    Rates by {RATE_PROVIDER_NAME}
+                  </a>
                 )}
               </div>
             </div>
-          </>
-        )}
+
+            {/* User Section */}
+            <div className="absolute bottom-0 left-0 right-0 p-5 border-t border-zinc-800 bg-zinc-900 safe-bottom">
+              {authView.mode === "unknown" ? (
+                <div className="flex items-center gap-3">
+                  <Skeleton className="h-10 w-10 rounded-full" />
+                  <Skeleton className="h-4 w-32 rounded" />
+                </div>
+              ) : isAuthedView ? (
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <Avatar className="h-10 w-10 border border-zinc-700">
+                      <AvatarImage src={getUserImage()} alt="Profile" />
+                      <AvatarFallback className="bg-zinc-800 text-white">
+                        {authView.name?.charAt(0) ?? "U"}
+                      </AvatarFallback>
+                    </Avatar>
+                    <span className="text-white font-medium text-sm truncate max-w-[140px]">
+                      {authView.name}
+                    </span>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    onClick={handleSignOut}
+                    className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                  >
+                    Sign out
+                  </Button>
+                </div>
+              ) : (
+                /* Mirrors the desktop bar: no marketing CTAs, sign in only. */
+                <Button
+                  onClick={() => handleNavigation("/auth/signin")}
+                  className="w-full bg-white text-zinc-900 hover:bg-zinc-200"
+                >
+                  Sign in
+                </Button>
+              )}
+            </div>
+          </div>
+        </>
+      )}
     </>
   );
 };

@@ -68,6 +68,12 @@ const PatchBodySchema = z
     pan: z.string().length(10).nullable().optional(),
     gstRegStatus: GstRegStatusSchema.optional(),
     gstStateCode: z.string().length(2).nullable().optional(),
+    // MSME (MSMED Act) declaration — #1230. The payout deadline engine reads
+    // this satellite to compute the 15/45-day mustPayByDate on host-org
+    // payouts; until now nothing wrote it, so every org defaulted to NONE and
+    // got 60-day terms where the statute mandates 15/45.
+    msmeStatus: z.enum(["NONE", "MICRO", "SMALL", "MEDIUM"]).optional(),
+    msmeWrittenAgreementOnFile: z.boolean().optional(),
     defaultCancellationPolicy: z.string().max(5000).nullable().optional(),
     defaultRefundPolicy: z.string().max(5000).nullable().optional(),
     isPublic: z.boolean().optional(),
@@ -138,6 +144,10 @@ const MAINTAINER_FIELDS = new Set([
   "secondaryColor",
 ]);
 const BILLING_ADMIN_FIELDS = new Set(["billingEmail", "paymentTermsDays"]);
+// Concurrency control, not a writable column: the optimistic-lock CAS below is
+// what enforces it, and every dashboard save echoes it back. Counting it as a
+// touched field 403'd every non-OWNER save regardless of what was edited.
+const CONTROL_FIELDS = new Set(["expectedVersion"]);
 
 export async function PATCH(
   req: NextRequest,
@@ -169,13 +179,14 @@ export async function PATCH(
     if (role === "BILLING_ADMIN") {
       BILLING_ADMIN_FIELDS.forEach((f) => allowed.add(f));
     }
-    const forbidden = Object.keys(body).filter((k) => !allowed.has(k));
+    const touched = Object.keys(body).filter((k) => !CONTROL_FIELDS.has(k));
+    const forbidden = touched.filter((k) => !allowed.has(k));
     if (allowed.size === 0 || forbidden.length > 0) {
       return NextResponse.json(
         {
           error: "Insufficient role for these fields",
           code: "FIELD_RBAC_FORBIDDEN",
-          fields: forbidden.length > 0 ? forbidden : Object.keys(body),
+          fields: forbidden.length > 0 ? forbidden : touched,
         },
         { status: 403 },
       );
@@ -463,6 +474,34 @@ export async function PATCH(
                 },
               }
             : {}),
+          // MSME satellite — same conditional-relation pattern as taxInfo
+          // above (#1230 intake writer for the payout-deadline engine).
+          ...(body.msmeStatus !== undefined || body.msmeWrittenAgreementOnFile !== undefined
+            ? {
+                msmeInfo: {
+                  upsert: {
+                    create: {
+                      ...(body.msmeStatus !== undefined && {
+                        msmeStatus: body.msmeStatus,
+                      }),
+                      ...(body.msmeWrittenAgreementOnFile !== undefined && {
+                        msmeWrittenAgreementOnFile:
+                          body.msmeWrittenAgreementOnFile,
+                      }),
+                    },
+                    update: {
+                      ...(body.msmeStatus !== undefined && {
+                        msmeStatus: body.msmeStatus,
+                      }),
+                      ...(body.msmeWrittenAgreementOnFile !== undefined && {
+                        msmeWrittenAgreementOnFile:
+                          body.msmeWrittenAgreementOnFile,
+                      }),
+                    },
+                  },
+                },
+              }
+            : {}),
           ...(body.defaultCancellationPolicy !== undefined && {
             defaultCancellationPolicy: body.defaultCancellationPolicy,
           }),
@@ -546,7 +585,15 @@ export async function DELETE(
   if (access.error) return access.error;
 
   try {
-    const outcome = await prisma.$transaction(async (tx) => {
+    // Serializable + retry closes the same TOCTOU the PATCH handler cites
+    // (state-audit S2): an invoice/assignment/PO landing between the
+    // wind-down COUNT checks and the delete would be stranded behind a
+    // DEACTIVATED org. A concurrent insert now aborts one side with P2034
+    // (retried, then 503) instead of slipping through the window
+    // (#1132 follow-up — the PATCH handler already did this; DELETE didn't).
+    const outcome = await withSerializableRetry(() =>
+      prisma.$transaction(
+        async (tx) => {
       // #781 §B — three-way delete. LIVE obligations block (wind-down
       // first, per the #779 guard doctrine). Settled financial HISTORY
       // makes the org soft-delete (DEACTIVATED + deletedAt + contact-PII
@@ -662,7 +709,10 @@ export async function DELETE(
         },
       });
       return "soft" as const;
-    });
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      ),
+    );
 
     return outcome === "hard"
       ? new NextResponse(null, { status: 204 })
@@ -672,6 +722,17 @@ export async function DELETE(
       const status =
         typeof err.httpStatus === "number" ? err.httpStatus : 500;
       return NextResponse.json({ error: err.message }, { status });
+    }
+    // CR #1234 — exhausted Serializable retries surface as a raw P2034
+    // throw; the PATCH handler maps the same case to a retryable 503.
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === "P2034"
+    ) {
+      return NextResponse.json(
+        { error: "Transaction conflict — please retry", code: "P2034" },
+        { status: 503 },
+      );
     }
     throw err;
   }

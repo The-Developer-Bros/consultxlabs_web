@@ -15,11 +15,15 @@ import { motion } from "framer-motion";
 import { ClockIcon, CheckCircle2, RefreshCw } from "lucide-react";
 import { useSession } from "@/lib/auth-client";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { PricingOption } from "../defaults";
 import { TSlotTiming } from "@/types/slots";
 import { breakDownSlotsPreservingStatus } from "@/utils/timeSlotsProcessing";
 import { MINIMUM_BOOKING_LEAD_TIME_MS } from "@/lib/payments/constants";
+import {
+  consumePurchaseIntent,
+  stashPurchaseIntent,
+} from "@/utils/purchase-intent";
 import { useToast } from "@/hooks/use-toast";
 import { useCurrency } from "@/hooks/useCurrency";
 
@@ -133,6 +137,49 @@ export default function ConsultationPricingToggle({
     }));
   }, [slotTimings, selectedDuration, timezone, selectedDate]);
 
+  // #booking-journey — restore a slot stashed before the auth bounce. Runs
+  // once per mount, and only once slots have actually loaded: the stashed
+  // pick is only applied when it still exists in the calendar (not past, not
+  // fully booked), so a stale intent can never select an invalid slot.
+  const purchaseIntentConsumedRef = useRef(false);
+  useEffect(() => {
+    if (purchaseIntentConsumedRef.current) return;
+    if (availableSlots.length === 0 || !session?.user?.id) return;
+    purchaseIntentConsumedRef.current = true;
+
+    const intent = consumePurchaseIntent(consultantDetails.id);
+    if (!intent) return;
+
+    if (
+      consultationOptions.some((opt) => opt.id === intent.consultationPlanId)
+    ) {
+      setActiveConsultationOption(intent.consultationPlanId);
+    }
+
+    const match = availableSlots.find(
+      (slot) =>
+        slot.startsAt === intent.slot.startsAt &&
+        slot.endsAt === intent.slot.endsAt &&
+        !slot._isPast &&
+        slot.bookingStatus !== "fully-booked",
+    );
+    if (match) {
+      setSelectedSlot(match);
+      toast({
+        title: "Welcome back",
+        description: "Your previously selected time slot was restored.",
+      });
+    }
+  }, [
+    availableSlots,
+    consultationOptions,
+    consultantDetails.id,
+    session?.user?.id,
+    setActiveConsultationOption,
+    setSelectedSlot,
+    toast,
+  ]);
+
   const handleRequestForApproval = async () => {
     if (!selectedSlot || !consultantDetails) {
       toast({ title: "Please select a time slot", variant: "destructive" });
@@ -145,6 +192,25 @@ export default function ConsultationPricingToggle({
       // implicitly: /checkout/* is middleware-protected and bounces here with
       // callbackUrl. The request-for-approval path runs client-side, so it
       // must build the same redirect itself or guests hit a wall.
+      //
+      // #booking-journey — the profile-page callbackUrl alone would lose the
+      // picked slot (the user returns to an unselected calendar). Stash the
+      // full selection in sessionStorage; ConsultationPricingToggle restores
+      // it on the next authenticated render.
+      stashPurchaseIntent({
+        consultantId: consultantDetails.id,
+        consultationPlanId: activeConsultationOption,
+        slot: {
+          startsAt: selectedSlot.startsAt,
+          endsAt: selectedSlot.endsAt,
+          type: (
+            selectedSlot as TSlotTiming & { type?: "WEEKLY" | "CUSTOM" }
+          ).type,
+          slotOfAvailabilityId: (
+            selectedSlot as TSlotTiming & { slotOfAvailabilityId?: string }
+          ).slotOfAvailabilityId,
+        },
+      });
       const callbackUrl = `${window.location.pathname}${window.location.search}`;
       window.location.href = `/auth/signin?callbackUrl=${encodeURIComponent(callbackUrl)}`;
       return;

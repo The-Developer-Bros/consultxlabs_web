@@ -236,11 +236,27 @@ export async function DELETE(
     // says are retained per IT Act 5–7y obligations. Users whose money ever
     // moved get the §12 erasure scrub instead: PII pseudonymised, erasedAt
     // tombstone set, financial rows intact.
-    const [paymentCount, referralCreditCount] = await Promise.all([
+    // Consultant-side money lives on ConsultantProfile (earnings/payouts/TDS
+    // Restrict-delete through it), not on Payment — a consultant with payout
+    // history but no payer-side rows must also take the scrub path, or the
+    // hard delete 500s on the first Restrict (#1205-triage).
+    const [paymentCount, referralCreditCount, profile] = await Promise.all([
       prisma.payment.count({ where: { userId: id } }),
       prisma.referralCredit.count({ where: { userId: id } }),
+      prisma.consultantProfile.findFirst({
+        where: { userId: id },
+        select: {
+          _count: { select: { earnings: true, payouts: true, tdsRecords: true } },
+        },
+      }),
     ]);
-    const hasMoneyHistory = paymentCount + referralCreditCount > 0;
+    const consultantMoneyCount = profile
+      ? profile._count.earnings +
+        profile._count.payouts +
+        profile._count.tdsRecords
+      : 0;
+    const hasMoneyHistory =
+      paymentCount + referralCreditCount + consultantMoneyCount > 0;
 
     if (hasMoneyHistory) {
       await scrubUser(prisma, id);

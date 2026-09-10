@@ -19,15 +19,38 @@ export async function GET() {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    // Fetch consultations with APPROVED_PENDING_PAYMENT status
-    const pendingConsultations = await prisma.consultation.findMany({
-      where: {
-        status: AppointmentStatus.APPROVED_PENDING_PAYMENT,
-      },
-      include: {
-        consultationPlan: {
+    // Three fully independent reads — run concurrently instead of paying the
+    // sum of three round trips serially.
+    //
+    // take: 200 (newest first) caps these admin-wide scans: this endpoint is a
+    // live monitoring table, not an audit export, and APPROVED_PENDING_PAYMENT
+    // rows are transient (48h expiry + sweeper). Without a bound the query
+    // cost grows unboundedly with platform history.
+    const TAKE_LIMIT = 200;
+
+    const [pendingConsultations, pendingSubscriptions, pendingTrials] =
+      await Promise.all([
+        // Consultations with APPROVED_PENDING_PAYMENT status
+        prisma.consultation.findMany({
+          where: {
+            status: AppointmentStatus.APPROVED_PENDING_PAYMENT,
+          },
           include: {
-            consultantProfile: {
+            consultationPlan: {
+              include: {
+                consultantProfile: {
+                  include: {
+                    user: {
+                      select: {
+                        name: true,
+                        email: true,
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            requestedBy: {
               include: {
                 user: {
                   select: {
@@ -37,48 +60,49 @@ export async function GET() {
                 },
               },
             },
-          },
-        },
-        requestedBy: {
-          include: {
-            user: {
-              select: {
-                name: true,
-                email: true,
-              },
-            },
-          },
-        },
-        appointment: {
-          include: {
-            payment: {
-              where: {
-                paymentStatus: {
-                  in: ["PENDING"],
+            appointment: {
+              include: {
+                payment: {
+                  where: {
+                    paymentStatus: {
+                      in: ["PENDING"],
+                    },
+                  },
+                  orderBy: {
+                    createdAt: "desc",
+                  },
+                  take: 1,
                 },
               },
-              orderBy: {
-                createdAt: "desc",
-              },
-              take: 1,
             },
           },
-        },
-      },
-      orderBy: {
-        updatedAt: "desc",
-      },
-    });
+          orderBy: {
+            updatedAt: "desc",
+          },
+          take: TAKE_LIMIT,
+        }),
 
-    // Fetch subscriptions with APPROVED_PENDING_PAYMENT status
-    const pendingSubscriptions = await prisma.subscription.findMany({
-      where: {
-        status: AppointmentStatus.APPROVED_PENDING_PAYMENT,
-      },
-      include: {
-        subscriptionPlan: {
+        // Subscriptions with APPROVED_PENDING_PAYMENT status
+        prisma.subscription.findMany({
+          where: {
+            status: AppointmentStatus.APPROVED_PENDING_PAYMENT,
+          },
           include: {
-            consultantProfile: {
+            subscriptionPlan: {
+              include: {
+                consultantProfile: {
+                  include: {
+                    user: {
+                      select: {
+                        name: true,
+                        email: true,
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            requestedBy: {
               include: {
                 user: {
                   select: {
@@ -88,59 +112,50 @@ export async function GET() {
                 },
               },
             },
-          },
-        },
-        requestedBy: {
-          include: {
-            user: {
-              select: {
-                name: true,
-                email: true,
-              },
-            },
-          },
-        },
-        appointments: {
-          include: {
-            payment: {
-              where: {
-                paymentStatus: {
-                  in: ["PENDING"],
+            appointments: {
+              include: {
+                payment: {
+                  where: {
+                    paymentStatus: {
+                      in: ["PENDING"],
+                    },
+                  },
+                  orderBy: {
+                    createdAt: "desc",
+                  },
+                  take: 1,
                 },
-              },
-              orderBy: {
-                createdAt: "desc",
               },
               take: 1,
             },
           },
-          take: 1,
-        },
-      },
-      orderBy: {
-        updatedAt: "desc",
-      },
-    });
+          orderBy: {
+            updatedAt: "desc",
+          },
+          take: TAKE_LIMIT,
+        }),
 
-    // Paid trials the consultant accepted but the learner hasn't paid for.
-    // Support needs these alongside consultations/subscriptions — the failure
-    // mode is identical (accepted, slot held, money not collected).
-    const pendingTrials = await prisma.trialSession.findMany({
-      where: { status: TrialSessionStatus.AWAITING_PAYMENT },
-      include: {
-        subscriptionPlan: {
+        // Paid trials the consultant accepted but the learner hasn't paid for.
+        // Support needs these alongside consultations/subscriptions — the failure
+        // mode is identical (accepted, slot held, money not collected).
+        prisma.trialSession.findMany({
+          where: { status: TrialSessionStatus.AWAITING_PAYMENT },
           include: {
-            consultantProfile: {
+            subscriptionPlan: {
+              include: {
+                consultantProfile: {
+                  include: { user: { select: { name: true, email: true } } },
+                },
+              },
+            },
+            consulteeProfile: {
               include: { user: { select: { name: true, email: true } } },
             },
           },
-        },
-        consulteeProfile: {
-          include: { user: { select: { name: true, email: true } } },
-        },
-      },
-      orderBy: { updatedAt: "desc" },
-    });
+          orderBy: { updatedAt: "desc" },
+          take: TAKE_LIMIT,
+        }),
+      ]);
 
     // Transform data into a consistent format
     const approvalPayments = [
@@ -225,7 +240,8 @@ export async function GET() {
             "Unknown Consultant",
           consultantEmail:
             trial.subscriptionPlan?.consultantProfile?.user?.email || "",
-          consulteeName: trial.consulteeProfile?.user?.name || "Unknown Consultee",
+          consulteeName:
+            trial.consulteeProfile?.user?.name || "Unknown Consultee",
           consulteeEmail: trial.consulteeProfile?.user?.email || "",
           amount: Number(trial.subscriptionPlan?.trialPriceInPaise ?? 0),
           currency: trial.subscriptionPlan?.priceCurrency || "INR",
@@ -262,7 +278,10 @@ export async function GET() {
       ).length,
     });
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "dashboard" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "dashboard" } },
+    );
     console.error("Error fetching approval payments:", error);
     return NextResponse.json(
       {

@@ -5,6 +5,8 @@ import { spamLimiter, applyRateLimit } from "@/lib/rate-limit";
 import { assertBodySize } from "@/lib/validation/limits";
 import { CreateSupportResponseSchema } from "@/schemas/support";
 import * as Sentry from "@sentry/nextjs";
+import { userRepliedPatch } from "@/lib/support/sla";
+import { notifyStaffOfTicketActivity } from "@/lib/support/create-ticket";
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ ticketId: string }> },
@@ -56,33 +58,61 @@ export async function POST(
       );
     }
 
-    const response = await prisma.supportResponse.create({
-      data: {
-        message: body.message,
-        supportTicket: { connect: { id: ticketId } },
-        user: { connect: { id: session.user.id } },
-      },
-      include: {
-        user: {
-          select: {
-            name: true,
-            role: true,
+    // One transaction: the reply, the activity clock and the SLA resume commit
+    // together. Previously the reply was the ONLY write — `lastMessageAt` never
+    // moved, so a user chasing their own ticket never resurfaced it in the ops
+    // inbox, which sorts on exactly that column.
+    const now = new Date();
+    const response = await prisma.$transaction(async (tx) => {
+      const created = await tx.supportResponse.create({
+        data: {
+          message: body.message,
+          supportTicket: { connect: { id: ticketId } },
+          user: { connect: { id: session.user.id } },
+        },
+        include: {
+          user: {
+            select: {
+              name: true,
+              role: true,
+            },
           },
         },
-      },
-    });
+      });
 
-    // Update ticket status to IN_PROGRESS if it was OPEN
-    if (ticket.status === "OPEN") {
-      await prisma.supportTicket.update({
+      await tx.supportTicket.update({
         where: { id: ticketId },
+        data: {
+          lastMessageAt: now,
+          // The ball is back with us — restart the resolution clock.
+          ...userRepliedPatch(ticket, now),
+        },
+      });
+      // CAS, not a bare update: a concurrent staff move off OPEN must not be
+      // clobbered back by the user's reply landing a moment later.
+      await tx.supportTicket.updateMany({
+        where: { id: ticketId, status: "OPEN" },
         data: { status: "IN_PROGRESS" },
       });
-    }
+      return created;
+    });
+
+    // Committed — safe to page the queue. A user's reply used to notify nobody.
+    await notifyStaffOfTicketActivity(ticketId, null, response.id).catch(
+      (error) => {
+        console.error("support: user-reply notification failed", {
+          ticketId,
+          error,
+        });
+      },
+    );
 
     return NextResponse.json(response, { status: 201 });
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "auth" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "auth" } },
+    );
     console.error("Error creating support response:", error);
     return NextResponse.json(
       {

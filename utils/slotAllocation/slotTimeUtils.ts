@@ -17,6 +17,7 @@ import {
   isNextDayOfWeek,
   resolveOvernightStatus,
 } from "@/utils/schedule/overnight";
+import { utcStartDayIndex } from "@/utils/schedule/weekly-projection";
 
 /** 24 hours expressed in milliseconds */
 export const TWENTY_FOUR_HOURS_IN_MS = 24 * 60 * 60 * 1000;
@@ -370,21 +371,22 @@ export function isMinuteWithinWeeklySlot(
   availEndTimeUtc: number,
   utcOffsetMinutes: number,
 ): boolean {
-  const availDay = DAY_OF_WEEK_TO_INDEX[availStartDay];
-  if (availDay === undefined) return false;
-
   const candidateEndMinutes = candidateMinutes + slotDurationMinutes;
   const { isOvernight } = resolveOvernightStatus({
     startTimeUtc: availStartTimeUtc,
     endTimeUtc: availEndTimeUtc,
   });
 
-  // availDay is the LOCAL day-of-week. The UTC day of the slot's start may
-  // differ when the consultant's midnight isn't aligned with UTC midnight.
-  // Formula: utcStartDay = (availDay - floor((startTimeUtc + offset) / 1440)) mod 7
-  const localStartMinutes = availStartTimeUtc + (utcOffsetMinutes ?? 0);
-  const dayAdjust = Math.floor(localStartMinutes / 1440);
-  const utcStartDay = (((availDay - dayAdjust) % 7) + 7) % 7;
+  // availStartDay is the consultant's LOCAL day; the UTC day the row starts on
+  // differs whenever their midnight is not UTC midnight. #1342 — that
+  // derivation now lives in the one module the grid generator also uses, so
+  // the validator and the grid cannot drift apart again.
+  const utcStartDay = utcStartDayIndex({
+    startDay: availStartDay as DayOfWeek,
+    startTimeUtc: availStartTimeUtc,
+    utcOffsetMinutes,
+  });
+  if (utcStartDay === -1) return false;
 
   if (!isOvernight) {
     return (

@@ -14,6 +14,7 @@ other.
 | 6 | [`06-ci-deployment.md`](./06-ci-deployment.md) | GitHub Actions CI pipeline, SSO cert expiry cron, Docker dev/prod, Netlify, env vars, secret rotation. |
 | 7 | [`sso/README.md`](./sso/README.md) | Enterprise SSO in depth — SAML/OIDC, enforcement layers, domain claims, provider schemas, PKCE, cert rotation. |
 | 8 | [`oauth/README.md`](./oauth/README.md) | OAuth providers (Google, GitHub, Facebook), account linking, how to add a new provider. |
+| 9 | [`08-redirects-and-navigation.md`](./08-redirects-and-navigation.md) | **The anti-flicker contract**: auth redirect rules (`replace` not `push`, idempotency refs, force-fresh destination checks, `safeSameOriginPath`, server-side dashboard entry redirects). Read before touching any redirect. |
 
 Authorization (role hierarchy, capability gates, `requireOrgAccess`) lives in [`docs/authorization/`](../../authorization/README.md).
 
@@ -46,9 +47,11 @@ don't repeat content.
    [`03-sessions-and-hooks.md`](./03-sessions-and-hooks.md).
 5. **SSO enforcement is server-side.** `session.create.before` rejects
    credential/OAuth signins from enforced domains at the source (closes
-   #673). `customSession` is defense-in-depth, marking
-   `ssoEnforcementFailed: true` for layouts that need to redirect a
-   reactively-detected drift. See [`sso/README.md`](./sso/README.md).
+   #673). There is no read-time enforcement: a `ssoEnforcementFailed`
+   flag existed in `customSession` but never had a consumer and was
+   removed in #1242 — re-introduce it only WITH its consumer, per the
+   spec in [#1241](https://github.com/Practitionist/familiarise_web/issues/1241).
+   See [`sso/README.md`](./sso/README.md).
 6. **Rate limits fail open.** If Redis is unreachable,
    `applyRateLimit()` returns `null` and the request proceeds. Better
    to ship a request during an Upstash outage than to 429 every login.

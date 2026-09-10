@@ -44,7 +44,9 @@ const CreateBodySchema = z
     // the BillingAccount has fundingSource=LICENSE. When provided, the
     // server creates Contract + BillingSubscription atomically in one tx
     // so the LICENSE commercial value (annual fee + cycle) is recorded.
+    licenseModel: z.enum(["FLAT_FEE", "PER_SEAT"]).optional(),
     licenseFeePaise: z.coerce.number().int().min(1).optional(),
+    licenseRatePerSeatPaise: z.coerce.number().int().min(1).optional(),
     licenseCycle: LicenseCycleSchema.optional(),
   })
   .refine(
@@ -54,6 +56,19 @@ const CreateBodySchema = z
     {
       message: "effectiveTo must be strictly after effectiveFrom",
       path: ["effectiveTo"],
+    },
+  )
+  .refine(
+    (v) =>
+      // PER_SEAT bills seats × rate, so it needs a per-seat rate and must not
+      // carry a flat fee; FLAT_FEE is the reverse. E2E-audit P1 fix — PER_SEAT
+      // was unreachable: the create route hardcoded FLAT_FEE.
+      v.licenseModel !== "PER_SEAT" ||
+      (v.licenseRatePerSeatPaise !== undefined && v.licenseFeePaise === undefined),
+    {
+      message:
+        "PER_SEAT requires licenseRatePerSeatPaise and forbids licenseFeePaise",
+      path: ["licenseModel"],
     },
   );
 
@@ -154,7 +169,7 @@ export async function POST(
   // existing subscription via contract create (renewals are a separate
   // flow). Fail loud rather than silently dropping the operator's input.
   const wantsLicenseSubscription =
-    body.licenseFeePaise !== undefined && body.licenseCycle !== undefined;
+    body.licenseFeePaise !== undefined || body.licenseRatePerSeatPaise !== undefined;
   if (wantsLicenseSubscription) {
     if (billingAccount.fundingSource !== "LICENSE") {
       return NextResponse.json(
@@ -205,14 +220,20 @@ export async function POST(
 
     if (wantsLicenseSubscription) {
       const cycleEnd = computeCycleEnd(body.effectiveFrom, body.licenseCycle!);
+      const isPerSeat = body.licenseModel === "PER_SEAT";
       await tx.billingSubscription.create({
         data: {
           contractId: created.id,
           billingAccountId: body.billingAccountId,
-          model: "FLAT_FEE",
+          model: body.licenseModel ?? "FLAT_FEE",
           cycle: body.licenseCycle!,
-          ratePerSeatPaise: null,
-          flatFeePaise: body.licenseFeePaise!,
+          ratePerSeatPaise: isPerSeat
+            ? BigInt(body.licenseRatePerSeatPaise!)
+            : null,
+          flatFeePaise:
+            !isPerSeat && body.licenseFeePaise !== undefined
+              ? BigInt(body.licenseFeePaise)
+              : null,
           activeSeatCount: 0,
           currentCycleStart: body.effectiveFrom,
           currentCycleEnd: cycleEnd,

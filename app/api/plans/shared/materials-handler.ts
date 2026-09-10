@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import { getSession } from "@/lib/auth-server";
+import { requireOrgAccess } from "@/lib/auth-helpers";
 import {
   uploadPlanMaterial,
   deletePlanMaterial,
@@ -19,83 +20,169 @@ export interface PlanMaterialsConfig {
     | "classPlan";
 }
 
-/** Shape of the ownership-check query passed to Prisma findFirst. */
-interface PlanOwnershipQuery {
-  where: {
-    id: string;
-    consultantProfile: {
-      user: {
-        id: string;
-      };
-    };
-  };
-}
-
 // Development mode check
 const isDevelopment = () =>
   process.env.NODE_ENV === "development" &&
   process.env.DEV_BYPASS_AUTH === "true";
 
 /**
- * Verify the user is the consultant who owns the plan
+ * Verify the user may manage this plan's materials. Two paths:
+ *   1. the owning consultant (personal plans), or
+ *   2. an org member with `catalog.manage` over the plan's organization —
+ *      org-owned plans were previously owner-only, which locked org
+ *      operators out of their own catalog (#org-materials alignment).
+ *
+ * Returns the plan's organizationId so uploads can mirror the denormalized
+ * `PlanMaterial.organizationId` tag.
  */
-async function verifyPlanOwnership(
+async function verifyMaterialManageAccess(
   userId: string,
   planId: string,
   config: PlanMaterialsConfig,
-): Promise<{ isOwner: boolean; error?: string }> {
+): Promise<{ allowed: boolean; organizationId: string | null; error?: string }> {
   if (isDevelopment()) {
-    return { isOwner: true };
+    return { allowed: true, organizationId: null };
   }
 
   try {
-    const planQuery: PlanOwnershipQuery = {
-      where: {
-        id: planId,
-        consultantProfile: {
-          user: {
-            id: userId,
-          },
-        },
-      },
-    };
+    const select = {
+      consultantProfile: { select: { userId: true } },
+      organizationId: true,
+    } as const;
 
-    let plan;
+    let plan: {
+      consultantProfile: { userId: string } | null;
+      organizationId: string | null;
+    } | null = null;
+
     switch (config.planModel) {
       case "consultationPlan":
-        plan = await prisma.consultationPlan.findFirst(
-          planQuery as Parameters<typeof prisma.consultationPlan.findFirst>[0],
-        );
+        plan = await prisma.consultationPlan.findFirst({
+          where: { id: planId },
+          select,
+        });
         break;
       case "subscriptionPlan":
-        plan = await prisma.subscriptionPlan.findFirst(
-          planQuery as Parameters<typeof prisma.subscriptionPlan.findFirst>[0],
-        );
+        plan = await prisma.subscriptionPlan.findFirst({
+          where: { id: planId },
+          select,
+        });
         break;
       case "webinarPlan":
-        plan = await prisma.webinarPlan.findFirst(
-          planQuery as Parameters<typeof prisma.webinarPlan.findFirst>[0],
-        );
+        plan = await prisma.webinarPlan.findFirst({
+          where: { id: planId },
+          select,
+        });
         break;
       case "classPlan":
-        plan = await prisma.classPlan.findFirst(
-          planQuery as Parameters<typeof prisma.classPlan.findFirst>[0],
-        );
+        plan = await prisma.classPlan.findFirst({
+          where: { id: planId },
+          select,
+        });
         break;
     }
 
-    if (!plan) {
+    if (!plan?.consultantProfile) {
       return {
-        isOwner: false,
-        error: "Plan not found or you don't have permission to access it",
+        allowed: false,
+        organizationId: null,
+        error: "Plan not found",
       };
     }
 
-    return { isOwner: true };
+    if (plan.consultantProfile?.userId === userId) {
+      return { allowed: true, organizationId: plan.organizationId };
+    }
+
+    if (plan.organizationId) {
+      const access = await requireOrgAccess(plan.organizationId, {
+        permission: "catalog.manage",
+      });
+      if (!access.error) {
+        return { allowed: true, organizationId: plan.organizationId };
+      }
+    }
+
+    return {
+      allowed: false,
+      organizationId: plan.organizationId,
+      error: "You don't have permission to manage this plan's materials",
+    };
   } catch (error) {
-    console.error("Error verifying plan ownership:", error);
-    return { isOwner: false, error: "Failed to verify plan ownership" };
+    console.error("Error verifying material access:", error);
+    return { allowed: false, organizationId: null, error: "Failed to verify access" };
   }
+}
+
+/** Row-level variant for delete/update: resolves via the material's plan FKs. */
+async function resolveMaterialRowAccess(
+  userId: string,
+  materialId: string,
+): Promise<
+  | { status: "not_found" }
+  | { status: "denied" }
+  | { status: "allowed"; storagePath: string; organizationId: string | null }
+> {
+  const material = await prisma.planMaterial.findUnique({
+    where: { id: materialId },
+    select: {
+      storagePath: true,
+      consultationPlan: {
+        select: {
+          consultantProfile: { select: { userId: true } },
+          organizationId: true,
+        },
+      },
+      subscriptionPlan: {
+        select: {
+          consultantProfile: { select: { userId: true } },
+          organizationId: true,
+        },
+      },
+      webinarPlan: {
+        select: {
+          consultantProfile: { select: { userId: true } },
+          organizationId: true,
+        },
+      },
+      classPlan: {
+        select: {
+          consultantProfile: { select: { userId: true } },
+          organizationId: true,
+        },
+      },
+    },
+  });
+  if (!material) return { status: "not_found" };
+
+  const plan =
+    material.consultationPlan ??
+    material.subscriptionPlan ??
+    material.webinarPlan ??
+    material.classPlan;
+  if (!plan) return { status: "not_found" };
+
+  if (isDevelopment() || plan.consultantProfile?.userId === userId) {
+    return {
+      status: "allowed",
+      storagePath: material.storagePath,
+      organizationId: plan.organizationId,
+    };
+  }
+
+  if (plan.organizationId) {
+    const access = await requireOrgAccess(plan.organizationId, {
+      permission: "catalog.manage",
+    });
+    if (!access.error) {
+      return {
+        status: "allowed",
+        storagePath: material.storagePath,
+        organizationId: plan.organizationId,
+      };
+    }
+  }
+  return { status: "denied" };
 }
 
 /**
@@ -119,13 +206,13 @@ export async function handleGetMaterials(
       );
     }
 
-    // Verify ownership
-    const { isOwner, error } = await verifyPlanOwnership(
+    // Verify manage access (owner consultant or org catalog.manage)
+    const { allowed, error } = await verifyMaterialManageAccess(
       session.user.id,
       planId,
       config,
     );
-    if (!isOwner) {
+    if (!allowed) {
       return NextResponse.json(
         {
           error: "Access denied",
@@ -181,13 +268,13 @@ export async function handleUploadMaterial(
       );
     }
 
-    // Verify ownership
-    const { isOwner, error } = await verifyPlanOwnership(
+    // Verify manage access (owner consultant or org catalog.manage)
+    const { allowed, organizationId, error } = await verifyMaterialManageAccess(
       session.user.id,
       planId,
       config,
     );
-    if (!isOwner) {
+    if (!allowed) {
       return NextResponse.json(
         {
           error: "Access denied",
@@ -246,8 +333,9 @@ export async function handleUploadMaterial(
     });
     const nextOrder = (maxOrderResult._max.order ?? -1) + 1;
 
-    // Create database record
-    const createData: Prisma.PlanMaterialCreateInput = {
+    // Create database record — mirror the plan's org tag so org dashboards
+    // can scope materials without polymorphic joins.
+    const createData = {
       fileName: uploadResult.fileName!,
       originalName: file.name,
       fileSize: uploadResult.fileSize!,
@@ -256,13 +344,12 @@ export async function handleUploadMaterial(
       storagePath: uploadResult.storagePath!,
       description: description || null,
       order: nextOrder,
+      organizationId,
+      [config.planIdField]: planId,
     };
 
     const material = await prisma.planMaterial.create({
-      data: {
-        ...createData,
-        [config.planIdField]: planId,
-      } as Prisma.PlanMaterialUncheckedCreateInput,
+      data: createData as Prisma.PlanMaterialUncheckedCreateInput,
     });
 
     return NextResponse.json({ data: material }, { status: 201 });
@@ -299,42 +386,9 @@ export async function handleDeleteMaterial(
       );
     }
 
-    // Find the material and verify ownership
-    const material = await prisma.planMaterial.findUnique({
-      where: { id: materialId },
-      include: {
-        consultationPlan: {
-          include: {
-            consultantProfile: {
-              select: { userId: true },
-            },
-          },
-        },
-        subscriptionPlan: {
-          include: {
-            consultantProfile: {
-              select: { userId: true },
-            },
-          },
-        },
-        webinarPlan: {
-          include: {
-            consultantProfile: {
-              select: { userId: true },
-            },
-          },
-        },
-        classPlan: {
-          include: {
-            consultantProfile: {
-              select: { userId: true },
-            },
-          },
-        },
-      },
-    });
-
-    if (!material) {
+    // Find the material and verify manage access (owner or org catalog.manage)
+    const access = await resolveMaterialRowAccess(session.user.id, materialId);
+    if (access.status === "not_found") {
       return NextResponse.json(
         {
           error: "Material not found",
@@ -344,15 +398,7 @@ export async function handleDeleteMaterial(
         { status: 404 },
       );
     }
-
-    // Check ownership
-    const ownerUserId =
-      material.consultationPlan?.consultantProfile?.userId ||
-      material.subscriptionPlan?.consultantProfile?.userId ||
-      material.webinarPlan?.consultantProfile?.userId ||
-      material.classPlan?.consultantProfile?.userId;
-
-    if (!isDevelopment() && ownerUserId !== session.user.id) {
+    if (access.status === "denied") {
       return NextResponse.json(
         {
           error: "Access denied",
@@ -364,7 +410,7 @@ export async function handleDeleteMaterial(
     }
 
     // Delete from Supabase storage
-    await deletePlanMaterial(material.storagePath);
+    await deletePlanMaterial(access.storagePath);
 
     // Delete from database
     await prisma.planMaterial.delete({
@@ -405,42 +451,9 @@ export async function handleUpdateMaterial(
       );
     }
 
-    // Find the material and verify ownership
-    const material = await prisma.planMaterial.findUnique({
-      where: { id: materialId },
-      include: {
-        consultationPlan: {
-          include: {
-            consultantProfile: {
-              select: { userId: true },
-            },
-          },
-        },
-        subscriptionPlan: {
-          include: {
-            consultantProfile: {
-              select: { userId: true },
-            },
-          },
-        },
-        webinarPlan: {
-          include: {
-            consultantProfile: {
-              select: { userId: true },
-            },
-          },
-        },
-        classPlan: {
-          include: {
-            consultantProfile: {
-              select: { userId: true },
-            },
-          },
-        },
-      },
-    });
-
-    if (!material) {
+    // Find the material and verify manage access (owner or org catalog.manage)
+    const access = await resolveMaterialRowAccess(session.user.id, materialId);
+    if (access.status === "not_found") {
       return NextResponse.json(
         {
           error: "Material not found",
@@ -450,15 +463,7 @@ export async function handleUpdateMaterial(
         { status: 404 },
       );
     }
-
-    // Check ownership
-    const ownerUserId =
-      material.consultationPlan?.consultantProfile?.userId ||
-      material.subscriptionPlan?.consultantProfile?.userId ||
-      material.webinarPlan?.consultantProfile?.userId ||
-      material.classPlan?.consultantProfile?.userId;
-
-    if (!isDevelopment() && ownerUserId !== session.user.id) {
+    if (access.status === "denied") {
       return NextResponse.json(
         {
           error: "Access denied",

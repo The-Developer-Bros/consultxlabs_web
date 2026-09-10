@@ -136,6 +136,12 @@ export function subscribeAuthSync(
         channel.removeEventListener("message", onMessage);
         channel.close();
       });
+      // BroadcastChannel handles peer delivery — do NOT also listen for
+      // `storage`. `postAuthSync` never writes the storage ping when a
+      // channel exists, so the listener would be inert at best; at worst any
+      // unrelated write to the sync key fires spurious refetch storms in
+      // every tab.
+      return () => cleanups.forEach((fn) => fn());
     }
   } catch {
     // ignore — storage fallback below still applies

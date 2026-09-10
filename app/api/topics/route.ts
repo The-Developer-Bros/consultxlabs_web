@@ -9,6 +9,9 @@ export async function GET(request: NextRequest) {
     const planType = searchParams.get("planType") || "all";
 
     if (withProgramCount) {
+      // All four plan types count as "programs" on a topic. Consultation and
+      // subscription plans were silently excluded, so topics only carried by
+      // 1:1 offerings reported zero and were filtered out entirely.
       const topics = await prisma.topic.findMany({
         include: {
           _count: {
@@ -18,6 +21,12 @@ export async function GET(request: NextRequest) {
                 : {}),
               ...(planType === "all" || planType === "webinar"
                 ? { webinarPlans: true }
+                : {}),
+              ...(planType === "all" || planType === "consultation"
+                ? { consultationPlans: true }
+                : {}),
+              ...(planType === "all" || planType === "subscription"
+                ? { subscriptionPlans: true }
                 : {}),
             },
           },
@@ -33,8 +42,16 @@ export async function GET(request: NextRequest) {
             programCount = count.classPlans ?? 0;
           } else if (planType === "webinar") {
             programCount = count.webinarPlans ?? 0;
+          } else if (planType === "consultation") {
+            programCount = count.consultationPlans ?? 0;
+          } else if (planType === "subscription") {
+            programCount = count.subscriptionPlans ?? 0;
           } else {
-            programCount = (count.classPlans ?? 0) + (count.webinarPlans ?? 0);
+            programCount =
+              (count.classPlans ?? 0) +
+              (count.webinarPlans ?? 0) +
+              (count.consultationPlans ?? 0) +
+              (count.subscriptionPlans ?? 0);
           }
           return {
             id: topic.id,

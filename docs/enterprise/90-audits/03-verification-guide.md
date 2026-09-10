@@ -28,20 +28,35 @@ The database was reset and reseeded (`small` mode). This guide gives you **every
 ### By org archetype
 | Org | Archetype | Funding / Program | Persona | Email |
 |---|---|---|---|---|
-| **Wipro Limited** (`wipro`) | **SPONSOR** (sponsor✓ host✗) | INVOICE · LICENSED_SEAT (200 seats, 12 covered/cycle) | OWNER | `samantha.anderson@yahoo.com` |
+| **Wipro Limited** (`wipro`) | **SPONSOR** (sponsor✓ host✗) | INVOICE · LICENSED_SEAT (200 seats, 12 covered/cycle) | OWNER | `zara.brown@yahoo.com` |
 | | | | OWNER (tour) | `tour-owner@familiarise.dev` |
-| | | | LEARNER | `olivia.anderson@gmail.com` |
-| | | | LEARNER | `patrick.anderson@outlook.com` |
-| | | | LEARNER | `priya.anderson@yahoo.com` |
+| | | | LEARNER | `robert.brown@gmail.com` |
+| | | | LEARNER | `samantha.brown@outlook.com` |
+| | | | LEARNER | `sarah.brown@yahoo.com` |
 | **IIT Madras** (`iit-madras`) | **HYBRID** (sponsor✓ host✓) | WALLET (₹14,75,000) · CREDIT_POOL | OWNER | `charlotte.anderson@gmail.com` |
 | | | | EXPERT | `andrew.anderson@gmail.com` (also: angela, arjun, benjamin, catherine) |
-| | | | LEARNER | `rachel.anderson@hotmail.com` (also: raj, rebecca, robert) |
+| | | | LEARNER | `sophia.brown@hotmail.com` (also: thomas, victoria, william) |
 | **LearnPro Academy** (`learnpro-academy`) | **HOST** (sponsor✗ host✓) | RateCard 10/10/80 | OWNER | `daniel.anderson@outlook.com` |
 | | | | EXPERT | `aarav.anderson@gmail.com` (also: aditi, alex, amit, ananya) |
-| **Arjun Anderson's Coaching** (`arjun-anderson-coaching-mrpk`) | **solo HOST** | personal org | OWNER | `arjun.anderson@yahoo.com` |
-| **Platform admin** | — | — | ADMIN | `olivia.brown@protonmail.com` |
+| **Arjun Anderson's Coaching** (`arjun-anderson-coaching-2ncb`) | **solo HOST** | personal org | OWNER | `arjun.anderson@yahoo.com` |
+| **Platform admin** | — | — | ADMIN | `robert.davis@yahoo.com` |
 
 > Note: `arjun.anderson@yahoo.com` is OWNER of the solo coaching org **and** an EXPERT at IIT Madras — a built-in **multi-org consultant** example.
+
+The org-archetype roster above was regenerated from the live database on 2026-09-06, against the `Membership`, `users`, and `organizations` tables in Supabase project `pzmbxqdgibfkhjwzeprf`, after a 2026-09-06 E2E run found that `rachel.anderson@hotmail.com` (the previously documented IIT Madras LEARNER) has no live membership at all; the actual IIT Madras LEARNER cohort is the Brown family (`sophia`, `thomas`, `victoria`, `william`).
+
+```sql
+-- Active enterprise memberships for the four seed orgs, joined to email/name/role.
+SELECT o.name AS org_name, m.role, u.email, u.name, m.status
+FROM "Membership" m
+JOIN users u ON u.id = m."userId"
+JOIN organizations o ON o.id = m."organizationId"
+WHERE o.slug IN ('wipro', 'learnpro-academy', 'iit-madras', 'arjun-anderson-coaching-2ncb')
+ORDER BY o.name, m.role, u.email;
+
+-- Live ADMIN-role users (the "Platform admin" persona).
+SELECT email, name, role FROM users WHERE role = 'ADMIN';
+```
 
 ### Seeded data summary
 `4 orgs · 78 users · 22 enterprise memberships · 2 programs · 2 contracts · 1 invoice (Wipro, DRAFT) · 8 ledger transactions`

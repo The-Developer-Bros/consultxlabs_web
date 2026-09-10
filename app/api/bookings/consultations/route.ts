@@ -7,9 +7,10 @@ import {
 import { Prisma, AppointmentStatus } from "@prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 import { transitionConsultationRequest } from "@/lib/booking/transitions";
+import { refundRejectedRequest } from "@/lib/booking/rejection-refund";
 import { IllegalTransitionError } from "@/lib/enterprise/transitions";
 import { applyRateLimit, eventMutationLimiter } from "@/lib/rate-limit";
-import { resolveOrgScope } from "@/lib/api/scope/parse";
+import { resolveOrgScope, scopeOrgId } from "@/lib/api/scope/parse";
 import {
   requireApiAuth,
   isPrivileged,
@@ -64,7 +65,9 @@ export async function GET(request: NextRequest) {
           });
         }
         if (session.user.consulteeProfileId) {
-          ownershipArms.push({ requestedById: session.user.consulteeProfileId });
+          ownershipArms.push({
+            requestedById: session.user.consulteeProfileId,
+          });
         }
       }
       if (ownershipArms.length === 0) {
@@ -130,10 +133,14 @@ export async function GET(request: NextRequest) {
           { status: scopeResolution.status },
         );
       }
-      if (scopeResolution.scope.kind === "org") {
-        whereClause.appointment = {
-          organizationId: scopeResolution.scope.orgId,
-        };
+      // #674 B2B gap 9 — `orgMember` pins an org too: it is what an active
+      // member below `operations.read` resolves to, meaning "my own rows in
+      // THAT org". Testing `kind === "org"` alone dropped them into the
+      // unfiltered arm, so picking one org returned every org plus personal.
+      // scopeOrgId is the single place that knows which kinds pin.
+      const pinnedOrgId = scopeOrgId(scopeResolution.scope);
+      if (pinnedOrgId) {
+        whereClause.appointment = { organizationId: pinnedOrgId };
       }
       // kind === "all": no additional filter
     }
@@ -182,7 +189,10 @@ export async function GET(request: NextRequest) {
       },
     });
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "bookings" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "bookings" } },
+    );
     console.error("Error fetching consultations:", error);
     return NextResponse.json(
       { error: "An error occurred while fetching consultations" },
@@ -212,7 +222,9 @@ export async function PATCH(request: NextRequest) {
       );
     }
 
-    if (!Object.values(AppointmentStatus).includes(status as AppointmentStatus)) {
+    if (
+      !Object.values(AppointmentStatus).includes(status as AppointmentStatus)
+    ) {
       return NextResponse.json({ error: "Invalid status" }, { status: 400 });
     }
 
@@ -251,11 +263,42 @@ export async function PATCH(request: NextRequest) {
       );
     }
 
+    // #1004 — declining is the CONSULTANT's act. REJECTED is legal from
+    // PENDING and APPROVED_PENDING_PAYMENT, so without this guard a consultee
+    // could reject their own PAID direct-checkout booking and ride the
+    // consultant-initiated 100% refund tier on demand. Mirrors the hardened
+    // [consultationId] PATCH route.
+    if (
+      status === AppointmentStatus.REJECTED &&
+      !isConsultant &&
+      !isPrivileged(session.user.role)
+    ) {
+      return forbiddenResponse(
+        "Only the consultant can decline a request. Cancel it instead.",
+      );
+    }
+
     // #836 — allowed-from guard rides the WHERE; updateMany returns no row,
     // so re-read for the heavy include.
     await prisma.$transaction((tx) =>
       transitionConsultationRequest(tx, { where: { id }, to: status }),
     );
+
+    // #1004 — a rejected request that was already paid has to give the money
+    // back. Direct checkout captures BEFORE the request exists, so a
+    // consultant declining a paid booking is the buyer's only exit; the
+    // transition's allowed-from guard makes this at-most-once. Never throws
+    // (failures surface in Sentry + system events).
+    const rejectionRefund =
+      status === AppointmentStatus.REJECTED
+        ? await refundRejectedRequest({
+            kind: "consultation",
+            requestId: id,
+            initiatedByUserId: session.user.id,
+            actor: isConsultant ? "CONSULTANT" : "PLATFORM",
+          })
+        : null;
+
     const consultation = await prisma.consultation.findUniqueOrThrow({
       where: { id },
       include: {
@@ -263,30 +306,64 @@ export async function PATCH(request: NextRequest) {
           include: {
             consultantProfile: {
               include: {
-                user: { select: { id: true, name: true, email: true, image: true, role: true, phone: true } },
+                user: {
+                  select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    image: true,
+                    role: true,
+                    phone: true,
+                  },
+                },
               },
             },
           },
         },
         requestedBy: {
           include: {
-            user: { select: { id: true, name: true, email: true, image: true, role: true, phone: true } },
+            user: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                image: true,
+                role: true,
+                phone: true,
+              },
+            },
           },
         },
         appointment: {
           include: {
             slotsOfAppointment: {
               include: {
-                user: { select: { id: true, name: true, email: true, image: true, role: true, phone: true } },
+                user: {
+                  select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    image: true,
+                    role: true,
+                    phone: true,
+                  },
+                },
               },
             },
-            payment: { select: { id: true, paymentStatus: true, amount: true, currency: true } },
+            payment: {
+              select: {
+                id: true,
+                paymentStatus: true,
+                amount: true,
+                currency: true,
+              },
+            },
           },
         },
       },
     });
 
-    return NextResponse.json({ data: consultation });
+    return NextResponse.json({ data: consultation, rejectionRefund });
   } catch (error) {
     if (error instanceof IllegalTransitionError) {
       return NextResponse.json(
@@ -294,7 +371,10 @@ export async function PATCH(request: NextRequest) {
         { status: error.httpStatus },
       );
     }
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "bookings" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "bookings" } },
+    );
     console.error("Error updating consultation:", error);
     return NextResponse.json(
       { error: "An error occurred while updating consultation" },

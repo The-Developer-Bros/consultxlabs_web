@@ -89,8 +89,21 @@ export async function PATCH(request: NextRequest) {
       ],
     };
 
+    // Same transition contract as the single-document PATCH: terminal states
+    // (APPROVED/REJECTED) and soft-deleted rows are skipped, not overwritten.
     const result = await prisma.appointmentDocument.updateMany({
-      where: { id: { in: documentIds }, appointment: ownedByConsultant },
+      where: {
+        id: { in: documentIds },
+        deletedAt: null,
+        reviewStatus: {
+          in: [
+            DocumentReviewStatus.PENDING,
+            DocumentReviewStatus.IN_REVIEW,
+            DocumentReviewStatus.NEEDS_REVISION,
+          ],
+        },
+        appointment: ownedByConsultant,
+      },
       data: {
         reviewStatus,
         // Apply the shared note only when one was provided; an empty note leaves

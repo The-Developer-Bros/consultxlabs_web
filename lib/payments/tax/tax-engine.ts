@@ -15,6 +15,7 @@
  */
 
 import { TAX_CONSTANTS } from "@/lib/payments/payouts/constants";
+import { hasValidPlatformLut } from "@/lib/compliance/lut";
 
 // ============================================================================
 // Types
@@ -69,10 +70,29 @@ export function determineTax(params: {
     };
   }
 
-  // International — zero-rated export of services
+  // International — export of services. Zero-rated ONLY under a platform
+  // LUT valid for the current FY (Rule 96A); otherwise the supply is taxable
+  // at 18% IGST and this engine must agree with lib/compliance/gst.ts, which
+  // gates invoicing on the same signal (#1230). Charging here keeps
+  // checkout↔invoice parity; without a LUT that tax is remittable, and the
+  // pay-IGST-then-refund route remains available to recover it.
   // TODO: For production tax-defense, capture additional evidence per payment:
   // billing address, gateway-confirmed remittance country, FIRC/eFIRC reference,
   // LUT state at invoice time, and stored reason code for zero-rating.
+  if (!hasValidPlatformLut()) {
+    const sacCode = getSacCode(serviceType);
+    const taxRate = TAX_CONSTANTS.GST_RATE;
+    return {
+      taxRate,
+      taxAmount: Math.round((baseAmountPaise * taxRate) / 100),
+      isZeroRated: false,
+      jurisdiction: "IN-GST",
+      sacCode,
+      notes:
+        "Export without a valid FY Letter of Undertaking — IGST charged per Rule 96A (fail-closed)",
+    };
+  }
+
   return {
     taxRate: 0,
     taxAmount: 0,

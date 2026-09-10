@@ -55,6 +55,96 @@ const optionalBulletList = (label: string) =>
       `${label} contains inappropriate language`,
     );
 
+// ── Shared plan-field builders ─────────────────────────────────────────────
+// The four plan schemas are parallel by design; these builders keep them from
+// being parallel COPIES. A rule change (the topic cap, the price ceiling, a
+// refine message) must land once, not four times — verbatim repeats of these
+// blocks also trip SonarCloud's new-code duplication gate.
+
+const planTitleSchema = z
+  .string()
+  .min(1, "Title is required")
+  .max(100, "Title must be 100 characters or less")
+  .refine(
+    meaningfulContentRefinement,
+    "Title contains nonsensical text or gibberish",
+  )
+  .refine(profanityFreeRefinement, "Title contains inappropriate language");
+
+// Required at the validation edge even though the DB columns stay nullable
+// (ClassPlan's was relaxed so legacy rows survive); authoring always has a
+// description.
+const requiredDescriptionSchema = z
+  .string()
+  .min(1, "Description is required")
+  .refine(
+    meaningfulContentRefinement,
+    "Description contains nonsensical text or gibberish",
+  )
+  .refine(
+    profanityFreeRefinement,
+    "Description contains inappropriate language",
+  );
+
+// Optional free text (prerequisites, materials). Empty/absent is fine; what
+// IS present must be meaningful and profanity-free.
+const optionalFreeText = (label: string) =>
+  z
+    .string()
+    .optional()
+    .nullable()
+    .refine(
+      (val) => !val || meaningfulContentRefinement(val),
+      `${label} contain nonsensical text or gibberish`,
+    )
+    .refine(
+      (val) => !val || profanityFreeRefinement(val),
+      `${label} contain inappropriate language`,
+    );
+
+const learningOutcomesSchema = z
+  .array(z.string().min(1, "Learning outcome cannot be empty"))
+  .min(1, "At least one learning outcome is required")
+  .refine(noDuplicatesRefinement, "Duplicate learning outcomes are not allowed")
+  .refine(
+    meaningfulArrayContentRefinement,
+    "Learning outcomes contain nonsensical text or gibberish",
+  )
+  .refine(
+    profanityFreeArrayRefinement,
+    "Learning outcomes contain inappropriate language",
+  );
+
+const topicsSchema = z
+  .array(z.string().min(1, "Topic cannot be empty"))
+  .min(1, "At least one topic is required")
+  .max(10, "At most 10 topics are allowed")
+  .refine(noDuplicatesRefinement, "Duplicate topics are not allowed")
+  .refine(
+    meaningfulArrayContentRefinement,
+    "Topics contain nonsensical text or gibberish",
+  )
+  .refine(
+    profanityFreeArrayRefinement,
+    "Topics contain inappropriate language",
+  );
+
+// Paise at the API edge (#780): the form edits rupees and the services
+// multiply by 100 before sending. Cap is ₹10,00,000.
+const priceSchema = z
+  .number()
+  .min(0, "Price must be non-negative")
+  .max(100000000, "Price cannot exceed ₹10,00,000");
+
+// #1134 P1-6 — recording is an explicit per-plan opt-in on all four types,
+// defaulting off with stream-only storage.
+const recordingShape = {
+  recordingEnabled: z.boolean().default(false),
+  recordingStoragePolicy: z
+    .enum(["STREAM_ONLY", "PERMANENT"])
+    .default("STREAM_ONLY"),
+};
+
 export const PlanFaqSchema = z.object({
   id: z.string().optional(),
   question: z
@@ -146,17 +236,7 @@ export const ClassContentSchema = z.object({
       "Title contains nonsensical text or gibberish",
     )
     .refine(profanityFreeRefinement, "Title contains inappropriate language"),
-  description: z
-    .string()
-    .min(1, "Description is required")
-    .refine(
-      meaningfulContentRefinement,
-      "Description contains nonsensical text or gibberish",
-    )
-    .refine(
-      profanityFreeRefinement,
-      "Description contains inappropriate language",
-    ),
+  description: requiredDescriptionSchema,
   contentType: z
     .string()
     .optional()
@@ -212,115 +292,41 @@ export const SubscriptionContentSchema = ClassContentSchema.omit({
 
 export const ConsultationPlanSchema = z.object({
   id: z.string().optional(),
-  title: z
-    .string()
-    .min(1, "Title is required")
-    .max(100, "Title must be 100 characters or less")
-    .refine(
-      meaningfulContentRefinement,
-      "Title contains nonsensical text or gibberish",
-    )
-    .refine(profanityFreeRefinement, "Title contains inappropriate language"),
-  description: z
-    .string()
-    .optional()
-    .refine(
-      (val) => !val || meaningfulContentRefinement(val),
-      "Description contains nonsensical text or gibberish",
-    )
-    .refine(
-      (val) => !val || profanityFreeRefinement(val),
-      "Description contains inappropriate language",
-    ),
+  title: planTitleSchema,
+  // Required at the validation edge even though the DB column stays nullable
+  // (relaxed so legacy rows survive); authoring always has a description.
+  description: requiredDescriptionSchema,
   durationInHours: z
     .number()
     .min(0.5, "Duration must be at least 30 minutes")
-    .max(8, "Duration cannot exceed 8 hours"),
-  price: z.number().min(0, "Price must be non-negative"),
+    .max(8, "Duration cannot exceed 8 hours")
+    .refine(
+      (val) => (val * 60) % 30 === 0,
+      "Duration must be in 30-minute increments",
+    ),
+  price: priceSchema,
   priceCurrency: z.nativeEnum(Currency).default(Currency.INR),
   language: z.string().min(1, "Language is required"),
   level: planLevelSchema,
-  prerequisites: z
-    .string()
-    .optional()
-    .nullable()
-    .refine(
-      (val) => !val || meaningfulContentRefinement(val),
-      "Prerequisites contain nonsensical text or gibberish",
-    )
-    .refine(
-      (val) => !val || profanityFreeRefinement(val),
-      "Prerequisites contain inappropriate language",
-    ),
-  materialProvided: z
-    .string()
-    .optional()
-    .nullable()
-    .refine(
-      (val) => !val || meaningfulContentRefinement(val),
-      "Materials contain nonsensical text or gibberish",
-    )
-    .refine(
-      (val) => !val || profanityFreeRefinement(val),
-      "Materials contain inappropriate language",
-    ),
-  learningOutcomes: z
-    .array(z.string().min(1, "Learning outcome cannot be empty"))
-    .min(1, "At least one learning outcome is required")
-    .refine(
-      noDuplicatesRefinement,
-      "Duplicate learning outcomes are not allowed",
-    )
-    .refine(
-      meaningfulArrayContentRefinement,
-      "Learning outcomes contain nonsensical text or gibberish",
-    )
-    .refine(
-      profanityFreeArrayRefinement,
-      "Learning outcomes contain inappropriate language",
-    ),
-  topics: z
-    .array(z.string().min(1, "Topic cannot be empty"))
-    .default([])
-    .refine(noDuplicatesRefinement, "Duplicate topics are not allowed")
-    .refine(
-      meaningfulArrayContentRefinement,
-      "Topics contain nonsensical text or gibberish",
-    )
-    .refine(
-      profanityFreeArrayRefinement,
-      "Topics contain inappropriate language",
-    ),
+  prerequisites: optionalFreeText("Prerequisites"),
+  materialProvided: optionalFreeText("Materials"),
+  learningOutcomes: learningOutcomesSchema,
+  topics: topicsSchema,
+  ...recordingShape,
   ...planPositioningShape,
 });
 
 export const SubscriptionPlanSchema = z.object({
   id: z.string().optional(),
-  title: z
-    .string()
-    .min(1, "Title is required")
-    .max(100, "Title must be 100 characters or less")
-    .refine(
-      meaningfulContentRefinement,
-      "Title contains nonsensical text or gibberish",
-    )
-    .refine(profanityFreeRefinement, "Title contains inappropriate language"),
-  description: z
-    .string()
-    .optional()
-    .refine(
-      (val) => !val || meaningfulContentRefinement(val),
-      "Description contains nonsensical text or gibberish",
-    )
-    .refine(
-      (val) => !val || profanityFreeRefinement(val),
-      "Description contains inappropriate language",
-    ),
+  title: planTitleSchema,
+  // Required at the validation edge even though the DB column stays nullable
+  // (relaxed so legacy rows survive); authoring always has a description.
+  description: requiredDescriptionSchema,
   durationInMonths: z
     .number()
     .min(1, "Duration must be at least 1 month")
     .max(24, "Duration cannot exceed 24 months"),
-  price: z.number().min(0, "Price must be non-negative"),
+  price: priceSchema,
   priceCurrency: z.nativeEnum(Currency).default(Currency.INR),
   trialEnabled: z.boolean().optional(),
   trialDurationMinutes: z
@@ -337,67 +343,20 @@ export const SubscriptionPlanSchema = z.object({
     .optional(),
   sessionsPerWeek: z
     .number()
-    .min(0, "Sessions per week cannot be negative")
+    .min(1, "At least one session per week is required")
     .max(7, "Cannot exceed 7 sessions per week"),
   sessionDurationInHours: z
     .number()
     .min(0.5, "Session duration must be at least 30 minutes")
     .max(4, "Session duration cannot exceed 4 hours")
     .default(1),
-  emailSupport: z.enum(["GENERAL", "PRIORITY", "DEDICATED"]),
+  emailSupport: z.enum(["GENERAL", "PRIORITY", "DEDICATED"]).default("GENERAL"),
   language: z.string().min(1, "Language is required"),
   level: planLevelSchema,
-  prerequisites: z
-    .string()
-    .optional()
-    .nullable()
-    .refine(
-      (val) => !val || meaningfulContentRefinement(val),
-      "Prerequisites contain nonsensical text or gibberish",
-    )
-    .refine(
-      (val) => !val || profanityFreeRefinement(val),
-      "Prerequisites contain inappropriate language",
-    ),
-  materialProvided: z
-    .string()
-    .optional()
-    .nullable()
-    .refine(
-      (val) => !val || meaningfulContentRefinement(val),
-      "Materials contain nonsensical text or gibberish",
-    )
-    .refine(
-      (val) => !val || profanityFreeRefinement(val),
-      "Materials contain inappropriate language",
-    ),
-  learningOutcomes: z
-    .array(z.string().min(1, "Learning outcome cannot be empty"))
-    .min(1, "At least one learning outcome is required")
-    .refine(
-      noDuplicatesRefinement,
-      "Duplicate learning outcomes are not allowed",
-    )
-    .refine(
-      meaningfulArrayContentRefinement,
-      "Learning outcomes contain nonsensical text or gibberish",
-    )
-    .refine(
-      profanityFreeArrayRefinement,
-      "Learning outcomes contain inappropriate language",
-    ),
-  topics: z
-    .array(z.string().min(1, "Topic cannot be empty"))
-    .default([])
-    .refine(noDuplicatesRefinement, "Duplicate topics are not allowed")
-    .refine(
-      meaningfulArrayContentRefinement,
-      "Topics contain nonsensical text or gibberish",
-    )
-    .refine(
-      profanityFreeArrayRefinement,
-      "Topics contain inappropriate language",
-    ),
+  prerequisites: optionalFreeText("Prerequisites"),
+  materialProvided: optionalFreeText("Materials"),
+  learningOutcomes: learningOutcomesSchema,
+  topics: topicsSchema,
   // The session roadmap the editor's roadmap slot authors. Absent here, the
   // resolver stripped it and every save sent an empty list, which the PUT
   // treats as "replace with nothing" — wiping the roadmap.
@@ -408,35 +367,23 @@ export const SubscriptionPlanSchema = z.object({
       const titles = contents.map((c) => c.title.trim().toLowerCase());
       return new Set(titles).size === titles.length;
     }, "Roadmap sessions must have unique titles"),
+  ...recordingShape,
   ...planPositioningShape,
 });
 
 // Base schema for common fields
 const BaseEventPlanSchema = z.object({
-  title: z
-    .string()
-    .min(1, "Title is required")
-    .refine(
-      meaningfulContentRefinement,
-      "Title contains nonsensical text or gibberish",
-    )
-    .refine(profanityFreeRefinement, "Title contains inappropriate language"),
-  description: z
-    .string()
-    .min(1, "Description is required")
-    .refine(
-      meaningfulContentRefinement,
-      "Description contains nonsensical text or gibberish",
-    )
-    .refine(
-      profanityFreeRefinement,
-      "Description contains inappropriate language",
-    ),
-  price: z.number().min(0, "Price must be non-negative"),
+  title: planTitleSchema,
+  description: requiredDescriptionSchema,
+  price: priceSchema,
   priceCurrency: z.nativeEnum(Currency).default(Currency.INR),
-  maxParticipants: z.number().min(1, "At least one participant is required"),
+  maxParticipants: z
+    .number()
+    .min(1, "At least one participant is required")
+    .max(10000, "Cannot exceed 10,000 participants"),
   language: z
     .string()
+    .min(1, "Language is required")
     .default("English")
     .refine(
       meaningfulContentRefinement,
@@ -447,57 +394,10 @@ const BaseEventPlanSchema = z.object({
       "Language contains inappropriate language",
     ),
   level: planLevelSchema,
-  prerequisites: z
-    .string()
-    .optional()
-    .nullable()
-    .refine(
-      (val) => !val || meaningfulContentRefinement(val),
-      "Prerequisites contain nonsensical text or gibberish",
-    )
-    .refine(
-      (val) => !val || profanityFreeRefinement(val),
-      "Prerequisites contain inappropriate language",
-    ),
-  materialProvided: z
-    .string()
-    .optional()
-    .nullable()
-    .refine(
-      (val) => !val || meaningfulContentRefinement(val),
-      "Materials contain nonsensical text or gibberish",
-    )
-    .refine(
-      (val) => !val || profanityFreeRefinement(val),
-      "Materials contain inappropriate language",
-    ),
-  learningOutcomes: z
-    .array(z.string().min(1, "Learning outcome cannot be empty"))
-    .min(1, "At least one learning outcome is required")
-    .refine(
-      noDuplicatesRefinement,
-      "Duplicate learning outcomes are not allowed",
-    )
-    .refine(
-      meaningfulArrayContentRefinement,
-      "Learning outcomes contain nonsensical text or gibberish",
-    )
-    .refine(
-      profanityFreeArrayRefinement,
-      "Learning outcomes contain inappropriate language",
-    ),
-  topics: z
-    .array(z.string().min(1, "Topic cannot be empty"))
-    .min(1, "At least one topic is required")
-    .refine(noDuplicatesRefinement, "Duplicate topics are not allowed")
-    .refine(
-      meaningfulArrayContentRefinement,
-      "Topics contain nonsensical text or gibberish",
-    )
-    .refine(
-      profanityFreeArrayRefinement,
-      "Topics contain inappropriate language",
-    ),
+  prerequisites: optionalFreeText("Prerequisites"),
+  materialProvided: optionalFreeText("Materials"),
+  learningOutcomes: learningOutcomesSchema,
+  topics: topicsSchema,
 
   // Make consultant fields optional and nullable
   consultantProfileId: z.string().optional().nullable(),
@@ -509,13 +409,11 @@ const BaseEventPlanSchema = z.object({
 // Webinar specific schema
 export const WebinarPlanSchema = BaseEventPlanSchema.extend({
   certificateProvided: z.boolean().default(false),
-  recordingEnabled: z.boolean().default(false),
-  recordingStoragePolicy: z
-    .enum(["STREAM_ONLY", "SUPABASE_PERMANENT"])
-    .default("STREAM_ONLY"),
+  ...recordingShape,
   durationInHours: z
     .number()
     .min(0.5, "Duration must be at least 30 minutes")
+    .max(8, "Duration cannot exceed 8 hours")
     .refine(
       (val) => (val * 60) % 30 === 0,
       "Duration must be in 30-minute increments",
@@ -559,13 +457,10 @@ export const ClassPlanSchema = BaseEventPlanSchema.extend({
     )
     .default(1),
   certificateProvided: z.boolean().default(false),
-  recordingEnabled: z.boolean().default(false),
-  recordingStoragePolicy: z
-    .enum(["STREAM_ONLY", "SUPABASE_PERMANENT"])
-    .default("STREAM_ONLY"),
+  ...recordingShape,
   sessionsPerWeek: z
     .number()
-    .min(0, "Sessions per week cannot be negative")
+    .min(1, "At least one session per week is required")
     .max(7, "Cannot exceed 7 sessions per week"),
   emailSupport: z.enum(["GENERAL", "PRIORITY", "DEDICATED"]).default("GENERAL"),
   classContents: z

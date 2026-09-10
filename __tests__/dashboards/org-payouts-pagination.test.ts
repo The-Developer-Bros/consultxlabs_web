@@ -51,7 +51,7 @@ beforeEach(() => {
   mockedAccess.mockResolvedValue({ org: { canHost: true } });
   mockedFindMany.mockResolvedValue([]);
   mockedCount.mockResolvedValue(0);
-  mockedAggregate.mockResolvedValue({ _sum: { netPayoutPaise: null } });
+  mockedAggregate.mockResolvedValue({ _sum: { amountPaise: null } });
   mockedGroupBy.mockResolvedValue([]);
 });
 
@@ -77,8 +77,8 @@ describe("GET /api/organizations/[orgId]/payouts — pagination + stats", () => 
 
   it("returns org-wide totalPaidPaise/pendingPaise/counts unaffected by the status filter", async () => {
     mockedAggregate
-      .mockResolvedValueOnce({ _sum: { netPayoutPaise: BigInt(50_000) } }) // COMPLETED
-      .mockResolvedValueOnce({ _sum: { netPayoutPaise: BigInt(12_000) } }); // in-flight
+      .mockResolvedValueOnce({ _sum: { amountPaise: BigInt(50_000) } }) // COMPLETED
+      .mockResolvedValueOnce({ _sum: { amountPaise: BigInt(12_000) } }); // in-flight
     mockedGroupBy.mockResolvedValue([
       { status: "COMPLETED", _count: { id: 4 } },
       { status: "PENDING", _count: { id: 2 } },

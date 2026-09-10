@@ -43,6 +43,19 @@ jest.mock("../../lib/prisma", () => ({
   },
 }));
 
+jest.mock("../../lib/rate-limit", () => ({
+  __esModule: true,
+  applyRateLimit: jest.fn(async () => null),
+  eventMutationLimiter: {},
+}));
+jest.mock("../../utils/appointmentlock", () => ({
+  __esModule: true,
+  withAppointmentLock: jest.fn(
+    async (_id: string, fn: () => Promise<unknown>) => fn(),
+  ),
+  BookingLockUnavailableError: class extends Error {},
+  AppointmentBusyError: class extends Error {},
+}));
 jest.mock("../../lib/auth-server", () => ({
   getSession: jest.fn(),
 }));
@@ -273,28 +286,46 @@ function makeMockTx(appointmentData: any = null) {
     },
     consultation: {
       update: jest.fn(),
+      findUnique: jest.fn().mockResolvedValue({ status: "SCHEDULED" }),
       // B2 — the cancel/reschedule CAS guards use updateMany.
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     subscription: {
       update: jest.fn(),
+      findUnique: jest.fn().mockResolvedValue({ status: "SCHEDULED" }),
       // B2 — the cancel/reschedule CAS guards use updateMany.
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     webinar: {
       update: jest.fn(),
+      findUnique: jest.fn().mockResolvedValue({ status: "SCHEDULED" }),
       // B2 — the cancel/reschedule CAS guards use updateMany.
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     class: {
       update: jest.fn(),
+      findUnique: jest.fn().mockResolvedValue({ status: "SCHEDULED" }),
       // B2 — the cancel/reschedule CAS guards use updateMany.
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
-    slotOfAppointment: { updateMany: jest.fn(), deleteMany: jest.fn() },
+    // transitionSlotCompletion reads the from-status, then moves the cohort
+    // with updateManyAndReturn so each moved id gets its history row.
+    slotOfAppointment: {
+      findMany: jest.fn().mockResolvedValue([]),
+      updateManyAndReturn: jest.fn().mockResolvedValue([{ id: "slot-1" }]),
+      deleteMany: jest.fn(),
+    },
+    appointmentParticipant: {
+      createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    bookingStatusHistory: { create: jest.fn().mockResolvedValue({}) },
     // Cancel closes any live reschedule proposal so the appointment's
     // openForAppointmentId reservation is released.
     rescheduleRequest: {
+      // The cancel route reads the open proposals, then CASes each by id.
+      findMany: jest.fn().mockResolvedValue([]),
+      findUnique: jest.fn().mockResolvedValue({ status: "PENDING_REVIEW" }),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       create: jest.fn().mockResolvedValue({ id: "reschedule-request-1" }),
     },

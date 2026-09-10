@@ -31,6 +31,10 @@ export const INQUIRY_CATEGORIES = [
   { value: "billing", label: "Billing & Payments" },
   { value: "booking", label: "Booking Issues" },
   { value: "consultant", label: "Consultant Support" },
+  // #1230 wave-4b — the enterprise funnel (#1132): these two route into the
+  // Lead pipeline instead of the support queue.
+  { value: "enterprise", label: "Enterprise / Platform demo" },
+  { value: "team-training", label: "Team training program" },
   { value: "feedback", label: "Feedback" },
   { value: "other", label: "Other" },
 ] as const;

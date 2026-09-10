@@ -6,57 +6,18 @@
  *
  * Schedule: every ~10 minutes (CRON_SECRET-gated, like the other cleanup jobs).
  */
-import { NextRequest, NextResponse } from "next/server";
+import { cleanupRoute, parseLimitParam } from "@/lib/cron/cleanup-route";
 import { sweepStuckWebhookEvents } from "@/scripts/cleanup/sweep-stuck-webhook-events";
-import { CronLockHeldError } from "@/lib/cron/with-cron-lock";
-import * as Sentry from "@sentry/nextjs";
 
-export async function GET(req: NextRequest): Promise<NextResponse> {
-  try {
-    const authHeader = req.headers.get("authorization");
-    const cronSecret =
-      process.env.CRON_SECRET || process.env.VERCEL_CRON_SECRET;
-
-    if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
-      console.warn("Unauthorized stuck-webhook sweep attempt");
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    Sentry.logger.info("cron:sweep-stuck-webhook-events started");
-    const result = await sweepStuckWebhookEvents();
-
-    Sentry.logger.info("cron:sweep-stuck-webhook-events finished", {
-      scanned: result.scanned,
-      recovered: result.recovered,
-      stillFailing: result.stillFailing,
-    });
-    console.log("✅ Stuck-webhook sweep completed:", {
-      scanned: result.scanned,
-      recovered: result.recovered,
-      stillFailing: result.stillFailing,
-    });
-
-    // 207 when some events are still failing after a re-drive (needs attention).
-    const status = result.stillFailing > 0 ? 207 : 200;
-    return NextResponse.json(result, { status });
-  } catch (error) {
-    // #476 — concurrent invocation (schedule overlap / manual re-run)
-    // skips with a 409 instead of double-running.
-    if (error instanceof CronLockHeldError) {
-      return NextResponse.json({ error: error.message }, { status: 409 });
-    }
-    Sentry.captureException(error, { tags: { subsystem: "cron", job: "sweep-stuck-webhook-events" } });
-    console.error("Error in stuck-webhook sweep:", error);
-    return NextResponse.json(
-      {
-        error: "Failed to sweep stuck webhook events",
-        details: error instanceof Error ? error.message : String(error),
-      },
-      { status: 500 },
-    );
-  }
-}
-
-export async function POST(req: NextRequest): Promise<NextResponse> {
-  return GET(req);
-}
+export const { GET, POST } = cleanupRoute({
+  job: "sweep-stuck-webhook-events",
+  run: (req) => sweepStuckWebhookEvents({ limit: parseLimitParam(req) }),
+  summarize: (r) => ({
+    scanned: r.scanned,
+    recovered: r.recovered,
+    stillFailing: r.stillFailing,
+  }),
+  // 207 when some events are still failing after a re-drive (needs attention).
+  status: (r) => (r.stillFailing > 0 ? 207 : 200),
+  failureMessage: "Failed to sweep stuck webhook events",
+});

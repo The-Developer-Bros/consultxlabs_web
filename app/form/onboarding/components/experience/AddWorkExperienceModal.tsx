@@ -15,7 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { CompanyLogo, lookupCompanyDomain } from "@/components/ui/company-logo";
-import { WorkExperienceSchema } from "@/schemas/user";
+import { LONG_FORM_TEXT_MAX, WorkExperienceSchema } from "@/schemas/user";
 import { WorkExperience } from "./WorkExperienceSection";
 
 interface AddWorkExperienceModalProps {
@@ -175,15 +175,17 @@ export function AddWorkExperienceModal({
                   Logo detected automatically
                 </p>
               )}
-              {!autoDetectedDomain && !manualDomainMode && formData.company.length > 0 && (
-                <button
-                  type="button"
-                  className="text-xs text-primary hover:underline"
-                  onClick={() => setManualDomainMode(true)}
-                >
-                  Add company website to show logo
-                </button>
-              )}
+              {!autoDetectedDomain &&
+                !manualDomainMode &&
+                formData.company.length > 0 && (
+                  <button
+                    type="button"
+                    className="text-xs text-primary hover:underline"
+                    onClick={() => setManualDomainMode(true)}
+                  >
+                    Add company website to show logo
+                  </button>
+                )}
             </div>
 
             {manualDomainMode && (
@@ -269,7 +271,12 @@ export function AddWorkExperienceModal({
                 }
                 placeholder="Describe your responsibilities and achievements..."
                 rows={4}
+                maxLength={LONG_FORM_TEXT_MAX}
               />
+              <p className="text-xs text-muted-foreground text-right">
+                {formData.description?.length || 0}/{LONG_FORM_TEXT_MAX}{" "}
+                characters
+              </p>
             </div>
           </div>
 

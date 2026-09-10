@@ -261,7 +261,14 @@ describe("the join window spans the whole session", () => {
 });
 
 describe("ending the call ends the session", () => {
-  const ended = { id: "ms-1", endedAt: at("10:10") };
+  // #1270 — a DELIBERATE end (`call_ended`). The `session_timeout` counterpart
+  // is asserted below, because the distinction between them is the whole point
+  // of `isDeliberateEnd`.
+  const ended = {
+    id: "ms-1",
+    endedAt: at("10:10"),
+    endedReason: "call_ended",
+  };
 
   it("does not re-light Join later in the booked hour", () => {
     const slots = oneHour();
@@ -275,6 +282,58 @@ describe("ending the call ends the session", () => {
         }),
       ).toBeNull();
     }
+  });
+
+  it("does NOT end the session when Stream merely timed out the room", () => {
+    // #1270 — the bug this predicate exists for. Stream fires
+    // `call.session_ended` `inactivity_timeout_seconds` after the LAST
+    // participant leaves — 30s on the live call type — so one party stepping
+    // out for coffee at 09:56 of a 10:00-11:00 booking produced this row.
+    // Treating it like a host closing the room locked BOTH sides out of a
+    // session they had paid for and that had not started.
+    const slots = oneHour();
+    slots[0].meetingSession = {
+      id: "ms-1",
+      endedAt: at("10:10"),
+      endedReason: "session_timeout",
+    };
+
+    expect(
+      getSessionJoinState(groupSlotsIntoRuns(slots)[0], { now: at("10:25") }),
+    ).toBe("joinable");
+  });
+
+  it("treats a reconciler's guess as non-terminal too", () => {
+    // `reconciled_no_end` and `stream_not_found` are the orphan sweeper saying
+    // "I could not tell", which is not the same as "the host closed it".
+    for (const reason of ["reconciled_no_end", "stream_not_found"]) {
+      const slots = oneHour();
+      slots[0].meetingSession = {
+        id: "ms-1",
+        endedAt: at("10:10"),
+        endedReason: reason,
+      };
+
+      expect(
+        getSessionJoinState(groupSlotsIntoRuns(slots)[0], { now: at("10:25") }),
+      ).toBe("joinable");
+    }
+  });
+
+  it("treats a row with no reason as terminal, for historical safety", () => {
+    // Rows written before the column existed carry no reason. Reading those as
+    // deliberate is the conservative direction; the REQUIRED field on the slot
+    // shape is what stops a forgetful projection reaching this branch.
+    const slots = oneHour();
+    slots[0].meetingSession = {
+      id: "ms-1",
+      endedAt: at("10:10"),
+      endedReason: null,
+    };
+
+    expect(
+      getSessionJoinState(groupSlotsIntoRuns(slots)[0], { now: at("10:25") }),
+    ).toBe("ended");
   });
 
   it("is honoured wherever the MeetingSession happens to hang", () => {

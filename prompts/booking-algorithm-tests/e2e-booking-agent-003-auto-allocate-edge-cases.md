@@ -31,21 +31,21 @@ All test data uses the `-003` suffix to avoid collisions with existing `-001` / 
 `SlotAllocationService.autoAllocate()` picks slots on behalf of the consultant without
 them manually choosing times.
 
-| Behaviour                    | Webinar                                                            | Class                                                      |
-| ---------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------- |
-| **Search window**            | 4 weeks from now                                                   | Full `schedulingPeriodStartsAt → EndsAt`                   |
-| **Slot grouping**            | One appointment containing all consecutive slots (entire duration) | One appointment per session, distributed across the period |
-| **Weekly limits**            | None                                                               | `meetingsPerWeek` on `ClassPlan`                           |
-| **Re-allocate**              | Deletes + recreates in a transaction                               | Deletes + recreates in a transaction                       |
-| **Request body**             | `{ "isAuto": true }`                                               | `{ "isAuto": true }`                                       |
-| **API endpoint**             | `PATCH /api/events/webinars/[id]/allocate`                         | `PATCH /api/events/classes/[id]/allocate`                  |
-| **isAuto + slots both sent** | `isAuto` wins, `slots` ignored                                     | `isAuto` wins, `slots` ignored                             |
+| Behaviour                    | Webinar                                                                                                             | Class                                                      |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| **Search window**            | 4 weeks from now                                                                                                    | Full `schedulingPeriodStartsAt → EndsAt`                   |
+| **Slot grouping**            | One appointment containing all consecutive slots (entire duration)                                                  | One appointment per session, distributed across the period |
+| **Weekly limits**            | None                                                                                                                | `sessionsPerWeek` on `ClassPlan`                           |
+| **Re-allocate**              | Replaces in a transaction; the appointment is only deleted when `payment: { none: {} }` still matches at write time | Same                                                       |
+| **Request body**             | `{ "isAuto": true }`                                                                                                | `{ "isAuto": true }`                                       |
+| **API endpoint**             | `PATCH /api/bookings/webinars/[webinarId]/allocate`                                                                 | `PATCH /api/bookings/classes/[classId]/allocate`           |
+| **isAuto + slots both sent** | `isAuto` wins, `slots` ignored                                                                                      | `isAuto` wins, `slots` ignored                             |
 
 **Critical source files:**
 
-- `utils/slotAllocation/SlotAllocationService.ts` — `autoAllocate()` webinar logic L742-835, class logic L837-975
-- `app/api/events/webinars/[webinarId]/allocate/route.ts`
-- `app/api/events/classes/[classId]/allocate/route.ts`
+- `utils/slotAllocation/SlotAllocationService.ts` — `autoAllocate()`, reached through the public `allocate()` entry point via `dispatch`
+- `app/api/bookings/webinars/[webinarId]/allocate/route.ts`
+- `app/api/bookings/classes/[classId]/allocate/route.ts`
 - `schemas/slotAllocation/validationSchemas.ts`
 
 ---
@@ -142,7 +142,7 @@ After signup, run:
 
 ```sql
 UPDATE "ConsulteeProfile"
-SET occupation = 'Software Engineer',
+SET goals = 'Exercise the auto-allocate paths end to end.',
     "aboutMe"  = 'Testing auto-allocate booking flows.'
 FROM users u
 WHERE "ConsulteeProfile"."userId" = u.id
@@ -235,7 +235,7 @@ Two classes:
 ```sql
 INSERT INTO "ClassPlan" (
   id, title, "sessionDurationInHours", "totalSessions",
-  "meetingsPerWeek", "maxParticipants",
+  "sessionsPerWeek", "maxParticipants",
   price, "priceCurrency",
   "consultantProfileId", "createdAt", "updatedAt"
 )
@@ -332,7 +332,7 @@ As CONSULTANT, use `evaluate_script` to PATCH:
 ```javascript
 async () => {
   const response = await fetch(
-    "/api/events/webinars/test-webinar-003/allocate",
+    "/api/bookings/webinars/test-webinar-003/allocate",
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -382,7 +382,7 @@ Call the exact same PATCH again:
 ```javascript
 async () => {
   const response = await fetch(
-    "/api/events/webinars/test-webinar-003/allocate",
+    "/api/bookings/webinars/test-webinar-003/allocate",
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -393,7 +393,11 @@ async () => {
 };
 ```
 
-**Expected:** HTTP 200, old appointment deleted and replaced with a new one.
+**Expected:** HTTP 200. The old appointment is replaced, but only because it
+carries no Payment: the allocator's delete is
+`tx.appointment.deleteMany({ where: { id, payment: { none: {} } } })`, and a
+count of zero means a payment committed between the read and the write, in
+which case it keeps the appointment and strips only its sessionless slots.
 Total appointment count should still be exactly 1 with 4 slots.
 
 **DB verify:**
@@ -466,11 +470,14 @@ Re-login as CONSULTANT before starting this phase.
 
 ```javascript
 async () => {
-  const response = await fetch("/api/events/classes/test-class-003/allocate", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ isAuto: true }),
-  });
+  const response = await fetch(
+    "/api/bookings/classes/test-class-003/allocate",
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isAuto: true }),
+    },
+  );
   return { status: response.status, body: await response.json() };
 };
 ```
@@ -572,7 +579,7 @@ As CONSULTANT:
 ```javascript
 async () => {
   const response = await fetch(
-    "/api/events/webinars/test-webinar-003b/allocate",
+    "/api/bookings/webinars/test-webinar-003b/allocate",
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -599,11 +606,14 @@ As CONSULTANT:
 
 ```javascript
 async () => {
-  const response = await fetch("/api/events/classes/test-class-003b/allocate", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ isAuto: true }),
-  });
+  const response = await fetch(
+    "/api/bookings/classes/test-class-003b/allocate",
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isAuto: true }),
+    },
+  );
   return { status: response.status, body: await response.json() };
 };
 ```
@@ -623,7 +633,7 @@ As CONSULTANT:
 ```javascript
 async () => {
   const response = await fetch(
-    "/api/events/webinars/test-webinar-003/allocate",
+    "/api/bookings/webinars/test-webinar-003/allocate",
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },

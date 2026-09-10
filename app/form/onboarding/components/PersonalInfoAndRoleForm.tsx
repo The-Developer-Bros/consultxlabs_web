@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Button } from "@/components/ui/button";
@@ -35,17 +35,21 @@ interface Props {
   initialData: Partial<FormData>;
 }
 
+// User-facing copy avoids internal role jargon (#onboarding-ux): "CONSULTEE"
+// means nothing to a new visitor — the picker answers "what do you want to
+// do?" instead. Enum VALUES are unchanged; only labels/descriptions differ.
 const ROLE_INFO: Record<string, { title: string; description: string }> = {
   CONSULTANT: {
-    title: "Consultant",
-    description: "Share your expertise and mentor others",
+    title: "I want to offer my expertise",
+    description:
+      "Create a consultant profile, get verified, and start taking sessions",
   },
   CONSULTEE: {
-    title: "Consultee",
-    description: "Learn from experienced professionals",
+    title: "I want expert guidance",
+    description: "Find experienced professionals and book your first session",
   },
   ORG_WORKSPACE: {
-    title: "Organization Owner",
+    title: "For my organization",
     description: "Create and manage an organization for your school or company",
   },
 };
@@ -65,6 +69,36 @@ const PersonalInfoAndRoleForm: React.FC<Props> = ({ onNext, initialData }) => {
   // action fails, the parent shows a toast and does NOT unmount us, so the
   // `finally` re-enables the button for retry.
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // #840 — invitees skip the role-picker entirely when they have a pending
+  // org invitation; picking a B2C tile would create unwanted profiles.
+  // CR #1245 r2 — tri-state: undefined = checking, null = none found,
+  // object = invite exists. The role picker MUST NOT render while checking
+  // or on failure, or a pending invitee could submit a B2C role.
+  const [inviteCheckDone, setInviteCheckDone] = useState(false);
+  const [inviteCheckError, setInviteCheckError] = useState(false);
+  const [pendingInvite, setPendingInvite] = useState<{
+    organizationName: string;
+    role: string;
+    organizationId: string;
+  } | null>(null);
+  const loadPendingInvites = useCallback(() => {
+    setInviteCheckDone(false);
+    setInviteCheckError(false);
+    fetch("/api/user/pending-invites")
+      .then((r) => (r.ok ? r.json() : Promise.reject("fetch failed")))
+      .then((d) => {
+        if (d?.invites?.length > 0) setPendingInvite(d.invites[0]);
+        setInviteCheckDone(true);
+      })
+      .catch(() => {
+        setInviteCheckError(true);
+        setInviteCheckDone(true);
+      });
+  }, []);
+  useEffect(() => {
+    loadPendingInvites();
+  }, [loadPendingInvites]);
 
   const {
     register,
@@ -134,6 +168,41 @@ const PersonalInfoAndRoleForm: React.FC<Props> = ({ onNext, initialData }) => {
       setIsSubmitting(false);
     }
   };
+
+  // #840 — invitees with a pending org invitation see this instead of the
+  // role tiles, so they can't accidentally create a B2C profile.
+  if (pendingInvite) {
+    if (!inviteCheckDone) {
+    return (
+      <div className="mx-auto max-w-md py-8 text-center">
+        <p className="text-sm text-zinc-500">Checking for pending invitations…</p>
+      </div>
+    );
+  }
+  if (inviteCheckError && !pendingInvite) {
+    return (
+      <div className="mx-auto max-w-md space-y-3 py-8 text-center">
+        <p className="text-sm text-red-600">Could not check for pending invitations.</p>
+        <Button size="sm" onClick={() => loadPendingInvites()}>Retry</Button>
+      </div>
+    );
+  }
+
+  return (
+      <div className="mx-auto max-w-md space-y-4 py-8 text-center">
+        <div className="rounded-lg border border-blue-200 bg-blue-50 p-6">
+          <p className="text-lg font-semibold text-blue-900">
+            You&apos;ve been invited to join{" "}
+            <span className="underline">{pendingInvite.organizationName}</span>
+          </p>
+          <p className="mt-2 text-sm text-zinc-600">
+            Check your email for the invitation link to accept and join
+            the organisation. Your profile will be set up as part of that flow.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">

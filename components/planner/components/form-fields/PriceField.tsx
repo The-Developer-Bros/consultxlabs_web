@@ -44,7 +44,7 @@ export function PriceField<T extends FieldValues = FieldValues>({
   control,
   priceName,
   currencyName,
-  label = "Price",
+  label = "Price (₹)",
   description,
   currencies = DEFAULT_CURRENCIES,
   className,

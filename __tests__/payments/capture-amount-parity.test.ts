@@ -17,9 +17,11 @@
  */
 
 const captureException = jest.fn();
+const captureMessage = jest.fn();
 jest.mock("@sentry/nextjs", () => ({
   __esModule: true,
   captureException: (...a: unknown[]) => captureException(...a),
+  captureMessage: (...a: unknown[]) => captureMessage(...a),
 }));
 
 const withSerializableRetry = jest.fn(async (fn: () => unknown) => fn());
@@ -28,13 +30,18 @@ jest.mock("../../lib/db/serializable-retry", () => ({
   withSerializableRetry: (fn: () => unknown) => withSerializableRetry(fn),
 }));
 
-const paymentUpdate = jest.fn(
-  async (_args: { where: unknown; data: { description?: string } }) => ({}),
+// #1439 — every in-tx status stamp is now a CAS, so the tx writer is
+// `updateMany` and its count decides whether the flow continues.
+const paymentUpdateMany = jest.fn(
+  async (_args: {
+    where: { paymentStatus?: string };
+    data: { description?: string };
+  }) => ({ count: 1 }),
 );
 const paymentFindUnique = jest.fn();
 const appointmentFindUnique = jest.fn();
 const txStub = {
-  payment: { findUnique: paymentFindUnique, update: paymentUpdate },
+  payment: { findUnique: paymentFindUnique, updateMany: paymentUpdateMany },
   appointment: { findUnique: appointmentFindUnique },
 };
 // #990 — the Phase-2 clear-marker write runs on the base client (outside the
@@ -85,18 +92,24 @@ jest.mock("../../actions/stream/chat/channel.action", () => ({
 jest.mock("../../lib/stream-logger", () => ({
   streamLogger: { info: jest.fn(), error: jest.fn() },
 }));
+const recordSystemError = jest.fn(
+  async (_args: { context?: Record<string, unknown> }) => undefined,
+);
 jest.mock("../../lib/enterprise/system-events", () => ({
-  recordSystemError: jest.fn(),
+  recordSystemError: (...a: unknown[]) => recordSystemError(...(a as [never])),
 }));
+const validateWebhookMetadata = jest.fn();
 jest.mock("../../schemas/webhooks/metadata", () => ({
   normalizeLegacySlotKeys: (m: unknown) => m,
-  validateWebhookMetadata: jest.fn(),
+  validateWebhookMetadata: (...a: unknown[]) => validateWebhookMetadata(...a),
 }));
 
 import { handlePaymentSuccess } from "../../lib/payments/webhooks/handlers";
 
 beforeEach(() => {
   jest.clearAllMocks();
+  paymentUpdateMany.mockImplementation(async () => ({ count: 1 }));
+  validateWebhookMetadata.mockImplementation(() => undefined);
   paymentFindUnique.mockResolvedValue({
     id: "pay1",
     paymentIntent: "order1",
@@ -126,9 +139,11 @@ describe("#677 / #990 — handlePaymentSuccess capture-amount parity", () => {
       "Capture amount mismatch",
     );
 
-    // Phase 1 stamped the REQUIRES_MANUAL_RECOVERY fallback marker (in-tx).
-    expect(paymentUpdate).toHaveBeenCalledTimes(1);
-    const update = paymentUpdate.mock.calls[0][0];
+    // Phase 1 stamped the REQUIRES_MANUAL_RECOVERY fallback marker (in-tx),
+    // and #1439 puts the PENDING predicate in the WHERE.
+    expect(paymentUpdateMany).toHaveBeenCalledTimes(1);
+    const update = paymentUpdateMany.mock.calls[0][0];
+    expect(update.where.paymentStatus).toBe("PENDING");
     expect(update.data.description).toContain("REQUIRES_MANUAL_RECOVERY");
 
     // #990 — Phase 2 auto-refunded the wrong-amount capture for this payment.
@@ -187,11 +202,53 @@ describe("#677 / #990 — handlePaymentSuccess capture-amount parity", () => {
     ).catch(() => undefined); // we only assert the guard did not fire
 
     expect(captureException).not.toHaveBeenCalled();
-    const recoveryWrite = paymentUpdate.mock.calls.find((c) =>
+    const recoveryWrite = paymentUpdateMany.mock.calls.find((c) =>
       String(c[0].data.description ?? "").includes("REQUIRES_MANUAL_RECOVERY"),
     );
     expect(recoveryWrite).toBeUndefined();
     // The guard let the flow proceed to the tentative-appointment lookup.
     expect(appointmentFindUnique).toHaveBeenCalled();
+  });
+});
+
+describe("#1439 — a capture landing on a terminal payment never restamps it", () => {
+  it("leaves an EXPIRED payment EXPIRED when the metadata fails validation", async () => {
+    // The abandoned-payments sweep expired the row and released its hold; a
+    // late capture then failed metadata validation. The old bare `update`
+    // flipped it to SUCCEEDED and the tentative hold leaked forever.
+    paymentFindUnique.mockResolvedValue({
+      id: "pay1",
+      paymentIntent: "order1",
+      amount: 10000,
+      paymentStatus: "EXPIRED",
+      userId: "u1",
+      currency: "INR",
+      appointmentId: "appt1",
+      user: { email: "buyer@example.com", name: "Buyer", consulteeProfile: {} },
+    });
+    paymentUpdateMany.mockImplementation(async () => ({ count: 0 }));
+    validateWebhookMetadata.mockImplementation(() => {
+      throw new Error("userId: Required");
+    });
+
+    await handlePaymentSuccess("order1", { appointmentType: "CONSULTATION" });
+
+    // The stamp was attempted as a CAS on PENDING and matched nothing.
+    expect(paymentUpdateMany).toHaveBeenCalledTimes(1);
+    expect(paymentUpdateMany.mock.calls[0][0].where).toMatchObject({
+      paymentStatus: "PENDING",
+    });
+    // The terminal race is recorded once, as a warning, naming the row.
+    expect(recordSystemError).toHaveBeenCalledTimes(1);
+    expect(recordSystemError.mock.calls[0][0].context).toMatchObject({
+      paymentId: "pay1",
+      orderId: "order1",
+      currentStatus: "EXPIRED",
+    });
+    expect(captureMessage).toHaveBeenCalledTimes(1);
+    // Nothing downstream ran: no ledger posting, no refund, no marker rewrite.
+    expect(createEarningsFromPayment).not.toHaveBeenCalled();
+    expect(refundPayment).not.toHaveBeenCalled();
+    expect(prismaPaymentUpdate).not.toHaveBeenCalled();
   });
 });

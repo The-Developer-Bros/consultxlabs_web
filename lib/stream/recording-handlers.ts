@@ -323,7 +323,7 @@ export async function handleRecordingReady(
     const storagePolicy =
       appointment?.webinar?.webinarPlan?.recordingStoragePolicy ??
       appointment?.class?.classPlan?.recordingStoragePolicy;
-    if (storagePolicy === "SUPABASE_PERMANENT") {
+    if (storagePolicy === "PERMANENT") {
       after(() =>
         RecordingTransferService.queueRecordingTransfer(recording.id).catch(
           (err) =>

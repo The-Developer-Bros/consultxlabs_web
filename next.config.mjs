@@ -30,7 +30,9 @@ const withBundleAnalyzer =
  *   - `connect-src` opens WSS for Stream + HTTPS for the four payment
  *     gateways + Sentry + Resend + Upstash. Anything new must be
  *     added here AND in the matching client.
- *   - `frame-src` allows Razorpay's + Stripe's checkout iframes.
+ *   - `frame-src` allows Razorpay's + Stripe's checkout iframes; Razorpay
+ *     serves the live checkout iframe from `api.razorpay.com`, not just
+ *     `checkout.razorpay.com` (report-only violation on a real checkout).
  *   - `media-src` is the load-bearing entry for Stream call audio /
  *     video / recording playback.
  *
@@ -64,7 +66,7 @@ const CSP_DIRECTIVES = [
   "img-src 'self' data: https: blob:",
   "media-src 'self' blob: https://*.getstream.io https://*.stream-io-cdn.com https://*.stream-io-api.com",
   "style-src 'self' 'unsafe-inline'",
-  "frame-src 'self' https://checkout.razorpay.com https://js.stripe.com https://hooks.stripe.com",
+  "frame-src 'self' https://checkout.razorpay.com https://api.razorpay.com https://js.stripe.com https://hooks.stripe.com",
   "font-src 'self' data:",
   "report-uri /api/csp-report",
 ].join("; ");
@@ -149,6 +151,13 @@ const nextConfig = {
           ].join(","),
         }
       : {}),
+    // #1086 — previews now report to the SAME Sentry project as production, so
+    // the branch is what makes their noise filterable. Baked at build for the
+    // same reason as the URLs above: NEXT_PUBLIC_* is inlined into the client
+    // bundle, and Netlify's BRANCH only exists on the build machine.
+    ...(process.env.BRANCH
+      ? { NEXT_PUBLIC_SENTRY_BRANCH: process.env.BRANCH }
+      : {}),
   },
   // Only the Netlify deploy build OOM'd at the 4GB heap re-running ESLint + tsc.
   // Skip them THERE (NETLIFY=true is set in Netlify's build env) to drop that memory
@@ -186,8 +195,62 @@ const nextConfig = {
   // confirming it needs `npm run build:analyze`, not reasoning.
   transpilePackages: ["date-fns"],
 
+  // #1244 — the OpenNext server-handler function blew past Netlify's hard
+  // 250MB per-function cap. The file tracer was pulling the entire BUILD
+  // toolchain into every deployment (typescript, esbuild binaries, webpack +
+  // its graph, terser): none of it is loadable at request time. Excluding it
+  // sheds ~40MB with zero runtime surface.
+  outputFileTracingExcludes: {
+    "*": [
+      "node_modules/typescript/**",
+      "node_modules/@esbuild/**",
+      "node_modules/esbuild/**",
+      "node_modules/webpack/**",
+      "node_modules/webpack-sources/**",
+      "node_modules/watchpack/**",
+      "node_modules/tapable/**",
+      "node_modules/@xtuc/**",
+      "node_modules/enhanced-resolve/**",
+      "node_modules/terser/**",
+      "node_modules/terser-webpack-plugin/**",
+      "node_modules/schema-utils/**",
+      "node_modules/jest-worker/**",
+    ],
+  },
+
+  // #1365 — the consumer invoice and credit-note PDFs register a Devanagari
+  // face from `public/fonts/`. The tracer follows imports, and a font read at
+  // render time through `path.join(process.cwd(), …)` is invisible to it, so
+  // the file would be absent from the deployed function and every Hindi or
+  // Marathi buyer name would render as boxes. Name the routes explicitly.
+  //
+  // #1468 — the same blind spot applies to `react/jsx-runtime`. The statutory
+  // documents create their elements through it deliberately outside the
+  // bundler (lib/pdf/react-runtime/jsx-runtime.ts), which the tracer cannot
+  // see, and the only traced import of `react` is the reconciler's, which
+  // reaches the package root rather than that entrypoint. Ship the package.
+  outputFileTracingIncludes: {
+    "/api/payments/[paymentId]/invoice/pdf": [
+      "./public/fonts/**",
+      "./node_modules/react/**",
+    ],
+    "/api/payments/[paymentId]/credit-note/[creditNoteId]/pdf": [
+      "./public/fonts/**",
+      "./node_modules/react/**",
+    ],
+    "/api/organizations/[orgId]/billing-account/invoices/[invoiceId]/pdf": [
+      "./node_modules/react/**",
+    ],
+    "/api/organizations/[orgId]/billing-account/credit-notes/[creditNoteId]/pdf":
+      ["./node_modules/react/**"],
+  },
+
   // Prevent pg (node-postgres) and related packages from being bundled into client-side code
-  // These are server-only dependencies used by @prisma/adapter-pg
+  // These are server-only dependencies used by @prisma/adapter-pg.
+  //
+  // `@react-pdf/renderer` is also in Next's own built-in external list, so
+  // listing it here changes nothing — it is external either way, and that is
+  // what forces lib/pdf to resolve its JSX runtime past the bundler (#1468).
   serverExternalPackages: [
     "pg",
     "@prisma/adapter-pg",

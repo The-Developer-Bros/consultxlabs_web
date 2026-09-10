@@ -21,6 +21,7 @@ import { AUDIT_ACTIONS } from "@/lib/enterprise/audit-actions";
 import { dispatchWebhookEvent } from "@/lib/enterprise/outbound-webhooks/dispatch";
 import { isBlockedRoleTransition } from "@/lib/enterprise/role-transitions";
 import { transitionMembership } from "@/lib/enterprise/transitions";
+import { releaseSeatsForTerminatedAssignments } from "@/lib/api/organizations/seat-count";
 import {
   applyMembershipRoleEffects,
   bumpUserSessionGeneration,
@@ -266,6 +267,9 @@ export async function PATCH(
             },
             data: { periodEnd: now, status: "CANCELLED" },
           });
+          // E2E-audit P1 fix — release the billed seats the cancelled
+          // assignments held (parity with the assignment-route cancels).
+          await releaseSeatsForTerminatedAssignments(tx, [memberId]);
         }
       }
 
@@ -589,6 +593,8 @@ export async function DELETE(
         },
         data: { periodEnd: now, status: "CANCELLED" },
       });
+      // E2E-audit P1 fix — release billed seats (see PATCH → REMOVED arm).
+      await releaseSeatsForTerminatedAssignments(tx, [memberId]);
 
       await tx.orgAuditLog.create({
         data: {

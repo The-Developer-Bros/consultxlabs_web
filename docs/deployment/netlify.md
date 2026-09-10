@@ -100,7 +100,7 @@ These variables are not required for the app to boot, but they tune runtime beha
 | ---------------------- | ---------------- | --------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `PRISMA_SLOW_QUERY_MS` | unset (uses 500) | unset (uses 500) | Threshold in milliseconds above which Prisma logs a slow-query warning. Optional; defaults to `500`. Must be a positive number, otherwise the default is used. |
 
-When a query runs longer than `PRISMA_SLOW_QUERY_MS`, `lib/prisma.ts` emits a `[Prisma:SLOW_QUERY]` `console.warn` so that missing indexes and N+1 patterns surface in any environment without enabling full query logging. The rationale is documented in [Navigation Performance](../performance/navigation-performance.md).
+When a query runs longer than `PRISMA_SLOW_QUERY_MS`, `lib/prisma.ts` emits a `[Prisma:SLOW_QUERY]` `console.warn` so that missing indexes and N+1 patterns surface in any environment without enabling full query logging. The rationale is documented in [Navigation Performance](../performance/01-navigation-performance.md).
 
 ### Why `BETTER_AUTH_URL` is the most important variable
 
@@ -526,7 +526,7 @@ the dashboard env vars (dashboard wins on conflict):
 
 ### Build configuration in `next.config.mjs`
 
-A few build-time settings that affect the deployed bundle now live in `next.config.mjs` rather than in any Netlify configuration. The navigation-performance work (PR #887) added or broadened the following, and the reasoning for each is recorded in [Navigation Performance](../performance/navigation-performance.md):
+A few build-time settings that affect the deployed bundle now live in `next.config.mjs` rather than in any Netlify configuration. The navigation-performance work (PR #887) added or broadened the following, and the reasoning for each is recorded in [Navigation Performance](../performance/01-navigation-performance.md):
 
 - `experimental.optimizePackageImports` tree-shakes large barrel imports (such as the icon, charting, and Stream React packages) so only the symbols actually used ship to the client.
 - `experimental.staleTimes` lets the client router cache hold RSC payloads between navigations instead of refetching on every move, which is the single biggest contributor to instant in-app navigation.

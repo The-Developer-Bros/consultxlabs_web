@@ -7,7 +7,6 @@ import { requireOnboarded } from "@/lib/auth-guard";
 import { getUserDetails } from "@/lib/data/user-details";
 import { toPlain } from "@/lib/data/serialize";
 import { ServerUserIdProvider } from "@/components/dashboard/ServerUserId";
-import { DashboardScrollLock } from "@/components/dashboard/DashboardScrollLock";
 
 /**
  * Seeds the query that both personal dashboard layouts gate their render on.
@@ -67,7 +66,6 @@ export default async function DashboardLayout({
         session.user.organizationMemberships?.[0]?.organizationId ?? null
       }
     >
-      <DashboardScrollLock />
       <HydrationBoundary state={dehydrate(queryClient)}>
         {children}
       </HydrationBoundary>
