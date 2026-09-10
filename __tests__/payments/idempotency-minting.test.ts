@@ -59,7 +59,9 @@ describe("idempotency keys are always minted (#1093 §3)", () => {
     // Live, and below the banner — these are the ones the old split lost.
     expect(names).toContain("appointment_doc_thread_version_unique");
     expect(names).toContain("onboarding_draft_payload_size");
-    expect(names).toContain("consultant_review_legacy_pair_key");
+    // `consultant_review_legacy_pair_key` used to live here. Reviews are now one
+    // per (consultant, consultee), which Prisma expresses as a real @@unique, so
+    // the sidecar's partial index was retired rather than left shadowing it.
     // `IF NOT EXISTS` must not be captured as an index name.
     expect(names).not.toContain("IF");
   });

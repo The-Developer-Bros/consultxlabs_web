@@ -151,6 +151,13 @@ const nextConfig = {
           ].join(","),
         }
       : {}),
+    // #1086 — previews now report to the SAME Sentry project as production, so
+    // the branch is what makes their noise filterable. Baked at build for the
+    // same reason as the URLs above: NEXT_PUBLIC_* is inlined into the client
+    // bundle, and Netlify's BRANCH only exists on the build machine.
+    ...(process.env.BRANCH
+      ? { NEXT_PUBLIC_SENTRY_BRANCH: process.env.BRANCH }
+      : {}),
   },
   // Only the Netlify deploy build OOM'd at the 4GB heap re-running ESLint + tsc.
   // Skip them THERE (NETLIFY=true is set in Netlify's build env) to drop that memory

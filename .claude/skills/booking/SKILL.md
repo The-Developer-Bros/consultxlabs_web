@@ -164,7 +164,7 @@ new sweep.
 
 The schema is managed with `prisma db push`, not migrations, and everything
 currently in the database is seed data awaiting the one-time pre-MVP reset
-(`docs/prisma/pre-mvp-reset-runbook.md`). The doctrine is therefore to freeze
+(`docs/prisma/02-pre-mvp-reset-runbook.md`). The doctrine is therefore to freeze
 the schema shape before launch, have every code path write the new tables from
 day one, and never write a data migration for pre-reset rows. This is why wave 5
 added `AppointmentParticipant` and `BookingStatusHistory` with no backfill.

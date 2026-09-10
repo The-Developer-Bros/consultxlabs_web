@@ -1,5 +1,6 @@
 import { unstable_cache } from "next/cache";
 import prisma from "@/lib/prisma";
+import { stripAnonymousReviewers } from "@/lib/data/review-privacy";
 import { toPlain } from "@/lib/data/serialize";
 import { consultantPublicScalars } from "@/lib/data/consultant-public";
 import { deriveDirectoryRating } from "@/lib/data/public-stats";
@@ -101,7 +102,7 @@ export const getHomeReviews = unstable_cache(
       },
       orderBy: { rating: "desc" },
     });
-    return toPlain(reviews);
+    return toPlain(stripAnonymousReviewers(reviews));
   },
   ["home-reviews"],
   { revalidate: 3600, tags: ["reviews", "home"] },

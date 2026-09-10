@@ -390,22 +390,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS "appointment_doc_thread_version_unique"
 ON "AppointmentDocument" (COALESCE("rootDocumentId", "id"), "versionNo")
 WHERE "deletedAt" IS NULL;
 -- SPLIT
--- #705 — reviews became per-appointment, so the unique moved to
--- (appointmentId, consulteeProfileId). Rows written before appointmentId
--- existed carry NULL, and Postgres treats a NULL key column as distinct, so
--- that unique is permissive for exactly the rows that were never gated per
--- session — the old "one review per (consultant, consultee)" rule would
--- silently lapse for them. This preserves it for the legacy band only, and
--- expires with the pre-MVP reset once no NULLs remain.
---
--- Cannot fail to build: the constraint it replaces already guarantees those
--- pairs are unique today.
-DROP INDEX IF EXISTS "consultant_review_legacy_pair_key";
--- SPLIT
-CREATE UNIQUE INDEX IF NOT EXISTS "consultant_review_legacy_pair_key"
-ON "ConsultantReview" ("consultantProfileId", "consulteeProfileId")
-WHERE "appointmentId" IS NULL;
--- SPLIT
 -- #onboarding-ux — the resumable-onboarding draft blob. The writer already
 -- byte-gates at ONBOARDING_DRAFT_MAX_BYTES (utils/onboarding-draft.ts), but
 -- that gate lives in application code on a column any future writer can reach

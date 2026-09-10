@@ -147,7 +147,7 @@ worktree's `.env` symlinks to the same `DATABASE_URL`. `npm run db:push` is
 therefore a production operation, as are `--force-reset`, the seed scripts and
 the availability coalesce scripts (which is why those default to dry-run and
 require `--apply`). The reset itself is a scheduled, owner-approved event with
-its own procedure in `docs/prisma/pre-mvp-reset-runbook.md`. If a change needs
+its own procedure in `docs/prisma/02-pre-mvp-reset-runbook.md`. If a change needs
 new schema, say so and stop; do not push it to prove a test passes.
 
 Since #1322 merged, `db:push` on `dev` is push-then-sidecars-then-assert

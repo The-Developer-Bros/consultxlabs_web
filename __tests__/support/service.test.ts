@@ -27,7 +27,11 @@ jest.mock("../../lib/prisma", () => ({
       findUniqueOrThrow: jest.fn(),
     },
     supportMessage: { create: jest.fn() },
-    supportTicket: { create: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
+    supportTicket: {
+      create: jest.fn(),
+      findUnique: jest.fn(),
+      update: jest.fn(),
+    },
     supportTicketCounter: { upsert: jest.fn() },
     user: { findMany: jest.fn() },
     $transaction: jest.fn(),
@@ -51,7 +55,11 @@ const mockPrisma = prisma as unknown as {
     findUniqueOrThrow: jest.Mock;
   };
   supportMessage: { create: jest.Mock };
-  supportTicket: { create: jest.Mock; findUnique: jest.Mock; update: jest.Mock };
+  supportTicket: {
+    create: jest.Mock;
+    findUnique: jest.Mock;
+    update: jest.Mock;
+  };
   supportTicketCounter: { upsert: jest.Mock };
   user: { findMany: jest.Mock };
   $transaction: jest.Mock;
@@ -111,7 +119,9 @@ beforeEach(() => {
   mockPrisma.appointmentSupportThread.update.mockResolvedValue({
     messageSeq: 0,
   });
-  mockPrisma.appointmentSupportThread.updateMany.mockResolvedValue({ count: 1 });
+  mockPrisma.appointmentSupportThread.updateMany.mockResolvedValue({
+    count: 1,
+  });
   mockPrisma.appointmentSupportThread.findUniqueOrThrow.mockResolvedValue({
     status: "ESCALATED",
     messageSeq: 0,
@@ -125,7 +135,9 @@ beforeEach(() => {
 describe("runSupportTurn", () => {
   it("returns 404-null when the appointment is gone", async () => {
     mockPrisma.appointment.findUnique.mockResolvedValueOnce(null);
-    const r = await runSupportTurn("missing", "user1", { category: "CANCEL_REFUND" });
+    const r = await runSupportTurn("missing", "user1", {
+      category: "CANCEL_REFUND",
+    });
     expect(r).toBeNull();
   });
 
@@ -133,7 +145,9 @@ describe("runSupportTurn", () => {
     mockPrisma.appointmentSupportThread.upsert.mockResolvedValue(
       threadRow({ currentNodeId: null }),
     );
-    const r = await runSupportTurn("appt1", "user1", { category: "CANCEL_REFUND" });
+    const r = await runSupportTurn("appt1", "user1", {
+      category: "CANCEL_REFUND",
+    });
     expect(r?.status).toBe("IN_PROGRESS");
     expect(r?.currentNodeId).toBe("start");
     expect(r?.escalated).toBe(false);
@@ -145,8 +159,12 @@ describe("runSupportTurn", () => {
     mockPrisma.appointmentSupportThread.upsert.mockResolvedValue(
       threadRow({ currentNodeId: "start" }),
     );
-    const r = await runSupportTurn("appt1", "user1", { chosenOptionId: "cancel" });
-    expect(r?.actions).toEqual([{ kind: "OFFER_CANCEL_REFUND", refundPct: 100 }]);
+    const r = await runSupportTurn("appt1", "user1", {
+      chosenOptionId: "cancel",
+    });
+    expect(r?.actions).toEqual([
+      { kind: "OFFER_CANCEL_REFUND", refundPct: 100 },
+    ]);
   });
 
   it("escalates on a human keyword: creates a SupportTicket and flips to HUMAN", async () => {
@@ -164,9 +182,15 @@ describe("runSupportTurn", () => {
     expect(r?.activeChannel).toBe("HUMAN");
     expect(r?.supportTicketId).toBe("ticket1");
     expect(mockPrisma.supportTicket.create).toHaveBeenCalledTimes(1);
-    expect(mockPrisma.appointmentSupportThread.update).toHaveBeenCalledWith(
+    // updateMany, not update: the flip is compare-and-set so a thread staff
+    // have CLOSED cannot be reopened into a second ticket.
+    expect(mockPrisma.appointmentSupportThread.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ status: "ESCALATED", activeChannel: "HUMAN" }),
+        where: expect.objectContaining({ status: { not: "CLOSED" } }),
+        data: expect.objectContaining({
+          status: "ESCALATED",
+          activeChannel: "HUMAN",
+        }),
       }),
     );
   });
@@ -175,10 +199,39 @@ describe("runSupportTurn", () => {
     mockPrisma.appointmentSupportThread.upsert.mockResolvedValue(
       threadRow({ activeChannel: "HUMAN", supportTicketId: "ticket-existing" }),
     );
-    const r = await runSupportTurn("appt1", "user1", { userMessage: "any update?" });
+    const r = await runSupportTurn("appt1", "user1", {
+      userMessage: "any update?",
+    });
     expect(r?.activeChannel).toBe("HUMAN");
     expect(r?.supportTicketId).toBe("ticket-existing");
     expect(mockPrisma.supportTicket.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses the write when the CAS matches no row, and says so", async () => {
+    // The concurrent case: staff close the thread between the read and the
+    // write, so `persistHumanTurn`'s guarded updateMany matches nothing. The
+    // contract is `accepted: false` plus the thread's REAL status, and no
+    // message row — SupportThreadSheet keys its "your message wasn't sent"
+    // recovery on exactly `accepted === false`, so this branch silently
+    // regressing is what puts a delivered-looking bubble on a closed thread.
+    mockPrisma.appointmentSupportThread.upsert.mockResolvedValue(
+      threadRow({ activeChannel: "HUMAN", supportTicketId: "ticket-existing" }),
+    );
+    mockPrisma.appointmentSupportThread.updateMany.mockResolvedValue({
+      count: 0,
+    });
+    mockPrisma.appointmentSupportThread.findUniqueOrThrow.mockResolvedValue({
+      status: "CLOSED",
+      messageSeq: 7,
+    });
+
+    const r = await runSupportTurn("appt1", "user1", {
+      userMessage: "are you still there?",
+    });
+
+    expect(r?.accepted).toBe(false);
+    expect(r?.status).toBe("CLOSED");
+    expect(mockPrisma.supportMessage.create).not.toHaveBeenCalled();
   });
 
   it("routes an OTHER intent (no self-serve flow) straight to a human", async () => {
@@ -197,7 +250,9 @@ describe("runSupportTurn", () => {
     mockPrisma.appointmentSupportThread.upsert.mockResolvedValue(
       threadRow({ category: "CANCEL_REFUND", currentNodeId: "ghost-node" }),
     );
-    const r = await runSupportTurn("appt1", "user1", { chosenOptionId: "cancel" });
+    const r = await runSupportTurn("appt1", "user1", {
+      chosenOptionId: "cancel",
+    });
     expect(r?.currentNodeId).toBe("start"); // presented the CURRENT entry…
     expect(r?.escalated).toBe(false); // …not failed safe to a human
     expect(mockPrisma.supportMessage.create).toHaveBeenCalledTimes(1);
@@ -207,7 +262,9 @@ describe("runSupportTurn", () => {
     mockPrisma.appointmentSupportThread.upsert.mockResolvedValue(
       threadRow({ category: "CANCEL_REFUND", currentNodeId: "start" }),
     );
-    const r = await runSupportTurn("appt1", "user1", { chosenOptionId: "bogus" });
+    const r = await runSupportTurn("appt1", "user1", {
+      chosenOptionId: "bogus",
+    });
     expect(r?.currentNodeId).toBe("start"); // cursor did not move
     // Exactly one bubble, and it is NOT a verbatim repeat of the prompt: this
     // used to persist nothing at all, so a user who typed at a prompt watched
@@ -240,11 +297,41 @@ describe("runSupportTurn", () => {
     expect(written[1].sender).toBe("BOT");
   });
 
+  it("does not scold the user for typing the word the nudge told them to type", async () => {
+    // "agent" matches no option, so the walk emits "I didn't catch that…" —
+    // which is the very copy telling them to type "agent". Escalating while
+    // persisting that message left the transcript contradicting itself one line
+    // above the hand-off.
+    mockPrisma.appointmentSupportThread.upsert.mockResolvedValue(
+      threadRow({ category: "CANCEL_REFUND", currentNodeId: "start" }),
+    );
+    mockPrisma.supportTicket.create.mockResolvedValue({
+      id: "t-kw",
+      title: "T",
+      organizationId: null,
+      referenceNumber: "FAM-2026-000001",
+    });
+    const r = await runSupportTurn("appt1", "user1", { userMessage: "agent" });
+    expect(r?.escalated).toBe(true);
+
+    const bodies = mockPrisma.supportMessage.create.mock.calls.map(
+      (c) => c[0].data,
+    );
+    // The user's own words are still recorded…
+    expect(bodies.some((b) => b.sender === "USER" && b.body === "agent")).toBe(
+      true,
+    );
+    // …but nothing tells them it wasn't understood.
+    expect(bodies.some((b) => /didn't catch that/i.test(b.body))).toBe(false);
+  });
+
   it("clicking the active intent chip restarts the flow at its entry", async () => {
     mockPrisma.appointmentSupportThread.upsert.mockResolvedValue(
       threadRow({ category: "CANCEL_REFUND", currentNodeId: "confirm" }),
     );
-    const r = await runSupportTurn("appt1", "user1", { category: "CANCEL_REFUND" });
+    const r = await runSupportTurn("appt1", "user1", {
+      category: "CANCEL_REFUND",
+    });
     expect(r?.currentNodeId).toBe("start");
     expect(r?.status).toBe("IN_PROGRESS");
   });
@@ -268,9 +355,105 @@ describe("runSupportTurn", () => {
     // The clamped flow self-serves — no ticket may be filed for the smuggled
     // intent.
     expect(mockPrisma.supportTicket.create).not.toHaveBeenCalled();
-    expect(mockPrisma.appointmentSupportThread.update).toHaveBeenCalledWith(
+    // The self-serve status write is a GUARDED updateMany, not a bare update.
+    expect(mockPrisma.appointmentSupportThread.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ category: "ORG_ADMIN_DISPUTE" }),
+      }),
+    );
+  });
+
+  it("refuses a self-serve turn on a CLOSED thread instead of reopening it", async () => {
+    // The asymmetry that made this reachable: `persistHumanTurn` has always
+    // CAS'd, so an escalated message could not land on a settled thread, while
+    // the self-serve path wrote `status` unconditionally and quietly reopened
+    // what staff had closed. Same door, two rules.
+    mockPrisma.appointmentSupportThread.upsert.mockResolvedValue(
+      threadRow({ category: "CANCEL_REFUND", status: "CLOSED" }),
+    );
+    mockPrisma.appointmentSupportThread.updateMany.mockResolvedValue({
+      count: 0,
+    });
+    mockPrisma.appointmentSupportThread.findUniqueOrThrow.mockResolvedValue({
+      status: "CLOSED",
+      messageSeq: 3,
+    });
+
+    const r = await runSupportTurn("appt1", "user1", {
+      chosenOptionId: "cancel",
+    });
+
+    expect(r?.accepted).toBe(false);
+    expect(r?.status).toBe("CLOSED");
+    // Nothing is echoed back: a bot reply rendered for a turn that rolled back
+    // is how a refused message ends up looking delivered.
+    expect(r?.messages).toEqual([]);
+    expect(r?.resolved).toBe(false);
+    // The whole point of CAS-ing first: the refusal wrote NOTHING. The
+    // assertions above pass just as well when the messages were inserted and
+    // then survived a `return false`, which is the regression this test exists
+    // for.
+    expect(mockPrisma.supportMessage.create).not.toHaveBeenCalled();
+    expect(mockPrisma.supportTicket.create).not.toHaveBeenCalled();
+  });
+
+  it("still lets a RESOLVED thread be picked up again", async () => {
+    // Deliberately NOT refused. RESOLVED means the bot answered the question;
+    // with one thread per booking, refusing it would leave someone who
+    // resolved one question unable to ask a second.
+    mockPrisma.appointmentSupportThread.upsert.mockResolvedValue(
+      threadRow({ category: "CANCEL_REFUND", status: "RESOLVED" }),
+    );
+
+    const r = await runSupportTurn("appt1", "user1", {
+      chosenOptionId: "cancel",
+    });
+
+    expect(r?.accepted).not.toBe(false);
+    expect(mockPrisma.appointmentSupportThread.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: { not: "CLOSED" } }),
+      }),
+    );
+  });
+
+  it("refuses an ESCALATING turn on a CLOSED thread, and mints no second ticket", async () => {
+    // The third door. The self-serve path and `persistHumanTurn` both CAS'd;
+    // `escalate()` did not, so any intent chip reopened a thread staff had
+    // closed — and worse than on the other two paths, because closing clears
+    // `supportTicketId`, so the reopen ALSO minted a second ticket with its own
+    // reference and its own SLA clock while the first sat resolved in the queue.
+    mockPrisma.appointmentSupportThread.upsert.mockResolvedValue(
+      threadRow({ category: "CANCEL_REFUND", status: "CLOSED" }),
+    );
+    mockPrisma.appointmentSupportThread.updateMany.mockResolvedValue({
+      count: 0,
+    });
+    mockPrisma.appointmentSupportThread.findUniqueOrThrow.mockResolvedValue({
+      status: "CLOSED",
+      activeChannel: "SELF_SERVE",
+      currentNodeId: null,
+      supportTicketId: null,
+      messageSeq: 3,
+    });
+
+    const r = await runSupportTurn("appt1", "user1", {
+      userMessage: "I want to speak to a human",
+    });
+
+    expect(r?.accepted).toBe(false);
+    expect(r?.escalated).toBe(false);
+    expect(r?.status).toBe("CLOSED");
+    // The thread keeps whatever ticket it had — no new link, nothing echoed.
+    expect(r?.supportTicketId).toBeNull();
+    expect(r?.messages).toEqual([]);
+    // And nothing landed: no transcript row, no second ticket minted.
+    expect(mockPrisma.supportMessage.create).not.toHaveBeenCalled();
+    expect(mockPrisma.supportTicket.create).not.toHaveBeenCalled();
+    // And the guard was actually expressed in the WHERE, not checked in JS.
+    expect(mockPrisma.appointmentSupportThread.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: { not: "CLOSED" } }),
       }),
     );
   });

@@ -14,14 +14,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  LifeBuoy,
-  Send,
-  UserRound,
-  Bot,
-  CheckCircle2,
-  Ticket,
-} from "lucide-react";
+import { LifeBuoy, Send, CheckCircle2, Ticket } from "lucide-react";
 import {
   Sheet,
   SheetContent,
@@ -309,141 +302,146 @@ export function PlatformSupportSheet({
           </SheetDescription>
         </SheetHeader>
 
-        <div className="flex-1 space-y-3 overflow-y-auto px-5 pb-2">
-          {!flowId &&
-            (catalog.isLoading ? (
-              <p className="text-sm text-muted-foreground">Loading…</p>
-            ) : catalog.isError ? (
-              <div className="rounded-lg border border-dashed border-border p-3 text-sm text-muted-foreground">
-                {(catalog.error as Error)?.message ??
-                  "Couldn't load support topics."}{" "}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="ml-1"
-                  onClick={() => catalog.refetch()}
-                >
-                  Retry
-                </Button>
-              </div>
-            ) : (
-              <div className="flex flex-col gap-2">
-                {(catalog.data ?? []).map((f) => (
+        {/* Bottom-aligned like the per-appointment drawer: a short transcript
+            sits against the composer rather than at the top of an empty panel. */}
+        <div className="flex-1 overflow-y-auto px-5 pb-2">
+          <div className="flex min-h-full flex-col justify-end space-y-3">
+            {!flowId &&
+              (catalog.isLoading ? (
+                <p className="text-sm text-muted-foreground">Loading…</p>
+              ) : catalog.isError ? (
+                <div className="rounded-lg border border-dashed border-border p-3 text-sm text-muted-foreground">
+                  {(catalog.error as Error)?.message ??
+                    "Couldn't load support topics."}{" "}
                   <Button
-                    key={f.id}
                     variant="outline"
-                    disabled={turn.isPending}
-                    className="h-auto justify-start py-2 text-left"
-                    onClick={() => startFlow(f)}
+                    size="sm"
+                    className="ml-1"
+                    onClick={() => catalog.refetch()}
                   >
-                    <span>
-                      <span className="block text-sm font-medium">
-                        {f.title}
-                      </span>
-                      <span className="block text-xs text-muted-foreground">
-                        {f.description}
-                      </span>
-                    </span>
+                    Retry
                   </Button>
-                ))}
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {(catalog.data ?? []).map((f) => (
+                    <Button
+                      key={f.id}
+                      variant="outline"
+                      disabled={turn.isPending}
+                      className="h-auto justify-start py-2 text-left"
+                      onClick={() => startFlow(f)}
+                    >
+                      <span>
+                        <span className="block text-sm font-medium">
+                          {f.title}
+                        </span>
+                        <span className="block text-xs text-muted-foreground">
+                          {f.description}
+                        </span>
+                      </span>
+                    </Button>
+                  ))}
+                </div>
+              ))}
+
+            {messages.map((m) => (
+              <div
+                key={m.id}
+                className={
+                  m.sender === "USER"
+                    ? "flex justify-end"
+                    : "flex justify-start"
+                }
+              >
+                {/* No per-bubble "USER"/"BOT" caption — side and colour say it. */}
+                <div
+                  className={
+                    "max-w-[85%] rounded-2xl px-3 py-2 text-sm transition-opacity " +
+                    (m.sender === "USER"
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted text-foreground") +
+                    (m.pending ? " opacity-70" : "")
+                  }
+                >
+                  {/* Screen-reader-only speaker attribution: the visual design
+                      dropped the captions, and side plus colour say nothing to
+                      assistive tech. */}
+                  <span className="sr-only">
+                    {m.sender === "USER" ? "You said" : "Assistant said"}:{" "}
+                  </span>
+                  {m.body}
+                </div>
               </div>
             ))}
 
-          {messages.map((m) => (
-            <div
-              key={m.id}
-              className={
-                m.sender === "USER" ? "flex justify-end" : "flex justify-start"
-              }
-            >
-              <div
-                className={
-                  "max-w-[85%] rounded-2xl px-3 py-2 text-sm transition-opacity " +
-                  (m.sender === "USER"
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-muted text-foreground") +
-                  (m.pending ? " opacity-70" : "")
-                }
-              >
-                <span className="mb-0.5 flex items-center gap-1 text-[10px] uppercase tracking-wide opacity-60">
-                  {m.sender === "USER" ? (
-                    <UserRound className="h-3 w-3" />
-                  ) : (
-                    <Bot className="h-3 w-3" />
-                  )}
-                  {m.sender.toLowerCase()}
-                </span>
-                {m.body}
+            {turn.isPending && (
+              <div className="flex justify-start">
+                <div
+                  className="flex items-center gap-1 rounded-2xl bg-muted px-3 py-2.5"
+                  role="status"
+                  aria-label="Support is typing"
+                >
+                  {[0, 150, 300].map((delay) => (
+                    <span
+                      key={delay}
+                      className="h-1.5 w-1.5 rounded-full bg-foreground/40 motion-safe:animate-bounce"
+                      style={{ animationDelay: `${delay}ms` }}
+                    />
+                  ))}
+                </div>
               </div>
-            </div>
-          ))}
+            )}
 
-          {turn.isPending && (
-            <div className="flex justify-start">
-              <div
-                className="flex items-center gap-1 rounded-2xl bg-muted px-3 py-2.5"
-                role="status"
-                aria-label="Support is typing"
-              >
-                {[0, 150, 300].map((delay) => (
-                  <span
-                    key={delay}
-                    className="h-1.5 w-1.5 animate-bounce rounded-full bg-foreground/40"
-                    style={{ animationDelay: `${delay}ms` }}
-                  />
-                ))}
+            {done?.resolved && !done.collectFeedback && (
+              <Badge variant="secondary" className="mt-1">
+                <CheckCircle2 className="mr-1 h-3 w-3" /> Resolved
+              </Badge>
+            )}
+
+            {done?.collectFeedback && (
+              <div className="space-y-2">
+                <Textarea
+                  rows={4}
+                  maxLength={2000}
+                  value={feedback}
+                  onChange={(e) => setFeedback(e.target.value)}
+                  placeholder="What would you change?"
+                />
+                <Button
+                  size="sm"
+                  disabled={!feedback.trim() || sendFeedback.isPending}
+                  onClick={() => sendFeedback.mutate(feedback.trim())}
+                >
+                  Send to the product team
+                </Button>
               </div>
-            </div>
-          )}
-
-          {done?.resolved && !done.collectFeedback && (
-            <Badge variant="secondary" className="mt-1">
-              <CheckCircle2 className="mr-1 h-3 w-3" /> Resolved
-            </Badge>
-          )}
-
-          {done?.collectFeedback && (
-            <div className="space-y-2">
-              <Textarea
-                rows={4}
-                maxLength={2000}
-                value={feedback}
-                onChange={(e) => setFeedback(e.target.value)}
-                placeholder="What would you change?"
-              />
-              <Button
-                size="sm"
-                disabled={!feedback.trim() || sendFeedback.isPending}
-                onClick={() => sendFeedback.mutate(feedback.trim())}
-              >
-                Send to the product team
-              </Button>
-            </div>
-          )}
-          {done && !done.resolved && done.ticketId && (
-            <div className="rounded-lg border border-dashed border-border bg-card px-3 py-2 text-xs text-muted-foreground">
-              <Ticket className="mr-1 inline h-3 w-3" />
-              {/* The reference is the whole point of minting one: it is what
+            )}
+            {done && !done.resolved && done.ticketId && (
+              <div className="rounded-lg border border-dashed border-border bg-card px-3 py-2 text-xs text-muted-foreground">
+                <Ticket className="mr-1 inline h-3 w-3" />
+                {/* The reference is the whole point of minting one: it is what
                   survives the channel change when the user follows up by
                   email or on a call. */}
-              {done.ticketReference ? (
-                <>
-                  Request{" "}
-                  <span className="font-mono text-foreground">
-                    {done.ticketReference}
-                  </span>{" "}
-                  created — quote it if you follow up. Our team will reply here
-                  in &quot;My requests&quot; and by email.
-                </>
-              ) : (
-                <>
-                  Ticket created — our team will reply here in &quot;My
-                  requests&quot; and by email.
-                </>
-              )}
-            </div>
-          )}
-          <div ref={endRef} />
+                {done.ticketReference ? (
+                  <>
+                    Request{" "}
+                    <span className="font-mono text-foreground">
+                      {done.ticketReference}
+                    </span>{" "}
+                    created — quote it if you follow up. Our team will reply
+                    here in &quot;My requests&quot; and by email.
+                  </>
+                ) : (
+                  <>
+                    Ticket created — our team will reply here in &quot;My
+                    requests&quot; and by email.
+                  </>
+                )}
+              </div>
+            )}
+            <div ref={endRef} />
+          </div>
         </div>
 
         {flowId && !done && (
