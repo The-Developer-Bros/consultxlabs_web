@@ -15,12 +15,5 @@
     "whitespace-insensitive. The reset is the only occasion that should add any."
   ],
   "enumLabelsInDbNotInSchema": [],
-  "destructiveStatementsAllowed": [
-    {
-      "statement": "DROP INDEX \"ConsultantReview_consultantProfileId_consulteeProfileId_key\"",
-      "reason": "#1300 widens the review unique to (consultantProfileId, consulteeProfileId, track) so a client who attends a webinar and later books the same consultant 1:1 holds one review of each product instead of one row that overwrites the other. Replacing a unique is a drop plus a create; the create cannot fail on this data (verified 2026-09-10: 0 duplicate pairs across 62 rows, and adding a column to a unique key can only split groups, never merge them). Remove this entry once the push has been applied and verified.",
-      "trackedBy": "#1300",
-      "expires": "2026-10-31"
-    }
-  ]
+  "destructiveStatementsAllowed": []
 }

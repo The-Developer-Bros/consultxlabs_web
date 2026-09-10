@@ -30,11 +30,15 @@ The argument for the relationship is that our unit of reputation is a person, an
 
 `@@unique([consultantProfileId, consulteeProfileId, track])`, editable, with `appointmentId` as provenance rather than subject.
 
+> **Shipping state:** the key is **two columns today**, and widening it is tracked at **#1549**. The reason is sequencing, not doubt. `next build` prerenders `/explore/experts` and friends against the live database, so the columns this decision adds have to be pushed _before_ the code deploys — which leaves a window where the new schema is live and the old code is still serving. Every DDL therefore has to be backward compatible with what is deployed, and replacing a unique is the one statement that is not: Prisma derives its compound-key name from the columns, so `a_b` becomes `a_b_c` and the deployed review write, which looks up `consultantProfileId_consulteeProfileId`, breaks. Keeping two columns makes the rest of the change purely additive and its push safe to run ahead of its own deploy. Nothing in the code references the compound key, so #1549 is a schema change with no code change. Until it lands, a mixed-mode client holds one review rather than two, filed under whichever product they reviewed first — which is the pre-existing behaviour, not a regression.
+
 `track` is in the key because without it a consultee who attends a webinar and later books the same consultant one-to-one holds exactly **one** row for two products. The P2002 is mapped to a 409 the client renders as "update your review", so their attempt to review the 1:1 engagement would overwrite the webinar review — and `track` is pinned at first write, so a year of 1:1 work would be filed under group reputation. In a product that sells both, that is the upsell path, not an edge case.
 
 "One considered opinion per person" therefore becomes "one per person per thing they bought", which is still one card per reviewer per product, and is what Practo's own model degenerates to for a doctor who runs both consultations and group camps.
 
-`track` is **never moved** once set. Moving it would collide with the same reviewer's other review of the same person. A legacy row with a NULL track is _adopted_ by the next write for that pair — stamped with the track it belongs to — rather than being left for a second row to sit beside it, because Postgres treats NULL key columns as distinct and a plain insert would put two reviews from one person on one profile.
+`track` is **never moved** once set — moving it would refile a year of work under the other product's reputation, and once #1549 lands it would also collide with the same reviewer's other review of the same person. A row with a NULL track is _adopted_ by the next write for that pair and stamped with the track it belongs to; 59 rows predate the column.
+
+The write path looks the pair's review up by `(consultant, consultee)` and **not** by track, deliberately. Under the two-column key, filtering by track would miss a group review while writing a one-to-one one, fall through to an insert, and hand the author a uniqueness error rendered as "you already have a review" for a row the form never showed them. It also means nothing references Prisma's compound key, which is what makes #1549 a schema change with no code change.
 
 ### Two published scores, side by side
 

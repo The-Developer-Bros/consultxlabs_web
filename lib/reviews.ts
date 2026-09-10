@@ -744,18 +744,17 @@ function describe(
     // person now, so it may well hang off a different booking — looking it up
     // through the appointment made the card say "Post review" to someone who
     // had already written one, and lose their text.
-    existingReview:
-      reviewByConsultant.get(reviewKey(consultantProfileId, track)) ?? null,
+    existingReview: reviewByConsultant.get(consultantProfileId) ?? null,
   };
 }
 
-/** The map key. One consultee can hold one review per consultant PER TRACK, so
- *  the consultant id alone would collapse a webinar review and a 1:1 review of
- *  the same person into whichever the query returned last. */
-const reviewKey = (consultantProfileId: string, track: ReviewTrack | null) =>
-  `${consultantProfileId}:${track ?? "LEGACY"}`;
-
-/** This consultee's existing reviews of the given consultants, by (consultant, track). */
+/** This consultee's existing review of each of the given consultants.
+ *
+ *  Keyed by consultant alone, because the unique is
+ *  `(consultantProfileId, consulteeProfileId)` — one review per pair, whatever
+ *  its track. Keying by `(consultant, track)` is what #1549 wants once the key
+ *  is widened; until then it would hide a GROUP review from the composer on a
+ *  1:1 session, which renders an empty form and then 409s on submit. */
 async function reviewsByConsultant(
   consulteeProfileId: string,
   consultantProfileIds: string[],
@@ -776,22 +775,16 @@ async function reviewsByConsultant(
       track: true,
     },
   });
-  // A legacy row (NULL track) is offered as the existing review for EITHER
-  // track, so a client who reviewed before the split edits the row they already
-  // wrote instead of being shown an empty form beside it. The write path adopts
-  // it and stamps its track.
-  const out = new Map<string, ExistingReview>();
-  for (const { consultantProfileId, track, ...r } of rows) {
-    if (track === null) {
-      for (const t of ["ONE_TO_ONE", "GROUP"] as const) {
-        const k = reviewKey(consultantProfileId, t);
-        if (!out.has(k)) out.set(k, r);
-      }
-      continue;
-    }
-    out.set(reviewKey(consultantProfileId, track), r);
-  }
-  return out;
+  // Whatever its track, it is THE review this person wrote about that consultant,
+  // so it is what the composer must load — for a legacy row with no track, and
+  // for a GROUP row being edited from a 1:1 session alike. #1549 splits this per
+  // track once the unique can express it.
+  return new Map(
+    rows.map(({ consultantProfileId, track: _track, ...r }) => [
+      consultantProfileId,
+      r,
+    ]),
+  );
 }
 
 /** Resolve a batch of appointment rows into reviewable sessions. */

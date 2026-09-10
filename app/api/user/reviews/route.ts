@@ -149,20 +149,26 @@ export async function POST(req: NextRequest) {
           // existence, and accepting the edit silently would tell the author it
           // was published while nothing changed on the page.
           //
-          // Two candidates, deliberately. The unique is
-          // (consultantProfileId, consulteeProfileId, track), and 59 legacy rows
-          // predate `track` entirely. Postgres treats their NULL as distinct, so
-          // inserting beside one would put two reviews from the same person on
-          // the same profile. The legacy row is ADOPTED instead: it is the review
-          // they already wrote, and this write stamps the track it belongs to.
-          const candidates = await tx.consultantReview.findMany({
+          // The pair's review, whatever its track. The unique is
+          // (consultantProfileId, consulteeProfileId) — see the schema comment
+          // and #1549 — so there is at most one, and it is the review this person
+          // wrote about this consultant.
+          //
+          // Deliberately NOT filtered to `reviewable.track`. Under a two-column
+          // unique that filter would miss a GROUP row while writing a 1:1 review,
+          // fall through to `create`, and hand the author a P2002 rendered as
+          // "you already have a review" for a row the form never showed them. The
+          // track is ADOPTED when the row has none — 59 legacy rows predate the
+          // column — and never MOVED once set, because moving it would refile a
+          // year of work under the other product's reputation.
+          //
+          // `findFirst` rather than a keyed `findUnique`: nothing here references
+          // the compound key name, which is what makes #1549 a schema change with
+          // no code change.
+          const existing = await tx.consultantReview.findFirst({
             where: {
               consultantProfileId: reviewable.consultantProfileId,
               consulteeProfileId: sessionConsulteeProfileId,
-              // `in: [track, null]` is not expressible — Prisma's `in` for a
-              // nullable enum rejects null in the list, because SQL `IN` cannot
-              // match NULL either. The OR is the honest form of the same query.
-              OR: [{ track: reviewable.track }, { track: null }],
             },
             select: {
               id: true,
@@ -176,12 +182,6 @@ export async function POST(req: NextRequest) {
               replyDeletedAt: true,
             },
           });
-          // Prefer an exact-track row over a legacy one: if both somehow exist,
-          // the tracked row is the one this product's reviews belong to.
-          const existing =
-            candidates.find((c) => c.track === reviewable.track) ??
-            candidates[0] ??
-            null;
           // #1300 — withdrawing your own review and having it moderated away
           // both set `deletedAt`, and this refused BOTH with "removed by our
           // moderation team". So a consultee who deleted their own review was

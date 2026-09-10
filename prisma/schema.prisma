@@ -3369,32 +3369,35 @@ model ConsultantReview {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // ONE review per consultee per consultant PER TRACK — Practo's model, with the
-  // one column their model does not need. A reader wants one considered opinion
-  // of a person, not four near-identical ones from the same client, and the
-  // reviewer edits theirs as the relationship develops; `appointmentId` records
-  // which session last prompted that.
+  // ONE review per consultee per consultant, ever — Practo's model. A reader
+  // wants one considered opinion of a person, not four near-identical ones from
+  // the same client; the reviewer edits theirs as the relationship develops, and
+  // `appointmentId` records which session last prompted that.
   //
-  // `track` is in the key because without it a consultee who attends a webinar
-  // and later books the same consultant 1:1 holds exactly ONE row for two
-  // different products. The P2002 below is mapped to a 409 that the client
-  // renders as "update your review", so their attempt to review the 1:1
-  // engagement would OVERWRITE the webinar review — and `track` is pinned at
-  // first write, so a year of 1:1 work would be filed under group reputation.
-  // In a product that sells both, that is the upsell path, not an edge case.
-  // "One opinion per person" becomes "one per person per thing they bought",
-  // which is still one card per reviewer per product.
+  // ADR 29 specifies `(consultantProfileId, consulteeProfileId, track)`, so a
+  // client who attends a webinar and later books the same consultant 1:1 holds
+  // one review of each product rather than one that overwrites the other.
+  // **Widening it is deferred to #1549**, and the reason is sequencing, not doubt:
   //
-  // Postgres treats NULLs as distinct, so the 59 legacy NULL-track rows do not
-  // collide with a new tracked review by the same pair. The write path adopts an
-  // existing NULL-track row for the pair instead of inserting beside it — see
-  // `lib/reviews.ts` — because a sidecar NULLS NOT DISTINCT variant on this same
-  // tuple would be matched by column list and renamed onto this constraint,
-  // which is exactly the trap #1268 hit.
+  //   1. `next build` prerenders `/explore/experts` and friends, and those reads
+  //      hit the LIVE database — so the columns this change adds must be pushed
+  //      BEFORE the code deploys, not at merge.
+  //   2. Which means there is a window where the new schema is live and the old
+  //      code is still serving. Every DDL here therefore has to be backward
+  //      compatible with what is deployed — and replacing a unique is the one
+  //      statement that is not: Prisma derives its compound-key name from the
+  //      columns, so `a_b` becomes `a_b_c`, and the deployed
+  //      `app/api/user/reviews/route.ts` looks up
+  //      `consultantProfileId_consulteeProfileId`.
+  //
+  // Keeping two columns makes this branch's whole plan additive, so its push is
+  // safe to run ahead of its own deploy. Nothing here references the compound key
+  // — the write path is `findMany` + `update({ where: { id } })` — so #1549 is a
+  // schema change with no code change.
   //
   // NOT partial on deletedAt: a moderation-removed review must not free the slot
   // for the same person to re-post it.
-  @@unique([consultantProfileId, consulteeProfileId, track])
+  @@unique([consultantProfileId, consulteeProfileId])
   // Serves the score recompute's per-consultant scan. It is no longer a
   // `groupBy`: Bayesian shrinkage with per-row recency decay cannot be expressed
   // as a Prisma aggregate, because the weight is a function of each row's own age
