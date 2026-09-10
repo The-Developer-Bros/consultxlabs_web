@@ -8,6 +8,10 @@
  *
  * Shape (consumed by `BillingPageClient.fetchBilling`):
  *   {
+ *     walletFrozen: boolean,
+ *     walletFrozenReason: string | null,
+ *     dunningSuspended: boolean,
+ *     dunningSuspendedInvoiceNumber: string | null,
  *     fundingSource: FundingSource | null,
  *     monthToDate: { gross: number, paymentCount: number },
  *     outstanding: { amount: number, invoiceCount: number },
@@ -18,12 +22,20 @@
  * `pendingCharges` is non-null only for INVOICE-funded orgs (where
  * Payment rows accrue with `billableToOrgInvoiceId = null` until the
  * monthly cron rolls them into an OrganizationInvoice).
+ *
+ * #1427/#1430 — `walletFrozen` and `dunningSuspended` were previously only
+ * ever read inside checkout's own block predicates, so an org hit a wall at
+ * the payment sheet with no earlier warning. They ride along here instead
+ * of a separate endpoint because the page already fetches this route on
+ * every billing-tab load.
  */
 
 import { NextResponse, type NextRequest } from "next/server";
 import prisma from "@/lib/prisma";
 import { requireOrgAccess } from "@/lib/auth-helpers";
 import { sumPaise } from "@/lib/payments/utils/money";
+import { isWalletFrozen } from "@/lib/payments/wallet-freeze";
+import { ENABLE_DUNNING_SUSPEND } from "@/lib/feature-flags";
 
 export async function GET(
   _req: NextRequest,
@@ -118,7 +130,34 @@ export async function GET(
     select: { paymentTermsDays: true },
   });
 
+  // #1427/#1430 — resolve the two silent-block states next to the account
+  // read the page already makes, so the client never has to special-case a
+  // failed checkout to learn about them. Freeze lives in SystemEvent (#837);
+  // dunning lives on the oldest OVERDUE invoice's stamp (#812, flag-gated).
+  const [walletFrozen, suspendingInvoice] = await Promise.all([
+    billingAccount
+      ? isWalletFrozen(prisma, billingAccount.id)
+      : Promise.resolve(false),
+    ENABLE_DUNNING_SUSPEND
+      ? prisma.organizationInvoice.findFirst({
+          where: {
+            organizationId: orgId,
+            status: "OVERDUE",
+            dunningSuspendedAt: { not: null },
+          },
+          select: { invoiceNumber: true },
+          orderBy: { dueDate: "asc" },
+        })
+      : Promise.resolve(null),
+  ]);
+
   return NextResponse.json({
+    walletFrozen,
+    walletFrozenReason: walletFrozen
+      ? "Wallet spend is paused pending a balance-reconciliation review."
+      : null,
+    dunningSuspended: suspendingInvoice !== null,
+    dunningSuspendedInvoiceNumber: suspendingInvoice?.invoiceNumber ?? null,
     fundingSource: billingAccount?.fundingSource ?? null,
     // null = unlimited (#777 §B credit-limit visibility).
     creditLimitPaise: billingAccount?.creditLimit ?? null,

@@ -65,6 +65,7 @@ import { AUDIT_ACTIONS } from "@/lib/enterprise/audit-actions";
 import { postLedgerTxn, type Posting } from "@/lib/payments/ledger/post";
 import { recordTdsReversal } from "@/lib/payments/tax/tds-service";
 import { generateOrgCreditNoteNumber } from "@/lib/payments/billing/credit-note-numbering";
+import { mintConsumerCreditNote } from "@/lib/payments/billing/consumer-invoice";
 import { recordSystemError } from "@/lib/enterprise/system-events";
 import { sumPaise } from "@/lib/payments/utils/money";
 import { withSerializableRetry } from "@/lib/db/serializable-retry";
@@ -1170,6 +1171,15 @@ export async function applyRefundCascade(
     reason: input.reason,
   });
 
+  // #1365 — the B2C sibling: a personal buyer's invoice is reversed by its own
+  // s.34 credit note on the platform series, never by deleting the invoice.
+  await mintConsumerCreditNote(tx, {
+    paymentId: payment.id,
+    refundId: input.refundId,
+    amountPaise: input.amountPaise,
+    reason: input.reason,
+  });
+
   // -----------------------------------------------------------------------
   // Step 7.6 (#715/#716): credit-back for an ALREADY-CHARGED overage on full
   // refund. reverseBookingUtilization only cancels UNCOLLECTED overages; a
@@ -1189,11 +1199,23 @@ export async function applyRefundCascade(
         bookingUtilizationId: payment.bookingUtilization.id,
         chargeStatus: "CHARGED",
       },
-      select: { id: true, overageBehavior: true, paymentId: true },
+      select: {
+        id: true,
+        overageBehavior: true,
+        paymentId: true,
+        invoiceLineItemId: true,
+      },
     });
+    // #1458 — the wallet rail collects a CHARGE_ORG marginal inside this very
+    // payment's WALLET debit, so the leg reversal above has already credited it
+    // back. There is no invoice behind it and therefore no credit note to wait
+    // for; gating on one left the event permanently CHARGED, still eating the
+    // programme's per-cycle overage ceiling after the booking was refunded.
+    const walletCollected =
+      charged?.paymentId === payment.id && charged?.invoiceLineItemId === null;
     if (
       charged?.overageBehavior === "CHARGE_ORG" &&
-      refundCreditNote.creditNoteId
+      (refundCreditNote.creditNoteId || walletCollected)
     ) {
       await transitionOverage(
         tx,

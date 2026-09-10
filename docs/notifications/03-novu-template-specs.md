@@ -7,6 +7,8 @@
 **Created**: 2026-03-24
 **Source of Truth**: `lib/novu/workflows.ts` (payload types)
 
+> **Payload values are customer-ready before they reach a template (#536).** Every field named below without a unit suffix already holds the string a person should read: `dateTime` is a sentence in the recipient's own timezone, `amount` is formatted money including its currency symbol, and `appointmentType` is a label rather than an enum member. The machine-readable original travels alongside under a unit-suffixed name (`dateTimeIso`, `amountPaise`, `appointmentTypeCode`). See "Payload conventions" in `02-workflows-and-api.md` for the full rule. A template must never format a date itself. The one exception to "print the field as-is" is money: the four templates that already render `{{payload.currency}} {{payload.amount}}` receive `amount` with the symbol stripped, so they keep printing the ISO code and read correctly; every other money template gets the symbol inside `amount` and must not print a currency code beside it.
+
 ---
 
 ## Table of Contents
@@ -91,11 +93,11 @@ In the Novu editor, replicate this using their visual builder or paste the HTML 
 
 ```
 {{payload.appointmentId}}     - Appointment ID
-{{payload.appointmentType}}   - "consultation" | "subscription" | "webinar" | "class"
+{{payload.appointmentType}}   - "consultation" | "subscription session" | "webinar" | "class" | "trial session"
 {{payload.consultantName}}    - Consultant display name
 {{payload.consulteeName}}     - Consultee display name
 {{payload.planTitle}}          - Plan/service title
-{{payload.dateTime}}           - Formatted date/time string
+{{payload.dateTime}}           - Recipient-zone date/time, e.g. "Sat, 6 Sep 2026 · 7:53 AM IST"
 {{payload.dashboardUrl}}       - Link to dashboard
 ```
 
@@ -188,20 +190,21 @@ Booking Confirmed — {{payload.planTitle}}
 
 ```
 {{payload.appointmentId}}     - Appointment ID
-{{payload.appointmentType}}   - "consultation" | "subscription" | "webinar" | "class"
+{{payload.appointmentType}}   - "consultation" | "subscription session" | "webinar" | "class" | "trial session"
 {{payload.consultantName}}    - Consultant display name
 {{payload.consulteeName}}     - Consultee display name
 {{payload.planTitle}}          - Plan/service title
-{{payload.dateTime}}           - Original date/time
+{{payload.dateTime}}           - Original date/time, rendered in the recipient's timezone
 {{payload.dashboardUrl}}       - Link to dashboard
-{{payload.reason}}             - Cancellation reason (optional)
-{{payload.cancelledBy}}        - "consultant" | "consultee" | "system"
+{{payload.reason}}             - Cancellation reason. Always present — "No reason given" when there is none
+{{payload.cancelledBy}}        - Who cancelled, as a name or "The platform". Capitalised: it opens the sentence
+{{payload.cancelledByRole}}    - "consultant" | "consultee" | "system" (for branching)
 ```
 
 **In-App notification**:
 
 ```
-Your {{payload.appointmentType}} "{{payload.planTitle}}" has been cancelled{{#if payload.reason}}: {{payload.reason}}{{/if}}.
+{{payload.cancelledBy}} cancelled the {{payload.appointmentType}} session for {{payload.planTitle}}. Reason: {{payload.reason}}
 ```
 
 **Email subject**:
@@ -222,8 +225,8 @@ Appointment Cancelled — {{payload.planTitle}}
 </p>
 
 <p style="font-size:16px;line-height:1.5;color:#444;margin:0 0 20px">
-  Your {{payload.appointmentType}} <strong>"{{payload.planTitle}}"</strong> has
-  been cancelled by the {{payload.cancelledBy}}.
+  Your {{payload.appointmentType}} <strong>"{{payload.planTitle}}"</strong> was
+  cancelled by {{payload.cancelledBy}}.
 </p>
 
 {{#if payload.reason}}
@@ -284,11 +287,11 @@ Appointment Cancelled — {{payload.planTitle}}
 **Payload variables** (`AppointmentPayload`):
 
 ```
-{{payload.appointmentType}}   - "consultation" | "subscription" | "webinar" | "class"
+{{payload.appointmentType}}   - "consultation" | "subscription session" | "webinar" | "class" | "trial session"
 {{payload.consultantName}}    - Consultant display name
 {{payload.consulteeName}}     - Consultee display name
 {{payload.planTitle}}          - Plan/service title
-{{payload.dateTime}}           - Upcoming date/time
+{{payload.dateTime}}           - Upcoming date/time, rendered in the recipient's timezone
 {{payload.dashboardUrl}}       - Link to dashboard
 ```
 
@@ -365,10 +368,12 @@ Reminder — {{payload.planTitle}} is coming up
 **Payload variables** (`PaymentSuccessPayload`):
 
 ```
-{{payload.amount}}            - Payment amount (number)
-{{payload.currency}}          - Currency code (e.g., "INR", "USD")
+{{payload.amount}}            - Localised figure without a symbol, e.g. "55,679.48"
+{{payload.amountFormatted}}   - The same figure with the symbol, e.g. "₹55,679.48"
+{{payload.amountPaise}}       - The same amount in integer minor units
+{{payload.currency}}          - Currency code (e.g., "INR", "USD") — printed before {{payload.amount}}
 {{payload.consultantName}}    - Consultant display name
-{{payload.appointmentType}}   - Service type
+{{payload.appointmentType}}   - Service label, e.g. "consultation"
 {{payload.planTitle}}          - Plan title
 {{payload.receiptUrl}}         - Receipt URL (optional)
 {{payload.dashboardUrl}}       - Link to dashboard
@@ -464,10 +469,12 @@ Payment Confirmed — {{payload.planTitle}}
 **Payload variables** (`PaymentFailedPayload`):
 
 ```
-{{payload.amount}}            - Payment amount
-{{payload.currency}}          - Currency code
+{{payload.amount}}            - Localised figure without a symbol, e.g. "55,679.48"
+{{payload.amountFormatted}}   - The same figure with the symbol, e.g. "₹55,679.48"
+{{payload.amountPaise}}       - The same amount in integer minor units
+{{payload.currency}}          - Currency code — printed before {{payload.amount}}
 {{payload.consultantName}}    - Consultant display name
-{{payload.appointmentType}}   - Service type
+{{payload.appointmentType}}   - Service label, e.g. "consultation"
 {{payload.planTitle}}          - Plan title (optional)
 {{payload.failureReason}}      - Reason for failure
 {{payload.retryUrl}}           - Retry URL (optional)
@@ -554,8 +561,8 @@ Payment Failed — Action Required
 ```
 {{payload.consulteeName}}      - Consultee display name
 {{payload.planTitle}}           - Plan title
-{{payload.appointmentType}}    - "consultation" | "subscription"
-{{payload.requestedDateTime}}  - Requested date/time (optional)
+{{payload.appointmentType}}    - "consultation" | "subscription session"
+{{payload.requestedDateTime}}  - Requested date/time, rendered in the recipient's timezone (optional)
 {{payload.dashboardUrl}}        - Link to dashboard
 ```
 
@@ -752,7 +759,7 @@ Subscription Cancelled — {{payload.planTitle}}
 {{payload.consultantName}}    - Consultant display name
 {{payload.consulteeName}}     - Consultee display name
 {{payload.planTitle}}          - Plan title
-{{payload.dateTime}}           - Requested date/time (optional)
+{{payload.dateTime}}           - Requested date/time, rendered in the recipient's timezone (optional)
 {{payload.status}}             - Current status
 {{payload.dashboardUrl}}       - Link to dashboard
 ```
@@ -823,7 +830,7 @@ New Trial Request — {{payload.planTitle}}
 {{payload.consultantName}}    - Consultant display name
 {{payload.consulteeName}}     - Consultee display name
 {{payload.planTitle}}          - Plan title
-{{payload.dateTime}}           - Scheduled date/time
+{{payload.dateTime}}           - Scheduled date/time, rendered in the recipient's timezone
 {{payload.dashboardUrl}}       - Link to dashboard
 ```
 

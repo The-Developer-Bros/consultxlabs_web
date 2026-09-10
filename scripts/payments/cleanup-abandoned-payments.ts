@@ -22,7 +22,7 @@ import {
   AppointmentStatus,
   SlotCompletionStatus,
 } from "@prisma/client";
-import Stripe from "stripe";
+import type Stripe from "stripe";
 import { cancelRazorpayOrder } from "../../lib/payments/core/razorpay";
 import { reverseCreditsForPayment } from "@/lib/referrals/service";
 import {
@@ -47,6 +47,113 @@ export interface CleanupResult {
   errors: string[];
 }
 
+export interface CleanupAbandonedOptions {
+  /** #1356 — caps the cohort for the Netlify ticker; undefined keeps the
+   * unbounded GitHub Actions behaviour. */
+  limit?: number;
+}
+
+/**
+ * #1386 — the same fence every money path reads, in the same shape
+ * `assertGatewayUsable` and the disputes sweep use: an env read at call time,
+ * because the gateway cores load lazily and jest flips the flag between cases.
+ */
+function isStripeEnabled(): boolean {
+  return process.env.STRIPE_ENABLED === "true";
+}
+
+/**
+ * #1464 — the fence is a property of the deployment, not of a payment, so one
+ * line per run says everything an operator needs; one line per fenced row
+ * would bury the rest of the summary. Reset at the top of each sweep so a
+ * later run still explains itself.
+ */
+let stripeFenceLogged = false;
+
+function logStripeFenceOnce(): void {
+  if (stripeFenceLogged) return;
+  stripeFenceLogged = true;
+  console.log(
+    '⏭️ Leaving Stripe intents alone — STRIPE_ENABLED is not "true" (#1386). ' +
+      "There is nothing to cancel on a gateway this deployment never charged.",
+  );
+}
+
+/** The two intent states that mean the hold this cancel was for is gone. */
+const TERMINAL_INTENT_STATUSES = new Set(["canceled", "succeeded"]);
+
+/**
+ * #1461 — `payment_intent_unexpected_state` does not mean "already gone". It
+ * means "the intent's current state forbids a cancel", which covers a
+ * `canceled` or `succeeded` intent (genuinely nothing to do) and equally a
+ * `processing` or `requires_capture` one, where the gateway is still holding
+ * the buyer's money. Stripe attaches the offending intent to the error, so the
+ * two can be told apart without spending a `retrieve` round trip out of this
+ * sweep's 4 s per-cancel budget. Read defensively off both the top level and
+ * `raw`, because which one carries it depends on the SDK's error wrapping.
+ */
+function unexpectedStateIsTerminal(error: unknown): boolean {
+  const err = error as
+    | {
+        payment_intent?: { status?: unknown };
+        raw?: { payment_intent?: { status?: unknown } };
+      }
+    | null
+    | undefined;
+  const status =
+    err?.payment_intent?.status ?? err?.raw?.payment_intent?.status;
+  return typeof status === "string" && TERMINAL_INTENT_STATUSES.has(status);
+}
+
+/**
+ * #1464 — an intent Stripe cannot find, or one that is already in a terminal
+ * state, is nothing to cancel rather than a failure: the hold it represented
+ * is gone, which is exactly what the cancel was for. Matched on the error's
+ * own fields instead of `instanceof Stripe.errors.StripeError` so the check
+ * does not depend on the lazily-imported SDK's class identity.
+ *
+ * #1461 — the row is expired either way (that is #1464's point), so what this
+ * decides is only whether an operator is told. A live intent we could not
+ * cancel, sitting behind a locally EXPIRED payment, is exactly the state
+ * someone has to look at, even though #1439 heals a capture that lands late.
+ */
+function isNothingToCancel(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  if (code === "resource_missing") return true;
+  // Terminal by the payload's own account, or a failure. An absent status is
+  // a failure too: unproven is not the same as safe.
+  if (code === "payment_intent_unexpected_state")
+    return unexpectedStateIsTerminal(error);
+  return error instanceof Error && error.message.includes("already");
+}
+
+/**
+ * Cancel one Stripe intent through the fenced client.
+ *
+ * The id shape decides the call, as in `cancelStripePayment`: checkout
+ * sessions (`cs_…`) are expired and payment intents (`pi_…`) are cancelled.
+ * Anything the gateway genuinely refused is rethrown, because the caller
+ * counts it.
+ */
+async function cancelStripeIntent(
+  stripe: Stripe,
+  paymentIntent: string,
+): Promise<void> {
+  try {
+    if (paymentIntent.startsWith("cs_")) {
+      await stripe.checkout.sessions.expire(paymentIntent);
+    } else {
+      await stripe.paymentIntents.cancel(paymentIntent);
+    }
+    console.log(`✅ Cancelled Stripe payment intent: ${paymentIntent}`);
+  } catch (error) {
+    if (!isNothingToCancel(error)) throw error;
+    console.log(
+      `✅ Stripe intent ${paymentIntent} was already gone — nothing to cancel`,
+    );
+  }
+}
+
 /**
  * Cancel payment intent with the appropriate payment gateway
  */
@@ -56,15 +163,26 @@ export async function cancelPaymentIntent(
 ): Promise<void> {
   try {
     switch (gateway) {
-      case PaymentGateway.STRIPE:
-        if (process.env.STRIPE_SECRET_KEY) {
-          const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-          await stripe.paymentIntents.cancel(paymentIntent);
-          console.log(`✅ Cancelled Stripe payment intent: ${paymentIntent}`);
-        } else {
-          console.warn("⚠️ STRIPE_SECRET_KEY not configured");
+      case PaymentGateway.STRIPE: {
+        // #1464 — respect the #1386 fence. This arm used to build a raw client
+        // around STRIPE_SECRET_KEY, so it bypassed both the fence and the
+        // test-key guard: with Stripe off, the key is absent or a test key and
+        // the call can only fail, which then blocked the expiry below.
+        if (!isStripeEnabled()) {
+          logStripeFenceOnce();
+          break;
         }
+        // #1376 — gateway cores load at call time, and this module is reached
+        // from the cleanup route's graph.
+        const { getStripeClient } = await import("@/lib/payments/core/stripe");
+        const stripe = getStripeClient();
+        if (!stripe) {
+          console.warn("⚠️ STRIPE_SECRET_KEY not configured");
+          break;
+        }
+        await cancelStripeIntent(stripe, paymentIntent);
         break;
+      }
 
       case PaymentGateway.RAZORPAY:
         await cancelRazorpayOrder(paymentIntent);
@@ -121,8 +239,12 @@ function logCleanupSummary(
  * The cohort: an appointment still holding a slot or a group seat against a
  * PENDING payment that has passed its expiry.
  */
-function findAbandonedAppointments() {
+function findAbandonedAppointments(limit?: number) {
   return prisma.appointment.findMany({
+    take: limit,
+    // Oldest-first with an id tie-break: a bounded run must not leave the
+    // same stale holds behind every tick while newer ones get processed.
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     where: {
       payment: {
         some: {
@@ -206,35 +328,133 @@ async function anyPaymentSucceeded(
 }
 
 /**
+ * #1464 — where one appointment's failures are collected. `count` is mutated
+ * in place rather than returned, because a gateway cancel is an external call
+ * the caller's transaction cannot roll back: it must still reach `errorCount`
+ * when the unit around it is rolled back and reported as skipped.
+ */
+interface FailureSink {
+  /** Appended to `CleanupResult.errors`. */
+  messages: string[];
+  /** Added to `CleanupResult.errorCount` by the caller. */
+  count: number;
+}
+
+/**
  * Cancel the gateway intent and mark the row EXPIRED (timed out, not a gateway
- * rejection). A gateway failure is recorded and the cleanup continues: the hold
- * still has to be released.
+ * rejection).
+ *
+ * #1464 — the expiry does not depend on the cancel succeeding. Skipping the CAS
+ * on a failed cancel desynchronised the unit: the credits were handed back and
+ * the slot released around a payment left PENDING, which no later sweep could
+ * see, because nothing about it still looked abandoned. Expiring anyway is also
+ * what the Razorpay arm has always done — an order cannot be cancelled, so that
+ * cancel is a no-op — and a capture landing after the row is EXPIRED is the
+ * terminal race #1439 owns. The failure is recorded AND counted, so the run
+ * reports `success: false` and the HTTP twin answers non-2xx.
  */
 async function expirePendingPayments(
   tx: Pick<Tx, "payment">,
   payments: AbandonedPayment[],
-  errors: string[],
+  failures: FailureSink,
 ): Promise<void> {
-  for (const payment of payments) {
-    try {
-      await cancelPaymentIntent(payment.paymentIntent, payment.paymentGateway);
+  // #1459 — the gateway round trips run first and in parallel; the status
+  // writes below stay one-at-a-time and in cohort order, because they are the
+  // part that has to be a deterministic sequence inside the caller's
+  // transaction.
+  const cancelFailures = await cancelGatewayIntents(payments);
 
-      // Conditional on PENDING: a capture racing this sweep keeps SUCCEEDED.
-      await tx.payment.updateMany({
-        where: { id: payment.id, paymentStatus: PaymentStatus.PENDING },
-        data: { paymentStatus: PaymentStatus.EXPIRED },
-      });
-    } catch (paymentError) {
-      const errorMessage = describeError(paymentError);
+  for (const payment of payments) {
+    const failure = cancelFailures.get(payment.id);
+    if (failure !== undefined) {
       console.warn(
         `⚠️ Failed to cancel payment intent ${payment.paymentIntent}:`,
-        errorMessage,
+        failure,
       );
-      errors.push(
-        `Payment cancellation failed for ${payment.paymentIntent}: ${errorMessage}`,
+      failures.messages.push(
+        `Payment cancellation failed for ${payment.paymentIntent}: ${failure}`,
       );
+      failures.count++;
     }
+
+    // Conditional on PENDING: a capture racing this sweep keeps SUCCEEDED.
+    await tx.payment.updateMany({
+      where: { id: payment.id, paymentStatus: PaymentStatus.PENDING },
+      data: { paymentStatus: PaymentStatus.EXPIRED },
+    });
   }
+}
+
+/**
+ * #1459 — how many gateway cancels are in flight at once. The Netlify ticker
+ * gives this sweep a 6 s budget (ADR 27) and one sequential round trip per
+ * payment spent all of it on five stuck rows, so every tick aborted mid-sweep.
+ * Five is enough to hide the latency without opening a burst the gateway would
+ * rate-limit.
+ */
+const GATEWAY_CANCEL_CONCURRENCY = 5;
+
+/**
+ * #1459 — ceiling on a single cancel. Neither gateway client sets one, so a
+ * hung connection would hold the whole batch past the ticker's timeout and the
+ * payment would never be marked EXPIRED. A timed-out cancel is recorded like
+ * any other gateway failure and retried on the next run.
+ */
+const GATEWAY_CANCEL_TIMEOUT_MS = 4_000;
+
+async function cancelWithTimeout(
+  paymentIntent: string,
+  gateway: PaymentGateway,
+): Promise<void> {
+  // AbortSignal.timeout's timer does not hold the event loop open, so a cancel
+  // that wins the race leaves nothing behind to keep the function alive.
+  const signal = AbortSignal.timeout(GATEWAY_CANCEL_TIMEOUT_MS);
+  await Promise.race([
+    cancelPaymentIntent(paymentIntent, gateway),
+    new Promise<never>((_resolve, reject) => {
+      signal.addEventListener("abort", () =>
+        reject(
+          new Error(
+            `Gateway cancel timed out after ${GATEWAY_CANCEL_TIMEOUT_MS} ms`,
+          ),
+        ),
+      );
+    }),
+  ]);
+}
+
+/**
+ * Cancel every payment's gateway intent with bounded concurrency.
+ *
+ * Exported for the concurrency pin: the ceiling is the whole point of the
+ * function, and it is invisible from the outside of the sweep.
+ *
+ * @returns The failures only, keyed by payment id — a payment absent from the
+ *   map was cancelled and is safe to mark EXPIRED.
+ */
+export async function cancelGatewayIntents(
+  payments: readonly Pick<
+    AbandonedPayment,
+    "id" | "paymentIntent" | "paymentGateway"
+  >[],
+): Promise<Map<string, string>> {
+  const failures = new Map<string, string>();
+
+  for (let i = 0; i < payments.length; i += GATEWAY_CANCEL_CONCURRENCY) {
+    const chunk = payments.slice(i, i + GATEWAY_CANCEL_CONCURRENCY);
+    const settled = await Promise.allSettled(
+      chunk.map((payment) =>
+        cancelWithTimeout(payment.paymentIntent, payment.paymentGateway),
+      ),
+    );
+    settled.forEach((outcome, j) => {
+      if (outcome.status === "rejected") {
+        failures.set(chunk[j].id, describeError(outcome.reason));
+      }
+    });
+  }
+
+  return failures;
 }
 
 /**
@@ -412,13 +632,13 @@ async function expireRequestAndReleaseSlots(
  */
 async function cleanupAbandonedAppointment(
   appointment: AbandonedAppointment,
-  errors: string[],
+  failures: FailureSink,
 ): Promise<"cleaned" | "skipped"> {
   try {
     return await prisma.$transaction(async (tx) => {
       if (await anyPaymentSucceeded(tx, appointment)) return "skipped" as const;
 
-      await expirePendingPayments(tx, appointment.payment, errors);
+      await expirePendingPayments(tx, appointment.payment, failures);
       await restoreReferralCredits(tx, appointment.payment);
 
       if (appointment.webinar || appointment.class) {
@@ -453,16 +673,21 @@ async function cleanupAbandonedAppointment(
  */
 // #476 — locked at the core so every entry (GH Actions / HTTP) shares one
 // mutual exclusion; fail-closed: money state must not double-run unlocked.
-export async function cleanupAbandonedPayments(): Promise<CleanupResult> {
+export async function cleanupAbandonedPayments(
+  opts: CleanupAbandonedOptions = {},
+): Promise<CleanupResult> {
   return withCronLock(
     "cleanup-abandoned-payments",
     { failMode: "closed" },
-    () => cleanupAbandonedPaymentsUnlocked(),
+    () => cleanupAbandonedPaymentsUnlocked(opts),
   );
 }
 
-async function cleanupAbandonedPaymentsUnlocked(): Promise<CleanupResult> {
+async function cleanupAbandonedPaymentsUnlocked(
+  opts: CleanupAbandonedOptions = {},
+): Promise<CleanupResult> {
   console.log("🧹 Starting abandoned payment cleanup...");
+  stripeFenceLogged = false;
 
   const result: CleanupResult = {
     success: false,
@@ -474,7 +699,7 @@ async function cleanupAbandonedPaymentsUnlocked(): Promise<CleanupResult> {
   };
 
   try {
-    const abandonedAppointments = await findAbandonedAppointments();
+    const abandonedAppointments = await findAbandonedAppointments(opts.limit);
 
     result.totalProcessed = abandonedAppointments.length;
     console.log(
@@ -482,11 +707,19 @@ async function cleanupAbandonedPaymentsUnlocked(): Promise<CleanupResult> {
     );
 
     for (const appointment of abandonedAppointments) {
+      // #1464 — per appointment, so the gateway failures counted below belong
+      // to this one and are not added again for the next.
+      const failures: FailureSink = { messages: result.errors, count: 0 };
       try {
         const outcome = await cleanupAbandonedAppointment(
           appointment,
-          result.errors,
+          failures,
         );
+
+        // A gateway cancel that failed fails the run even though the row was
+        // still expired and its hold released: the intent may still be live at
+        // the gateway, which is something an operator has to see.
+        result.errorCount += failures.count;
 
         if (outcome === "skipped") {
           result.skippedCount++;
@@ -497,7 +730,10 @@ async function cleanupAbandonedPaymentsUnlocked(): Promise<CleanupResult> {
           );
         }
       } catch (error) {
-        result.errorCount++;
+        // Both: a gateway cancel that failed pushed its own line into
+        // `errors`, so the count has to match or the summary contradicts the
+        // list it prints.
+        result.errorCount += failures.count + 1;
         const errorMessage = describeError(error);
         console.error(
           `❌ Failed to clean up appointment ${appointment.id}:`,
@@ -533,15 +769,19 @@ async function cleanupAbandonedPaymentsUnlocked(): Promise<CleanupResult> {
  */
 // #476 — locked at the core so every entry (GH Actions / HTTP) shares one
 // mutual exclusion; fail-closed: money state must not double-run unlocked.
-export async function cleanupExpiredApprovalPendingPayments(): Promise<CleanupResult> {
+export async function cleanupExpiredApprovalPendingPayments(
+  opts: CleanupAbandonedOptions = {},
+): Promise<CleanupResult> {
   return withCronLock(
     "cleanup-abandoned-payments",
     { failMode: "closed" },
-    () => cleanupExpiredApprovalPendingPaymentsUnlocked(),
+    () => cleanupExpiredApprovalPendingPaymentsUnlocked(opts),
   );
 }
 
-async function cleanupExpiredApprovalPendingPaymentsUnlocked(): Promise<CleanupResult> {
+async function cleanupExpiredApprovalPendingPaymentsUnlocked(
+  opts: CleanupAbandonedOptions = {},
+): Promise<CleanupResult> {
   console.log(
     "🧹 Starting cleanup of expired APPROVED_PENDING_PAYMENT consultations...",
   );
@@ -558,6 +798,9 @@ async function cleanupExpiredApprovalPendingPaymentsUnlocked(): Promise<CleanupR
   try {
     // Find consultations stuck in APPROVED_PENDING_PAYMENT with expired payments
     const expiredConsultations = await prisma.consultation.findMany({
+      take: opts.limit,
+      // Oldest-first with an id tie-break: see findAbandonedAppointments above.
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       where: {
         status: AppointmentStatus.APPROVED_PENDING_PAYMENT,
         appointment: {

@@ -27,7 +27,10 @@ export const { GET, POST } = cleanupRoute({
     reconciledCount: r.reconciledCount,
     urgentCount: r.urgentCount,
     razorpayManualReviewCount: r.razorpayManualReviewCount,
+    skippedFenced: r.skippedFenced,
   }),
-  status: () => 200,
+  // #1459 — no `status` override: a hardcoded 200 reported every failed run as
+  // healthy, the same masking #1390 removed from the other sweeps. The default
+  // mapping answers 500 when `success` is false.
   failureMessage: "Failed to reconcile disputes",
 });

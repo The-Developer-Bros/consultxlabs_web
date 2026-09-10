@@ -12,7 +12,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarDays, LifeBuoy, Send, UserRound, Bot } from "lucide-react";
+import { CalendarDays, LifeBuoy, Send } from "lucide-react";
 import {
   Sheet,
   SheetContent,
@@ -51,6 +51,11 @@ interface SupportThread {
   activeChannel: string;
   currentNodeId: string | null;
   messages: ThreadMessage[];
+  /** Present once escalated — the deadline committed to at intake. */
+  supportTicket?: {
+    referenceNumber: string | null;
+    ackDueAt: string | null;
+  } | null;
 }
 
 interface ThreadData {
@@ -67,9 +72,15 @@ interface TurnResult {
   activeChannel: string;
   currentNodeId: string | null;
   /** The bot's own reply. Rendered straight from here — see `onSuccess`. */
-  messages: { sender: Sender; body: string; metadata?: MessageMetadata | null }[];
+  messages: {
+    sender: Sender;
+    body: string;
+    metadata?: MessageMetadata | null;
+  }[];
   escalated: boolean;
   resolved: boolean;
+  /** False when the server refused the write (thread closed underneath us). */
+  accepted?: boolean;
   actions: SupportAction[];
 }
 
@@ -82,7 +93,7 @@ const nextLocalId = () => `local-${++localSeq}`;
  *  first turn (the row does not exist until the server writes it). */
 function appendMessages(
   old: ThreadData | undefined,
-  msgs: Omit<ThreadMessage, "id" | "createdAt">[],
+  msgs: (Omit<ThreadMessage, "id" | "createdAt"> & { id?: string })[],
 ): ThreadData {
   const base: ThreadData = old ?? { thread: null, intents: [] };
   const thread: SupportThread = base.thread ?? {
@@ -100,12 +111,54 @@ function appendMessages(
         ...thread.messages,
         ...msgs.map((m) => ({
           ...m,
-          id: nextLocalId(),
+          id: m.id ?? nextLocalId(),
           createdAt: new Date().toISOString(),
         })),
       ],
     },
   };
+}
+
+/** One turn's payload, kept so a failed send can be repeated verbatim. */
+interface TurnVars {
+  category?: string;
+  chosenOptionId?: string;
+  userMessage?: string;
+  /** Client-only echo of what was pressed. Never sent. */
+  chosenLabel?: string;
+}
+
+/**
+ * "We'll reply by 4:30 PM" beats "soon": a concrete wait is what the hand-off
+ * research found cuts abandonment, and this one is a promise already made at
+ * intake rather than a guess.
+ */
+/** Announced to assistive tech only — the visual design carries no captions. */
+function speakerLabel(sender: Sender): string {
+  if (sender === "USER") return "You said";
+  if (sender === "AGENT") return "Support said";
+  if (sender === "SYSTEM") return "System";
+  return "Assistant said";
+}
+
+function describeWait(ackDueAt: string | null | undefined): string {
+  const FALLBACK = "Our team will reply here and by email.";
+  if (!ackDueAt) return FALLBACK;
+  const due = new Date(ackDueAt);
+  if (Number.isNaN(due.getTime())) return FALLBACK;
+  // Past our own deadline — say so rather than showing a promise that lapsed.
+  if (due.getTime() < Date.now()) {
+    return "Our team is taking longer than usual. You'll get a reply here and by email.";
+  }
+  const time = due.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  if (due.toDateString() === new Date().toDateString()) {
+    return `Our team will reply by ${time} today.`;
+  }
+  const day = due.toLocaleDateString([], { day: "numeric", month: "short" });
+  return `Our team will reply by ${time} on ${day}.`;
 }
 
 function describeAction(a: SupportAction): string | null {
@@ -144,6 +197,15 @@ export function SupportThreadSheet({
   const open = controlledOpen ?? internalOpen;
   const [text, setText] = useState("");
   const [lastActions, setLastActions] = useState<SupportAction[]>([]);
+  // A failed send stays in the transcript, keyed by its optimistic bubble id,
+  // with the payload needed to send it again. A toast disappears and leaves the
+  // user unable to tell whether anything was sent.
+  // Held in component state, NOT in the query cache: a poll replaces the cache
+  // wholesale with server rows, which would take the failed bubble and its
+  // Retry with it — the exact thing the user needs in order to recover.
+  const [failedTurns, setFailedTurns] = useState<
+    Record<string, { body: string; vars: TurnVars }>
+  >({});
   const { toast } = useToast();
   const qc = useQueryClient();
   const queryKey = ["support-thread", appointmentId] as const;
@@ -158,17 +220,40 @@ export function SupportThreadSheet({
     }
   };
 
+  // Undo the optimistic bubble. Restoring the pre-turn snapshot is the normal
+  // path, but a turn sent before the first GET resolves has NO snapshot to
+  // restore — the composer is live while the thread is still loading. Skipping
+  // the rollback there left the pending bubble in the cache and added a failed
+  // one beside it, so one failed send rendered as two messages until a refetch.
+  const rollbackOptimistic = (
+    previous: ThreadData | undefined,
+    optimisticId: string | undefined,
+  ) => {
+    if (previous) {
+      qc.setQueryData(queryKey, previous);
+      return;
+    }
+    if (!optimisticId) return;
+    qc.setQueryData<ThreadData>(queryKey, (old) =>
+      old?.thread
+        ? {
+            ...old,
+            thread: {
+              ...old.thread,
+              messages: old.thread.messages.filter(
+                (m) => m.id !== optimisticId,
+              ),
+            },
+          }
+        : old,
+    );
+  };
+
   const turn = useMutation({
     mutationFn: async ({
       chosenLabel: _chosenLabel,
       ...body
-    }: {
-      category?: string;
-      chosenOptionId?: string;
-      userMessage?: string;
-      /** Client-only echo of what was pressed — see `onMutate`. Never sent. */
-      chosenLabel?: string;
-    }): Promise<TurnResult> => {
+    }: TurnVars): Promise<TurnResult> => {
       const res = await fetch(`/api/appointments/${appointmentId}/support`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -186,16 +271,34 @@ export function SupportThreadSheet({
       await qc.cancelQueries({ queryKey });
       const previous = qc.getQueryData<ThreadData>(queryKey);
       const said = vars.userMessage ?? vars.chosenLabel;
+      let optimisticId: string | undefined;
       if (said) {
+        optimisticId = nextLocalId();
         qc.setQueryData<ThreadData>(queryKey, (old) =>
           appendMessages(old, [
-            { sender: "USER", body: said, pending: true },
+            { id: optimisticId, sender: "USER", body: said, pending: true },
           ]),
         );
       }
-      return { previous };
+      return { previous, optimisticId };
     },
-    onSuccess: (result) => {
+    onSuccess: (result, vars, context) => {
+      // The server took the request but refused the write. Treat it exactly
+      // like a failure, or the bubble sits there looking delivered.
+      if (result.accepted === false) {
+        const id = context?.optimisticId;
+        const said = vars.userMessage ?? vars.chosenLabel;
+        rollbackOptimistic(context?.previous, id);
+        if (id && said)
+          setFailedTurns((f) => ({ ...f, [id]: { body: said, vars } }));
+        toast({
+          title: "Support",
+          description:
+            "This conversation has been closed, so your message wasn't sent.",
+          variant: "destructive",
+        });
+        return;
+      }
       setLastActions(result.actions ?? []);
       setText("");
       // Merge the server's own reply rather than only invalidating: an
@@ -228,15 +331,25 @@ export function SupportThreadSheet({
       });
       void qc.invalidateQueries({ queryKey });
     },
-    onError: (e: unknown, _vars, context) => {
-      // Roll the optimistic bubble back — a message that stays on screen after
-      // the turn failed is worse than one that never appeared.
-      if (context?.previous) qc.setQueryData(queryKey, context.previous);
-      toast({
-        title: "Support",
-        description: e instanceof Error ? e.message : "Please try again.",
-        variant: "destructive",
-      });
+    onError: (e: unknown, vars, context) => {
+      // Keep the message where the user put it, marked failed, with a retry —
+      // the convention every messaging app uses. Rolling it back and toasting
+      // left them unable to tell whether it had sent at all, which is exactly
+      // what a connection timeout on a cold instance looked like.
+      const id = context?.optimisticId;
+      const said = vars.userMessage ?? vars.chosenLabel;
+      if (id && said) {
+        // Roll the cache back to the server's truth and keep the failed message
+        // beside it in component state, so a refetch cannot erase it.
+        rollbackOptimistic(context?.previous, id);
+        setFailedTurns((f) => ({ ...f, [id]: { body: said, vars } }));
+      } else {
+        toast({
+          title: "Support",
+          description: e instanceof Error ? e.message : "Please try again.",
+          variant: "destructive",
+        });
+      }
     },
   });
 
@@ -290,6 +403,36 @@ export function SupportThreadSheet({
     !isHuman && !isResolved ? (activePrompt?.metadata?.options ?? []) : [];
   const started = !!thread;
   const turnPending = turn.isPending;
+  // `turnPending` is React state, so two clicks in the same tick both read the
+  // stale value and both fire. A ref flips synchronously and stops the second
+  // before it leaves the browser — which also spares a pool where
+  // PG_POOL_MAX=1 serialises everything an entirely wasted round trip.
+  const inFlight = useRef(false);
+  const submitTurn = (vars: TurnVars) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    turn.mutate(vars, { onSettled: () => (inFlight.current = false) });
+  };
+  // The hand-off sits immediately before the first AGENT message. A thread that
+  // has escalated but whose staff reply has not landed yet still gets the
+  // marker, at the end — otherwise the drawer looks like the bot simply gave
+  // up on the user.
+  const retryTurn = (id: string) => {
+    const failed = failedTurns[id];
+    // Check the in-flight guard BEFORE dropping the entry. `submitTurn` returns
+    // silently while another turn is out, so deleting first meant a Retry
+    // pressed during an in-flight send erased the message and never resent it —
+    // losing the very text the Retry existed to protect.
+    if (!failed || inFlight.current) return;
+    setFailedTurns(({ [id]: _gone, ...rest }) => rest);
+    submitTurn(failed.vars);
+  };
+
+  const waitingLine = describeWait(thread?.supportTicket?.ackDueAt);
+
+  const firstAgent = messages.findIndex((m) => m.sender === "AGENT");
+  const handoffIndex =
+    firstAgent >= 0 ? firstAgent : isHuman ? messages.length : -1;
 
   // Keep the newest bubble in view. The transcript is a plain overflow
   // container, so past the drawer height every reply lands below the fold and
@@ -334,81 +477,145 @@ export function SupportThreadSheet({
           </SheetDescription>
         </SheetHeader>
 
-        {/* Conversation */}
-        <div className="flex-1 space-y-3 overflow-y-auto px-5 pb-2">
-          {!started && (
-            <p className="text-sm text-muted-foreground">
-              What do you need help with?
-            </p>
-          )}
-          {messages.map((m) => (
-            <div
-              key={m.id}
-              className={
-                m.sender === "USER" ? "flex justify-end" : "flex justify-start"
-              }
-            >
-              <div
-                className={
-                  "max-w-[85%] rounded-2xl px-3 py-2 text-sm transition-opacity " +
-                  (m.sender === "USER"
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-muted text-foreground") +
-                  (m.pending ? " opacity-70" : "")
-                }
-              >
-                <span className="mb-0.5 flex items-center gap-1 text-[10px] uppercase tracking-wide opacity-60">
-                  {m.sender === "USER" ? (
-                    <UserRound className="h-3 w-3" />
-                  ) : (
-                    <Bot className="h-3 w-3" />
-                  )}
-                  {m.sender === "AGENT" ? "Support" : m.sender.toLowerCase()}
-                </span>
-                {m.body}
+        {/* Conversation. The inner wrapper bottom-aligns a short transcript
+            against the composer instead of stranding it at the top of an empty
+            panel, and still scrolls normally once it outgrows the drawer. */}
+        <div className="flex-1 overflow-y-auto px-5 pb-2">
+          <div className="flex min-h-full flex-col justify-end space-y-3">
+            {!started && (
+              <p className="text-sm text-muted-foreground">
+                What do you need help with?
+              </p>
+            )}
+            {messages.map((m, i) => (
+              <div key={m.id}>
+                {/* Where the bot stopped and a person took over. Without it the
+                    hand-off is invisible inside the drawer even though the page
+                    behind it says "With our team". */}
+                {i === handoffIndex && (
+                  <div className="mb-3 flex items-center gap-2">
+                    <span className="h-px flex-1 bg-border" />
+                    <span className="text-[11px] text-muted-foreground">
+                      Passed to our support team
+                    </span>
+                    <span className="h-px flex-1 bg-border" />
+                  </div>
+                )}
+                <div
+                  className={
+                    m.sender === "USER"
+                      ? "flex justify-end"
+                      : "flex justify-start"
+                  }
+                >
+                  {/* No "USER"/"BOT" caption: nobody labels their own messages,
+                      and "BOT" contradicted the header's "you're connected with
+                      our support team". Side and colour carry the speaker; the
+                      divider above carries who is answering. */}
+                  <div
+                    className={
+                      "max-w-[85%] rounded-2xl px-3 py-2 text-sm transition-opacity " +
+                      (m.sender === "USER"
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-foreground") +
+                      (m.pending ? " opacity-70" : "")
+                    }
+                  >
+                    {/* Dropping the visible USER/BOT captions removed the only
+                        speaker attribution a screen reader had — side and colour
+                        are visual-only. This restores it without restoring the
+                        clutter. */}
+                    <span className="sr-only">{speakerLabel(m.sender)}: </span>
+                    {m.body}
+                  </div>
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
 
-          {/* The bot is working. Uber's own write-up calls this out as the
+            {/* The bot is working. Uber's own write-up calls this out as the
               contract of a request/response flow engine: the user waits, and a
               visual indicator tells them why. */}
-          {turnPending && (
-            <div className="flex justify-start">
-              <div
-                className="flex items-center gap-1 rounded-2xl bg-muted px-3 py-2.5"
-                role="status"
-                aria-label="Support is typing"
-              >
-                {[0, 150, 300].map((delay) => (
-                  <span
-                    key={delay}
-                    className="h-1.5 w-1.5 animate-bounce rounded-full bg-foreground/40"
-                    style={{ animationDelay: `${delay}ms` }}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
+            {/* The honest version of "we're on it": the deadline we already
+                committed to at intake, rather than an indefinite spinner. */}
+            {isHuman && !isResolved && waitingLine && (
+              <p className="text-center text-[11px] text-muted-foreground">
+                {waitingLine}
+              </p>
+            )}
 
-          {/* Offered actions from the latest turn (informational, not executed) */}
-          {lastActions.map(describeAction).map((desc, i) =>
-            desc ? (
-              <div
-                key={i}
-                className="rounded-lg border border-dashed border-border bg-card px-3 py-2 text-xs text-muted-foreground"
-              >
-                {desc}
+            {/* Failed sends, kept out of the cache so a poll cannot erase them. */}
+            {Object.entries(failedTurns).map(([id, f]) => (
+              <div key={id} className="flex justify-end">
+                <div className="max-w-[85%]">
+                  <div className="rounded-2xl bg-primary px-3 py-2 text-sm text-primary-foreground opacity-60 ring-1 ring-destructive">
+                    <span className="sr-only">You said: </span>
+                    {f.body}
+                  </div>
+                  <div className="mt-1 flex items-center justify-end gap-2 text-[11px] text-destructive">
+                    <span>Not sent</span>
+                    <button
+                      type="button"
+                      className="underline underline-offset-2"
+                      onClick={() => retryTurn(id)}
+                    >
+                      Retry
+                    </button>
+                  </div>
+                </div>
               </div>
-            ) : null,
-          )}
+            ))}
 
-          {isResolved && (
-            <Badge variant="secondary" className="mt-1">
-              Resolved
-            </Badge>
-          )}
-          <div ref={endRef} />
+            {handoffIndex === messages.length && (
+              <div className="flex items-center gap-2">
+                <span className="h-px flex-1 bg-border" />
+                <span className="text-[11px] text-muted-foreground">
+                  Passed to our support team
+                </span>
+                <span className="h-px flex-1 bg-border" />
+              </div>
+            )}
+
+            {/* Only while the flowchart is answering. Once the thread is with a
+                human there is nobody composing anything, and dots promising an
+                imminent reply on an asynchronous hand-off is the single thing
+                the research says loses people. */}
+            {turnPending && !isHuman && (
+              <div className="flex justify-start">
+                <div
+                  className="flex items-center gap-1 rounded-2xl bg-muted px-3 py-2.5"
+                  role="status"
+                  aria-label="Support is typing"
+                >
+                  {[0, 150, 300].map((delay) => (
+                    <span
+                      key={delay}
+                      className="h-1.5 w-1.5 rounded-full bg-foreground/40 motion-safe:animate-bounce"
+                      style={{ animationDelay: `${delay}ms` }}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Offered actions from the latest turn (informational, not executed) */}
+            {lastActions.map(describeAction).map((desc, i) =>
+              desc ? (
+                <div
+                  key={i}
+                  className="rounded-lg border border-dashed border-border bg-card px-3 py-2 text-xs text-muted-foreground"
+                >
+                  {desc}
+                </div>
+              ) : null,
+            )}
+
+            {isResolved && (
+              <Badge variant="secondary" className="mt-1">
+                Resolved
+              </Badge>
+            )}
+            <div ref={endRef} />
+          </div>
         </div>
 
         {/* Controls */}
@@ -438,7 +645,10 @@ export function SupportThreadSheet({
                     size="sm"
                     disabled={turnPending}
                     onClick={() =>
-                      turn.mutate({ category: i.category, chosenLabel: i.label })
+                      submitTurn({
+                        category: i.category,
+                        chosenLabel: i.label,
+                      })
                     }
                   >
                     {i.label}
@@ -456,7 +666,7 @@ export function SupportThreadSheet({
                     size="sm"
                     disabled={turnPending}
                     onClick={() =>
-                      turn.mutate({
+                      submitTurn({
                         chosenOptionId: o.id,
                         chosenLabel: o.label,
                       })
@@ -474,7 +684,7 @@ export function SupportThreadSheet({
             onSubmit={(e) => {
               e.preventDefault();
               const msg = text.trim();
-              if (msg) turn.mutate({ userMessage: msg });
+              if (msg) submitTurn({ userMessage: msg });
             }}
           >
             <Input

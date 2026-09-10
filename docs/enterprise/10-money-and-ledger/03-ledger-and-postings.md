@@ -157,10 +157,12 @@ Dr CONSULTANT_PAYABLE(consultant)   net + TDS
 ### 4.5 Host-org payout — `ORG_PAYOUT` (`orgpayout:<payoutId>`)
 The host-org mirror of 4.4.
 ```
-Dr ORG_PAYABLE(org)          net + TDS
-   Cr CASH(platform)         net paid
-   Cr TDS_PAYABLE            TDS withheld (only if > 0)
+Dr ORG_PAYABLE(org)          netPayoutPaise   (pre-withholding org share)
+   Cr CASH(platform)         amountPaise      (what the rail transferred)
+   Cr TDS_PAYABLE            tdsAmountPaise   (withheld, only if > 0)
 ```
+
+`OrganizationPayout.netPayoutPaise` is the pre-withholding figure and `amountPaise` is the post-withholding one, so `amountPaise + tdsAmountPaise` must equal `netPayoutPaise` for these legs to be right. `markOrgPayoutCompleted` asserts exactly that before posting and throws — rolling the completion back rather than journalling a guess — when it does not hold (#1470). The same assertion also refuses a payout whose figures are negative, because the equation alone accepts one (minus one lakh plus nothing does equal minus one lakh) and the posting is skipped for anything that is not greater than zero, which would let such a row settle with no journal at all. `markOrgPayoutReversed` posts the exact mirror, `Dr CASH amountPaise` and `Dr TDS_PAYABLE tdsAmountPaise` against `Cr ORG_PAYABLE netPayoutPaise`, under the same assertion. See the [payout pipeline](07-payout-pipeline.md) for the history: the earlier shape debited the payable at `net + TDS` and credited cash at `net`, which balanced and so passed every write-time check while overstating both sides by the withholding.
 
 ### 4.6 Top-up refund — `TOPUP_REFUND` (`topup-refund:<providerPaymentId>`)
 A confirmed top-up is refunded; the IOU shrinks, cash returns to the gateway. Exact reverse of 4.1.

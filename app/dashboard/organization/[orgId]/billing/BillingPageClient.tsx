@@ -60,6 +60,7 @@ import type {
   OrgReceivablesPayload,
 } from "@/lib/data/org-receivables";
 import { WalletTab } from "./WalletTab";
+import { BillingBlockBanner } from "@/components/billing/BillingBlockBanner";
 
 // ---------------------------------------------------------------------------
 // Zod schemas — narrow API responses at the network boundary so the rest
@@ -67,6 +68,12 @@ import { WalletTab } from "./WalletTab";
 // ---------------------------------------------------------------------------
 
 const billingSummarySchema = z.object({
+  // #1427/#1430 — resolved server-side next to the account read; see
+  // app/api/organizations/[orgId]/billing/route.ts.
+  walletFrozen: z.boolean().default(false),
+  walletFrozenReason: z.string().nullable().default(null),
+  dunningSuspended: z.boolean().default(false),
+  dunningSuspendedInvoiceNumber: z.string().nullable().default(null),
   fundingSource: z
     .enum(["PERSONAL", "WALLET", "INVOICE", "LICENSE"])
     .nullable(),
@@ -345,12 +352,23 @@ export function BillingPageClient({
     staleTime: 60_000,
   });
   const orgStatus = orgDetails.data?.organization.status;
+  // #1427/#1430 — a frozen wallet or a dunning-suspended org blocks the same
+  // pay/top-up affordances as an unverified org; fold both into the one
+  // gate rather than leaving the buttons live until checkout rejects them.
+  const walletFrozen = summary.data?.walletFrozen ?? false;
+  const dunningSuspended = summary.data?.dunningSuspended ?? false;
   const moneyMoveBlocked =
-    orgStatus === "PENDING_VERIFICATION" || orgStatus === "SUSPENDED";
-  const moneyMoveReason =
-    orgStatus === "SUSPENDED"
-      ? "Organization suspended"
-      : "Verify your organization to move money";
+    orgStatus === "PENDING_VERIFICATION" ||
+    orgStatus === "SUSPENDED" ||
+    walletFrozen ||
+    dunningSuspended;
+  const moneyMoveReason = walletFrozen
+    ? (summary.data?.walletFrozenReason ?? "Wallet spend is frozen")
+    : dunningSuspended
+      ? "Bookings are paused until the overdue invoice is settled"
+      : orgStatus === "SUSPENDED"
+        ? "Organization suspended"
+        : "Verify your organization to move money";
 
   const generateMutation = useMutation({
     mutationFn: () => generateInvoice(orgId),
@@ -826,9 +844,19 @@ export function BillingPageClient({
               </p>
             )}
 
+            {/* #1427/#1430 — the freeze/dunning states get the shared
+                banner (with the support link); org-verification status
+                keeps its own inline reason below. */}
+            <BillingBlockBanner
+              walletFrozen={walletFrozen}
+              walletFrozenReason={summary.data?.walletFrozenReason}
+              dunningSuspended={dunningSuspended}
+              supportHref={`/dashboard/organization/${orgId}/support`}
+            />
+
             {/* #779 §B: org can't move money until ACTIVE; surface the reason
                 inline so the disabled Pay/Top-up affordances aren't silent. */}
-            {moneyMoveBlocked && (
+            {moneyMoveBlocked && !walletFrozen && !dunningSuspended && (
               <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
                 <Lock className="mt-0.5 h-4 w-4 shrink-0" />
                 <p>

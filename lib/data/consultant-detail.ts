@@ -1,6 +1,7 @@
 import { cache } from "react";
 import { reportSentryError } from "@/lib/observability/report";
 import prisma from "@/lib/prisma";
+import { stripAnonymousReviewers } from "@/lib/data/review-privacy";
 import { consultantPublicScalars } from "@/lib/data/consultant-public";
 
 /**
@@ -133,6 +134,7 @@ export const getConsultantReviews = cache(
       },
       orderBy: { rating: "desc" },
     });
-    return reviews;
+    // The reviewer chose to be unnamed; that has to hold in the payload.
+    return stripAnonymousReviewers(reviews);
   },
 );

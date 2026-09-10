@@ -8,8 +8,13 @@ import {
   minutesToTimeString,
   validateWeeklySlotTimeOrder,
   buildWeeklyOverlapWhere,
-  getTimezoneOffsetMinutes,
 } from "@/utils/slotAllocation/slotTimeUtils";
+import {
+  resolveWeeklyTimezone,
+  resolveWeeklyUtcOffsetMinutes,
+  WeeklyOffsetConflictError,
+  weeklyRowLocalColumns,
+} from "@/lib/scheduling/weeklyUtcOffset";
 import { getSession } from "@/lib/auth-server";
 
 export async function GET(req: NextRequest) {
@@ -91,8 +96,14 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { consultantProfileId, startDay, endDay, startTimeUtc, endTimeUtc } =
-      body;
+    const {
+      consultantProfileId,
+      startDay,
+      endDay,
+      startTimeUtc,
+      endTimeUtc,
+      utcOffsetMinutes: suppliedUtcOffsetMinutes,
+    } = body;
 
     if (
       !consultantProfileId ||
@@ -161,6 +172,33 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: timeError }, { status: 400 });
     }
 
+    // #1326 — the consultant's profile timezone decides the offset, and a
+    // caller who sends one of their own may only agree with it. Resolved once,
+    // before the transaction, so a contradiction costs no write.
+    const profileTimezone = consultantProfile.user?.timezone ?? null;
+    let utcOffsetMinutes: number;
+    try {
+      utcOffsetMinutes = resolveWeeklyUtcOffsetMinutes({
+        profileTimezone,
+        callerSupplied: suppliedUtcOffsetMinutes ?? null,
+        consultantProfileId,
+      });
+    } catch (error) {
+      if (error instanceof WeeklyOffsetConflictError) {
+        return NextResponse.json(
+          { error: error.message, code: error.code },
+          { status: 400 },
+        );
+      }
+      throw error;
+    }
+    // #872 — dual-written, read by nothing until the reader flip.
+    const localColumns = weeklyRowLocalColumns(
+      { startDay, endDay, startTimeUtc, endTimeUtc },
+      resolveWeeklyTimezone(profileTimezone),
+      utcOffsetMinutes,
+    );
+
     // Overlap check, write and coalescing share one Serializable transaction:
     // coalescing rewrites the consultant's whole weekly set as
     // delete-then-recreate, so a half-applied rewrite on the bare client would
@@ -188,12 +226,6 @@ export async function POST(req: NextRequest) {
             );
           }
 
-          const utcOffsetMinutes = consultantProfile.user?.timezone
-            ? getTimezoneOffsetMinutes(consultantProfile.user.timezone)
-            : 330; // #872 — IST-only at launch: default a missing timezone to IST, never UTC 0.
-          // TODO(#872): restore the local wall-clock + IANA-zone source of truth when
-          // non-IST consultants onboard; DST is parked post-MVP (IST-only at launch).
-
           // Not the response payload: the coalesce below can fold this row
           // away, so the covering row is what the client is answered with.
           await tx.slotOfAvailabilityWeekly.create({
@@ -204,6 +236,7 @@ export async function POST(req: NextRequest) {
               startTimeUtc,
               endTimeUtc,
               utcOffsetMinutes,
+              ...localColumns,
             },
           });
 

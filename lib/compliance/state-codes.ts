@@ -67,3 +67,61 @@ export function numericStateCode(
   if (/^[0-9]{2}$/.test(v)) return v;
   return STATE_ALPHA_TO_NUMERIC[v] ?? null;
 }
+
+/**
+ * Human-readable names for the 2-digit numeric GST state codes, in code order
+ * — the list a buyer picks their billing state from at checkout (#1365). It
+ * lives beside the alpha map so the two representations of a state are never
+ * maintained in two places.
+ */
+export const STATE_NUMERIC_TO_NAME: Record<string, string> = {
+  "01": "Jammu and Kashmir",
+  "02": "Himachal Pradesh",
+  "03": "Punjab",
+  "04": "Chandigarh",
+  "05": "Uttarakhand",
+  "06": "Haryana",
+  "07": "Delhi",
+  "08": "Rajasthan",
+  "09": "Uttar Pradesh",
+  "10": "Bihar",
+  "11": "Sikkim",
+  "12": "Arunachal Pradesh",
+  "13": "Nagaland",
+  "14": "Manipur",
+  "15": "Mizoram",
+  "16": "Tripura",
+  "17": "Meghalaya",
+  "18": "Assam",
+  "19": "West Bengal",
+  "20": "Jharkhand",
+  "21": "Odisha",
+  "22": "Chhattisgarh",
+  "23": "Madhya Pradesh",
+  "24": "Gujarat",
+  // 25 (Daman and Diu) merged into 26 in 2020; the merged UT keeps code 26.
+  "26": "Dadra and Nagar Haveli and Daman and Diu",
+  "27": "Maharashtra",
+  "29": "Karnataka",
+  "30": "Goa",
+  "31": "Lakshadweep",
+  "32": "Kerala",
+  "33": "Tamil Nadu",
+  "34": "Puducherry",
+  "35": "Andaman and Nicobar Islands",
+  "36": "Telangana",
+  "37": "Andhra Pradesh",
+  "38": "Ladakh",
+};
+
+/**
+ * The picker's options, ordered by state code. The sort is explicit because
+ * `Object.entries` returns canonical integer-like keys ("26", "27") before the
+ * zero-padded ones ("01"). Every key here is a two-digit numeral, so ordering
+ * them numerically is exact and gives the same result on every runtime —
+ * unlike `localeCompare`, whose collation is ICU-dependent.
+ */
+export const GST_STATE_OPTIONS: ReadonlyArray<{ code: string; name: string }> =
+  Object.entries(STATE_NUMERIC_TO_NAME)
+    .map(([code, name]) => ({ code, name }))
+    .sort((a, b) => Number(a.code) - Number(b.code));

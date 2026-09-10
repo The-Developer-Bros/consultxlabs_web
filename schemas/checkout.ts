@@ -1,6 +1,22 @@
 import { z } from "zod";
 import { AppointmentsType } from "@prisma/client";
 import { validateSlotTiming } from "@/lib/payments/utils/slot-validation";
+import {
+  SUPPORTED_CURRENCY_CODES,
+  toSupportedCurrency,
+} from "@/lib/currency-codes";
+import { GST_STATE_OPTIONS } from "@/lib/compliance/state-codes";
+
+/**
+ * The 2-digit GST state codes that actually exist, derived from the same map
+ * the checkout picker renders. `.length(2)` alone let "00" or "99" through, and
+ * `numericStateCode` passes any two digits straight to `placeOfSupply` — so an
+ * invalid code reached a statutory document as a real-looking state and the
+ * register filed it under a state that does not exist, without even a warning.
+ */
+const GST_STATE_CODES: ReadonlySet<string> = new Set(
+  GST_STATE_OPTIONS.map((option) => option.code),
+);
 
 // Base schemas for individual components
 export const appointmentTypeSchema = z.enum([
@@ -84,8 +100,34 @@ export const checkoutSchema = z
     // original response for a duplicate instead of minting a second order.
     clientIdempotencyKey: z.string().min(8).max(128).optional(),
     paymentGateway: paymentGatewaySchema.default("RAZORPAY"), // Server auto-routes; client hint only
-    displayCurrency: z.string().length(3).optional(), // Currency shown in the checkout UI
-    notes: z.string().optional(),
+    // #1396 — this lands in `Payment.displayCurrencyAtCheckout` and it comes
+    // from localStorage. `z.string().length(3)` let any three letters through
+    // and `Intl.NumberFormat` renders an invented code without complaint
+    // ("XYZ 1,234.50"), so junk persisted onto a money row. Allowlisted against
+    // the same codes the navbar offers; the list is shared so the two cannot
+    // drift. This is a DISPLAY currency — settlement stays INR-only (ADR 15).
+    displayCurrency: z.enum(SUPPORTED_CURRENCY_CODES).optional(),
+    // #1437 — this note is forwarded verbatim into the Razorpay order's
+    // `notes` payload, where a value may not exceed 256 characters. Over that
+    // the gateway refuses to create the order and the buyer simply cannot pay,
+    // so bound it here with a message they can act on. The metadata builder
+    // truncates as a second line of defence; the full note is still persisted
+    // on the Payment and Appointment rows.
+    notes: z
+      .string()
+      .max(256, "Booking notes must be 256 characters or fewer")
+      .optional(),
+    // #1365 — the buyer's GST state (2-digit numeric), declared at checkout.
+    // Optional by design: Sec 12(2)(b) IGST Act places a B2C supply at the
+    // supplier's own location when no address is on record, so a blank field
+    // is the statutory default rather than a missing answer.
+    consumerStateCode: z
+      .string()
+      .length(2)
+      .refine((code) => GST_STATE_CODES.has(code), {
+        message: "Not a valid GST state code",
+      })
+      .optional(),
     useReferralCredits: z.boolean().optional(), // Apply available referral credits
     // Enterprise: optional org context. When set, the payment is tagged with
     // organizationId and billing is routed per the BillingAccount's
@@ -306,6 +348,7 @@ export const createCheckoutData = (params: {
   notes?: string;
   useReferralCredits?: boolean;
   organizationId?: string;
+  consumerStateCode?: string;
 }): CheckoutInput => {
   return {
     appointmentType: params.appointmentType,
@@ -319,9 +362,10 @@ export const createCheckoutData = (params: {
     schedulingPeriodStartsAt: params.schedulingPeriodStartsAt,
     schedulingPeriodEndsAt: params.schedulingPeriodEndsAt,
     discountCode: params.discountCode,
-    displayCurrency: params.displayCurrency?.toUpperCase(),
+    displayCurrency: toSupportedCurrency(params.displayCurrency),
     notes: params.notes,
     useReferralCredits: params.useReferralCredits,
     organizationId: params.organizationId,
+    consumerStateCode: params.consumerStateCode,
   };
 };

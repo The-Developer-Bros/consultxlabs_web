@@ -84,8 +84,8 @@
  */
 
 import { createHash } from "node:crypto";
-import prisma from "@/lib/prisma";
-import type { PurposeCode } from "./purpose-codes";
+import prisma, { type Tx } from "@/lib/prisma";
+import { purposeCodeAliases, type PurposeCode } from "./purpose-codes";
 
 /**
  * Thrown when a purpose-scoped action is blocked because the user has not
@@ -183,18 +183,31 @@ export function buildConsentArtifact(
  *   - If the most recent artifact is past its retention window → false
  *     (operator must refresh the consent before re-enabling processing).
  *   - Otherwise → true.
+ *
+ * `db` defaults to the global client but MUST be the transaction client when
+ * the caller is already inside an interactive `$transaction`. Netlify runs
+ * `PG_POOL_MAX=1`, so a read issued on the global client while a transaction
+ * holds the pool's only connection waits for a second connection that can
+ * never arrive and dies at the 3 s pg connect timeout (#1421).
  */
-export async function checkConsent(params: {
-  userId: string;
-  purposeCode: PurposeCode;
-}): Promise<boolean> {
+export async function checkConsent(
+  params: {
+    userId: string;
+    purposeCode: PurposeCode;
+  },
+  db: Tx | typeof prisma = prisma,
+): Promise<boolean> {
   const { userId, purposeCode } = params;
   const now = new Date();
 
-  const artifact = await prisma.consentArtifact.findFirst({
+  const artifact = await db.consentArtifact.findFirst({
     where: {
       userId,
-      purposeCodes: { has: purposeCode },
+      // #1472 — `hasSome` over the canonical code AND its legacy aliases. An
+      // exact `has` made every pre-taxonomy artifact (`session-booking`)
+      // invisible here, so the fail-closed gate denied a consultant who had in
+      // fact granted consent. See purposeCodeAliases.
+      purposeCodes: { hasSome: purposeCodeAliases(purposeCode) },
       withdrawnAt: null,
       auditRetainedUntil: { gt: now },
     },
@@ -230,7 +243,9 @@ export async function checkConsentBatch(params: {
     const artifacts = await prisma.consentArtifact.findMany({
       where: {
         userId: { in: userIds.slice(i, i + CHUNK) },
-        purposeCodes: { has: purposeCode },
+        // #1472 — same alias set as checkConsent; the batch form must not
+        // answer differently from the per-user gate it stands in for.
+        purposeCodes: { hasSome: purposeCodeAliases(purposeCode) },
         withdrawnAt: null,
         auditRetainedUntil: { gt: now },
       },
@@ -262,7 +277,10 @@ export async function withdrawConsent(params: {
     ? {
         userId,
         withdrawnAt: null,
-        purposeCodes: { has: purposeCode },
+        // #1472 — a narrow withdrawal has to reach the artifact under whatever
+        // code it was written with, or the user withdraws and the gate keeps
+        // reading the legacy row as live consent.
+        purposeCodes: { hasSome: purposeCodeAliases(purposeCode) },
       }
     : { userId, withdrawnAt: null };
 
@@ -277,7 +295,8 @@ export async function withdrawConsent(params: {
   // when. The checkout path (validateSlotAvailability) independently
   // checks this consent fail-closed at booking time.
   if (purposeCode === "SESSION_BOOKING" && count > 0) {
-    const { recordSystemEvent } = await import("@/lib/enterprise/system-events");
+    const { recordSystemEvent } =
+      await import("@/lib/enterprise/system-events");
     void recordSystemEvent({
       organizationId: null,
       category: "CONSENT",

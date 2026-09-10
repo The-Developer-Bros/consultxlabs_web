@@ -51,11 +51,16 @@ jest.mock("../../lib/referrals/service", () => ({
 jest.mock("../../lib/payments/core/razorpay", () => ({
   cancelRazorpayOrder: jest.fn().mockResolvedValue(undefined),
 }));
-jest.mock("stripe", () => ({
+// #1464 — the sweep reaches Stripe only through the fenced core client, so
+// mocking the core is what proves the fence: a call to `getStripeClient` is a
+// gateway call, and with the fence shut there must not be one.
+const stripeClient = {
+  paymentIntents: { cancel: jest.fn() },
+  checkout: { sessions: { expire: jest.fn() } },
+};
+jest.mock("../../lib/payments/core/stripe", () => ({
   __esModule: true,
-  default: class {
-    paymentIntents = { cancel: jest.fn() };
-  },
+  getStripeClient: jest.fn(() => stripeClient),
 }));
 
 jest.mock("../../lib/cron/with-cron-lock", () => ({
@@ -68,7 +73,12 @@ jest.mock("../../lib/cron/with-cron-lock", () => ({
 
 import prisma from "../../lib/prisma";
 import { reverseCreditsForPayment } from "../../lib/referrals/service";
-import { cleanupAbandonedPayments } from "../../scripts/payments/cleanup-abandoned-payments";
+import { cancelRazorpayOrder } from "../../lib/payments/core/razorpay";
+import { getStripeClient } from "../../lib/payments/core/stripe";
+import {
+  cancelGatewayIntents,
+  cleanupAbandonedPayments,
+} from "../../scripts/payments/cleanup-abandoned-payments";
 import { REQUEST_ALLOWED_FROM } from "../../lib/booking/transitions";
 import { IllegalTransitionError } from "../../lib/enterprise/transitions";
 
@@ -297,5 +307,161 @@ describe("cleanupAbandonedPayments — soft-cancel + credit reversal (#1319)", (
         data: expect.objectContaining({ completionStatus: "CANCELLED" }),
       }),
     );
+  });
+});
+
+/**
+ * #1459 — the Netlify ticker gives this sweep a six-second budget and the
+ * cancels used to run one after another, so five stuck payments were enough to
+ * spend it all and every tick aborted mid-sweep. The cancels now fan out, and
+ * the ceiling on that fan-out is the only thing keeping the sweep from opening
+ * an unbounded burst against the gateway.
+ */
+describe("cleanupAbandonedPayments gateway cancel concurrency (#1459)", () => {
+  it("never has more than five gateway cancels in flight", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    (cancelRazorpayOrder as jest.Mock).mockImplementation(async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      inFlight--;
+    });
+
+    const payments = Array.from({ length: 12 }, (_, i) => ({
+      id: `pay_${i}`,
+      paymentIntent: `order_${i}`,
+      paymentGateway: "RAZORPAY" as const,
+    }));
+
+    const failures = await cancelGatewayIntents(payments);
+
+    expect(cancelRazorpayOrder).toHaveBeenCalledTimes(12);
+    expect(peak).toBeLessThanOrEqual(5);
+    // Twelve over a ceiling of five is three chunks, so the fan-out is real
+    // rather than an accidental sequence of one.
+    expect(peak).toBeGreaterThan(1);
+    expect(failures.size).toBe(0);
+  });
+
+  it("reports a failed cancel against its own payment and lets the rest through", async () => {
+    (cancelRazorpayOrder as jest.Mock).mockImplementation(
+      async (intent: string) => {
+        if (intent === "order_1") throw new Error("gateway refused");
+      },
+    );
+
+    const failures = await cancelGatewayIntents([
+      { id: "pay_0", paymentIntent: "order_0", paymentGateway: "RAZORPAY" },
+      { id: "pay_1", paymentIntent: "order_1", paymentGateway: "RAZORPAY" },
+    ]);
+
+    expect([...failures.keys()]).toEqual(["pay_1"]);
+    expect(failures.get("pay_1")).toBe("gateway refused");
+  });
+});
+
+/**
+ * #1464 — a gateway cancel that failed used to skip the PENDING→EXPIRED CAS
+ * while the credits were still restored and the slot still released, and the
+ * run reported `success: true`. The payment was then invisible to every later
+ * sweep, because nothing about it still looked abandoned.
+ */
+describe("cleanupAbandonedPayments — a failed gateway cancel (#1464)", () => {
+  const originalStripeEnabled = process.env.STRIPE_ENABLED;
+
+  afterEach(() => {
+    if (originalStripeEnabled === undefined) delete process.env.STRIPE_ENABLED;
+    else process.env.STRIPE_ENABLED = originalStripeEnabled;
+  });
+
+  it("still expires the payment and returns its credits, and fails the run", async () => {
+    (cancelRazorpayOrder as jest.Mock).mockRejectedValue(
+      new Error("gateway refused"),
+    );
+
+    const result = await cleanupAbandonedPayments();
+
+    expect(tx.payment.updateMany).toHaveBeenCalledWith({
+      where: { id: "pay_1", paymentStatus: "PENDING" },
+      data: { paymentStatus: "EXPIRED" },
+    });
+    expect(mockReverse).toHaveBeenCalledWith("pay_1", tx);
+    expect(result.cleanedCount).toBe(1);
+    // Counted, not just listed: `success` is what the HTTP twin turns into a
+    // non-2xx, and the listing alone left the run looking healthy.
+    expect(result.errorCount).toBe(1);
+    expect(result.success).toBe(false);
+    expect(result.errors).toEqual([
+      expect.stringContaining("Payment cancellation failed for order_abc"),
+    ]);
+  });
+
+  it("makes no gateway call for a Stripe row while the fence is shut", async () => {
+    delete process.env.STRIPE_ENABLED;
+    const appointment = abandonedConsultation();
+    appointment.payment[0].paymentGateway = "STRIPE";
+    db.appointment.findMany.mockResolvedValue([appointment]);
+
+    const result = await cleanupAbandonedPayments();
+
+    expect(getStripeClient).not.toHaveBeenCalled();
+    // Fenced is "nothing to cancel", not a failure: the row still expires.
+    expect(tx.payment.updateMany).toHaveBeenCalledWith({
+      where: { id: "pay_1", paymentStatus: "PENDING" },
+      data: { paymentStatus: "EXPIRED" },
+    });
+    expect(result.errorCount).toBe(0);
+    expect(result.success).toBe(true);
+  });
+
+  /**
+   * #1461 — `payment_intent_unexpected_state` used to be blanket-suppressed as
+   * "already gone". On a `processing` intent that is false: Stripe is still
+   * holding the buyer's money behind a payment this sweep has just marked
+   * EXPIRED, and the run reported itself healthy.
+   */
+  it("counts an uncancellable but still-live Stripe intent as a failure", async () => {
+    process.env.STRIPE_ENABLED = "true";
+    const appointment = abandonedConsultation();
+    appointment.payment[0].paymentGateway = "STRIPE";
+    appointment.payment[0].paymentIntent = "pi_live_1";
+    db.appointment.findMany.mockResolvedValue([appointment]);
+    stripeClient.paymentIntents.cancel.mockRejectedValue(
+      Object.assign(new Error("cannot cancel a processing PaymentIntent"), {
+        code: "payment_intent_unexpected_state",
+        payment_intent: { status: "processing" },
+      }),
+    );
+
+    const result = await cleanupAbandonedPayments();
+
+    // #1464 still holds: the row expires regardless of the cancel's outcome.
+    expect(tx.payment.updateMany).toHaveBeenCalledWith({
+      where: { id: "pay_1", paymentStatus: "PENDING" },
+      data: { paymentStatus: "EXPIRED" },
+    });
+    expect(result.errorCount).toBe(1);
+    expect(result.success).toBe(false);
+  });
+
+  it("leaves a succeeded intent alone — that one really is nothing to cancel", async () => {
+    process.env.STRIPE_ENABLED = "true";
+    const appointment = abandonedConsultation();
+    appointment.payment[0].paymentGateway = "STRIPE";
+    appointment.payment[0].paymentIntent = "pi_done_1";
+    db.appointment.findMany.mockResolvedValue([appointment]);
+    stripeClient.paymentIntents.cancel.mockRejectedValue(
+      Object.assign(new Error("cannot cancel a succeeded PaymentIntent"), {
+        code: "payment_intent_unexpected_state",
+        // Nested under `raw`, the other shape the SDK wraps errors in.
+        raw: { payment_intent: { status: "succeeded" } },
+      }),
+    );
+
+    const result = await cleanupAbandonedPayments();
+
+    expect(result.errorCount).toBe(0);
+    expect(result.success).toBe(true);
   });
 });

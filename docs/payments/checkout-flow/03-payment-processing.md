@@ -263,13 +263,13 @@ export async function createStripeCheckoutSession({
 
 #### Currency Conversion:
 
-```typescript
-// Lines 56-59
-const toSmallestUnit = (amount: number, currency: string): number => {
-  const multiplier = CURRENCY_MULTIPLIERS[currency] || 100;
-  return Math.round(amount * multiplier); // USD: 100 cents per dollar
-};
-```
+There is none, and there has not been any since the paise migration. Every money
+column in the schema already holds an integer count of the smallest unit, so the
+amount is handed to the gateway exactly as it is stored. The
+`CURRENCY_MULTIPLIERS` table this section used to show was deleted in #1396
+because nothing imported it. Settlement is INR-only in any case:
+`assertInrSettlement` is the first statement of both `createRazorpayOrder` and
+`createStripeCheckoutSession`, so a non-INR currency never reaches a gateway.
 
 ### 2.4 Razorpay Integration
 

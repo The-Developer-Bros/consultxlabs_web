@@ -18,6 +18,7 @@ import {
   PaymentStatus,
   Prisma,
   AppointmentStatus,
+  SlotCompletionStatus,
   TrialSessionStatus,
 } from "@prisma/client";
 import { calculateSubscriptionEndDate } from "@/utils/dateUtils";
@@ -26,6 +27,7 @@ import {
   REQUEST_ALLOWED_FROM,
   EVENT_ALLOWED_FROM,
   CLASS_EVENT_ALLOWED_FROM,
+  transitionSlotCompletion,
 } from "@/lib/booking/transitions";
 import { isExclusionViolation } from "@/lib/db/pg-errors";
 import { withSerializableRetry } from "@/lib/db/serializable-retry";
@@ -37,6 +39,7 @@ import {
 import { connectAttendeeToEventSlots } from "@/lib/appointments/attendee-seats";
 import { recordSystemError } from "@/lib/enterprise/system-events";
 import { refundPayment } from "@/lib/payments/operations/refund";
+import { mintConsumerInvoiceBestEffort } from "@/lib/payments/billing/consumer-invoice";
 import {
   normalizeLegacySlotKeys,
   validateWebhookMetadata,
@@ -45,7 +48,7 @@ import { ZodError } from "zod";
 import { sendPaymentSuccessEmail, sendPaymentFailedEmail } from "@/lib/email";
 import {
   createEarningsFromPayment,
-  type AppointmentType,
+  resolvePaymentForEarnings,
 } from "@/lib/payments/payouts";
 import {
   notifyPaymentSuccess,
@@ -54,14 +57,13 @@ import {
 } from "@/lib/novu";
 import { notificationScope } from "@/lib/novu/workflows";
 import { notificationHref } from "@/lib/novu/resolve-href";
+import { planTitleOrSessionLabel } from "@/lib/novu/humanize";
 import {
   processQualifyingAction,
   processConsultantBookingReferral,
 } from "@/lib/referrals/service";
-import { addUserToEventChannel } from "@/actions/stream/chat/event-channel.action";
-import { createDirectMessageChannel } from "@/actions/stream/chat/channel.action";
+import { ensureChannelsForAppointment } from "@/lib/payments/webhooks/ensure-channels";
 import { streamLogger } from "@/lib/stream-logger";
-import { bookingOrgId } from "@/lib/stream-utils";
 import { getAppUrl } from "@/lib/url";
 
 // ============================================================================
@@ -175,16 +177,120 @@ type PaymentSuccessTxResult =
       doubleBookingBlocked: boolean;
     };
 
+/**
+ * #1446 — Phase 2 runs inside `after()`, on the same warm instance that is
+ * already serving the next inbound request, and PG_POOL_MAX=1 means the two
+ * share one Prisma connection. Two unawaited 39 s Novu triggers held the event
+ * loop and the socket while the chat-channel step waited for that connection
+ * and died at the 3 s connect timeout. So every outbound Phase-2 step is
+ * bounded and the notifications are awaited before the channel read begins.
+ * Money is committed by this point, so a step that runs out of time is dropped
+ * rather than retried inline: the reconcile sweep re-drives what is durable.
+ */
+const PHASE_2_DEADLINE_MS = 5_000;
+
+/**
+ * Resolve to `undefined` when `work` outlives the deadline, never throwing for
+ * the timeout itself. The underlying call is not cancelled — nothing here can
+ * cancel a socket — it is simply no longer waited on, which is what keeps the
+ * connection free for the step behind it.
+ */
+async function withPhase2Deadline<T>(
+  work: Promise<T>,
+  label: string,
+  ms: number = PHASE_2_DEADLINE_MS,
+): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(
+        `⚠️ Phase 2 step exceeded its ${ms}ms deadline and was abandoned: ${label}`,
+      );
+      resolve(undefined);
+    }, ms);
+  });
+  try {
+    return await Promise.race([work, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Report a capture that landed on a payment which is no longer PENDING.
+ *
+ * Every status stamp below rides a CAS (`updateMany` with `paymentStatus` in
+ * the WHERE), so a zero count means the row reached a terminal state — EXPIRED,
+ * FAILED or SUCCEEDED — before this webhook arrived. The caller writes nothing
+ * and still acknowledges the delivery; this records the evidence an operator
+ * needs to reconcile the captured funds by hand.
+ *
+ * The status is re-read rather than taken from the caller's pre-read, following
+ * the same doctrine confirmApprovalStatus already applies below (#844): the
+ * pre-read can have raced the very transition that made the CAS miss, and the
+ * state named in this report is what an operator reconciles against. Callers
+ * pass their own client — `tx` inside the Serializable transaction, `prisma`
+ * for the post-rollback GiST branch — because a global-client read inside a
+ * transaction deadlocks on a single-connection pool (#1435).
+ */
+async function reportTerminalCaptureRace(params: {
+  db: Tx | typeof prisma;
+  paymentId: string;
+  orderId: string;
+  /** Pre-read status; used only when the re-read finds nothing. */
+  observedStatus: PaymentStatus;
+  reason: string;
+}): Promise<void> {
+  const fresh = await params.db.payment.findUnique({
+    where: { id: params.paymentId },
+    select: { paymentStatus: true },
+  });
+  const currentStatus = fresh?.paymentStatus ?? params.observedStatus;
+  void recordSystemError({
+    organizationId: null,
+    category: "PAYMENT",
+    summary: `Capture for order ${params.orderId} landed on a ${currentStatus} payment — status left alone, refund by hand`,
+    err: new Error("CAPTURE_AFTER_TERMINAL_PAYMENT"),
+    context: {
+      paymentId: params.paymentId,
+      orderId: params.orderId,
+      currentStatus,
+      reason: params.reason,
+    },
+  }).catch(() => {});
+  reportSentryMessage(
+    "Capture landed on a terminal payment — status not restamped",
+    {
+      subsystem: "payments",
+      level: "warning",
+      extra: {
+        paymentId: params.paymentId,
+        orderId: params.orderId,
+        currentStatus,
+        reason: params.reason,
+      },
+    },
+  );
+}
+
 export async function handlePaymentSuccess(
   paymentIntentId: string,
   rawMetadata: Record<string, string>,
   gatewayAmountPaise?: number,
+  gatewayPaymentId?: string,
 ): Promise<void> {
   // #679 transition dual-read (see normalizeLegacySlotKeys) — in-flight
   // Razorpay orders created pre-rename replay webhooks with legacy slot
   // keys; normalize ONCE here so validation AND the legacy create flow
   // read the same new-key shape.
   const metadata = normalizeLegacySlotKeys(rawMetadata);
+  // #1353 — the gateway's `pay_…` id is persisted by THIS pipeline and nowhere
+  // else, because Phase 1 is already the single writer of the Payment row's
+  // capture truth (ADR 21) and the id is part of that truth. Spread rather than
+  // assigned unconditionally: `order.paid` carries no payment id, and writing
+  // `undefined` from that path would erase an id a `payment.captured` had
+  // already recorded.
+  const capturedGatewayId = gatewayPaymentId ? { gatewayPaymentId } : {};
   // C1 FIX: Split into two phases:
   //   Phase 1 (transaction): Critical payment + appointment processing
   //   Phase 2 (post-tx): Earnings, invoice, notifications
@@ -263,13 +369,31 @@ export async function handlePaymentSuccess(
             // #837 — mark SUCCEEDED (gateway truth) + stamp REQUIRES_MANUAL_RECOVERY as
             // the FALLBACK. Phase 2 auto-refunds the wrong-amount capture; the manual
             // marker only survives if that refund call itself throws.
-            await tx.payment.update({
-              where: { id: payment.id },
+            // #1439 — the stamp is a CAS: a late capture on an EXPIRED order
+            // resurrected it to SUCCEEDED and its tentative hold leaked, so the
+            // status rides the WHERE (ADR 21). Count 0 = already terminal:
+            // write nothing, report, and still acknowledge the webhook.
+            const stamped = await tx.payment.updateMany({
+              where: { id: payment.id, paymentStatus: PaymentStatus.PENDING },
               data: {
                 paymentStatus: PaymentStatus.SUCCEEDED,
+                // #1353 — this branch auto-refunds in Phase 2, so it is the one
+                // that MOST needs the id: the refund webhook that comes back
+                // carries only `pay_…`, and without the column it cannot find
+                // the Payment it is reversing.
+                ...capturedGatewayId,
                 description: `REQUIRES_MANUAL_RECOVERY: capture amount ${gatewayAmountPaise}p ≠ expected ${payment.amount}p. Booking NOT confirmed; auto-refund attempted.`,
               },
             });
+            if (stamped.count === 0) {
+              await reportTerminalCaptureRace({
+                db: tx,
+                paymentId: payment.id,
+                orderId: paymentIntentId,
+                observedStatus: payment.paymentStatus,
+                reason: `capture amount ${gatewayAmountPaise}p ≠ expected ${payment.amount}p`,
+              });
+            }
             console.error(
               JSON.stringify({
                 event: "CRITICAL_PAYMENT_AMOUNT_MISMATCH",
@@ -325,13 +449,29 @@ export async function handlePaymentSuccess(
 
             // FIX Issue #8: Enhanced alerting for metadata validation failures
             // This is a CRITICAL condition - customer charged but no appointment created!
-            await tx.payment.update({
-              where: { id: payment.id },
+            // #1439 — the stamp is a CAS: a late capture on an EXPIRED order
+            // resurrected it to SUCCEEDED and its tentative hold leaked, so the
+            // status rides the WHERE (ADR 21). Count 0 = already terminal:
+            // write nothing, report, and still acknowledge the webhook.
+            const recoveryStamped = await tx.payment.updateMany({
+              where: { id: payment.id, paymentStatus: PaymentStatus.PENDING },
               data: {
                 paymentStatus: PaymentStatus.SUCCEEDED,
+                // #1353 — a manual recovery here usually ends in a refund; give
+                // that refund's webhook the id it needs to match this row.
+                ...capturedGatewayId,
                 description: `REQUIRES_MANUAL_RECOVERY: Metadata validation failed: ${errorMessage}. Customer charged but appointment NOT created.`,
               },
             });
+            if (recoveryStamped.count === 0) {
+              await reportTerminalCaptureRace({
+                db: tx,
+                paymentId: payment.id,
+                orderId: paymentIntentId,
+                observedStatus: payment.paymentStatus,
+                reason: `metadata validation failed: ${errorMessage}`,
+              });
+            }
 
             // CRITICAL ALERT - Log in structured format for monitoring systems
             console.error(
@@ -373,10 +513,29 @@ ACTION REQUIRED: Customer was charged but appointment was NOT created!
             return null; // Exit early — requires manual intervention
           }
 
-          await tx.payment.update({
-            where: { id: payment.id },
-            data: { paymentStatus: PaymentStatus.SUCCEEDED },
+          // #1439 — the confirmation stamp is a CAS for the same reason as the
+          // two recovery branches above, and it is the one a REPLAY now reaches
+          // (the dev replay route used to fail metadata validation). Confirming
+          // an EXPIRED payment would flip a hold the abandoned-payments sweep
+          // has already released, so a terminal row is reported, not booked.
+          const confirmed = await tx.payment.updateMany({
+            where: { id: payment.id, paymentStatus: PaymentStatus.PENDING },
+            data: {
+              paymentStatus: PaymentStatus.SUCCEEDED,
+              ...capturedGatewayId,
+            },
           });
+          if (confirmed.count === 0) {
+            await reportTerminalCaptureRace({
+              db: tx,
+              paymentId: payment.id,
+              orderId: paymentIntentId,
+              observedStatus: payment.paymentStatus,
+              reason:
+                "capture arrived after the payment reached a terminal state",
+            });
+            return null; // Signal: nothing to confirm, skip Phase 2
+          }
 
           let appointment;
           if (payment.appointmentId) {
@@ -496,21 +655,40 @@ ACTION REQUIRED: Customer was charged but appointment was NOT created!
     if (!isExclusionViolation(err)) throw err;
     const loser = await prisma.payment.findUnique({
       where: { paymentIntent: paymentIntentId },
-      select: { id: true },
+      select: { id: true, paymentStatus: true },
     });
     if (!loser) throw err;
     // Description stays HONEST at each step (CodeRabbit triage): "refund
     // pending" while the gateway call is in flight — if it fails, the record
     // must not claim money the buyer has not received. The success branch
     // below rewrites it to "Auto-refunded".
-    await prisma.payment.update({
-      where: { id: loser.id },
+    // #1439 — third recovery stamp of the same shape, so it takes the same CAS.
+    // The failed tx rolled the confirmation back, so the row is PENDING again
+    // unless it went terminal underneath us; if it did, refundPayment would
+    // reject it anyway (PAYMENT_NOT_SUCCEEDED), so report and stop.
+    const restamped = await prisma.payment.updateMany({
+      where: { id: loser.id, paymentStatus: PaymentStatus.PENDING },
       data: {
         paymentStatus: PaymentStatus.SUCCEEDED,
+        // #1353 — the rolled-back tx took the id with it, and this branch
+        // refunds immediately below; re-stamp it so that refund's webhook can
+        // match the row.
+        ...capturedGatewayId,
         description:
           "Refund pending: legacy-shape capture overlapped a confirmed booking (slot_no_confirmed_overlap) — booking NOT confirmed.",
       },
     });
+    if (restamped.count === 0) {
+      await reportTerminalCaptureRace({
+        db: prisma,
+        paymentId: loser.id,
+        orderId: paymentIntentId,
+        observedStatus: loser.paymentStatus,
+        reason:
+          "legacy-shape capture overlapped a confirmed booking (slot_no_confirmed_overlap)",
+      });
+      return;
+    }
     void recordSystemError({
       organizationId: null,
       category: "PAYMENT",
@@ -682,100 +860,20 @@ ACTION REQUIRED: Customer was charged but appointment was NOT created!
 
   // --- Earnings creation ---
   try {
-    const paymentWithAppointment = await prisma.payment.findUnique({
-      where: { id: paymentId },
-      include: {
-        appointment: {
-          include: {
-            consultation: {
-              include: {
-                consultationPlan: {
-                  include: { consultantProfile: true },
-                },
-              },
-            },
-            subscription: {
-              include: {
-                subscriptionPlan: {
-                  include: { consultantProfile: true },
-                },
-              },
-            },
-            webinar: {
-              select: {
-                id: true,
-                webinarPlanId: true,
-                webinarPlan: {
-                  include: { consultantProfile: true },
-                },
-              },
-            },
-            class: {
-              select: {
-                id: true,
-                classPlanId: true,
-                classPlan: {
-                  include: { consultantProfile: true },
-                },
-              },
-            },
-          },
-        },
-      },
-    });
+    const resolved = await resolvePaymentForEarnings(
+      { id: paymentId },
+      metadata.appointmentType,
+    );
 
-    if (paymentWithAppointment?.appointment) {
-      const consultantProfile =
-        paymentWithAppointment.appointment.consultation?.consultationPlan
-          ?.consultantProfile ||
-        paymentWithAppointment.appointment.subscription?.subscriptionPlan
-          ?.consultantProfile ||
-        paymentWithAppointment.appointment.webinar?.webinarPlan
-          ?.consultantProfile ||
-        paymentWithAppointment.appointment.class?.classPlan?.consultantProfile;
+    if (resolved) {
+      await createEarningsFromPayment({
+        payment: resolved.paymentForEarnings,
+        appointmentType: resolved.earningsAppointmentType,
+      });
 
-      if (consultantProfile) {
-        const appointmentTypeMap: Record<string, AppointmentType> = {
-          CONSULTATION: "CONSULTATION",
-          SUBSCRIPTION: "SUBSCRIPTION",
-          WEBINAR: "WEBINAR",
-          CLASS: "CLASS",
-        };
-
-        const earningsAppointmentType =
-          appointmentTypeMap[metadata.appointmentType] || "CONSULTATION";
-
-        const paymentForEarnings = {
-          ...paymentWithAppointment,
-          appointment: {
-            ...paymentWithAppointment.appointment,
-            consultantProfile: { id: consultantProfile.id },
-            webinar: paymentWithAppointment.appointment.webinar
-              ? {
-                  webinarPlanId:
-                    paymentWithAppointment.appointment.webinar.webinarPlanId,
-                }
-              : null,
-            class: paymentWithAppointment.appointment.class
-              ? {
-                  classPlanId:
-                    paymentWithAppointment.appointment.class.classPlanId,
-                }
-              : null,
-          },
-        };
-
-        await createEarningsFromPayment({
-          payment: paymentForEarnings as Parameters<
-            typeof createEarningsFromPayment
-          >[0]["payment"],
-          appointmentType: earningsAppointmentType,
-        });
-
-        console.log(
-          `💰 Earnings record created for payment ${paymentId}, consultant ${consultantProfile.id}`,
-        );
-      }
+      console.log(
+        `💰 Earnings record created for payment ${paymentId}, consultant ${resolved.consultantProfileId}`,
+      );
     }
   } catch (earningsError) {
     // C-01 #837 — payment + booking are committed but earnings + the BOOKING
@@ -829,18 +927,26 @@ ACTION REQUIRED: Customer was charged but appointment was NOT created!
     );
   }
 
-  // Personal-consultee per-Payment invoice generation was removed in
-  // the v0 lockdown (#768). Org-funded checkouts continue to roll up
-  // into OrganizationInvoice via the INVOICE cycle cron; personal-card
-  // consultees request a receipt via support@familiarise.work until v1.1
-  // re-introduces a per-Payment surface.
+  // #1365 — the personal-consultee tax invoice the v0 lockdown (#768) removed.
+  // The platform bills as principal supplier (ADR 26), so a consumer who was
+  // charged 18% GST is owed a Rule 46 document; org-funded checkouts still roll
+  // up into OrganizationInvoice and the mint no-ops for them by design.
+  await mintConsumerInvoiceBestEffort({ paymentId });
 
   // --- Novu notifications (M5 FIX: moved outside transaction) ---
   try {
     // #734 — the notification only needs the consultant's id/name; the old
     // 4-level include dragged full User + profile rows for all four shapes.
-    const consultantUserSelect = {
-      select: { user: { select: { id: true, name: true } } },
+    // #1484 widens it by exactly one scalar, the plan's own title, because this
+    // is the only appointment read Phase 2 makes and the buyer's confirmation
+    // has to name what they bought.
+    const planNotifSelect = {
+      select: {
+        title: true,
+        consultantProfile: {
+          select: { user: { select: { id: true, name: true } } },
+        },
+      },
     } as const;
     const appointmentForNotif = await prisma.appointment.findUnique({
       where: { id: appointmentId },
@@ -850,32 +956,16 @@ ACTION REQUIRED: Customer was charged but appointment was NOT created!
         organizationId: true,
         organization: { select: { name: true } },
         consultation: {
-          select: {
-            consultationPlan: {
-              select: { consultantProfile: consultantUserSelect },
-            },
-          },
+          select: { consultationPlan: planNotifSelect },
         },
         subscription: {
-          select: {
-            subscriptionPlan: {
-              select: { consultantProfile: consultantUserSelect },
-            },
-          },
+          select: { subscriptionPlan: planNotifSelect },
         },
         webinar: {
-          select: {
-            webinarPlan: {
-              select: { consultantProfile: consultantUserSelect },
-            },
-          },
+          select: { webinarPlan: planNotifSelect },
         },
         class: {
-          select: {
-            classPlan: {
-              select: { consultantProfile: consultantUserSelect },
-            },
-          },
+          select: { classPlan: planNotifSelect },
         },
       },
     });
@@ -890,10 +980,24 @@ ACTION REQUIRED: Customer was charged but appointment was NOT created!
       consultantProfileData?.user?.name || "Consultant";
     const consultantUserId = consultantProfileData?.user?.id;
 
-    const planTitle = appointmentForNotif?.consultation?.consultationPlan
-      ?.consultantProfile?.user?.name
-      ? metadata.appointmentType
-      : metadata.appointmentType || "Appointment";
+    // #1484 — name the thing that was bought. `metadata.planId` is an id and
+    // sat on the left of the `||` at both payload sites below, so every normal
+    // capture told the buyer they had purchased a UUID; the fallback it shadowed
+    // returned `metadata.appointmentType` on BOTH branches of its ternary and so
+    // could never be a plan name either. A TRIAL hangs off the parent
+    // subscription plan, whose title names the paid programme, not the free
+    // session — so it gets its own label rather than that plan's title.
+    const resolvedPlanTitle =
+      metadata.appointmentType === AppointmentsType.TRIAL
+        ? "Trial session"
+        : planTitleOrSessionLabel(
+            appointmentForNotif?.consultation?.consultationPlan?.title ??
+              appointmentForNotif?.subscription?.subscriptionPlan?.title ??
+              appointmentForNotif?.webinar?.webinarPlan?.title ??
+              appointmentForNotif?.class?.classPlan?.title ??
+              null,
+            metadata.appointmentType,
+          );
 
     const orgId = appointmentForNotif?.organizationId ?? null;
     const scope = notificationScope(
@@ -905,18 +1009,24 @@ ACTION REQUIRED: Customer was charged but appointment was NOT created!
     // consultant and consultee land in different personal trees.
     const dashboardUrl = notificationHref(orgId, "appointments");
 
+    // #1446 — collected, not fired and forgotten: they are awaited together
+    // below, before the channel step touches the pool's only connection.
+    const notifications: Promise<unknown>[] = [];
+
     // Notify consultee of successful payment
-    void Promise.resolve(
-      notifyPaymentSuccess(userId, {
-        ...scope,
-        amount,
-        currency,
-        consultantName: consultantNameForNotif,
-        appointmentType: metadata.appointmentType,
-        planTitle: metadata.planId || planTitle,
-        dashboardUrl,
-      }),
-    ).catch(() => {});
+    notifications.push(
+      Promise.resolve(
+        notifyPaymentSuccess(userId, {
+          ...scope,
+          amount,
+          currency,
+          consultantName: consultantNameForNotif,
+          appointmentType: metadata.appointmentType,
+          planTitle: resolvedPlanTitle,
+          dashboardUrl,
+        }),
+      ),
+    );
 
     // Notify both consultant and consultee of the booked appointment
     const notifUserIds = [userId];
@@ -953,19 +1063,30 @@ ACTION REQUIRED: Customer was charged but appointment was NOT created!
       // returns (Novu wrappers swallow internally; test doubles return
       // undefined), so a synchronous throw can't become an unhandled
       // rejection inside this handler.
-      void Promise.resolve(
-        notifyAppointmentBooked(notifUserIds, {
-          ...scope,
-          appointmentId,
-          dateTime: firstSlot.startsAt.toISOString(),
-          appointmentType: metadata.appointmentType,
-          consultantName: consultantNameForNotif,
-          consulteeName: userName || "User",
-          planTitle: metadata.planId || planTitle,
-          dashboardUrl,
-        }),
-      ).catch(() => {});
+      notifications.push(
+        Promise.resolve(
+          notifyAppointmentBooked(notifUserIds, {
+            ...scope,
+            appointmentId,
+            dateTime: firstSlot.startsAt.toISOString(),
+            appointmentType: metadata.appointmentType,
+            consultantName: consultantNameForNotif,
+            consulteeName: userName || "User",
+            planTitle: resolvedPlanTitle,
+            dashboardUrl,
+          }),
+        ),
+      );
     }
+
+    // #1446 — best-effort still, but bounded and finished BEFORE the channel
+    // step: `allSettled` swallows a rejected trigger (the Novu wrappers already
+    // log and report it) and the deadline drops one that hangs.
+    await Promise.allSettled(
+      notifications.map((notification, i) =>
+        withPhase2Deadline(notification, `novu-trigger[${i}] ${paymentId}`),
+      ),
+    );
   } catch (novuError) {
     reportSentryError(novuError, { subsystem: "payments", level: "warning" });
     console.error(
@@ -975,131 +1096,36 @@ ACTION REQUIRED: Customer was charged but appointment was NOT created!
   }
 
   // --- Stream channel creation (truly fire-and-forget — does not block webhook response) ---
+  //
+  // #1356 — the work itself moved to `ensureChannelsForAppointment`, which
+  // stamps `Appointment.chatChannelEnsuredAt` on success. The call stays here,
+  // in the same post-commit position and with the same fire-and-forget posture,
+  // for the same reason as before: it is outbound network work. What changed is
+  // that failing it now leaves a trace — a confirmed appointment with a NULL
+  // stamp — which reconcile-orphaned-confirmations re-drives instead of the
+  // buyer silently never having a chat.
   void (async () => {
     try {
-      const eventType = metadata.appointmentType?.toUpperCase();
-      const appointmentForChannel = await prisma.appointment.findUnique({
-        where: { id: appointmentId },
-        include: {
-          consultation: {
-            include: {
-              consultationPlan: {
-                include: { consultantProfile: true },
-              },
-            },
-          },
-          subscription: {
-            include: {
-              subscriptionPlan: {
-                include: { consultantProfile: true },
-              },
-              // The org-tagged sibling, not the appointment being paid for.
-              // `appointmentForChannel` is one appointment of many under a
-              // subscription and may be the personal one, while
-              // createSubscriptionChannel resolves the first ORG-tagged row —
-              // so without this the creator mints `dmo-…` and this path looks
-              // for `dm-…`. Filtered in the query because `take: 1` truncates
-              // server-side, before bookingOrgId's `find` can choose.
-              appointments: {
-                where: { organizationId: { not: null } },
-                select: { organizationId: true },
-                // Deterministic, not just filtered: `take: 1` over an
-                // unordered result can hand different callers different
-                // rows if a subscription ever carries two org-tagged
-                // appointments, which is the same divergence one layer down.
-                orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-                take: 1,
-              },
-            },
-          },
-          webinar: {
-            include: {
-              webinarPlan: {
-                include: { consultantProfile: true },
-              },
-            },
-          },
-          class: {
-            include: {
-              classPlan: {
-                include: { consultantProfile: true },
-              },
-            },
-          },
-          // A trial appointment has none of the four relations above — the
-          // consultant hangs off TrialSession directly. Without this the
-          // resolution below yields undefined, the guard fails, and the TRIAL
-          // branch added below never executes for the only appointments that
-          // can reach it.
-          trialSession: {
-            include: { consultantProfile: true },
-          },
-        },
-      });
-
-      const consultantProfile =
-        appointmentForChannel?.consultation?.consultationPlan
-          ?.consultantProfile ||
-        appointmentForChannel?.subscription?.subscriptionPlan
-          ?.consultantProfile ||
-        appointmentForChannel?.webinar?.webinarPlan?.consultantProfile ||
-        appointmentForChannel?.class?.classPlan?.consultantProfile ||
-        // `TrialSession.consultantProfile` is the required, authoritative
-        // relation — not `trialSession.subscriptionPlan.consultantProfile`,
-        // which is the plan author and can differ.
-        appointmentForChannel?.trialSession?.consultantProfile;
-
-      const consultantUserId = consultantProfile?.userId;
-
-      if (appointmentForChannel && consultantUserId) {
-        const consultation = appointmentForChannel.consultation;
-        const subscription = appointmentForChannel.subscription;
-        const webinar = appointmentForChannel.webinar;
-        const classEvent = appointmentForChannel.class;
-
-        // #1134 P0-8 — the org MUST be threaded through. getDmPairsForUser
-        // recomputes the expected id with plan-org-then-appointment-org
-        // precedence, so a DM minted without it landed on the personal `dm-`
-        // key, failed to match the expected `dmo-` one, and — because `dm-` is
-        // a managed prefix — was then treated as stale and the user removed
-        // from the only conversation they had. Shared with every other site
-        // that derives this key, so the two can no longer drift.
-        const dmOrgId = bookingOrgId({
-          consultationPlan: consultation?.consultationPlan,
-          subscriptionPlan: subscription?.subscriptionPlan,
-          appointments: subscription?.appointments,
-          appointment: appointmentForChannel,
-        });
-
-        // #1134 P0-7 — `consultation-<id>` / `subscription-<id>` channels are
-        // NOT created any more. syncUserEventChannels only ever expected
-        // webinars, classes and DMs, while treating both prefixes as managed,
-        // so every one of these was deleted on the buyer's next dashboard load.
-        // The pair already gets a DM, and createConsultationChannel minted a DM
-        // rather than a `consultation-` channel anyway — the concept never
-        // cohered. One thread per relationship-context is the whole model now.
-        if (
-          (eventType === "CONSULTATION" && consultation) ||
-          (eventType === "SUBSCRIPTION" && subscription) ||
-          // #1134 P1-16 — TRIAL had no branch here at all, so a trial buyer got
-          // video and no way to message the consultant before or after it. A
-          // trial is the platform's first impression; it is the LAST session
-          // type that should be mute. Same DM as any other 1:1, so it merges
-          // with their thread if they go on to book.
-          eventType === "TRIAL"
-        ) {
-          await createDirectMessageChannel(consultantUserId, userId, dmOrgId);
-        } else if (eventType === "WEBINAR" && webinar) {
-          await addUserToEventChannel("webinar", webinar.id, userId);
-        } else if (eventType === "CLASS" && classEvent) {
-          await addUserToEventChannel("class", classEvent.id, userId);
-        }
-
-        streamLogger.info("Stream channel created on payment success", {
-          appointmentType: eventType,
-          appointmentId,
-          userId,
-        });
+      // #1446 — the step opens with a DB read, so it is the first thing to die
+      // when the single connection is busy. Bounded: on timeout
+      // `chatChannelEnsuredAt` stays NULL, which is exactly the queue that
+      // reconcile-orphaned-confirmations drains.
+      const result = await withPhase2Deadline(
+        ensureChannelsForAppointment(appointmentId),
+        `ensureChannelsForAppointment(${appointmentId})`,
+      );
+      if (!result) {
+        streamLogger.warn(
+          "Stream channel step hit its deadline — stamp left NULL for the reconcile sweep",
+          { appointmentId, userId, deadlineMs: PHASE_2_DEADLINE_MS },
+        );
+        return;
+      }
+      if (!result.ensured) {
+        streamLogger.warn(
+          "Stream channels not ensured on payment success — left for the reconcile sweep",
+          { appointmentId, userId, reason: result.reason },
+        );
       }
     } catch (channelError) {
       // #1134 P1-15 — this used to say "sync job will catch up". No such job
@@ -1107,7 +1133,7 @@ ACTION REQUIRED: Customer was charged but appointment was NOT created!
       // syncUserEventChannels repairs webinar/class/DM membership on the next
       // dashboard load but cannot invent a channel for a booking it never saw.
       // A failure here means the buyer silently has no chat, so it must at
-      // least page. A durable outbox is the real fix and is tracked separately.
+      // least page. The reconcile sweep is now the durable re-drive.
       reportSentryError(channelError, {
         subsystem: "stream",
         op: "handlePaymentSuccess.createChannels",
@@ -2007,18 +2033,28 @@ async function cleanupFailedPaymentAppointment(tx: Tx, appointmentId: string) {
 
   if (!appointment) return;
 
+  // Live holds only: a previously released row is soft-cancelled, not gone,
+  // and counting it here would re-run this arm on every replayed failure.
   const tentativeSlots = appointment.slotsOfAppointment.filter(
-    (slot) => slot.isTentative,
+    (slot) => slot.isTentative && slot.deletedAt === null,
   );
 
   if (tentativeSlots.length > 0) {
-    await tx.slotOfAppointment.deleteMany({
-      where: { appointmentId, isTentative: true },
+    // Doctrine rule 2: the hold is freed by status, so the slot survives for
+    // the dispute trail that a failed payment is most likely to need.
+    await transitionSlotCompletion(tx, {
+      where: { appointmentId, isTentative: true, deletedAt: null },
+      to: SlotCompletionStatus.CANCELLED,
+      data: { deletedAt: new Date() },
+      allowZero: true,
     });
 
     if (appointment.consultation || appointment.subscription) {
+      // Live rows only — the release above leaves its rows in place, so an
+      // unfiltered count would never reach zero and the EXPIRED transition
+      // this gates would never fire again.
       const remainingSlots = await tx.slotOfAppointment.count({
-        where: { appointmentId },
+        where: { appointmentId, deletedAt: null },
       });
       if (remainingSlots === 0) {
         // Soft-delete: transition to EXPIRED status instead of hard-deleting

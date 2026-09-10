@@ -25,7 +25,7 @@ import prisma from "@/lib/prisma";
 import { handlePaymentSuccess } from "@/lib/payments/webhooks/handlers";
 import { refundEarnings } from "@/lib/payments/payouts/earnings-service";
 import { handlePayoutWebhook } from "@/lib/payments/payouts/payout-service";
-import { PaymentGateway, PaymentStatus, EarningStatus } from "@prisma/client";
+import { PaymentGateway, EarningStatus } from "@prisma/client";
 
 // ============================================
 // Types
@@ -63,12 +63,16 @@ interface MockWebhookResponse {
  * production deployment into an unauthenticated "confirm any payment" endpoint.
  * That disjunct is gone. The gate is now build-time posture only: a production
  * build cannot be opened up by configuration.
+ *
+ * The `VERCEL_ENV === "preview"` disjunct went the same way, for the same
+ * reason: it was a second runtime toggle contradicting the sentence above, and
+ * on a preview built against the one shared Supabase project it would have
+ * meant an unauthenticated "confirm any payment" endpoint over real rows. It
+ * was never load-bearing here — this app deploys on Netlify, which sets no
+ * `VERCEL_ENV`, so the branch had been dead since it was written.
  */
 function isDevelopment(): boolean {
-  return (
-    process.env.NODE_ENV === "development" ||
-    process.env.VERCEL_ENV === "preview"
-  );
+  return process.env.NODE_ENV === "development";
 }
 
 // ============================================
@@ -158,7 +162,10 @@ async function handleMockPaymentCaptured(
   const metadata: Record<string, string> = {
     appointmentId: payment.appointmentId || "",
     appointmentType: payment.appointment?.appointmentType || "CONSULTATION",
-    consulteeId: payment.userId || "",
+    // #1439 — the schema's key is `userId`; under `consulteeId` every replay
+    // failed validation and took the manual-recovery branch instead of
+    // confirming the booking.
+    userId: payment.userId || "",
     consultantId: getConsultantProfileId(),
   };
 

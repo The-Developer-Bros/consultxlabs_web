@@ -36,6 +36,7 @@ graph TD
 - **Sunday-to-Saturday weeks** -- `SlotCalculationService.countWeeks()` is the single source of truth
 - **`isTentative` flag** -- marks slots pending payment or reschedule; cleaned up by cron after 24 hours (`TENTATIVE_EXPIRATION_HOURS = 24`, reduced from 7 days by #833); users can self-release via `DELETE /api/checkout/pending/[paymentId]` (#849)
 - **`startDay`/`endDay` DayOfWeek enum + `startTimeUtc`/`endTimeUtc` Int** -- source of truth for weekly availability (minutes since midnight UTC, 0-1439; supports overnight/cross-midnight slots)
+- The canonical definitions of "slot" and "session" and the other terms this page uses live in [`docs/enterprise/00-foundations/07-slots-sessions-glossary.md`](../enterprise/00-foundations/07-slots-sessions-glossary.md), which this document assumes rather than restates.
 
 ## Reading the audit trail
 
@@ -154,6 +155,6 @@ Then reference these as needed:
 - **Payments**: [../payments/README.md](../payments/README.md) -- Payment architecture, checkout flows, refunds, payouts
 - **Notifications**: [../notifications/README.md](../notifications/README.md) -- Novu workflows triggered by booking events
 - **Agent-run booking test corpus**: `prompts/booking-algorithm-tests/` -- the E2E prompt corpus that exercises this subsystem; scenario prompts and the harness that runs them
-- **Booking-specific Claude Code skills**: `.claude/skills/booking-*` -- doctrine and workflow skills for agents working in this subsystem
+- **Booking-specific Claude Code skills**: `.claude/skills/booking/` -- doctrine and workflow skills for agents working in this subsystem
 - **Distributed Locking**: [../upstash/redis/locking/00_README.md](../upstash/redis/locking/00_README.md) -- Redis locking deep dive
 - **Cron Setup**: [../guides/cron-setup.md](../guides/cron-setup.md) -- Deployment-specific cron configuration

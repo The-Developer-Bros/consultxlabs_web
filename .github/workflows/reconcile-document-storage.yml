@@ -6,6 +6,10 @@ on:
     - cron: "35 2 * * *"
   workflow_dispatch: # Allow manual triggering
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   reconcile-document-storage:
     runs-on: ubuntu-latest

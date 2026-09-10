@@ -10,6 +10,7 @@ export const { GET, POST } = cleanupRoute({
   job: "sweep-abandoned-overage-charges",
   run: () => sweepAbandonedOverageCharges(),
   summarize: (r) => ({ scanned: r.scanned, failed: r.failed }),
-  status: () => 200,
+  // #1390 review — the constant 200 masked a caught job error (success:false)
+  // as healthy; the default statusFor already reads result.success.
   failureMessage: "Failed to sweep abandoned overage charges",
 });

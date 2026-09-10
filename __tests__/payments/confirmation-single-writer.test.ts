@@ -58,6 +58,26 @@ jest.mock("../../lib/auth-server", () => ({
   getSession: () => getSession(),
 }));
 
+// #1353 — the route now applies checkoutLimiter per user. In the shared CI
+// process the mock-redis store accumulates hits across suites, so these
+// success-path POSTs would start answering 429. Boundary-mock it: rate limiting
+// is infrastructure, not the single-writer contract under test here.
+jest.mock("../../lib/rate-limit", () => ({
+  __esModule: true,
+  applyRateLimit: jest.fn().mockResolvedValue(null),
+  checkoutLimiter: { limit: jest.fn() },
+}));
+
+// #1353 — the route records a client-confirmation audit event. It is
+// fire-and-forget and best-effort in production; here it would reach the real
+// prisma module, which this suite stubs to a handful of models.
+const recordSystemEvent = jest.fn().mockResolvedValue(undefined);
+jest.mock("../../lib/enterprise/system-events", () => ({
+  __esModule: true,
+  recordSystemEvent: (...args: unknown[]) => recordSystemEvent(...args),
+  recordSystemError: jest.fn().mockResolvedValue(undefined),
+}));
+
 const findUnique = jest.fn();
 const updateMany = jest.fn();
 jest.mock("../../lib/prisma", () => ({

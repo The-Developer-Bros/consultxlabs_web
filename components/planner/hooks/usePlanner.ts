@@ -27,6 +27,29 @@ type SubscriptionPlanUpdateInput = {
   [key: string]: unknown;
 };
 
+type ArchivePlanInput = { id: string; archived: boolean };
+
+// Shared by every plan family's archive/restore toggle (#1494) so the four
+// PATCH callers can't drift in error handling or content-type.
+async function patchPlanArchived(
+  basePath: string,
+  { id, archived }: ArchivePlanInput,
+  fallbackErrorMessage: string,
+) {
+  const response = await fetch(`${basePath}/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ archived }),
+  });
+  if (!response.ok) {
+    // A 502 HTML page or an empty 401 has no JSON body to read; without this
+    // the thrown SyntaxError replaces the message meant for the consultant.
+    const errorData = await response.json().catch(() => null);
+    throw new Error(errorData?.error || fallbackErrorMessage);
+  }
+  return response.json();
+}
+
 // The planner READ lives in createConsultantQueries(...).planner
 // (queryKey ["consultant-planner", consultantId, scopeKey]) — the mutation
 // hooks below invalidate that key by prefix. A previous local usePlanner()
@@ -251,10 +274,41 @@ export function useConsultationPlanMutations(consultantId: string) {
     },
   });
 
+  const archiveConsultationPlan = useMutation({
+    mutationFn: (input: ArchivePlanInput) =>
+      patchPlanArchived(
+        "/api/plans/consultations",
+        input,
+        "Failed to update consultation plan",
+      ),
+    onSuccess: (result, variables) => {
+      queryClient.invalidateQueries({
+        queryKey: ["consultationPlans", consultantId],
+      });
+      queryClient.invalidateQueries({ queryKey: ["consultant-planner", consultantId] });
+      toast({
+        title: variables.archived ? "Offering archived" : "Offering restored",
+        description:
+          result.message ??
+          (variables.archived
+            ? "This plan stopped taking new bookings. Existing appointments are unaffected."
+            : "This plan is back on sale."),
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   return {
     createConsultationPlan,
     updateConsultationPlan,
     deleteConsultationPlan,
+    archiveConsultationPlan,
   };
 }
 
@@ -390,11 +444,116 @@ export function useSubscriptionPlanMutations(consultantId: string) {
     },
   });
 
+  const archiveSubscriptionPlan = useMutation({
+    mutationFn: (input: ArchivePlanInput) =>
+      patchPlanArchived(
+        "/api/plans/subscriptions",
+        input,
+        "Failed to update subscription plan",
+      ),
+    onSuccess: (result, variables) => {
+      queryClient.invalidateQueries({
+        queryKey: ["subscriptionPlans", consultantId],
+      });
+      queryClient.invalidateQueries({ queryKey: ["consultant-planner", consultantId] });
+      toast({
+        title: variables.archived ? "Offering archived" : "Offering restored",
+        description:
+          result.message ??
+          (variables.archived
+            ? "This plan stopped taking new bookings. Existing appointments are unaffected."
+            : "This plan is back on sale."),
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   return {
     createSubscriptionPlan,
     updateSubscriptionPlan,
     deleteSubscriptionPlan,
+    archiveSubscriptionPlan,
   };
+}
+
+/**
+ * Archive/restore for webinar and class PLANS (#1494) — distinct from
+ * useWebinarMutations/useClassMutations above, which delete a live SESSION
+ * instance. The plan is the sellable offering; a consultant retires it here
+ * without touching crud-with-plan's create/reschedule transaction.
+ */
+export function useWebinarPlanMutations(consultantId: string) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  const archiveWebinarPlan = useMutation({
+    mutationFn: (input: ArchivePlanInput) =>
+      patchPlanArchived(
+        "/api/plans/webinars",
+        input,
+        "Failed to update webinar plan",
+      ),
+    onSuccess: (result, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["consultant-planner", consultantId] });
+      toast({
+        title: variables.archived ? "Offering archived" : "Offering restored",
+        description:
+          result.message ??
+          (variables.archived
+            ? "This webinar stopped taking new bookings. Existing appointments are unaffected."
+            : "This webinar is back on sale."),
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  return { archiveWebinarPlan };
+}
+
+export function useClassPlanMutations(consultantId: string) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  const archiveClassPlan = useMutation({
+    mutationFn: (input: ArchivePlanInput) =>
+      patchPlanArchived(
+        "/api/plans/classes",
+        input,
+        "Failed to update class plan",
+      ),
+    onSuccess: (result, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["consultant-planner", consultantId] });
+      toast({
+        title: variables.archived ? "Offering archived" : "Offering restored",
+        description:
+          result.message ??
+          (variables.archived
+            ? "This class stopped taking new bookings. Existing appointments are unaffected."
+            : "This class is back on sale."),
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  return { archiveClassPlan };
 }
 
 // Hook for refetching planner data (useful after saves)

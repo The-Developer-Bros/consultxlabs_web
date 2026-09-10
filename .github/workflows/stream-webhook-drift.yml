@@ -36,6 +36,14 @@ on:
       - ".github/workflows/stream-webhook-drift.yml"
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+  # A second workflow_dispatch while one is already pending would replace it
+  # under the default single-pending-run policy; queue: max keeps every
+  # trigger instead of silently dropping one.
+  queue: max
+
 # Read-only: the check mode makes no Stream write and no repository write.
 permissions:
   contents: read

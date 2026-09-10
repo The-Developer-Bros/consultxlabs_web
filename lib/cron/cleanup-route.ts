@@ -27,6 +27,47 @@ export function statusFor(
   return needsAttention ? 207 : 200;
 }
 
+/** Ceiling on an explicit `?limit=`; above this it is clamped, not rejected. */
+const LIMIT_CAP = 500;
+
+/**
+ * Thrown by {@link parseLimitParam} for a `?limit=` that is present but not a
+ * positive integer, so `cleanupRoute` can answer 400 instead of the caller
+ * silently falling through to an unbounded run — the failure mode a malformed
+ * ticker request would otherwise hit.
+ */
+export class InvalidLimitError extends Error {
+  constructor() {
+    super("INVALID_LIMIT");
+    this.name = "InvalidLimitError";
+  }
+}
+
+/**
+ * Optional `?limit=` cap shared by the routes the Netlify ticker drives every
+ * five minutes (#1356, ADR 27 — docs/enterprise/70-design-decisions/27-state-as-outbox-and-scheduled-ticker.md).
+ * A five-minute tick has to fit inside the ticker's per-target timeout, unlike
+ * the nightly GitHub Actions run, which can afford an unbounded batch — so the
+ * ticker sends `?limit=50` and every other caller (Actions, manual `curl`)
+ * omits it and keeps today's unbounded behaviour. A present-but-invalid value
+ * (empty, non-numeric, zero, negative, or fractional) throws
+ * {@link InvalidLimitError} rather than being treated as absent; a value above
+ * the cap is clamped to it.
+ */
+export function parseLimitParam(req: NextRequest): number | undefined {
+  const raw = req.nextUrl.searchParams.get("limit");
+  // #1459 — only a missing key is absent. A truthiness test also swallowed
+  // `?limit=`, which is a caller that meant to bound the sweep and sent
+  // nothing: it would have got the unbounded batch back, the exact silent
+  // fall-through this parser exists to make visible.
+  if (raw === null) return undefined;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new InvalidLimitError();
+  }
+  return Math.min(n, LIMIT_CAP);
+}
+
 /**
  * Constant-time bearer comparison. Digesting first keeps both operands the
  * same fixed length, so neither the secret's length nor its matching prefix is
@@ -107,6 +148,9 @@ export function cleanupRoute<T extends object>(opts: {
       // skips with a 409 instead of double-running.
       if (error instanceof CronLockHeldError) {
         return NextResponse.json({ error: error.message }, { status: 409 });
+      }
+      if (error instanceof InvalidLimitError) {
+        return NextResponse.json({ error: "INVALID_LIMIT" }, { status: 400 });
       }
       if (error instanceof MaintenanceActiveError) {
         return NextResponse.json(

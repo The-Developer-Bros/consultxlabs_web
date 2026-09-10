@@ -28,6 +28,11 @@ import type { Prisma } from "@prisma/client";
 
 import prisma from "@/lib/prisma";
 import { recordSystemError } from "@/lib/enterprise/system-events";
+import type { CancellationPolicyTerms } from "@/lib/payments/operations/cancellation-policy";
+import {
+  POLICY_TERMS_INCLUDE,
+  termsFromPolicyRow,
+} from "@/lib/payments/operations/cancellation-policy-store";
 import {
   REFUNDABLE_BALANCE_SELECT,
   refundableBalancePaise,
@@ -52,8 +57,12 @@ export type BookingRefundContext = {
      */
     refundablePaise: number;
   } | null;
-  /** Terms frozen at purchase; null falls back to the platform defaults. */
-  policySnapshot: Prisma.JsonValue | null;
+  /**
+   * #1499 — the terms the buyer was sold under, loaded from the immutable policy
+   * version the booking points at. Always populated: a booking with no policy row
+   * resolves to the platform ladder rather than to null, so no caller has to.
+   */
+  policy: CancellationPolicyTerms;
   /**
    * Hours until the earliest session that has not been delivered or cancelled,
    * or null when the booking has no live session at all (an unallocated
@@ -112,7 +121,7 @@ export async function resolveBookingRefundContext(
     where: { ...bookingAppointmentFilter(ref), deletedAt: null },
     select: {
       id: true,
-      cancellationPolicySnapshot: true,
+      cancellationPolicy: POLICY_TERMS_INCLUDE,
       payment: {
         where: {
           paymentStatus: "SUCCEEDED",
@@ -173,19 +182,23 @@ export async function resolveBookingRefundContext(
         id: payment.id,
         amountPaise: Number(payment.amount),
         paymentIntent: payment.paymentIntent,
-        refundablePaise: refundableBalancePaise(Number(payment.amount), payment),
+        refundablePaise: refundableBalancePaise(
+          Number(payment.amount),
+          payment,
+        ),
       }
     : null;
   const payer = rows.find((r) => r.payment.length > 0);
 
-  // The terms that bind are the ones frozen on the row the buyer actually paid
-  // for. The subscription placeholder predates the snapshot write, so fall back
-  // to any session row's snapshot before dropping to the platform defaults.
-  const policySnapshot =
-    payer?.cancellationPolicySnapshot ??
-    rows.find((r) => r.cancellationPolicySnapshot !== null)
-      ?.cancellationPolicySnapshot ??
-    null;
+  // The terms that bind are the ones stamped on the row the buyer actually paid for.
+  // The "any session row" fallback survives only for bookings sold before #1499 wrote
+  // the FK onto the subscription placeholder; a booking with neither reads as the
+  // platform ladder, which is what it was sold under.
+  const policy = termsFromPolicyRow(
+    payer?.cancellationPolicy ??
+      rows.find((r) => r.cancellationPolicy !== null)?.cancellationPolicy ??
+      null,
+  );
 
   const slots = rows.flatMap((r) => r.slotsOfAppointment);
   const liveStarts = slots
@@ -197,7 +210,7 @@ export async function resolveBookingRefundContext(
 
   return {
     paidPayment,
-    policySnapshot,
+    policy,
     hoursUntilNextSession:
       liveStarts.length > 0 ? (liveStarts[0] - Date.now()) / 3_600_000 : null,
     sessionsCompleted: slots.filter((s) => s.completionStatus === "COMPLETED")

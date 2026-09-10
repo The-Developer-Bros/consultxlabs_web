@@ -7,6 +7,14 @@ on:
     - cron: "0 3 * * *"
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+  # A second workflow_dispatch while one is already pending would replace it
+  # under the default single-pending-run policy; queue: max keeps every
+  # trigger instead of silently dropping one.
+  queue: max
+
 jobs:
   cleanup-old-stream-recordings:
     runs-on: ubuntu-latest

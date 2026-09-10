@@ -1,15 +1,45 @@
 name: Claude Code Review
 
+# CodeRabbit is the reviewer of record on every pull request in this repository,
+# so this workflow no longer runs automatically. It used to fire on the
+# `claude-review` label and duplicated CodeRabbit's review on every finance PR
+# the train orchestrator tagged. It also went red on every run once
+# `CLAUDE_CODE_OAUTH_TOKEN` expired (`API Error: 401 ... OAuth access token has
+# expired`), leaving a permanent non-required failing check on those PRs. The
+# `claude-review` label is now a plain tag with no workflow attached to it.
+#
+# To bring this back: rotate the token by running `claude setup-token` locally
+# and updating the `CLAUDE_CODE_OAUTH_TOKEN` repository secret (or switch the
+# `with:` block below to `anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}`
+# instead), then re-add an automatic trigger such as `pull_request: { types:
+# [labeled] }`. The action is already pinned to its current major tag
+# (`@v1`, GA as of the 2026-09 migration guide) rather than `@beta` — see
+# https://github.com/anthropics/claude-code-action/blob/main/docs/migration-guide.md.
+# The repository declined SHA-pinning `claude-code-action` as a general policy
+# (#1393), so the major-tag pin above is intentional and should not be
+# tightened to a commit SHA.
+#
+# The base checkout above stays at the workspace root and only ever contains
+# `dev` (or whatever ref triggered the run). The pull request under review is
+# checked out separately into the `pr/` subdirectory, and that subdirectory is
+# handed to `claude-code-action` via `claude_args: "--add-dir pr"`, so a fork
+# PR's files sit alongside the trusted checkout rather than replacing it at
+# the workspace root before the authenticated action runs with
+# `id-token: write`.
 on:
-  # Trigger only when a label is added to a PR
-  pull_request:
-    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number to review"
+        required: true
+        type: number
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.pr_number }}
+  cancel-in-progress: false
 
 jobs:
   claude-review:
-    # Only run when the specific label is added
-    if: github.event.label.name == 'claude-review'
-
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -23,9 +53,17 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Check out the requested pull request into pr/
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p pr
+          cd pr
+          gh pr checkout ${{ inputs.pr_number }} --repo ${{ github.repository }}
+
       - name: Run Claude Code Review
         id: claude-review
-        uses: anthropics/claude-code-action@beta
+        uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
@@ -35,8 +73,16 @@ jobs:
           # Allow Dependabot to trigger reviews
           allowed_bots: "dependabot"
 
-          # Direct prompt for automated review (no @claude mention needed)
-          direct_prompt: |
+          # Give Claude access to the untrusted PR checkout, which lives in
+          # its own subdirectory rather than at the workspace root.
+          claude_args: "--add-dir pr"
+
+          # Prompt for automated review (no @claude mention needed)
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ inputs.pr_number }}
+            The pull request's files are checked out at ./pr, not the workspace root.
+
             Please review this pull request and provide feedback on:
             - Code quality and best practices
             - Potential bugs or issues
@@ -50,7 +96,7 @@ jobs:
           # use_sticky_comment: true
 
           # Optional: Customize review based on file types
-          # direct_prompt: |
+          # prompt: |
           #   Review this PR focusing on:
           #   - For TypeScript files: Type safety and proper interface usage
           #   - For API endpoints: Security, input validation, and error handling
@@ -58,7 +104,7 @@ jobs:
           #   - For tests: Coverage, edge cases, and test quality
 
           # Optional: Different prompts for different authors
-          # direct_prompt: |
+          # prompt: |
           #   ${{ github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR' &&
           #   'Welcome! Please review this PR from a first-time contributor. Be encouraging and provide detailed explanations for any suggestions.' ||
           #   'Please provide a thorough code review focusing on our coding standards and best practices.' }}

@@ -11,6 +11,10 @@
  * now()`. This preserves the historical split each earning was settled
  * against — see `OrganizationEarnings.platformBpsApplied`.
  *
+ * #1335 — a card scoped to a contract, planType or planId is only selected at
+ * settlement when `RATE_CARD_SCOPED_RESOLUTION=on`; off (the default), the org
+ * default card settles instead. Creation is unaffected either way.
+ *
  * Query params on GET:
  *   scope=current|all           (default current — live cards only)
  *   planType=CONSULTATION|CLASS|WEBINAR|SUBSCRIPTION
@@ -21,7 +25,9 @@
 import * as Sentry from "@sentry/nextjs";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import prisma from "@/lib/prisma";
+import { withSerializableRetry } from "@/lib/db/serializable-retry";
 import { requireOrgAccess } from "@/lib/auth-helpers";
 // Why: rate card creation/edit is a finance-team mutation; downgrade
 // from OWNER-only so BILLING_ADMIN can configure splits without escalation.
@@ -140,73 +146,105 @@ export async function POST(
   const body = parsed.data;
 
   try {
-    const card = await prisma.$transaction(async (tx) => {
-      // Cross-org check: contract must belong to this org when scoping
-      // the card to a contract.
-      if (body.contractId) {
-        const contract = await tx.contract.findFirst({
-          where: { id: body.contractId, organizationId: orgId },
-          select: { id: true },
-        });
-        if (!contract) {
-          throw Object.assign(
-            new Error("Contract not found for this organization"),
-            { httpStatus: 404 },
-          );
-        }
-      }
+    // #1405 — bumpRateCard is read-then-write (findEffective → close the open
+    // card → insert the replacement). Under the default isolation two
+    // concurrent bumps on one scope each read "no card open yet" and each
+    // insert with `effectiveTo = null`, after which `findEffective` picks
+    // between the two open windows non-deterministically. Serializable makes
+    // that interleaving abort, and withSerializableRetry re-runs the loser
+    // the way checkout does rather than surfacing P2034 to the caller.
+    const card = await withSerializableRetry(() =>
+      prisma.$transaction(
+        async (tx) => {
+          // Cross-org check: contract must belong to this org when scoping
+          // the card to a contract.
+          if (body.contractId) {
+            const contract = await tx.contract.findFirst({
+              where: { id: body.contractId, organizationId: orgId },
+              select: { id: true },
+            });
+            if (!contract) {
+              throw Object.assign(
+                new Error("Contract not found for this organization"),
+                { httpStatus: 404 },
+              );
+            }
+          }
 
-      const created = await bumpRateCard(tx, {
-        scope: body.contractId
-          ? { ownerContractId: body.contractId }
-          : { ownerOrgId: orgId },
-        planType: body.planType ?? null,
-        planId: body.planId ?? null,
-        next: {
-          platformBps: body.platformBps,
-          orgBps: body.orgBps,
-          consultantBps: body.consultantBps,
-        },
-        minGrossPaise: body.minGrossPaise,
-        maxGrossPaise: body.maxGrossPaise,
-        effectiveAt: body.effectiveAt,
-        reason: body.reason,
-      });
-
-      await tx.orgAuditLog.create({
-        data: {
-          organizationId: orgId,
-          actorMembershipId: access.member.id,
-          category: "PROGRAM",
-          action: AUDIT_ACTIONS.PROGRAM.RATE_CARD_BUMPED,
-          description: body.contractId
-            ? `Rate card bumped for contract ${body.contractId}`
-            : `Org-default rate card bumped`,
-          details: {
-            rateCardId: created.id,
-            contractId: body.contractId ?? null,
+          const created = await bumpRateCard(tx, {
+            scope: body.contractId
+              ? { ownerContractId: body.contractId }
+              : { ownerOrgId: orgId },
             planType: body.planType ?? null,
             planId: body.planId ?? null,
-            platformBps: body.platformBps,
-            orgBps: body.orgBps,
-            consultantBps: body.consultantBps,
-            effectiveFrom: created.effectiveFrom,
-            reason: body.reason ?? null,
-          },
-        },
-      });
+            next: {
+              platformBps: body.platformBps,
+              orgBps: body.orgBps,
+              consultantBps: body.consultantBps,
+            },
+            minGrossPaise: body.minGrossPaise,
+            maxGrossPaise: body.maxGrossPaise,
+            effectiveAt: body.effectiveAt,
+            reason: body.reason,
+          });
 
-      return created;
-    });
+          await tx.orgAuditLog.create({
+            data: {
+              organizationId: orgId,
+              actorMembershipId: access.member.id,
+              category: "PROGRAM",
+              action: AUDIT_ACTIONS.PROGRAM.RATE_CARD_BUMPED,
+              description: body.contractId
+                ? `Rate card bumped for contract ${body.contractId}`
+                : `Org-default rate card bumped`,
+              details: {
+                rateCardId: created.id,
+                contractId: body.contractId ?? null,
+                planType: body.planType ?? null,
+                planId: body.planId ?? null,
+                platformBps: body.platformBps,
+                orgBps: body.orgBps,
+                consultantBps: body.consultantBps,
+                effectiveFrom: created.effectiveFrom,
+                reason: body.reason ?? null,
+              },
+            },
+          });
+
+          return created;
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      ),
+    );
 
     return NextResponse.json({ rateCard: card }, { status: 201 });
   } catch (err) {
     if (err instanceof Error && "httpStatus" in err) {
-      const status =
-        typeof err.httpStatus === "number" ? err.httpStatus : 500;
+      const status = typeof err.httpStatus === "number" ? err.httpStatus : 500;
       return NextResponse.json({ error: err.message }, { status });
     }
-    Sentry.captureException(err instanceof Error ? err : new Error(String(err)), { tags: { subsystem: "enterprise" } });
+    // #1405 — the `rate_card_one_open_window` partial unique is the structural
+    // half of the fix: it refuses a second open window on the same scope even
+    // if Serializable is unavailable or the write arrives from somewhere else.
+    // A caller that loses that race is not a server fault, so answer 409 and
+    // let them re-read the current card and retry.
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === "P2002"
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "This rate-card scope already has an open window; re-read the current card and retry",
+          code: "RATE_CARD_OPEN_WINDOW_CONFLICT",
+        },
+        { status: 409 },
+      );
+    }
+    Sentry.captureException(
+      err instanceof Error ? err : new Error(String(err)),
+      { tags: { subsystem: "enterprise" } },
+    );
     throw err;
   }
 }

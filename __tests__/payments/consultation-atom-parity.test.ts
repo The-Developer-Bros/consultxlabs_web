@@ -47,7 +47,8 @@ type SlotAtom = {
 const webhookAppointmentCreate = jest.fn();
 const consultationCreate = jest.fn();
 const webhookTx = {
-  payment: { findUnique: jest.fn(), update: jest.fn() },
+  // #1439 — the confirmation stamp is a CAS, so the tx writer is updateMany.
+  payment: { findUnique: jest.fn(), update: jest.fn(), updateMany: jest.fn() },
   consultation: {
     create: consultationCreate,
     updateMany: jest.fn(),
@@ -184,6 +185,7 @@ async function runWebhookCreator(): Promise<SlotAtom[]> {
   // `clearMocks` wipes implementations between tests, so every default the
   // webhook transaction needs is (re)installed here rather than at module scope.
   webhookTx.payment.update.mockResolvedValue({});
+  webhookTx.payment.updateMany.mockResolvedValue({ count: 1 });
   webhookTx.appointment.update.mockResolvedValue({});
   webhookTx.consultation.updateMany.mockResolvedValue({ count: 1 });
   webhookTx.consultation.findUnique.mockResolvedValue({
@@ -287,6 +289,8 @@ async function runCheckoutCreator(): Promise<SlotAtom[]> {
     CONSULTEE_USER,
     false,
     null,
+    // #1499 — the policy version the caller resolved; this suite only asserts atoms.
+    "policy-1",
   );
 
   expect(checkoutAppointmentCreate).toHaveBeenCalledTimes(1);

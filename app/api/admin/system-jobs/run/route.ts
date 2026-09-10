@@ -167,6 +167,8 @@ const JOB_FUNCTIONS: Record<string, JobFunction> = {
     return {
       success: result.success,
       releasedCount: result.releasedCount,
+      // #1471 — the same run now also releases host-org earnings.
+      organizationEarningsReleased: result.organizationEarningsReleased,
       errorCount: result.errorCount,
     };
   },

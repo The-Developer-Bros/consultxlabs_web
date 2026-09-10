@@ -25,6 +25,8 @@ Stripe serves two roles in our system:
 
 ### When to Use Stripe vs Razorpay
 
+The table below describes what Stripe is capable of, not what this deployment does. Today Razorpay takes every payment, domestic and international, and the routing table in `lib/payments/gateway-router.ts` never selects Stripe on its own. Read the fence section immediately after this one before assuming any of these rows is live.
+
 | Customer From | Gateway  | Why                     |
 | ------------- | -------- | ----------------------- |
 | India         | Razorpay | UPI support, lower fees |
@@ -32,6 +34,26 @@ Stripe serves two roles in our system:
 | Europe        | Stripe   | SEPA, iDEAL             |
 | UK            | Stripe   | GBP, UK cards           |
 | Others        | Stripe   | Global support          |
+
+---
+
+## Fenced by default
+
+Stripe is switched off unless a deployment deliberately turns it on. It exists in the tree as a contingency rail: Razorpay is the primary gateway and covers international collections through IBT at roughly a sixth of Stripe's cost, Dodo Payments is the sanctioned post-MVP international rail, and Stripe is what we would fall back to if RBI rules changed and Razorpay could no longer settle a class of collections. Until that happens, a customer must never be able to reach a Stripe charge, because the account runs on test keys and no Stripe payment has ever been reconciled end to end.
+
+Three environment variables control this, and all three are optional and default to unset.
+
+| Variable                               | Read by                                                                                          | Effect when unset                                                                                                                                                                                                                                                                                                                           |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `STRIPE_ENABLED`                       | `assertGatewayUsable` in `lib/payments/validation/gateway-guards.ts`, at call time               | Any attempt to route a checkout to Stripe, or to mint a live Stripe payment intent, throws a `DisabledGatewayError`. Mock payments are the one deliberate exception, because `createPaymentIntent` returns a mock intent before it consults the guard. This is the fence that actually protects money. Set it to exactly `true` to open it. |
+| `NEXT_PUBLIC_STRIPE_ENABLED`           | `paymentGateways` in `app/checkout/plans/utils.ts`, inlined into the client bundle at build time | The Stripe card on all four checkout pages renders a disabled "Coming Soon" button and no `StripeCheckout` component mounts. It keeps the UI honest; because the value ships to the browser it is not a security control on its own.                                                                                                        |
+| `STRIPE_ALLOW_TEST_KEYS_IN_PRODUCTION` | `initializeStripeClient` in `lib/payments/core/stripe.ts`, when the client is lazily constructed | Under `NODE_ENV=production`, a test-mode secret key throws `STRIPE_TEST_KEY_IN_PRODUCTION` instead of booting, and both `sk_test_…` and the restricted `rk_test_…` count as test mode. Set it to `true` only for the pre-launch window where the production site legitimately runs on test keys, and delete it with the first live key.     |
+
+Turning Stripe on therefore means setting both `STRIPE_ENABLED` and `NEXT_PUBLIC_STRIPE_ENABLED` to `true` and redeploying, since the public one is inlined at build time and a runtime change does not reach an already-built bundle.
+
+Refunds are deliberately outside the fence. `assertGatewayUsable` guards the paths that start new money movement — routing a checkout and creating a payment intent — and does not guard `createRefund`, refund lookups or dispute reads. A `Payment` row already written against Stripe has to stay refundable after the flag goes back to unset, otherwise closing the fence would strand real customer money.
+
+The guard mirrors the Razorpay one in `lib/payments/core/razorpay.ts`, with one difference worth knowing: Razorpay's test-key check runs at module load, while Stripe's runs inside the lazy client initializer, because gateway cores are loaded at call time (#1376) and a module-scope throw would fire on any import of the file. Both carry the same `next build` carve-out, so a build that legitimately holds test keys still completes.
 
 ---
 

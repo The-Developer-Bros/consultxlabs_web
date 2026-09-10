@@ -14,6 +14,7 @@
  * - searchLimiter:          60/min per IP    — GET /api/user/consultants, /api/consultants/search
  * - eligibilityLimiter:     20/min per IP    — GET /api/trials/check-eligibility
  * - availabilityLimiter:    30/min per IP    — GET /api/slots/availability/[consultantId]
+ * - currencyLimiter:        30/min per IP    — GET /api/currency (protects the FX provider quota)
  * - documentUploadLimiter:  10/min per user  — POST /api/appointments/[id]/documents (+ /consultant)
  * - streamRecordingSyncLimiter: 3/5min per user — POST /api/stream/recordings/sync (Stream fan-out)
  */
@@ -152,6 +153,19 @@ export const eligibilityLimiter = makeLimiter(20, "1 m", "rl:eligibility");
 
 /** 30 per minute — GET /api/slots/availability/[consultantId] (IP-based, public booking flow) */
 export const availabilityLimiter = makeLimiter(30, "1 m", "rl:availability");
+
+/**
+ * 30 per minute per IP — GET /api/currency (#1396).
+ *
+ * The route was public and completely unbounded, and every miss on the
+ * per-instance rate cache becomes an outbound call to ExchangeRate-API's free
+ * tier, whose 429 carries roughly a twenty-minute lockout. One scripted caller
+ * could therefore take FX display down for every buyer on the site. IP-keyed
+ * because the endpoint is anonymous: a visitor reading prices has no session.
+ * Thirty a minute is far above what a browsing session needs — the client
+ * caches the answer for an hour — while a loop trips it immediately.
+ */
+export const currencyLimiter = makeLimiter(30, "1 m", "rl:currency");
 
 /** 30 per minute — GET /api/participants/{class,webinar}/[id] (per user) */
 export const participantReadLimiter = makeLimiter(30, "1 m", "rl:participants");

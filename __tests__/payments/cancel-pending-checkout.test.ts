@@ -19,6 +19,8 @@ interface SlotRow {
   appointmentId: string;
   classId: string | null;
   isTentative: boolean;
+  completionStatus: string;
+  deletedAt: Date | null;
   userIds: string[];
 }
 
@@ -44,6 +46,32 @@ function matchesUserSome(slot: SlotRow, where: Row): boolean {
   const user = where.user as { some?: { id?: string } } | undefined;
   if (!user?.some?.id) return true;
   return slot.userIds.includes(user.some.id);
+}
+
+interface SlotWhere {
+  appointmentId?: string;
+  appointment?: { classId?: string };
+  isTentative?: boolean;
+  deletedAt?: Date | null;
+  completionStatus?: { in?: string[] };
+}
+
+function matchSlots(where: Row): SlotRow[] {
+  const w = where as SlotWhere;
+  return state.slots.filter((slot) => {
+    let match = true;
+    if (w.appointmentId !== undefined)
+      match = match && slot.appointmentId === w.appointmentId;
+    if (w.appointment?.classId !== undefined)
+      match = match && slot.classId === w.appointment.classId;
+    if (w.isTentative !== undefined)
+      match = match && slot.isTentative === w.isTentative;
+    if (w.deletedAt === null) match = match && slot.deletedAt === null;
+    if (w.completionStatus?.in !== undefined)
+      match = match && w.completionStatus.in.includes(slot.completionStatus);
+    match = match && matchesUserSome(slot, where);
+    return match;
+  });
 }
 
 function makeTx() {
@@ -115,19 +143,10 @@ function makeTx() {
     },
     slotOfAppointment: {
       findMany: jest.fn(async ({ where }: any) =>
-        state.slots
-          .filter((slot) => {
-            let match = true;
-            if (where.appointmentId !== undefined)
-              match = match && slot.appointmentId === where.appointmentId;
-            if (where.appointment?.classId !== undefined)
-              match = match && slot.classId === where.appointment.classId;
-            if (where.isTentative !== undefined)
-              match = match && slot.isTentative === where.isTentative;
-            match = match && matchesUserSome(slot, where);
-            return match;
-          })
-          .map((slot) => ({ id: slot.id })),
+        matchSlots(where).map((slot) => ({
+          id: slot.id,
+          completionStatus: slot.completionStatus,
+        })),
       ),
       update: jest.fn(async ({ where, data }: any) => {
         const slot = state.slots.find((s) => s.id === where.id);
@@ -138,21 +157,16 @@ function makeTx() {
         }
         return { id: slot.id };
       }),
-      deleteMany: jest.fn(async ({ where }: any) => {
-        const before = state.slots.length;
-        state.slots = state.slots.filter((slot) => {
-          let match = true;
-          if (where.appointmentId !== undefined)
-            match = match && slot.appointmentId === where.appointmentId;
-          if (where.appointment?.classId !== undefined)
-            match = match && slot.classId === where.appointment.classId;
-          if (where.isTentative !== undefined)
-            match = match && slot.isTentative === where.isTentative;
-          match = match && matchesUserSome(slot, where);
-          return !match;
-        });
-        return { count: before - state.slots.length };
-      }),
+      updateManyAndReturn: jest.fn(
+        async ({ where, data }: { where: Row; data: Row }) => {
+          const moved = matchSlots(where);
+          for (const slot of moved) Object.assign(slot, data);
+          return moved.map((slot) => ({
+            id: slot.id,
+            appointmentId: slot.appointmentId,
+          }));
+        },
+      ),
     },
     referralCreditUsage: {
       findMany: jest.fn(async () => []),
@@ -221,6 +235,8 @@ function seedConsultationPayment({
     appointmentId: "appt-1",
     classId: null,
     isTentative: true,
+    completionStatus: "SCHEDULED",
+    deletedAt: null,
     userIds: ["user-1"],
   });
 }
@@ -242,12 +258,29 @@ describe("cancelPendingCheckout — happy path (consultation)", () => {
 
     expect(result).toEqual({ ok: true, slotsReleased: 1 });
     expect(state.payments.get("pay-1")?.paymentStatus).toBe("EXPIRED");
-    expect(state.slots).toHaveLength(0);
+    // Freed by status, not deleted: the row stays so support can see the
+    // hold the buyer abandoned (doctrine rule 2).
+    expect(state.slots).toHaveLength(1);
+    expect(state.slots[0].completionStatus).toBe("CANCELLED");
+    expect(state.slots[0].deletedAt).toBeInstanceOf(Date);
     const cons = state.consultations.get("cons-1");
     expect(cons?.status).toBe("CANCELLED");
     expect(cons?.cancellationNotes).toBe("Cancelled by user during checkout");
     expect(cons?.cancelledAt).toBeInstanceOf(Date);
     expect(cancelPaymentIntent).toHaveBeenCalledWith("order_abc", "RAZORPAY");
+    // #1333 — the slot history rows name the appointment the rows came back with.
+    const slotHistory = (
+      tx.bookingStatusHistory.create as jest.Mock
+    ).mock.calls.filter(([call]) => call.data.entity === "SLOT");
+    expect(slotHistory.length).toBeGreaterThan(0);
+    for (const [call] of slotHistory) {
+      expect(call.data).toEqual(
+        expect.objectContaining({
+          toStatus: "CANCELLED",
+          appointmentId: "appt-1",
+        }),
+      );
+    }
   });
 
   it("skips the gateway cancel for mock payments", async () => {
@@ -297,6 +330,8 @@ describe("cancelPendingCheckout — CAS / status guards", () => {
     expect(result).toEqual({ ok: false, code: "NOT_PENDING" });
     expect(state.payments.get("pay-1")?.paymentStatus).toBe("SUCCEEDED");
     expect(state.slots).toHaveLength(1);
+    expect(state.slots[0].completionStatus).toBe("SCHEDULED");
+    expect(state.slots[0].deletedAt).toBeNull();
     expect(state.consultations.get("cons-1")?.status).toBe(
       "APPROVED_PENDING_PAYMENT",
     );
@@ -330,6 +365,7 @@ describe("cancelPendingCheckout — CAS / status guards", () => {
     expect(result).toEqual({ ok: false, code: "NOT_FOUND" });
     expect(state.payments.get("pay-1")?.paymentStatus).toBe("PENDING");
     expect(state.slots).toHaveLength(1);
+    expect(state.slots[0].deletedAt).toBeNull();
   });
 
   it("returns NOT_FOUND for a missing payment", async () => {
@@ -378,6 +414,8 @@ describe("cancelPendingCheckout — subscription parent", () => {
       appointmentId: "appt-s",
       classId: null,
       isTentative: true,
+      completionStatus: "SCHEDULED",
+      deletedAt: null,
       userIds: ["user-1"],
     });
 
@@ -417,7 +455,7 @@ describe("cancelPendingCheckout — subscription parent", () => {
 });
 
 describe("cancelPendingCheckout — webinar scoping", () => {
-  it("deletes only the caller's tentative slot on a shared webinar appointment", async () => {
+  it("releases only the caller's tentative seat on a shared webinar appointment", async () => {
     state.payments.set("pay-w", {
       id: "pay-w",
       userId: "user-1",
@@ -437,6 +475,8 @@ describe("cancelPendingCheckout — webinar scoping", () => {
         appointmentId: "appt-w",
         classId: null,
         isTentative: true,
+        completionStatus: "SCHEDULED",
+        deletedAt: null,
         userIds: ["user-1"],
       },
       {
@@ -444,6 +484,8 @@ describe("cancelPendingCheckout — webinar scoping", () => {
         appointmentId: "appt-w",
         classId: null,
         isTentative: true,
+        completionStatus: "SCHEDULED",
+        deletedAt: null,
         userIds: ["user-2"],
       },
       {
@@ -451,6 +493,8 @@ describe("cancelPendingCheckout — webinar scoping", () => {
         appointmentId: "appt-w",
         classId: null,
         isTentative: false,
+        completionStatus: "SCHEDULED",
+        deletedAt: null,
         userIds: ["user-1"],
       },
     );
@@ -495,6 +539,8 @@ describe("cancelPendingCheckout — class scoping", () => {
         appointmentId: "appt-c1",
         classId: "class-1",
         isTentative: true,
+        completionStatus: "SCHEDULED",
+        deletedAt: null,
         userIds: ["user-1"],
       },
       {
@@ -502,6 +548,8 @@ describe("cancelPendingCheckout — class scoping", () => {
         appointmentId: "appt-c2",
         classId: "class-1",
         isTentative: true,
+        completionStatus: "SCHEDULED",
+        deletedAt: null,
         userIds: ["user-1"],
       },
       {
@@ -509,6 +557,8 @@ describe("cancelPendingCheckout — class scoping", () => {
         appointmentId: "appt-c2",
         classId: "class-1",
         isTentative: true,
+        completionStatus: "SCHEDULED",
+        deletedAt: null,
         userIds: ["user-2"],
       },
     );

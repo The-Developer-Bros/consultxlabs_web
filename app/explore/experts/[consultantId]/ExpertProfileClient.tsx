@@ -4,7 +4,7 @@ import { useToast } from "@/components/ui/use-toast";
 import type { ConsultantDetailData } from "./types";
 import { TSlotTiming } from "@/types/slots";
 import { TUserWithProfessionalBackground } from "@/types/user";
-import { TConsultantReview } from "@/types/review";
+import { TPublicConsultantReview } from "@/types/review";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
@@ -24,7 +24,7 @@ import { formatInTimeZone } from "date-fns-tz";
 interface ExpertProfileClientProps {
   consultantDetails: ConsultantDetailData;
   userDetails: TUserWithProfessionalBackground;
-  reviews: TConsultantReview[];
+  reviews: TPublicConsultantReview[];
 }
 
 export function ExpertProfileClient({

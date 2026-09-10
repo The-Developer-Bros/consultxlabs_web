@@ -21,6 +21,10 @@
 import prisma from "@/lib/prisma";
 import { scopeToWhereOrgId } from "@/lib/api/scope/parse";
 import { readByIds } from "@/lib/data/read-by-ids";
+import {
+  pendingConsultationWhere,
+  pendingSubscriptionWhere,
+} from "@/lib/data/needs-you";
 import { Prisma } from "@prisma/client";
 import { PAYOUT_CONSTANTS } from "@/lib/payments/payouts/constants";
 import { sumPaise } from "@/lib/payments/utils/money";
@@ -491,17 +495,20 @@ export async function getConsultantDashboard(
     // every pending request regardless of age, and these two numbers render
     // inches apart, so matching its definition is what stops them contradicting
     // each other. The 90-day bound stays on the list, which is only a preview.
+    //
+    // #1345 — and the predicate itself is NeedsYou's, not a re-typed copy. Home
+    // is a personal (B2C) surface like PERSONAL_ORG_PIN below, so an org-funded
+    // pending request belongs to that org's dashboard and must not inflate this
+    // badge while the card underneath it excludes the same row.
     prisma.consultation.count({
-      where: {
-        consultationPlan: { consultantProfile: { id: consultantProfileId } },
-        status: "PENDING",
-      },
+      where: pendingConsultationWhere(consultantProfileId, {
+        kind: "personal",
+      }),
     }),
     prisma.subscription.count({
-      where: {
-        subscriptionPlan: { consultantProfileId },
-        status: "PENDING",
-      },
+      where: pendingSubscriptionWhere(consultantProfileId, {
+        kind: "personal",
+      }),
     }),
     // Fetch recent activities
     prisma.activityLog.findMany({

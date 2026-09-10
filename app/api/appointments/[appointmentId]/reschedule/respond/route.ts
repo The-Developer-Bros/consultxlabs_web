@@ -10,6 +10,11 @@ import {
 import { RESCHEDULE_OPEN_STATUSES } from "@/lib/booking/transitions";
 import { hasActiveDisputeForAppointment } from "@/lib/payments/dispute-guard";
 import { isOrgAdminOfAppointment } from "@/lib/booking/org-actor";
+import {
+  AppointmentBusyError,
+  BookingLockUnavailableError,
+  withAppointmentLock,
+} from "@/utils/appointmentlock";
 import type { EventType } from "@/utils/slotAllocation/types";
 
 const RespondSchema = z.object({ action: z.enum(["accept", "decline"]) });
@@ -193,12 +198,21 @@ export async function POST(
       );
     }
 
-    const result = await acceptProposal({
-      rescheduleRequestId: open.id,
-      eventType,
-      eventId,
-      resolvedById: session.user.id,
-    });
+    // #1340 — accept is a lifecycle mutation: it moves this appointment's slots
+    // to new times. The sibling cancel and reschedule routes already serialize
+    // on the `appointment-lock:` atom, so an accept that ran outside it was the
+    // one mover that could interleave with a concurrent cancel — the allocator's
+    // own consultant/consultee locks are keyed by person, not by appointment,
+    // and never contend with a cancel at all. Lock order is unchanged: the
+    // appointment atom is the coarsest and is taken before the allocator's.
+    const result = await withAppointmentLock(appointmentId, () =>
+      acceptProposal({
+        rescheduleRequestId: open.id,
+        eventType,
+        eventId,
+        resolvedById: session.user.id,
+      }),
+    );
     if (!result.done) {
       // Only "there is nothing here to accept" is a request-shape problem; every
       // other refusal is a state conflict.
@@ -217,6 +231,22 @@ export async function POST(
         "Proposal accepted — the booking has moved to the proposed times.",
     });
   } catch (error) {
+    // #1340 — lock outcomes are structured answers, never a 500, exactly as the
+    // reschedule route already reports them: 423 while another lifecycle
+    // mutation holds the appointment, 503 when the locking service itself is
+    // unreachable and the guard fails closed.
+    if (error instanceof AppointmentBusyError) {
+      return NextResponse.json(
+        { error: error.message, code: error.code },
+        { status: error.httpStatus },
+      );
+    }
+    if (error instanceof BookingLockUnavailableError) {
+      return NextResponse.json(
+        { error: error.message, code: error.code },
+        { status: error.httpStatus },
+      );
+    }
     return apiError({ tag: "[Reschedule.Respond]", error });
   }
 }

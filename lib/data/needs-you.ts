@@ -39,8 +39,15 @@ export interface NeedsYouSummary {
  * arm below is this surface's own business rule, not a scope rule: a request
  * has no appointment until it is allocated, and an unallocated request is by
  * definition not org-funded.
+ *
+ * #1345 — exported because the consultant Home badge counts the same cohort a
+ * few inches above NeedsYou, and re-typing the predicate there let the two
+ * numbers drift into different scopes.
  */
-function pendingConsultationWhere(consultantProfileId: string, scope: Scope) {
+export function pendingConsultationWhere(
+  consultantProfileId: string,
+  scope: Scope,
+) {
   const orgWhere = scopeToWhereOrgId(scope);
   return {
     status: "PENDING" as const,
@@ -51,7 +58,10 @@ function pendingConsultationWhere(consultantProfileId: string, scope: Scope) {
   };
 }
 
-function pendingSubscriptionWhere(consultantProfileId: string, scope: Scope) {
+export function pendingSubscriptionWhere(
+  consultantProfileId: string,
+  scope: Scope,
+) {
   return {
     status: "PENDING" as const,
     subscriptionPlan: { consultantProfileId },

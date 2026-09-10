@@ -46,9 +46,16 @@ const classUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
 const participantCreateMany = jest.fn().mockResolvedValue({ count: 1 });
 const participantUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
 const paymentFindUnique = jest.fn();
-const paymentUpdate = jest.fn().mockResolvedValue({});
+// #1439 — the confirmation stamp is a CAS, so the tx writer is updateMany
+// and a count of 1 means this capture won the PENDING row.
+const paymentUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
 const txStub = {
-  payment: { findUnique: paymentFindUnique, update: paymentUpdate },
+  payment: {
+    findUnique: paymentFindUnique,
+    // The appointmentId link is still a plain update — only STATUS rides a CAS.
+    update: jest.fn().mockResolvedValue({}),
+    updateMany: paymentUpdateMany,
+  },
   slotOfAppointment: {
     create: slotCreate,
     update: slotUpdate,

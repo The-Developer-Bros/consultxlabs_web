@@ -264,4 +264,35 @@ describe("reconcilePendingRefunds real-id PENDING polling", () => {
     expect(result.failedCount).toBe(0);
     expect(refundTable.update).not.toHaveBeenCalled();
   });
+
+  // #1458 — with STRIPE_ENABLED unset, the Stripe client is never built, so
+  // getRefund threw for every Stripe row, the error list filled up and the whole
+  // run reported success:false — the cleanup route answered 500 for what is
+  // deliberate configuration.
+  test("a fenced STRIPE refund is skipped and counted, not failed", async () => {
+    const previous = process.env.STRIPE_ENABLED;
+    delete process.env.STRIPE_ENABLED;
+    try {
+      refundTable.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([
+        {
+          id: "row_stripe",
+          refundId: "re_real",
+          status: "PENDING",
+          amountPaise: 10_000,
+          createdAt: new Date(Date.now() - 3 * HOUR),
+          payment: { paymentGateway: "STRIPE" },
+        },
+      ]);
+
+      const result = await reconcilePendingRefunds();
+
+      expect(mockGet).not.toHaveBeenCalled();
+      expect(result.skippedFenced).toBe(1);
+      expect(result.success).toBe(true);
+      expect(result.errors).toEqual([]);
+    } finally {
+      if (previous === undefined) delete process.env.STRIPE_ENABLED;
+      else process.env.STRIPE_ENABLED = previous;
+    }
+  });
 });

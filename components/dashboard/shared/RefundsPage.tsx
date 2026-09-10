@@ -2,10 +2,10 @@
 
 import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-// `formatCurrencyAmount`, not `formatCurrencyFromMajorUnit`: refunds carry
-// paise. The old call had both halves wrong — a field the payload has never
-// contained, passed to the rupees formatter — so it rendered ₹NaN rather than
-// a number that was merely 100× too large.
+// `formatCurrencyAmount`, not the old major-unit formatter (deleted in #1396):
+// refunds carry paise. The old call had both halves wrong — a field the payload
+// has never contained, passed to the rupees formatter — so it rendered ₹NaN
+// rather than a number that was merely 100× too large.
 import { formatCurrencyAmount } from "@/utils/formatting";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";

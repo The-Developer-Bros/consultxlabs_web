@@ -7,12 +7,16 @@
  * Schedule: Every 30 minutes (via GitHub Actions or external cron)
  */
 
-import { cleanupRoute, statusFor } from "@/lib/cron/cleanup-route";
+import {
+  cleanupRoute,
+  parseLimitParam,
+  statusFor,
+} from "@/lib/cron/cleanup-route";
 import { reconcilePaymentStatus } from "@/scripts/payments/reconcile-payment-status";
 
 export const { GET, POST } = cleanupRoute({
   job: "reconcile-payment-status",
-  run: () => reconcilePaymentStatus(),
+  run: (req) => reconcilePaymentStatus({ limit: parseLimitParam(req) }),
   summarize: (r) => ({
     totalProcessed: r.totalProcessed,
     reconciledCount: r.reconciledCount,

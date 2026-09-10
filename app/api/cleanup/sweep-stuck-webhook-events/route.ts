@@ -6,12 +6,12 @@
  *
  * Schedule: every ~10 minutes (CRON_SECRET-gated, like the other cleanup jobs).
  */
-import { cleanupRoute } from "@/lib/cron/cleanup-route";
+import { cleanupRoute, parseLimitParam } from "@/lib/cron/cleanup-route";
 import { sweepStuckWebhookEvents } from "@/scripts/cleanup/sweep-stuck-webhook-events";
 
 export const { GET, POST } = cleanupRoute({
   job: "sweep-stuck-webhook-events",
-  run: () => sweepStuckWebhookEvents(),
+  run: (req) => sweepStuckWebhookEvents({ limit: parseLimitParam(req) }),
   summarize: (r) => ({
     scanned: r.scanned,
     recovered: r.recovered,

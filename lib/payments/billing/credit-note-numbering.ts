@@ -69,3 +69,54 @@ export async function generateOrgCreditNoteNumber(
     seq,
   };
 }
+
+// ============================================================================
+// Platform (B2C) credit-note numbering — #1365
+// ============================================================================
+
+/**
+ * Atomically reserve the next platform credit-note sequence for a fiscal year.
+ * Rule 53 requires this series to run independently of the invoice series, so
+ * it has its own counter table.
+ */
+export async function allocatePlatformCreditNoteSeq(
+  tx: Tx,
+  fiscalYear: number,
+): Promise<number> {
+  const counter = await tx.platformCreditNoteCounter.upsert({
+    where: { fiscalYear },
+    create: { fiscalYear, nextSeq: 2 },
+    update: { nextSeq: { increment: 1 } },
+    select: { nextSeq: true },
+  });
+  return counter.nextSeq - 1;
+}
+
+/**
+ * Generate the next consumer credit-note number: `<PREFIX>-CN-<FY>-<SEQ4>`.
+ *
+ * The `-CN-` infix costs three characters against the same sixteen-character
+ * Rule 53 cap, so the sequence is four digits: this series can issue 9,999
+ * credit notes per fiscal year. That ceiling is well above the refund volume a
+ * consumer book of this size produces, and raising it means shortening the
+ * prefix, not widening the number.
+ */
+export async function generateConsumerCreditNoteNumber(
+  tx: Tx,
+  issuedAt: Date,
+): Promise<{ creditNoteNumber: string; fiscalYear: number; seq: number }> {
+  const fiscalYear = indianFiscalYear(issuedAt);
+  const seq = await allocatePlatformCreditNoteSeq(tx, fiscalYear);
+  const padded = seq.toString().padStart(4, "0");
+  const nonPrefixLength =
+    "-CN-".length + String(fiscalYear).length + 1 + padded.length;
+  const prefix = fitPrefixToRule46(
+    (process.env.PLATFORM_INVOICE_PREFIX ?? "FAM").toUpperCase(),
+    nonPrefixLength,
+  );
+  return {
+    creditNoteNumber: `${prefix}-CN-${fiscalYear}-${padded}`,
+    fiscalYear,
+    seq,
+  };
+}

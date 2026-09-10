@@ -21,6 +21,7 @@ import prisma from "../../lib/prisma";
 import { PayoutStatus, PaymentGateway } from "@prisma/client";
 import { withCronLock, LONG_JOB_TTL_MS } from "@/lib/cron/with-cron-lock";
 import { handlePayoutWebhook } from "@/lib/payments/payouts";
+import { resolveRazorpayXCredentials } from "@/lib/payments/payouts/razorpay-payouts";
 
 // #677 PM-15 — narrow PayoutStatus to the status union handlePayoutWebhook
 // accepts. mapGatewayStatus only ever returns these four, so the rest map to
@@ -98,12 +99,13 @@ async function getStripePayoutStatus(
 async function getRazorpayPayoutStatus(
   providerPayoutId: string,
 ): Promise<{ status: string; failureReason?: string; utr?: string } | null> {
-  const keyId = process.env.RAZORPAY_KEY_ID;
-  // #677 PM-1 — prod env defines RAZORPAY_SECRET (the canonical name the
-  // core lib reads); reading only RAZORPAY_KEY_SECRET silently disabled
-  // this reconciliation in production while it looked green.
-  const keySecret =
-    process.env.RAZORPAY_SECRET ?? process.env.RAZORPAY_KEY_SECRET;
+  // #1407 — the same resolver the disbursement path uses. Reading
+  // RAZORPAY_KEY_ID/RAZORPAY_SECRET here authenticated as the checkout
+  // merchant, not the RazorpayX one, so on an account with distinct X keys
+  // every lookup 401s and this reconciliation is silently dead while it
+  // looks green. (#677 PM-1 kept the RAZORPAY_SECRET fallback, inside the
+  // resolver now.)
+  const { keyId, keySecret } = resolveRazorpayXCredentials();
 
   if (!keyId || !keySecret) {
     console.warn("RazorpayX credentials not configured");
@@ -182,6 +184,14 @@ function mapGatewayStatus(
         return PayoutStatus.PROCESSING;
       case "rejected":
         return PayoutStatus.FAILED;
+      // #1407 — RazorpayX returns `failed` for a payout the bank refused after
+      // it was queued, and the arm had only `rejected`. That is precisely the
+      // cohort this sweep walks, so the payout fell through as an unknown
+      // status and was skipped: PENDING/PROCESSING forever, earnings still
+      // batched against money that never left. The Stripe arm has always
+      // mapped it. FAILED delegation un-batches the earnings and reverses TDS.
+      case "failed":
+        return PayoutStatus.FAILED;
       case "reversed":
         return PayoutStatus.FAILED;
       case "cancelled":
@@ -237,9 +247,11 @@ async function reconcilePayoutStatusUnlocked(): Promise<PayoutReconciliationResu
     orderBy: { updatedAt: "asc" },
   });
 
+  // #1407 — the pre-flight gate has to test the credentials the lookup will
+  // actually send, or it reports "configured" and every lookup still 401s.
+  const razorpayXCredentials = resolveRazorpayXCredentials();
   const razorpayConfigured = !!(
-    process.env.RAZORPAY_KEY_ID &&
-    (process.env.RAZORPAY_SECRET ?? process.env.RAZORPAY_KEY_SECRET)
+    razorpayXCredentials.keyId && razorpayXCredentials.keySecret
   );
   if (!razorpayConfigured) {
     console.warn(

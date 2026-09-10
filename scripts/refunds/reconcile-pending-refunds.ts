@@ -34,8 +34,26 @@ export interface RefundReconciliationResult {
   reconciledCount: number;
   failedCount: number;
   skippedCount: number;
+  /**
+   * #1458 — the subset of `skippedCount` that was left alone because its
+   * gateway is fenced off for this deployment. Reported separately so an
+   * operator can tell "nothing to do" from "there is settled money we are not
+   * polling because STRIPE_ENABLED is off".
+   */
+  skippedFenced: number;
   errors: string[];
   timestamp: string;
+}
+
+export interface ReconcilePendingRefundsOptions {
+  /**
+   * #1356 — applied to EACH pass below in full, not split or subtracted
+   * between them: it bounds each pass's own query so a single pass fits the
+   * ticker's 26s function ceiling, and the unbounded GitHub Actions run is
+   * the backstop that drains whatever a bounded tick leaves behind (ADR 27).
+   * Undefined keeps today's unbounded scan.
+   */
+  limit?: number;
 }
 
 /**
@@ -61,21 +79,39 @@ export interface RefundReconciliationResult {
  */
 // #476 — locked at the core so every entry (GH Actions / HTTP) shares one
 // mutual exclusion; fail-closed: money state must not double-run unlocked.
-export async function reconcilePendingRefunds(): Promise<RefundReconciliationResult> {
+export async function reconcilePendingRefunds(
+  opts: ReconcilePendingRefundsOptions = {},
+): Promise<RefundReconciliationResult> {
   return withCronLock(
     "reconcile-pending-refunds",
     { failMode: "closed", ttlMs: LONG_JOB_TTL_MS },
-    () => reconcilePendingRefundsUnlocked(),
+    () => reconcilePendingRefundsUnlocked(opts),
   );
 }
 
-async function reconcilePendingRefundsUnlocked(): Promise<RefundReconciliationResult> {
+async function reconcilePendingRefundsUnlocked(
+  opts: ReconcilePendingRefundsOptions = {},
+): Promise<RefundReconciliationResult> {
   const thresholdDate = new Date(Date.now() - RECONCILIATION_THRESHOLD_MS);
   const errors: string[] = [];
   let reconciledCount = 0;
   let failedCount = 0;
   let skippedCount = 0;
+  let skippedFenced = 0;
   let totalProcessed = 0;
+
+  /**
+   * #1458 — a PENDING refund on a gateway this deployment has fenced off is not
+   * reconcilable: the gateway client is never constructed, so `listRefunds` /
+   * `getRefund` throw, every fenced row lands in `errors`, and the whole run
+   * reports `success: false` — a 500 from the cleanup route for a condition
+   * that is deliberate configuration. `assertGatewayUsable` cannot be reused
+   * here because it deliberately leaves refund LOOKUPS open, so that a Payment
+   * already written against Stripe stays refundable after the fence goes up.
+   * Skip the row, count it, and let the summary say so.
+   */
+  const isFencedGateway = (gateway: PaymentGateway): boolean =>
+    gateway === PaymentGateway.STRIPE && process.env.STRIPE_ENABLED !== "true";
 
   // ------------------------------------------------------------------
   // Pass 1 — placeholders
@@ -89,9 +125,14 @@ async function reconcilePendingRefundsUnlocked(): Promise<RefundReconciliationRe
     include: {
       payment: true,
     },
-    orderBy: {
-      createdAt: "asc",
-    },
+    // Least-recently-touched first, id tie-break. Neither branch below that
+    // leaves a row PENDING (ambiguous / still within grace) writes back to
+    // it, so under a bounded run the same cohort can recur every tick; a
+    // persisted retry timestamp was deliberately NOT added here (pre-MVP,
+    // no-backfill posture) and starvation is capped by the unbounded GitHub
+    // Actions run, which always drains the full backlog.
+    orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+    take: opts.limit,
   });
 
   console.log(
@@ -110,6 +151,14 @@ async function reconcilePendingRefundsUnlocked(): Promise<RefundReconciliationRe
           `⏭️ Skipping refund ${refund.id} - unsupported gateway: ${refund.payment.paymentGateway}`,
         );
         skippedCount++;
+        continue;
+      }
+      if (isFencedGateway(refund.payment.paymentGateway)) {
+        console.log(
+          `⏭️ Skipping refund ${refund.id} - ${refund.payment.paymentGateway} is fenced off for this deployment`,
+        );
+        skippedCount++;
+        skippedFenced++;
         continue;
       }
 
@@ -231,12 +280,14 @@ async function reconcilePendingRefundsUnlocked(): Promise<RefundReconciliationRe
       createdAt: { lt: thresholdDate },
     },
     include: { payment: { select: { paymentGateway: true } } },
-    orderBy: { createdAt: "asc" },
+    // Same starvation reasoning as the placeholder pass above: "still
+    // settling" leaves the row untouched, so order least-recently-touched
+    // first rather than by creation.
+    orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+    take: opts.limit,
   });
 
-  console.log(
-    `Found ${pendingRealId.length} real-id PENDING refunds to poll`,
-  );
+  console.log(`Found ${pendingRealId.length} real-id PENDING refunds to poll`);
   totalProcessed += pendingRealId.length;
 
   for (const refund of pendingRealId) {
@@ -246,6 +297,11 @@ async function reconcilePendingRefundsUnlocked(): Promise<RefundReconciliationRe
         refund.payment.paymentGateway !== PaymentGateway.RAZORPAY
       ) {
         skippedCount++;
+        continue;
+      }
+      if (isFencedGateway(refund.payment.paymentGateway)) {
+        skippedCount++;
+        skippedFenced++;
         continue;
       }
 
@@ -295,6 +351,7 @@ async function reconcilePendingRefundsUnlocked(): Promise<RefundReconciliationRe
     reconciledCount,
     failedCount,
     skippedCount,
+    skippedFenced,
     errors,
     timestamp: new Date().toISOString(),
   };

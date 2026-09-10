@@ -104,7 +104,11 @@ type PaymentLegInput =
       referralCreditUsageId: string;
     }
   | {
-      source: "WALLET" | "INVOICE_ACCRUAL" | "OVERAGE_INVOICE_ACCRUAL" | "LICENSE";
+      source:
+        | "WALLET"
+        | "INVOICE_ACCRUAL"
+        | "OVERAGE_INVOICE_ACCRUAL"
+        | "LICENSE";
       amountPaise: number;
       programAssignmentId: string;
     };
@@ -156,16 +160,20 @@ export function isReversalLegSource(
 }
 
 /**
- * Per-payment invariant: `sum(non-reversal legs.amountPaise) === Payment.amount`.
+ * Per-payment funding identity:
+ * `Σ(non-reversal, non-REFERRAL_CREDIT legs.amountPaise) === Payment.amount`.
+ *
+ * #1347 — `Payment.amount` is the gateway charge (after discounts + tax −
+ * credits), so a REFERRAL_CREDIT leg is value the platform has ALREADY netted
+ * out of `amount`; summing it back in double-counts the credit and every
+ * credit-funded checkout dies at COMMIT on the DB constraint. The credit leg
+ * still exists — it is the `PLATFORM_PROMO` debit in the booking journal — it
+ * just is not part of the funding that has to add up to `amount`.
  *
  * `LICENSE` legs intentionally carry `amountPaise = 0` (the cost is
  * absorbed at contract time) — they're still part of the sum and the
  * math holds. For org-sponsored flows a single non-zero leg (WALLET or
- * INVOICE_ACCRUAL) equals `Payment.amount`. For B2C card flows with
- * referral credits applied the CARD leg carries the post-credit gateway
- * charge and the REFERRAL_CREDIT leg carries the credit value; together
- * they sum to `Payment.amount` (which is post-credit per the field-
- * level comment on `Payment.amount`).
+ * INVOICE_ACCRUAL) equals `Payment.amount`.
  *
  * #786 — `*_REVERSAL` legs are negative refund counter-entries. They are
  * excluded from the funding sum (originals stay immutable and still sum to
@@ -202,12 +210,19 @@ export function checkPaymentLegsSumToAmount(args: {
   const nonLicenseOriginals = originals.filter(
     (l) => !(l.source === "LICENSE" && l.amountPaise === 0),
   );
-  if (nonLicenseOriginals.length === 0 && originals.length > 0) {
-    return null;
-  }
+  // #1347 — the carve suppresses the SUM COMPARISON only, never the
+  // reversal-pair checks below. Returning early here let a positive or
+  // over-large *_REVERSAL leg pass the checker on a licence-only payment while
+  // `assert_payment_legs_ok` still raised on it at COMMIT, so runtime and
+  // database reached opposite verdicts about the same rows.
+  const licenseOnly = nonLicenseOriginals.length === 0 && originals.length > 0;
 
-  const legSum = originals.reduce((acc, leg) => acc + leg.amountPaise, 0);
-  if (legSum !== args.paymentAmountPaise) {
+  // #1347 — the credit is platform-funded and already netted out of
+  // Payment.amount; counting it here would demand it twice over.
+  const legSum = originals
+    .filter((l) => l.source !== "REFERRAL_CREDIT")
+    .reduce((acc, leg) => acc + leg.amountPaise, 0);
+  if (!licenseOnly && legSum !== args.paymentAmountPaise) {
     return {
       paymentAmountPaise: args.paymentAmountPaise,
       legSumPaise: legSum,
@@ -219,9 +234,17 @@ export function checkPaymentLegsSumToAmount(args: {
   for (const leg of args.legs) {
     if (!isReversalLegSource(leg.source)) continue;
     const sibling = args.legs
-      .filter((l) => l.source === REVERSAL_LEG_PAIRS[leg.source as keyof typeof REVERSAL_LEG_PAIRS])
+      .filter(
+        (l) =>
+          l.source ===
+          REVERSAL_LEG_PAIRS[leg.source as keyof typeof REVERSAL_LEG_PAIRS],
+      )
       .reduce((acc, l) => acc + l.amountPaise, 0);
-    if (leg.amountPaise > 0 || -leg.amountPaise > sibling) {
+    // #1347 — `>= 0`, not `> 0`: a zero reversal is an orphan counter-entry
+    // with no economic content, and `assert_payment_legs_ok` rejects it. The
+    // checker read zero as benign, so the two reached opposite verdicts on the
+    // one value neither writer emits (refund.ts skips `reverse <= 0`).
+    if (leg.amountPaise >= 0 || -leg.amountPaise > sibling) {
       return {
         paymentAmountPaise: args.paymentAmountPaise,
         legSumPaise: legSum,

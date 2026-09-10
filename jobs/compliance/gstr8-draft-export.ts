@@ -17,22 +17,22 @@ import * as Sentry from "@sentry/nextjs";
 import { buildGstr8Draft, type Gstr8SourceRow } from "@/lib/compliance/gstr8";
 import { withCronLock } from "@/lib/cron/with-cron-lock";
 import { abortIfMaintenance } from "@/lib/maintenance-cron";
+import {
+  previousIstCalendarMonthStart,
+  nextMonthStart,
+} from "@/lib/compliance/ist-period";
 
 async function main() {
   runJob("gstr8-draft-export", async () => {
     await abortIfMaintenance("gstr8-draft-export");
     // #476 — fail-open: the draft is read-only console output, harmless to repeat.
     await withCronLock("gstr8-draft-export", { failMode: "open" }, async () => {
-      // Default: previous calendar month in IST terms.
-      const nowIst = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+      // Default: previous calendar month in IST terms. The shift is shared
+      // with the outward-supplies register export (#1370).
       const monthStart = process.env.GSTR8_MONTH_START
         ? new Date(process.env.GSTR8_MONTH_START)
-        : new Date(
-            Date.UTC(nowIst.getUTCFullYear(), nowIst.getUTCMonth() - 1, 1),
-          );
-      const monthEnd = new Date(
-        Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + 1, 1),
-      );
+        : previousIstCalendarMonthStart();
+      const monthEnd = nextMonthStart(monthStart);
 
       const earnings = await prisma.consultantEarnings.findMany({
         where: {

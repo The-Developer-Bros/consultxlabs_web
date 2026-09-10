@@ -143,6 +143,32 @@ describe("PM-15 — payout reconcile delegates to handlePayoutWebhook", () => {
     expect(utr).toBeUndefined();
   });
 
+  // #1407 — RazorpayX `failed` (the bank refused a queued payout) had no arm
+  // here while Stripe's did, so the payout fell through as an unknown status
+  // and was skipped — which is the exact cohort this sweep exists for.
+  it("gateway `failed` → delegates FAILED, not skipped as an unknown status", async () => {
+    (global as unknown as { fetch: jest.Mock }).fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: "failed", failure_reason: "account closed" }),
+    });
+
+    const result = await reconcilePayoutStatus();
+
+    expect(handlePayoutWebhook).toHaveBeenCalledTimes(1);
+    const [provider, id, status, reason, utr] =
+      handlePayoutWebhook.mock.calls[0];
+    expect(provider).toBe("RAZORPAY");
+    expect(id).toBe("pout_live_1");
+    expect(status).toBe("FAILED");
+    // A plain `failed` is not the pre-completion reversal, so it carries the
+    // gateway's own reason without the net-zero note.
+    expect(reason).toBe("account closed");
+    expect(reason).not.toContain("net-zero");
+    expect(utr).toBeUndefined();
+    expect(result.failedCount).toBe(1);
+    expect(result.skippedCount).toBe(0);
+  });
+
   it("still-processing payout → no delegation (status unchanged)", async () => {
     (global as unknown as { fetch: jest.Mock }).fetch = jest.fn().mockResolvedValue({
       ok: true,

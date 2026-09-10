@@ -43,12 +43,15 @@
  *      org-license-covered bookings. The hot checkout path log-warns
  *      on mismatch; this invariant is the retroactive detector.)
  *
- *   G. For every OrganizationPayout:
+ *   G. For every OrganizationPayout in PENDING / APPROVED / PROCESSING /
+ *      COMPLETED:
  *      sum(OrganizationEarnings.orgSharePaise - .refundedAmountPaise)
  *        for batched earnings === OrganizationPayout.netPayoutPaise
  *      (drift here means the batch claim updated earnings but didn't
  *      match the payout totals — investigate the
- *      createOrgPayoutBatch tx history)
+ *      createOrgPayoutBatch tx history. #1471: FAILED / REVERSED /
+ *      CANCELLED payouts are skipped because they deliberately detach
+ *      their earnings back to READY.)
  *
  *   Note: as of A3 (per-collaborator HOST-org settlement) one Payment
  *   can carry N OrganizationEarnings rows — one per (paymentId, orgId)
@@ -125,6 +128,15 @@ export type Finding = {
     // #812 — a COMPLETED OrganizationPayout with no ORG_PAYOUT ledger
     // transaction: the cash left but the payable was never cleared in the journal.
     | "COMPLETED_PAYOUT_WITHOUT_LEDGER_TXN"
+    // #1408 — an OrganizationPayout whose `clawbackAmountPaise` exceeds the
+    // CASH DEBIT its `clawback:*` postings actually recorded. Only
+    // reversePayoutClawback posts one, and it does so best-effort inside a
+    // try/catch; the two other writers of `clawbackAmountPaise` (refund.ts and
+    // booking-refund.ts) post nothing at all. The money row and the journal are
+    // a dual write with no transaction spanning them, so this is the detector
+    // for the gap — total (nothing posted) and partial (a later clawback's
+    // posting lost) share the kind and differ only in `deltaPaise`.
+    | "LEDGER_DUAL_WRITE_GAP"
     // #780 — a stored money value approaching/beyond Number.MAX_SAFE_INTEGER.
     // The JS boundary converts BigInt → number; past 2^53−1 that conversion
     // loses precision (and sumPaise() starts throwing mid-flight). This
@@ -183,6 +195,59 @@ export type ReconcileReport = {
   };
   findings: Finding[];
 };
+
+/**
+ * #1408 — the clawback dual-write gap, compared on AMOUNTS rather than on the
+ * presence of a posting. `clawbackAmountPaise` is a running total: a payout
+ * clawed back twice whose second posting was swallowed still carries a
+ * `clawback:*` transaction, so a payout-id Set reads it as clean. The CASH
+ * DEBIT is the authoritative leg — it is the money that came back — so the sum
+ * of those legs is what the stamped counter is measured against. Pure, so the
+ * pin can drive it without standing up a whole reconciler run.
+ */
+export function clawbackDualWriteGapFindings(
+  payouts: {
+    id: string;
+    organizationId: string;
+    clawbackAmountPaise: number | bigint;
+  }[],
+  postedPaiseByPayout: Map<string, number>,
+): Finding[] {
+  const out: Finding[] = [];
+  for (const po of payouts) {
+    const expected = Number(po.clawbackAmountPaise);
+    // Both columns are BigInt and `Finding` carries plain numbers, so the
+    // narrowing stays. What must never happen quietly is a value that does not
+    // survive it: past 2^53 the comparison below rounds, and a rounded shortfall
+    // reads as `actual >= expected` — the detector would report CLEAN on a real
+    // dual-write gap. Loud failure naming the row beats a suppressed finding.
+    if (!Number.isSafeInteger(expected)) {
+      throw new Error(
+        `clawbackDualWriteGapFindings: OrganizationPayout ${po.id} has clawbackAmountPaise=${po.clawbackAmountPaise}, outside the safe-integer range — the shortfall comparison would round and could suppress a LEDGER_DUAL_WRITE_GAP.`,
+      );
+    }
+    const actual = postedPaiseByPayout.get(po.id) ?? 0;
+    // Shortfall only. A ledger that posted MORE than was stamped is the
+    // opposite defect and does not belong under this kind's note.
+    if (actual >= expected) continue;
+    out.push({
+      kind: "LEDGER_DUAL_WRITE_GAP",
+      organizationId: po.organizationId,
+      payoutId: po.id,
+      expectedPaise: expected,
+      actualPaise: actual,
+      deltaPaise: expected - actual,
+      details: {
+        scope: "org-payout-clawback",
+        note:
+          actual === 0
+            ? "OrganizationPayout.clawbackAmountPaise > 0 but no clawback:* ledger transaction against this payout."
+            : "OrganizationPayout.clawbackAmountPaise exceeds the summed CASH DEBIT of its clawback:* postings — a later clawback's dual write was lost.",
+      },
+    });
+  }
+  return out;
+}
 
 // #476 — locked at the core so every entry (GH Actions / HTTP) shares one
 // mutual exclusion; fail-open: read-only auditor, lock is belt-and-braces.
@@ -380,10 +445,28 @@ async function runReconcileLedgersUnlocked(
           chargeStatus: { in: ["PENDING", "FAILED", "CHARGED"] },
           paymentId: null,
         },
+        // ACCRUED means "billed on an issued invoice", which only the rollup
+        // produces and which always stamps the line item. A payment link cannot
+        // stand in for it, so this branch keeps invoiceLineItemId mandatory.
         {
           overageBehavior: "CHARGE_ORG",
-          chargeStatus: { in: ["ACCRUED", "CHARGED"] },
+          chargeStatus: "ACCRUED",
           invoiceLineItemId: null,
+        },
+        // #1458 — a wallet-funded CHARGE_ORG overage is collected by the
+        // booking's own wallet debit and never reaches an invoice, so it is born
+        // CHARGED with a paymentId and no line item. That link is proof of
+        // collection only when the payment behind it actually carries the WALLET
+        // leg that did the collecting; any other CHARGED event with no line item
+        // is still the drift this check hunts.
+        {
+          overageBehavior: "CHARGE_ORG",
+          chargeStatus: "CHARGED",
+          invoiceLineItemId: null,
+          OR: [
+            { paymentId: null },
+            { payment: { legs: { none: { source: "WALLET" } } } },
+          ],
         },
         { chargeStatus: "CHARGED", settledAt: null },
       ],
@@ -423,7 +506,7 @@ async function runReconcileLedgersUnlocked(
         paymentId: ev.paymentId,
         invoiceLineItemId: ev.invoiceLineItemId,
         settledAt: ev.settledAt,
-        note: "OverageEvent link/state invariant violated: CHARGE_MEMBER pending/failed/charged without a side-Payment, CHARGE_ORG accrued/charged without an InvoiceLineItem, or CHARGED without settledAt. Trace the transitionOverage() path that produced this state.",
+        note: "OverageEvent link/state invariant violated: CHARGE_MEMBER pending/failed/charged without a side-Payment, CHARGE_ORG accrued without an InvoiceLineItem, CHARGE_ORG charged with neither an InvoiceLineItem nor a booking Payment carrying the WALLET leg that collected it (#1458), or CHARGED without settledAt. Trace the transitionOverage() path that produced this state.",
       },
     });
   }
@@ -535,10 +618,26 @@ async function runReconcileLedgersUnlocked(
   // and writes them to the payout in one go. If anything ever diverges
   // (manual SQL, partial migration, future code changes) this catches
   // the drift before the next bank transfer is initiated.
+  //
+  // #1471 review — scoped to the statuses where the attachment is EXPECTED to
+  // hold. A FAILED payout (markOrgPayoutFailedInternal) and a REVERSED one
+  // (markOrgPayoutReversed) both detach their earnings back to READY with
+  // `orgPayoutId: null` on purpose, so they legitimately end up with zero
+  // attached earnings against a retained `netPayoutPaise` — every one of them
+  // was being reported as drift. CANCELLED is excluded for the same reason.
+  // APPROVED is included with PENDING/PROCESSING/COMPLETED because the batch is
+  // still live and its earnings are still claimed.
+  const ATTACHMENT_EXPECTED_STATUSES = [
+    "PENDING",
+    "APPROVED",
+    "PROCESSING",
+    "COMPLETED",
+  ] as const;
   const payouts = await prisma.organizationPayout.findMany({
-    where: opts.organizationId
-      ? { organizationId: opts.organizationId }
-      : undefined,
+    where: {
+      status: { in: [...ATTACHMENT_EXPECTED_STATUSES] },
+      ...(opts.organizationId ? { organizationId: opts.organizationId } : {}),
+    },
     select: {
       id: true,
       organizationId: true,
@@ -563,7 +662,7 @@ async function runReconcileLedgersUnlocked(
         deltaPaise: p.netPayoutPaise - expected,
         details: {
           earningsCount: p.earnings.length,
-          note: "OrganizationPayout.netPayoutPaise diverges from sum(orgShare - refunds) of attached earnings.",
+          note: "OrganizationPayout.netPayoutPaise diverges from sum(orgShare - refunds) of attached earnings. Only PENDING/APPROVED/PROCESSING/COMPLETED payouts are checked: FAILED, REVERSED and CANCELLED payouts release their earnings back to READY with orgPayoutId cleared, so a zero-earnings total on those is the designed outcome, not drift (#1471).",
         },
       });
     }
@@ -933,6 +1032,76 @@ async function runReconcileLedgersUnlocked(
           note: "OrganizationPayout.status=COMPLETED but no ORG_PAYOUT ledger transaction.",
         },
       });
+    }
+  }
+
+  // #1408 — the clawback dual-write. A refund against an already-paid org
+  // payout stamps `clawbackAmountPaise` on the payout and writes an audit row,
+  // but the matching `Dr CASH / Cr ORG_PAYABLE` reversal is a separate write:
+  // reversePayoutClawback posts it inside a try/catch that swallows the
+  // failure, and refund.ts / booking-refund.ts never post it at all. The
+  // stamped payout then claims cash was recovered that the journal has never
+  // seen. Matched on the soft link plus the `clawback:` key prefix because the
+  // full key embeds the refund id, which the payout row does not carry — and
+  // compared on summed amounts, not presence, since the counter is cumulative
+  // and a second clawback's lost posting hides behind the first one's.
+  {
+    const clawedBackPayouts = await prisma.organizationPayout.findMany({
+      where: {
+        clawbackAmountPaise: { gt: 0 },
+        ...(opts.organizationId ? { organizationId: opts.organizationId } : {}),
+      },
+      select: { id: true, organizationId: true, clawbackAmountPaise: true },
+    });
+    if (clawedBackPayouts.length > 0) {
+      // Chunked IN to stay under the bind-param cap, like the sibling lookups
+      // below; a full-scope run can carry more payout ids than one statement.
+      const CLAWBACK_CHUNK = 5_000;
+      const clawbackPostedByPayout = new Map<string, number>();
+      for (let i = 0; i < clawedBackPayouts.length; i += CLAWBACK_CHUNK) {
+        const clawbackTxns = await prisma.ledgerTransaction.findMany({
+          where: {
+            payoutId: {
+              in: clawedBackPayouts
+                .slice(i, i + CLAWBACK_CHUNK)
+                .map((po) => po.id),
+            },
+            idempotencyKey: { startsWith: "clawback:" },
+          },
+          select: {
+            payoutId: true,
+            entries: {
+              where: { direction: "DEBIT", account: { kind: "CASH" } },
+              select: { amountPaise: true },
+            },
+          },
+        });
+        for (const t of clawbackTxns) {
+          if (!t.payoutId) continue;
+          const posted = t.entries.reduce((sum, e) => {
+            // Same reasoning as the detector's guard: a leg that does not
+            // survive the narrowing would under-report the posted side, which
+            // manufactures a phantom gap or hides a real one.
+            const paise = Number(e.amountPaise);
+            if (!Number.isSafeInteger(paise)) {
+              throw new Error(
+                `clawback posting for payout ${t.payoutId} has amountPaise=${e.amountPaise}, outside the safe-integer range.`,
+              );
+            }
+            return sum + paise;
+          }, 0);
+          clawbackPostedByPayout.set(
+            t.payoutId,
+            (clawbackPostedByPayout.get(t.payoutId) ?? 0) + posted,
+          );
+        }
+      }
+      findings.push(
+        ...clawbackDualWriteGapFindings(
+          clawedBackPayouts,
+          clawbackPostedByPayout,
+        ),
+      );
     }
   }
 

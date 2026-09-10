@@ -66,7 +66,17 @@ Each `Payment` carries zero or more `PaymentLeg` rows (append-only; `prisma/sche
 
 Legs are **append-only** — a refund never mutates the original leg; it upserts a negative `*_REVERSAL` sibling (`lib/payments/operations/refund.ts:778`). The `@@unique([paymentId, source])` constraint means one reversal leg per source; subsequent partial refunds decrement the existing reversal leg via `update: { amountPaise: { decrement: reverse } }`.
 
-Invariant: `sum(non-reversal legs.amountPaise) == Payment.amount` when legs are present (LICENSE legs contribute 0).
+Invariant: `sum(non-reversal, non-REFERRAL_CREDIT legs.amountPaise) == Payment.amount` when legs are present (LICENSE legs contribute 0). The referral credit sits outside the sum because `Payment.amount` is the post-credit gateway charge, so the credit has already been deducted from it and counting the leg as well would demand it twice (#1347). See [payment legs §3](../enterprise/10-money-and-ledger/09-payment-legs.md#3-invariants).
+
+### Programme overage across the rails (#1458)
+
+A booking that breaches its programme's cap does not settle the same way on every rail, because the rails collect at different moments.
+
+On the **INVOICE** rail the org has not paid anything yet, so the marginal is carved out of the base `INVOICE_ACCRUAL` leg into an `OVERAGE_INVOICE_ACCRUAL` leg and billed at the month-end rollup. On the **WALLET** rail the debit taken when the booking committed is the whole nominal price, so the overage is collected the moment the booking commits: no `OVERAGE_INVOICE_ACCRUAL` leg is written, `Payment.amount` is left exactly at the wallet debit, and the `OverageEvent` is recorded as `CHARGED` and settled against the payment whose `WALLET` leg collected it. Writing a leg there would have broken the leg-sum invariant above and, worse, incrementing `Payment.amount` on top of it made a later cancellation refund the organisation more than its wallet was ever debited.
+
+`CHARGE_MEMBER` is **not available on a WALLET-funded billing account**. Charging the member requires carving the over-cap portion back out of the parent payment, which on this rail would mean crediting the wallet mid-transaction — the credit-back that #715 has never built. The combination is refused when a programme is created or patched, and checkout keeps a fail-closed refusal (`OVERAGE_CHARGE_MEMBER_UNSUPPORTED`, HTTP 409) for any programme configured before that guard existed.
+
+`PROGRAM_CAP_EXHAUSTED` is the contract for the per-cycle overage ceiling. The settlement code throws it as an HTTP 402 with a machine-readable code, the checkout transaction's catch rethrows it unchanged because that code is registered in `BUSINESS_ERROR_CODES`, and the route answers 402 with a toast telling the buyer that the organisation's programme budget for this cycle is used up. It is a modelled outcome, so Sentry records it as expected volume rather than a fault; the two overage funding refusals above are deliberately not modelled, because they mean a programme was configured in a shape no rail can collect on.
 
 ---
 

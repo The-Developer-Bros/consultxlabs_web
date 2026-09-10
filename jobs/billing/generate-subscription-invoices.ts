@@ -42,6 +42,8 @@ import { withCronLock, LONG_JOB_TTL_MS } from "@/lib/cron/with-cron-lock";
 import { dispatchWebhookEvent } from "@/lib/enterprise/outbound-webhooks/dispatch";
 import * as Sentry from "@sentry/nextjs";
 import { runJob } from "@/lib/observability/job-sentry";
+import { reportSentryError } from "@/lib/observability/report";
+import { recordSystemEvent } from "@/lib/enterprise/system-events";
 
 // Reminder fires when nextInvoiceDate is within this many days. Once
 // per cycle (gated by BillingSubscription.renewalReminderSentAt).
@@ -126,6 +128,11 @@ export async function runGenerateSubscriptionInvoices(): Promise<{
       nextEnd.setMonth(nextEnd.getMonth() + 3);
     else nextEnd.setFullYear(nextEnd.getFullYear() + 1);
 
+    // #1401 — held outside the transaction so the P2002 handler below can name
+    // the number that collided; the value is only meaningful once the claim has
+    // been won and the counter reserved.
+    let competingInvoiceNumber: string | undefined;
+
     try {
       const result = await prisma.$transaction(
         async (tx) => {
@@ -165,6 +172,7 @@ export async function runGenerateSubscriptionInvoices(): Promise<{
             },
             now,
           );
+          competingInvoiceNumber = invoiceNumber;
 
           const invoice = await tx.organizationInvoice.create({
             data: {
@@ -276,6 +284,36 @@ export async function runGenerateSubscriptionInvoices(): Promise<{
         console.warn(
           `[cron] Duplicate invoiceNumber for subscription ${sub.id}; will retry next run`,
         );
+        // #1401 — no number burns: the counter reservation runs inside this
+        // same Serializable transaction, so the collision rolls the sequence
+        // back with it and the next run re-issues cleanly. What was missing is
+        // that nobody heard about it — a console.warn in a cron is not an
+        // alert, and a repeating collision means the claim UPDATE has stopped
+        // serialising the workers, which is worth waking someone for. Alerting
+        // only; the skip-and-retry behaviour is unchanged.
+        reportSentryError(err, {
+          subsystem: "jobs",
+          op: "generate-subscription-invoices",
+          level: "error",
+          extra: { subscriptionId: sub.id, competingInvoiceNumber },
+        });
+        // One capture, not two: recordSystemError escalates to Sentry itself,
+        // and its escalation drops `context`, so the collision extras would
+        // only survive on the reportSentryError event above. The durable row
+        // is written through recordSystemEvent directly instead. Awaited: the
+        // insert rides this job's Prisma client, and a fire-and-forget one
+        // loses the audit row to the `$disconnect()` at the end of `main`.
+        await recordSystemEvent({
+          organizationId: sub.contract.organization.id,
+          category: "INVOICE",
+          severity: "ERROR",
+          message: `Duplicate invoice number on subscription ${sub.id}: ${err.message}`,
+          context: {
+            subscriptionId: sub.id,
+            competingInvoiceNumber,
+            errorMessage: err.message,
+          },
+        }).catch(() => {});
         skipped++;
         continue;
       }

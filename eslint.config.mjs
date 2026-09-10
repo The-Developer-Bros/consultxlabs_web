@@ -39,9 +39,12 @@ export default [
     },
   },
 
-  // Base config for all JavaScript/TypeScript files
+  // Base config for all JavaScript/TypeScript files. `mts`/`cts` included so
+  // netlify/functions/*.mts (#1356 — the scheduled ticker) is linted rather
+  // than silently skipped; it was previously the only extension this repo
+  // ships that fell through every `files` glob below.
   {
-    files: ["**/*.{js,mjs,cjs,ts,jsx,tsx}"],
+    files: ["**/*.{js,mjs,cjs,ts,mts,cts,jsx,tsx}"],
     languageOptions: {
       globals: {
         ...globals.browser,

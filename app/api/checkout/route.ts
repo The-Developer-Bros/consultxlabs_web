@@ -4,7 +4,10 @@ import { handleCheckout } from "@/lib/payments/operations/checkout";
 import {
   classifyError,
   logClassifiedError,
+  isBusinessErrorCode,
+  ErrorTypes,
 } from "@/lib/errors/classification/payment-error-classification";
+import { reportSentryError } from "@/lib/observability/report";
 import { NextRequest, NextResponse } from "next/server";
 import { requireApiAuth } from "@/lib/auth-helpers";
 import {
@@ -15,6 +18,8 @@ import {
   EventFullError,
 } from "@/utils/appointmentlock";
 import { WalletFrozenError } from "@/lib/payments/wallet-freeze";
+import { WalletInsufficientFundsError } from "@/lib/api/organizations/wallet";
+import { DomainVerificationRequiredError } from "@/lib/enterprise/governance";
 import { checkoutLimiter, applyRateLimit } from "@/lib/rate-limit";
 import { ZodError } from "zod";
 import { Prisma } from "@prisma/client";
@@ -80,7 +85,6 @@ export async function POST(req: NextRequest) {
         event: "checkout_gateway_routed",
         buyerCountry,
         gateway: gatewayRouting.gateway,
-        isIBT: gatewayRouting.isIBT,
         reason: gatewayRouting.reason,
         timestamp: new Date().toISOString(),
       }),
@@ -207,6 +211,45 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // #1477 — an overdrawn wallet reaches here with its own code, so the
+    // classifier below would already answer 402. It gets its own branch anyway
+    // for the two things that fall-through cannot do: replace a message naming
+    // the billing account and the paise figure with copy the buyer can act on,
+    // and skip the unconditional `captureException` under it, which would file
+    // a routine refusal as an exception.
+    if (error instanceof WalletInsufficientFundsError) {
+      // #1477 — a modelled refusal, reported like the other business-coded
+      // outcomes below so the route's observability stays uniform.
+      reportSentryError(error, { subsystem: "checkout", expected: true });
+      return NextResponse.json(
+        {
+          error:
+            "This organization's wallet does not have enough balance for this booking. Your card was not charged — ask your billing admin to top it up.",
+          errorType: ErrorTypes.WALLET_INSUFFICIENT_FUNDS,
+          yourCardWasNotCharged: true,
+          timestamp: new Date().toISOString(),
+        },
+        { status: error.httpStatus },
+      );
+    }
+
+    // #1407 — invoice funding asserts a verified org domain
+    // (lib/payments/operations/checkout.ts:2585) and the guard's typed 403 fell
+    // through to classifyError, which is message-only and answered 500
+    // UNKNOWN_ERROR. Honour the structured status like WalletFrozenError above,
+    // so the page can say what the admin has to do.
+    if (error instanceof DomainVerificationRequiredError) {
+      return NextResponse.json(
+        {
+          error:
+            "Invoice funding requires a verified domain on this organization. Your card was not charged — ask your billing admin to verify the domain, or pay by card instead.",
+          errorType: "DOMAIN_VERIFICATION_REQUIRED",
+          timestamp: new Date().toISOString(),
+        },
+        { status: error.httpStatus },
+      );
+    }
+
     // #1319 — an exhausted serialization retry (P2034 ×4) means the tx never
     // committed: nothing was charged and a retry will see the sibling's state.
     // classifyError is message-only and would label it 500.
@@ -227,10 +270,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    Sentry.captureException(
-      error instanceof Error ? error : new Error(String(error)),
-      { tags: { subsystem: "checkout" } },
-    );
+    // #1477 — an error carrying a registered business code is an ANSWER, not a
+    // fault: the classifier below already resolves it to its own status and
+    // toast. Capturing it here as an exception is what kept every coded refusal
+    // without an explicit branch above — the #1458 programme-cap codes, the
+    // #1467 entitlement codes — paging as a checkout incident. Report it the
+    // way the modelled refusals inside handleCheckout are reported instead.
+    if (isBusinessErrorCode((error as { code?: unknown } | null)?.code)) {
+      reportSentryError(error, { subsystem: "checkout", expected: true });
+    } else {
+      Sentry.captureException(
+        error instanceof Error ? error : new Error(String(error)),
+        { tags: { subsystem: "checkout" } },
+      );
+    }
     const classified = classifyError(error, "Checkout failed");
     logClassifiedError("Checkout", classified, error);
 

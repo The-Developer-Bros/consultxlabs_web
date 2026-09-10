@@ -243,7 +243,8 @@ export async function createApprovalPaymentIntent(
       // was just asked for: leaving the old amount would make the trial
       // checkout page quote a number the charge does not honour, which is
       // exactly the drift that froze the amount onto this row to begin with.
-      // The CARD leg follows for the same reason — sum(legs) must equal amount.
+      // The CARD leg follows for the same reason — the funding legs (every
+      // source but REFERRAL_CREDIT) must still sum to amount (#1347).
       await prisma.payment.update({
         where: { id: remintIntoPaymentId },
         data: {

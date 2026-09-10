@@ -98,6 +98,7 @@ describe("PM-12 — createRazorpayRefund targets the captured payment", () => {
     });
 
     await createRazorpayRefund({
+      idempotencyKey: "clx3k2j9a0000abcd1234efgh",
       paymentIntentId: "order_1",
       amount: 5000,
       reason: "requested_by_customer",
@@ -121,7 +122,11 @@ describe("PM-12 — createRazorpayRefund targets the captured payment", () => {
       notes: {},
     });
 
-    await createRazorpayRefund({ paymentIntentId: "order_2", amount: 1000 });
+    await createRazorpayRefund({
+      paymentIntentId: "order_2",
+      amount: 1000,
+      idempotencyKey: "clx3k2j9a0000abcd1234efgh",
+    });
 
     expect(refundedPaymentId()).toBe("pay_only");
   });

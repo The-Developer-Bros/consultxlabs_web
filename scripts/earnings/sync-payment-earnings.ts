@@ -61,6 +61,12 @@ export interface PaymentEarningSyncResult {
   timestamp: string;
 }
 
+export interface SyncPaymentEarningsOptions {
+  /** #1356 — overrides MAX_PAYMENTS_PER_RUN for the Netlify ticker; undefined
+   * keeps the 500-row GitHub Actions ceiling. */
+  limit?: number;
+}
+
 /** A payment that has a booking but no consultant anyone could ever pay. */
 type UnaccruablePayment = {
   id: string;
@@ -182,20 +188,25 @@ function mapAppointmentType(type: AppointmentsType): AppointmentType {
  */
 // #476 — locked at the core so every entry (GH Actions / HTTP) shares one
 // mutual exclusion; fail-closed: money state must not double-run unlocked.
-export async function syncPaymentEarnings(): Promise<PaymentEarningSyncResult> {
+export async function syncPaymentEarnings(
+  opts: SyncPaymentEarningsOptions = {},
+): Promise<PaymentEarningSyncResult> {
   return withCronLock(
     "sync-payment-earnings",
     { failMode: "closed", ttlMs: LONG_JOB_TTL_MS },
-    () => syncPaymentEarningsUnlocked(),
+    () => syncPaymentEarningsUnlocked(opts),
   );
 }
 
-async function syncPaymentEarningsUnlocked(): Promise<PaymentEarningSyncResult> {
+async function syncPaymentEarningsUnlocked(
+  opts: SyncPaymentEarningsOptions = {},
+): Promise<PaymentEarningSyncResult> {
   const errors: string[] = [];
   let totalProcessed = 0;
   let createdCount = 0;
   let skippedCount = 0;
   let errorCount = 0;
+  const maxPayments = opts.limit ?? MAX_PAYMENTS_PER_RUN;
 
   const now = new Date();
   const alertCutoff = new Date(
@@ -210,8 +221,8 @@ async function syncPaymentEarningsUnlocked(): Promise<PaymentEarningSyncResult> 
   let cursor: string | undefined;
   let hasMore = true;
 
-  while (hasMore && totalProcessed < MAX_PAYMENTS_PER_RUN) {
-    const take = Math.min(BATCH_SIZE, MAX_PAYMENTS_PER_RUN - totalProcessed);
+  while (hasMore && totalProcessed < maxPayments) {
+    const take = Math.min(BATCH_SIZE, maxPayments - totalProcessed);
     // Fetch batch with cursor-based pagination
     const payments = await prisma.payment.findMany({
       where: {

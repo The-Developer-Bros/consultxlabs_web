@@ -44,6 +44,14 @@ export const FINANCIAL_JOB_NAMES = new Set([
   "sync-payment-earnings",
   "generate-subscription-invoices",
   "settle-invoice-accruals",
+  // #1506 — cancels and refunds consultant no-shows through
+  // refundBookingPayment; every job that calls the refund front door belongs
+  // here so DEGRADED maintenance holds it with the other refunding jobs.
+  "detect-consultant-no-shows",
+  // #1506 — expirePaymentPendingRequests/expireApprovedUnallocatedSubscriptions
+  // in this job call refundPaymentsForExpired, another refund front-door
+  // caller that must be held with the rest of the money jobs.
+  "expire-stale-requests",
   // Added by the wave-5 sweep: each of these either moves money directly or
   // mutates the org contract/program state the checkout sponsorship resolver
   // reads, so a partial deployment can bill against a half-written entitlement.
@@ -57,6 +65,9 @@ export const FINANCIAL_JOB_NAMES = new Set([
   // state onto the invoice. It moves no money, but a half-deployed payload
   // becomes a statutory record that can only be cancelled for 24 hours.
   "irp-uploader",
+  // #1370 — its healer mints tax invoices, which burns numbers from a gapless
+  // statutory series. A half-deployed run leaves gaps that cannot be filled.
+  "gst-outward-register-export",
 ]);
 
 /** The maintenance phases that can stop a job. */

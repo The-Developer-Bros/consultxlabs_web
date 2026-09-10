@@ -68,9 +68,9 @@ export default async function ExplorePrograms() {
     getTopicsWithCount("all").catch(
       emptyOnTransientDbError("topics", { perRequest: true }),
     ),
-    // `null` here means "show the marketing numbers instead", which the client
-    // already handles. Routed through the helper rather than a local catch so a
-    // real defect surfaces instead of quietly pinning the hero to placeholders.
+    // #1490 — `null` now means "show no numbers", not "show the marketing
+    // numbers": there are no placeholder figures left to fall back to. Routed
+    // through the helper rather than a local catch so a real defect surfaces.
     getCachedProgramCounts().catch(
       fallbackOnTransientDbError("program stats", null, { perRequest: true }),
     ),
@@ -101,14 +101,39 @@ export default async function ExplorePrograms() {
 }
 
 // Marketing counts change slowly (a few plans/day) — cache cross-request for an
-// hour rather than re-running two aggregates on every explore visit (#932 perf).
+// hour rather than re-running the aggregates on every explore visit (#932 perf).
+//
+// #1490 — the plan counts are of PUBLISHED plans only. They used to count every
+// row, including the org-only ones this page cannot show a visitor, which made
+// the number on the page larger than the catalogue behind it. The third figure
+// replaces a hardcoded "25K+ Students Enrolled" that was read from nothing: it
+// counts distinct LEARNERS holding a seat that was actually paid for and not
+// given back (CONFIRMED or ATTENDED), so one person across four webinars counts
+// once, and a held-but-unpaid seat does not count at all.
 const getCachedProgramCounts = unstable_cache(
   async () => {
-    const [classCount, webinarCount] = await Promise.all([
-      prisma.classPlan.count(),
-      prisma.webinarPlan.count(),
-    ]);
-    return { classCount, webinarCount };
+    const [publishedClassCount, publishedWebinarCount, learners] =
+      await Promise.all([
+        prisma.classPlan.count({ where: { visibility: "PUBLIC" } }),
+        prisma.webinarPlan.count({ where: { visibility: "PUBLIC" } }),
+        prisma.appointmentParticipant.findMany({
+          where: {
+            role: "CONSULTEE",
+            status: { in: ["CONFIRMED", "ATTENDED"] },
+            appointment: {
+              appointmentType: { in: ["WEBINAR", "CLASS"] },
+              deletedAt: null,
+            },
+          },
+          select: { userId: true },
+          distinct: ["userId"],
+        }),
+      ]);
+    return {
+      publishedClassCount,
+      publishedWebinarCount,
+      enrolledLearnerCount: learners.length,
+    };
   },
   ["program-stats"],
   { revalidate: 3600, tags: ["programs"] },

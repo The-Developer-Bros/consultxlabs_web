@@ -7,7 +7,7 @@
  * the bearer gate keeps random callers from running it.
  */
 
-import { cleanupRoute } from "@/lib/cron/cleanup-route";
+import { cleanupRoute, parseLimitParam } from "@/lib/cron/cleanup-route";
 import { dispatchOutboundWebhooks } from "@/scripts/cleanup/dispatch-outbound-webhooks";
 
 export const { GET, POST } = cleanupRoute({
@@ -15,7 +15,7 @@ export const { GET, POST } = cleanupRoute({
   // The HTTP route does NOT disconnect — `prisma` is the global singleton
   // shared with the rest of the Next runtime. We only disconnect in the
   // standalone job wrapper (jobs/cleanup/*).
-  run: () => dispatchOutboundWebhooks(),
+  run: (req) => dispatchOutboundWebhooks({ limit: parseLimitParam(req) }),
   summarize: (r) => ({
     scanned: r.scanned,
     succeeded: r.succeeded,

@@ -35,6 +35,7 @@ import {
   mintInvoiceRefundCreditNote,
   mintRefundCreditNote,
 } from "@/lib/payments/operations/refund";
+import { mintConsumerCreditNote } from "@/lib/payments/billing/consumer-invoice";
 import { applyReversal } from "@/lib/payments/operations/reversal-engine";
 import { recordTdsReversal } from "@/lib/payments/tax/tds-service";
 import { AUDIT_ACTIONS } from "@/lib/enterprise/audit-actions";
@@ -621,9 +622,30 @@ export async function handleRefundCreated(
   return await withSerializableRetry(() =>
     prisma.$transaction(
       async (tx) => {
-    // Find the payment (B2C appointment path)
-    const payment = await tx.payment.findUnique({
-      where: { paymentIntent: paymentIntentId },
+    // Find the payment (B2C appointment path).
+    //
+    // #1353 — match on EITHER id. A refund webhook carries only the gateway's
+    // `pay_…` payment id, so the dispatcher had to translate it into our order
+    // id with a live `payments.fetch`; when that call failed it passed the
+    // `pay_…` id through unchanged and a lookup keyed solely on `paymentIntent`
+    // could never match it. The refund then deferred and was re-driven for up
+    // to a week against a payment that had been captured all along. Now the id
+    // the webhook actually carries is itself a key.
+    //
+    // Deliberately NOT filtered on `deletedAt: null`: the lookup this replaced
+    // was a `findUnique` on `paymentIntent`, which reached soft-deleted rows
+    // too. A Payment soft-deleted after capture still owes its refund event a
+    // hearing — excluding it would defer the webhook and give up on it after
+    // 168h, which is a money outcome, not a tidier query.
+    const payment = await tx.payment.findFirst({
+      where: {
+        OR: [
+          { paymentIntent: paymentIntentId },
+          ...(providerPaymentId
+            ? [{ gatewayPaymentId: providerPaymentId }]
+            : []),
+        ],
+      },
     });
 
     if (!payment) {
@@ -967,8 +989,16 @@ export async function handleRefundCreated(
       // error=true which the sweeper skips (it only re-drives error=null) — both
       // are permanent death on Razorpay (no redelivery after a 200). Instead
       // DEFER: on Razorpay the dispatcher skips the mark and the sweeper re-drives
-      // until the payment lands (or the terminal age cap gives up). Stripe retries
-      // natively on a 5xx and doesn't read this return, so keep throwing there.
+      // until the payment lands (or the terminal age cap gives up).
+      //
+      // Stripe keeps throwing, and the asymmetry is deliberate rather than
+      // leftover: sweep-stuck-webhook-events.ts selects
+      // `provider: { in: ["razorpay", "stream"] }`, so a deferred Stripe event
+      // has NO actor — it would sit processed=false/error=null forever after a
+      // 200 told Stripe to stop retrying. The throw returns 5xx, and Stripe's
+      // native retry schedule (~3 days) is the re-drive. Extracting a Stripe
+      // dispatch and adding it to the sweep is the precondition for unifying
+      // these two branches.
       const deferReason = `refund-before-capture: payment not yet recorded for refund ${refundId} (paymentIntent=${paymentIntentId}, providerPaymentId=${providerPaymentId})`;
       if (gateway === "RAZORPAY") {
         return new DeferSignal(deferReason);
@@ -1223,11 +1253,26 @@ export async function handleDisputeCreated(
   return await withSerializableRetry(() =>
     prisma.$transaction(
       async (tx) => {
-        const payment = resolvedPaymentIntent
-          ? await tx.payment.findUnique({
-              where: { paymentIntent: resolvedPaymentIntent },
-            })
-          : null;
+        // #1353 — either id resolves the disputed payment: the order id when
+        // the gateway lookup above succeeded, or `chargeId` (the `pay_…` id the
+        // webhook itself carried) against the column the capture pipeline now
+        // persists. The second key is what keeps a dispute linkable when that
+        // gateway fetch fails — until now such a failure meant no link at all,
+        // a CRITICAL_DISPUTE_UNLINKED page, and disputed earnings left payable
+        // until the six-hourly reconcile cron noticed. As on the refund path,
+        // no `deletedAt` filter: this replaced a `findUnique` that reached
+        // soft-deleted rows, and a chargeback against one still has to be
+        // recorded and still has to hold the earnings.
+        const payment = await tx.payment.findFirst({
+          where: {
+            OR: [
+              ...(resolvedPaymentIntent
+                ? [{ paymentIntent: resolvedPaymentIntent }]
+                : []),
+              { gatewayPaymentId: chargeId },
+            ],
+          },
+        });
 
         if (!payment) {
           console.warn(`Payment not found for dispute: ${disputeId}`);
@@ -1659,6 +1704,17 @@ export async function handleDisputeUpdated(
           reason: `chargeback lost (dispute ${disputeId})`,
         });
 
+        // #1365 — the B2C sibling. A personal buyer's tax invoice is reversed
+        // by its own s.34 credit note on the platform series; idempotent on
+        // ConsumerCreditNote.disputeId, and a no-op when no consumer invoice
+        // was ever issued for the payment.
+        await mintConsumerCreditNote(tx, {
+          paymentId: dispute.paymentId,
+          disputeId: dispute.id,
+          amountPaise: dispute.amountPaise,
+          reason: `chargeback lost (dispute ${disputeId})`,
+        });
+
         // #738-B — TCS u/s 52 parity: if collection ever stamped this payment
         // (flag-gated, schema-live), the chargeback must net it out of the
         // next GSTR-8. Inert while gstTcsCollectedPaise stays null.
@@ -2081,6 +2137,12 @@ export async function handleRazorpayPayoutWebhook(
     processed: "COMPLETED",
     reversed: "FAILED",
     rejected: "FAILED",
+    // #1451 — RazorpayX answers a bank-level failure with `failed`, and the missing
+    // entry fell through to the `|| "PENDING"` default: a `payout.failed`
+    // delivery left the consultant payout in flight and its earnings BATCHED
+    // forever, because the un-batch back to READY only runs on the FAILED
+    // branch of handlePayoutWebhook. The Stripe twin below already maps it.
+    failed: "FAILED",
     cancelled: "CANCELLED",
   };
 

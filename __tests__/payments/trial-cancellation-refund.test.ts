@@ -90,7 +90,7 @@ const paidTrial = {
 
 function appointmentStartingInHours(hours: number) {
   return {
-    cancellationPolicySnapshot: null,
+    cancellationPolicy: null,
     slotsOfAppointment: [
       { startsAt: new Date(Date.now() + hours * 3_600_000) },
     ],

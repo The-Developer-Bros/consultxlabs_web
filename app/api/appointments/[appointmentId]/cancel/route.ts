@@ -6,12 +6,13 @@ import {
   withAppointmentLock,
 } from "@/utils/appointmentlock";
 import { setParticipantStatus } from "@/lib/booking/participants";
-import prisma from "@/lib/prisma";
+import prisma, { type Tx } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 import { CancellationReason } from "@prisma/client";
 import { notifyAppointmentCancelled } from "@/lib/novu";
 import { notificationScope } from "@/lib/novu/workflows";
 import { notificationHref } from "@/lib/novu/resolve-href";
+import { planTitleOrSessionLabel } from "@/lib/novu/humanize";
 import { CancelAppointmentSchema } from "@/schemas/appointments";
 import {
   logConsultationCancelled,
@@ -39,7 +40,78 @@ import {
   EVENT_ALLOWED_FROM,
   RESCHEDULE_OPEN_STATUSES,
   SLOT_RESCHEDULABLE_FROM,
+  transitionClassEvent,
+  transitionConsultationRequest,
+  transitionRescheduleRequest,
+  transitionSlotCompletion,
+  transitionSubscriptionRequest,
+  transitionWebinarEvent,
 } from "@/lib/booking/transitions";
+import { IllegalTransitionError } from "@/lib/enterprise/transitions";
+
+/** Audit attribution shared by every CAS this cancel drives (#1322 A12). */
+type CancelAuditMeta = {
+  actorUserId: string;
+  reason: string | null;
+  organizationId: string | null;
+};
+
+/**
+ * Which rows this cancel sweeps. A whole-subscription or whole-class cancel
+ * also ends the sessions of its sibling appointments; every other booking ends
+ * only its own. The slot sweep and the participant sweep must never disagree
+ * about that, so both read the scope from here (#1383).
+ */
+function cancelSweepScope(appointment: {
+  id: string;
+  subscription: { id: string } | null;
+  class: { id: string } | null;
+}) {
+  if (appointment.subscription) {
+    return { appointment: { subscriptionId: appointment.subscription.id } };
+  }
+  if (appointment.class) {
+    return { appointment: { classId: appointment.class.id } };
+  }
+  // Consultation/webinar/trial — single appointment.
+  return { appointmentId: appointment.id };
+}
+
+/**
+ * Close any live reschedule proposal on a booking being cancelled. Leaving one
+ * open would keep `openForAppointmentId` reserved forever and let the expiry
+ * cron act on a cancelled booking. The helper CASes one row by id — hence the
+ * read — and releases the reservation itself on every terminal target, so
+ * `data` carries nothing here (#1383).
+ */
+async function declineOpenReschedules(
+  tx: Pick<Tx, "rescheduleRequest" | "bookingStatusHistory">,
+  appointmentId: string,
+  auditMeta: CancelAuditMeta,
+): Promise<void> {
+  const openProposals = await tx.rescheduleRequest.findMany({
+    where: { appointmentId, status: { in: RESCHEDULE_OPEN_STATUSES } },
+    select: { id: true },
+  });
+  for (const proposal of openProposals) {
+    try {
+      await transitionRescheduleRequest(tx, {
+        ...auditMeta,
+        appointmentId,
+        where: { id: proposal.id },
+        to: "DECLINED",
+        fromIn: RESCHEDULE_OPEN_STATUSES,
+      });
+    } catch (err) {
+      // The expiry cron holds no appointment lock, so it can answer a
+      // proposal between the read above and this CAS. Either way the
+      // booking ends with no open proposal, which is the whole point;
+      // failing the cancel over it would be the wrong outcome.
+      if (!(err instanceof IllegalTransitionError)) throw err;
+    }
+  }
+}
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ appointmentId: string }> },
@@ -272,14 +344,29 @@ export async function POST(
         })
       : null;
 
-    // Prepare cancellation data
+    // Prepare cancellation data. `status` is NOT here: the transition helpers
+    // own that column, and their `data` type excludes it so a caller cannot
+    // write a status past the CAS.
     const cancellationData = {
-      status: "CANCELLED" as const,
       cancellationReason: (validatedData.reason as CancellationReason) || null,
       cancellationNotes: validatedData.notes || null,
       cancelledAt: new Date(),
       cancelledBy: session.user.id,
     };
+
+    // Audit attribution for every BookingStatusHistory row this cancel writes
+    // (#1322 A12). `appointmentId` is added per call site rather than here: a
+    // subscription/class cancel sweeps slots belonging to sibling appointments,
+    // and stamping this appointment on those rows would file another session's
+    // history under this booking's timeline.
+    const auditMeta: CancelAuditMeta = {
+      actorUserId: session.user.id,
+      reason: validatedData.reason ?? null,
+      organizationId: appointment.organizationId,
+    };
+
+    // One scope for both sweeps below, resolved before the transaction opens.
+    const sweepScope = cancelSweepScope(appointment);
 
     // Cancellable from-states: never COMPLETED (history), never CANCELLED
     // (idempotency — a double-cancel must not re-run refunds), never
@@ -294,52 +381,58 @@ export async function POST(
     const result = await withAppointmentLock(appointmentId, () =>
       prisma.$transaction(
         async (tx) => {
-          // Update appointment status based on type — CAS-guarded.
-          let moved = 0;
-          if (appointment.consultation) {
-            moved = (
-              await tx.consultation.updateMany({
-                where: {
-                  id: appointment.consultation.id,
-                  status: { in: [...CANCELLABLE_FROM] },
-                },
+          // Update appointment status based on type — through the CAS helpers,
+          // which bake the same allowed-from set into the WHERE and append the
+          // BookingStatusHistory row this route used to skip entirely.
+          let moved = false;
+          try {
+            if (appointment.consultation) {
+              await transitionConsultationRequest(tx, {
+                ...auditMeta,
+                appointmentId,
+                where: { id: appointment.consultation.id },
+                to: "CANCELLED",
                 data: cancellationData,
-              })
-            ).count;
-          } else if (appointment.subscription) {
-            moved = (
-              await tx.subscription.updateMany({
-                where: {
-                  id: appointment.subscription.id,
-                  status: { in: [...CANCELLABLE_FROM] },
-                },
+                fromIn: [...CANCELLABLE_FROM],
+              });
+              moved = true;
+            } else if (appointment.subscription) {
+              await transitionSubscriptionRequest(tx, {
+                ...auditMeta,
+                appointmentId,
+                where: { id: appointment.subscription.id },
+                to: "CANCELLED",
                 data: cancellationData,
-              })
-            ).count;
-          } else if (appointment.webinar) {
-            // Explicit allowed-from (was notIn) — robust against future enum
-            // additions (#837).
-            moved = (
-              await tx.webinar.updateMany({
-                where: {
-                  id: appointment.webinar.id,
-                  status: { in: EVENT_ALLOWED_FROM.CANCELLED },
-                },
-                data: { status: "CANCELLED" },
-              })
-            ).count;
-          } else if (appointment.class) {
-            moved = (
-              await tx.class.updateMany({
-                where: {
-                  id: appointment.class.id,
-                  status: { in: CLASS_EVENT_ALLOWED_FROM.CANCELLED },
-                },
-                data: { status: "CANCELLED" },
-              })
-            ).count;
+                fromIn: [...CANCELLABLE_FROM],
+              });
+              moved = true;
+            } else if (appointment.webinar) {
+              // Explicit allowed-from (was notIn) — robust against future enum
+              // additions (#837).
+              await transitionWebinarEvent(tx, {
+                ...auditMeta,
+                appointmentId,
+                where: { id: appointment.webinar.id },
+                to: "CANCELLED",
+                fromIn: EVENT_ALLOWED_FROM.CANCELLED,
+              });
+              moved = true;
+            } else if (appointment.class) {
+              await transitionClassEvent(tx, {
+                ...auditMeta,
+                appointmentId,
+                where: { id: appointment.class.id },
+                to: "CANCELLED",
+                fromIn: CLASS_EVENT_ALLOWED_FROM.CANCELLED,
+              });
+              moved = true;
+            }
+          } catch (err) {
+            // The helper's zero-row throw IS the old `moved === 0`; the client
+            // contract stays NOT_CANCELLABLE rather than ILLEGAL_TRANSITION.
+            if (!(err instanceof IllegalTransitionError)) throw err;
           }
-          if (moved === 0) {
+          if (!moved) {
             throw Object.assign(
               new Error(
                 "This appointment can no longer be cancelled (already cancelled, completed, or expired).",
@@ -356,58 +449,28 @@ export async function POST(
           // SCHEDULED, so filtering on SCHEDULED alone left those rows in a
           // non-terminal state on a booking that no longer exists — and proposals
           // hang off exactly those rows.
-          const cancellableSlotStatuses = SLOT_RESCHEDULABLE_FROM;
-          if (appointment.subscription) {
-            await tx.slotOfAppointment.updateMany({
-              where: {
-                appointment: { subscriptionId: appointment.subscription.id },
-                completionStatus: { in: cancellableSlotStatuses },
-              },
-              data: { completionStatus: "CANCELLED" },
-            });
-          } else if (appointment.class) {
-            await tx.slotOfAppointment.updateMany({
-              where: {
-                appointment: { classId: appointment.class.id },
-                completionStatus: { in: cancellableSlotStatuses },
-              },
-              data: { completionStatus: "CANCELLED" },
-            });
-          } else {
-            // Consultation/webinar/trial — single appointment
-            await tx.slotOfAppointment.updateMany({
-              where: {
-                appointmentId,
-                completionStatus: { in: cancellableSlotStatuses },
-              },
-              data: { completionStatus: "CANCELLED" },
-            });
-          }
-          // #1319 A9 — every participant of the cancelled engagement.
-          await setParticipantStatus(
-            tx,
-            appointment.subscription
-              ? { appointment: { subscriptionId: appointment.subscription.id } }
-              : appointment.class
-                ? { appointment: { classId: appointment.class.id } }
-                : { appointmentId },
-            "CANCELLED",
-          );
-
-          // Close any live reschedule proposal on this booking. Leaving one open
-          // would keep openForAppointmentId reserved forever and let the expiry
-          // cron act on a cancelled booking.
-          await tx.rescheduleRequest.updateMany({
-            where: {
-              appointmentId,
-              status: { in: RESCHEDULE_OPEN_STATUSES },
-            },
-            data: {
-              status: "DECLINED",
-              openForAppointmentId: null,
-              resolvedAt: new Date(),
-            },
+          //
+          // The from-set rides in `fromIn`, never in `where`: the helper
+          // overwrites `completionStatus` in the caller's WHERE with its own
+          // from-set, so a status left there is silently discarded.
+          await transitionSlotCompletion(tx, {
+            ...auditMeta,
+            where: sweepScope,
+            to: "CANCELLED",
+            // The tombstone is half of the soft-cancel: without it the row
+            // still occupies the consultant's calendar for every reader that
+            // filters on `deletedAt: null` (#676 A10, the shape
+            // cleanup-abandoned-payments already writes).
+            data: { deletedAt: new Date() },
+            fromIn: [...SLOT_RESCHEDULABLE_FROM],
+            // A booking whose sessions are all delivered or already terminal
+            // is still cancellable; matching no live slot is not a conflict.
+            allowZero: true,
           });
+          // #1319 A9 — every participant of the cancelled engagement.
+          await setParticipantStatus(tx, sweepScope, "CANCELLED");
+
+          await declineOpenReschedules(tx, appointmentId, auditMeta);
 
           return {
             success: true,
@@ -439,12 +502,7 @@ export async function POST(
        * already exhausted" and "the gateway refused" — and the client was left
        * inferring failure from a positive `refundPct`, which is a guess.
        */
-      status:
-        | "REFUNDED"
-        | "FAILED"
-        | "NOTHING_REFUNDABLE"
-        | "POLICY_ZERO"
-        | "MANUAL_REVIEW";
+      status: "REFUNDED" | "FAILED" | "NOTHING_REFUNDABLE" | "POLICY_ZERO";
       /** #1006 — set when the refund needs a human, not a formula. */
       requiresManualReview?: boolean;
       /**
@@ -470,10 +528,10 @@ export async function POST(
             consultantUserId === session.user.id) ||
           (isPrivilegedUser && session.user.id !== consulteeUserId);
         // #1161 — a fully-credit-funded booking: its refund IS the credit
-        // restoration, all-or-nothing. Full restoration when the cancellation
-        // is not the buyer's choice or falls in a full-refund window; a
-        // payer-initiated late cancel escalates (partial credit restoration is
-        // an unmade product call — same residual as attendee-leave).
+        // restoration, all-or-nothing, because the credits rail refuses a partial
+        // amount. #1500 settled what a partial TIER means for such a booking: the
+        // quote rounds it up to a full restoration, and only a 0% tier returns
+        // nothing.
         const isFreeCreditFunded =
           paidPayment.amountPaise === 0 &&
           paidPayment.paymentIntent.startsWith("free_");
@@ -484,12 +542,13 @@ export async function POST(
         // exists to tell the buyer what this click pays, so they must be one
         // function or the quote eventually stops matching the charge.
         const quote = quoteBookingRefund({
-          policySnapshot: bookingCtx.policySnapshot,
+          policy: bookingCtx.policy,
           hoursUntilNextSession: bookingCtx.hoursUntilNextSession,
           slotsTotal: bookingCtx.slotsTotal,
           sessionsRemaining: bookingCtx.sessionsRemaining,
           isSubscription: !!appointment.subscription,
           isConsultantInitiated,
+          isFreeCreditFunded,
           grossPaise: paidPayment.amountPaise,
           refundablePaise: paidPayment.refundablePaise,
         });
@@ -498,53 +557,54 @@ export async function POST(
 
         // Credit-funded first: its refund is a credit restoration, which is
         // all-or-nothing, so the tiered amount above does not apply to it.
-        // (#1006's partly-consumed escalation used to branch here; the linear
-        // proration in `proratedBasePaise` replaced it — see the PR for why.)
-        if (isFreeCreditFunded) {
-          if (refundPct === 100) {
-            try {
-              const restored = await refundBookingPayment({
-                paymentId: paidPayment.id,
-                reason:
-                  "cancellation (credit-funded booking, full restoration)",
-                initiatedByUserId: session.user.id,
-              });
-              refund = {
-                // Report what the restoration actually returned. Hardcoding 0
-                // reintroduced the ambiguity this field exists to remove — the
-                // status says REFUNDED while the amount reads like the policy
-                // owed nothing.
-                amountRefundedPaise: restored.amountRefundedPaise,
-                refundPct: 100,
-                status: "REFUNDED",
-                requiresManualReview: false,
-                rail: restored.rail,
-              };
-            } catch (freeErr) {
-              Sentry.captureException(
-                freeErr instanceof Error ? freeErr : new Error(String(freeErr)),
-                { tags: { subsystem: "bookings" } },
-              );
-              refund = {
-                amountRefundedPaise: 0,
-                refundPct: 100,
-                status: "FAILED",
-                requiresManualReview: true,
-              };
-            }
-          } else {
+        // #1500 — every tier above 0% restores the credit IN FULL; the escalation
+        // to a human that used to sit on the partial branch is gone, because the
+        // product rule it was waiting for now exists. A 0% tier falls through to
+        // POLICY_ZERO below, so a late cancel bites a credit buyer exactly as it
+        // bites a card buyer.
+        if (quote.creditRestoresInFull) {
+          try {
+            const restored = await refundBookingPayment({
+              paymentId: paidPayment.id,
+              reason: `cancellation (credit-funded booking, credit restored in full from the ${quote.tierRefundPct}% tier)`,
+              initiatedByUserId: session.user.id,
+            });
+            refund = {
+              // Report what the restoration actually returned. Hardcoding 0
+              // reintroduced the ambiguity this field exists to remove — the
+              // status says REFUNDED while the amount reads like the policy
+              // owed nothing.
+              amountRefundedPaise: restored.amountRefundedPaise,
+              refundPct: 100,
+              status: "REFUNDED",
+              requiresManualReview: false,
+              rail: restored.rail,
+            };
+          } catch (freeErr) {
+            Sentry.captureException(
+              freeErr instanceof Error ? freeErr : new Error(String(freeErr)),
+              { tags: { subsystem: "bookings" } },
+            );
+            // #1513 review — the monetary branch below lands a failed refund on
+            // the durable ops surface, and this branch owes the same: a credit
+            // the buyer is owed but did not get back is money, and Sentry is an
+            // alert channel rather than a queue anyone works.
             await recordSystemError({
               organizationId: appointment.organizationId ?? null,
               category: "PAYMENT",
               summary:
-                "Credit-funded booking cancelled inside a partial-refund window; partial credit restoration has no product rule yet (#1161)",
-              err: new Error("FREE_CREDIT_PARTIAL_RESTORATION_UNDEFINED"),
-              context: { appointmentId, paymentId: paidPayment.id, refundPct },
+                "Credit-funded booking cancelled but the credit restoration failed",
+              err: freeErr,
+              context: {
+                appointmentId,
+                paymentId: paidPayment.id,
+                tierRefundPct: quote.tierRefundPct,
+              },
             }).catch(() => {});
             refund = {
               amountRefundedPaise: 0,
-              refundPct,
-              status: "MANUAL_REVIEW",
+              refundPct: 100,
+              status: "FAILED",
               requiresManualReview: true,
             };
           }
@@ -680,7 +740,12 @@ export async function POST(
         appointmentType: notificationMeta.appointmentType,
         consultantName: notificationMeta.consultantName || "Consultant",
         consulteeName: notificationMeta.consulteeName || "Consultee",
-        planTitle: notificationMeta.planTitle || "N/A",
+        // #536 — "N/A" is a developer's placeholder; it used to be the name the
+        // customer read for the session they had just lost.
+        planTitle: planTitleOrSessionLabel(
+          notificationMeta.planTitle,
+          notificationMeta.appointmentType,
+        ),
         dateTime: notificationMeta.dateTime,
         // Both parties receive one payload, so the href has to suit either.
         dashboardUrl: notificationHref(

@@ -11,11 +11,12 @@
  *   - assertPaymentLegsSumToAmount — hard-throwing sibling for tests +
  *     reconciliation jobs.
  *
- * The invariant: `sum(legs.amountPaise) === Payment.amount`. LICENSE
- * legs intentionally carry zero amount (cost absorbed at contract time)
- * and are still part of the sum. Referral-credit flows mix a CARD leg
- * (post-credit gateway charge) with a REFERRAL_CREDIT leg (the credit
- * value) whose sum equals Payment.amount (post-credit).
+ * The invariant: `sum(non-reversal, non-REFERRAL_CREDIT legs.amountPaise)
+ * === Payment.amount`. LICENSE legs intentionally carry zero amount (cost
+ * absorbed at contract time) and are still part of the sum. REFERRAL_CREDIT
+ * legs are not: `Payment.amount` is the gateway charge and the credit has
+ * already been netted out of it, so a credit-funded checkout has its CARD leg
+ * alone equal to `Payment.amount` (#1347).
  */
 
 import {
@@ -53,18 +54,35 @@ describe("checkPaymentLegsSumToAmount", () => {
     ).toBeNull();
   });
 
-  it("returns null when CARD + REFERRAL_CREDIT legs sum to Payment.amount", () => {
-    // Post-credit scenario: gateway charged 100 paise, credits covered
-    // 50, Payment.amount = 150 (pre-credit total).
+  it("returns null when the CARD leg alone matches a credit-funded Payment.amount", () => {
+    // #1347 — gateway charged 100 paise, credits covered 50, so
+    // Payment.amount is the post-credit 100. The REFERRAL_CREDIT leg records
+    // the platform's 50 but is excluded from the funding sum.
     expect(
       checkPaymentLegsSumToAmount({
-        paymentAmountPaise: 150,
+        paymentAmountPaise: 100,
         legs: [
           { source: "CARD", amountPaise: 100 },
           { source: "REFERRAL_CREDIT", amountPaise: 50 },
         ],
       }),
     ).toBeNull();
+  });
+
+  it("still reports drift when a REFERRAL_CREDIT leg sits beside a CARD leg that misses the amount", () => {
+    // Excluding the credit must not blind the check to the funding it does
+    // cover: the card is short by 20 and that is real drift.
+    const mismatch = checkPaymentLegsSumToAmount({
+      paymentAmountPaise: 100,
+      legs: [
+        { source: "CARD", amountPaise: 80 },
+        { source: "REFERRAL_CREDIT", amountPaise: 50 },
+      ],
+    });
+    expect(mismatch).not.toBeNull();
+    expect(mismatch?.reason).toBe("FUNDING_SUM_DRIFT");
+    expect(mismatch?.legSumPaise).toBe(80);
+    expect(mismatch?.deltaPaise).toBe(-20);
   });
 
   it("returns a mismatch payload when legs sum is less than the amount", () => {
@@ -83,7 +101,7 @@ describe("checkPaymentLegsSumToAmount", () => {
       paymentAmountPaise: 100,
       legs: [
         { source: "CARD", amountPaise: 80 },
-        { source: "REFERRAL_CREDIT", amountPaise: 40 },
+        { source: "WALLET", amountPaise: 40 },
       ],
     });
     expect(mismatch?.deltaPaise).toBe(20);
@@ -188,18 +206,19 @@ describe("checkPaymentLegsSumToAmount — zero-value LICENSE exemption", () => {
     expect(mismatch!.legSumPaise).toBe(250000);
   });
 
-  it("exempts a license booking whose accrual reversal nets it back to nothing", () => {
-    // Reversal sources are filtered out before the sum runs, so a refunded
-    // license booking is still judged on its original legs alone.
-    expect(
-      checkPaymentLegsSumToAmount({
-        paymentAmountPaise: 500000,
-        legs: [
-          { source: "LICENSE", amountPaise: 0 },
-          { source: "INVOICE_ACCRUAL_REVERSAL", amountPaise: -0 },
-        ],
-      }),
-    ).toBeNull();
+  it("rejects a zero accrual reversal on a license booking", () => {
+    // #1347 — zero is rejected on BOTH sides: the checker and
+    // `assert_payment_legs_ok` agree a reversal must be strictly negative, so
+    // a zero one is an orphan counter-entry rather than a benign no-op. The
+    // sum carve still suppresses the sum comparison; it never reaches here.
+    const mismatch = checkPaymentLegsSumToAmount({
+      paymentAmountPaise: 500000,
+      legs: [
+        { source: "LICENSE", amountPaise: 0 },
+        { source: "INVOICE_ACCRUAL_REVERSAL", amountPaise: 0 },
+      ],
+    });
+    expect(mismatch?.reason).toBe("REVERSAL_PAIR_VIOLATION");
   });
 
   it("does NOT exempt a LICENSE leg that carries a non-zero amount", () => {
@@ -235,5 +254,67 @@ describe("checkPaymentLegsSumToAmount — zero-value LICENSE exemption", () => {
     });
     expect(mismatch).not.toBeNull();
     expect(mismatch!.legSumPaise).toBe(0);
+  });
+});
+
+/**
+ * #786 — partial-refund reversal pairs.
+ *
+ * A refund appends a negative `*_REVERSAL` sibling rather than mutating the
+ * original leg, so the originals keep summing to `Payment.amount` and the
+ * reversal is judged against its own pair: it must be negative and must never
+ * exceed the originals it reverses. `assert_payment_legs_ok` enforces the same
+ * two rules in the database, including on a licence-only payment, so the
+ * checker has to reach them there too — otherwise a leg the checker waved
+ * through would still be rejected at COMMIT (#1347).
+ */
+describe("checkPaymentLegsSumToAmount — reversal pairs", () => {
+  it("accepts a partial reversal that stays inside its original sibling", () => {
+    expect(
+      checkPaymentLegsSumToAmount({
+        paymentAmountPaise: 500000,
+        legs: [
+          { source: "INVOICE_ACCRUAL", amountPaise: 500000 },
+          { source: "INVOICE_ACCRUAL_REVERSAL", amountPaise: -200000 },
+        ],
+      }),
+    ).toBeNull();
+  });
+
+  it("rejects a partial reversal larger than the accrual it reverses", () => {
+    const mismatch = checkPaymentLegsSumToAmount({
+      paymentAmountPaise: 500000,
+      legs: [
+        { source: "INVOICE_ACCRUAL", amountPaise: 500000 },
+        { source: "INVOICE_ACCRUAL_REVERSAL", amountPaise: -600000 },
+      ],
+    });
+    expect(mismatch?.reason).toBe("REVERSAL_PAIR_VIOLATION");
+  });
+
+  it("rejects a positive reversal leg", () => {
+    // A reversal is a counter-entry; a positive one would credit the org twice.
+    const mismatch = checkPaymentLegsSumToAmount({
+      paymentAmountPaise: 500000,
+      legs: [
+        { source: "INVOICE_ACCRUAL", amountPaise: 500000 },
+        { source: "INVOICE_ACCRUAL_REVERSAL", amountPaise: 200000 },
+      ],
+    });
+    expect(mismatch?.reason).toBe("REVERSAL_PAIR_VIOLATION");
+  });
+
+  it("still checks the pair on a licence-only payment the sum carve exempts", () => {
+    // The zero-LICENSE carve skips the SUM comparison only. A reversal with no
+    // original sibling is corrupt whichever way the sum is read, and the
+    // trigger raises on it, so the checker must agree rather than return early.
+    const mismatch = checkPaymentLegsSumToAmount({
+      paymentAmountPaise: 500000,
+      legs: [
+        { source: "LICENSE", amountPaise: 0 },
+        { source: "INVOICE_ACCRUAL_REVERSAL", amountPaise: -200000 },
+      ],
+    });
+    expect(mismatch?.reason).toBe("REVERSAL_PAIR_VIOLATION");
   });
 });

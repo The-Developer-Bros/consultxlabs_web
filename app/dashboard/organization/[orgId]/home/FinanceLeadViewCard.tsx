@@ -20,6 +20,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
 import {
   CreditCard,
   Wallet,
@@ -39,6 +40,7 @@ import { StatCard } from "@/components/dashboard/StatCard";
 import { Button } from "@/components/ui/button";
 import { DashboardGrid } from "@/components/dashboard/PageScaffold";
 import { formatCurrencyAmount } from "@/utils/formatting";
+import { BillingBlockBanner } from "@/components/billing/BillingBlockBanner";
 
 /**
  * Shape mirrors the live `/api/organizations/[orgId]/analytics` payload
@@ -72,6 +74,23 @@ export function FinanceLeadViewCard({ orgId, data }: FinanceLeadViewProps) {
   const billingHref = `/dashboard/organization/${orgId}/billing`;
   const pastDueCount = data.invoices?.pastDueCount ?? 0;
 
+  // #1427/#1430 — same query key as BillingPageClient's `fetchBilling`
+  // (["org-billing", orgId]), so the two share react-query's cache instead
+  // of double-fetching when a finance lead lands here first. The route is
+  // a cheap DB-side aggregate, not the heavier analytics payload above.
+  const billingBlock = useQuery({
+    queryKey: ["org-billing", orgId],
+    queryFn: async () => {
+      const res = await fetch(`/api/organizations/${orgId}/billing`);
+      if (!res.ok) throw new Error("Failed to load billing status");
+      return (await res.json()) as {
+        walletFrozen: boolean;
+        walletFrozenReason: string | null;
+        dunningSuspended: boolean;
+      };
+    },
+  });
+
   const stats: Array<{
     label: string;
     value: string;
@@ -97,9 +116,7 @@ export function FinanceLeadViewCard({ orgId, data }: FinanceLeadViewProps) {
       value: data.wallet
         ? formatCurrencyAmount(data.wallet.balancePaise, currency)
         : "—",
-      subtitle: data.wallet
-        ? "Available to debit"
-        : "No wallet configured",
+      subtitle: data.wallet ? "Available to debit" : "No wallet configured",
       icon: Wallet,
       href: `/dashboard/organization/${orgId}/billing?tab=wallet`,
       cta: "Top up wallet",
@@ -124,14 +141,23 @@ export function FinanceLeadViewCard({ orgId, data }: FinanceLeadViewProps) {
 
   return (
     <>
+      {billingBlock.data && (
+        <BillingBlockBanner
+          walletFrozen={billingBlock.data.walletFrozen}
+          walletFrozenReason={billingBlock.data.walletFrozenReason}
+          dunningSuspended={billingBlock.data.dunningSuspended}
+          supportHref={`/dashboard/organization/${orgId}/support`}
+        />
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Finance overview</CardTitle>
           <CardDescription>
-            Everything you can act on as the finance lead — invoices to
-            chase, payouts to approve, wallet headroom, PO burndown.
-            Member and SSO surfaces are intentionally hidden; coordinate
-            with your OWNER for those.
+            Everything you can act on as the finance lead — invoices to chase,
+            payouts to approve, wallet headroom, PO burndown. Member and SSO
+            surfaces are intentionally hidden; coordinate with your OWNER for
+            those.
           </CardDescription>
         </CardHeader>
       </Card>
@@ -158,9 +184,7 @@ export function FinanceLeadViewCard({ orgId, data }: FinanceLeadViewProps) {
                 variant={
                   isOutstanding && pastDueCount > 0 ? "danger" : "default"
                 }
-                onClick={
-                  deepLinks ? () => router.push(stat.href) : undefined
-                }
+                onClick={deepLinks ? () => router.push(stat.href) : undefined}
               />
               {/* Past-due needs more than a number — give the finance lead a
                   one-click jump to the invoices they have to chase. */}
@@ -200,13 +224,17 @@ export function FinanceLeadViewCard({ orgId, data }: FinanceLeadViewProps) {
             </Button>
           ))}
           <Button asChild variant="outline" className="justify-between">
-            <Link href={`/dashboard/organization/${orgId}/settings?tab=webhooks`}>
+            <Link
+              href={`/dashboard/organization/${orgId}/settings?tab=webhooks`}
+            >
               <span>Manage outbound webhooks</span>
               <ArrowRight className="h-4 w-4" />
             </Link>
           </Button>
           <Button asChild variant="outline" className="justify-between">
-            <Link href={`/dashboard/organization/${orgId}/settings?tab=data-exports`}>
+            <Link
+              href={`/dashboard/organization/${orgId}/settings?tab=data-exports`}
+            >
               <span>Request a data export</span>
               <ArrowRight className="h-4 w-4" />
             </Link>

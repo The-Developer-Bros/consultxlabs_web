@@ -19,7 +19,11 @@
  */
 
 import prisma from "../../lib/prisma";
-import { AppointmentStatus, PaymentStatus } from "@prisma/client";
+import {
+  AppointmentStatus,
+  PaymentStatus,
+  SlotCompletionStatus,
+} from "@prisma/client";
 import { withCronLock, LONG_JOB_TTL_MS } from "@/lib/cron/with-cron-lock";
 import {
   buildOccupiedAppointmentFilter,
@@ -75,6 +79,24 @@ async function clearTentativeOnSuccessfulPayments(): Promise<{
 
   console.log("🔍 Finding tentative slots with successful payments...");
 
+  // #1424 — the sweep's own predicate, hoisted so the write can repeat it
+  // (ADR 21: a sweep restates its money predicate in the WHERE it writes with).
+  // The completion from-set is the point: a partial reschedule releases a slot
+  // as isTentative=true / completionStatus=RESCHEDULED while leaving the parent
+  // APPROVED, so the parent-status guard below does not see it. Stamping such a
+  // slot confirmed blocks the consultant's calendar for a session nobody will
+  // deliver. CANCELLED is excluded for the same reason.
+  const CLEARABLE_COMPLETION_STATUSES: SlotCompletionStatus[] = [
+    SlotCompletionStatus.SCHEDULED,
+    SlotCompletionStatus.COMPLETED,
+    SlotCompletionStatus.UNVERIFIED,
+  ];
+  const LIVE_TENTATIVE_SLOT = {
+    isTentative: true,
+    deletedAt: null,
+    completionStatus: { in: CLEARABLE_COMPLETION_STATUSES },
+  };
+
   try {
     // FIX #623: Find tentative slots with successful payments, but EXCLUDE
     // slots that are tentative due to an in-progress reschedule.
@@ -82,7 +104,7 @@ async function clearTentativeOnSuccessfulPayments(): Promise<{
     // while new slots are being selected. We must not clear those prematurely.
     const slotsToFix = await prisma.slotOfAppointment.findMany({
       where: {
-        isTentative: true,
+        ...LIVE_TENTATIVE_SLOT,
         appointment: {
           payment: {
             some: {
@@ -133,16 +155,32 @@ async function clearTentativeOnSuccessfulPayments(): Promise<{
     }
 
     if (slotsToFix.length > 0) {
-      // Bulk update to clear tentative flag — use exact IDs from the filtered query
-      // to ensure we don't accidentally clear reschedule-in-progress slots.
+      // Bulk update to clear tentative flag — use exact IDs from the filtered
+      // query so we never touch a slot outside the cohort, AND repeat the
+      // cohort's own predicate so we never touch a slot that LEFT the cohort
+      // between the read and this write (#1424).
+      const ids = slotsToFix.map((s) => s.id);
       const result = await prisma.slotOfAppointment.updateMany({
-        where: {
-          id: { in: slotsToFix.map((s) => s.id) },
-        },
+        where: { id: { in: ids }, ...LIVE_TENTATIVE_SLOT },
         data: { isTentative: false },
       });
 
       console.log(`✅ Cleared tentative flag on ${result.count} slots`);
+      if (result.count < ids.length) {
+        // Not an error: the skipped rows were rescheduled, cancelled or
+        // soft-deleted mid-run and will be picked up by the cohort that owns
+        // them. Logged so a persistent gap is visible rather than silent.
+        console.warn(
+          JSON.stringify({
+            event: "reconcile_tentative_clear_raced",
+            read: ids.length,
+            cleared: result.count,
+            skipped: ids.length - result.count,
+            note: "slots left the cohort between the read and the write",
+            timestamp: new Date().toISOString(),
+          }),
+        );
+      }
       return { cleared: result.count, errors };
     }
 

@@ -38,7 +38,7 @@ interface AppointmentShape {
 }
 
 /**
- * Lifted from `lib/payments/webhooks/handlers.ts`. A copy, so the test states
+ * Lifted from `lib/payments/webhooks/ensure-channels.ts`. A copy, so the test states
  * the contract rather than re-deriving it — the assertion below pins it to the
  * source so the two cannot drift apart silently.
  */
@@ -106,8 +106,11 @@ describe("the handler actually does this", () => {
   const { readFileSync } = require("fs") as typeof import("fs");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { join } = require("path") as typeof import("path");
+  // #1356 — the channel block moved out of `handlers.ts` into its own module
+  // so the reconcile sweep can re-drive it. The pin follows the code; the
+  // contract it pins is unchanged.
   const source = readFileSync(
-    join(process.cwd(), "lib/payments/webhooks/handlers.ts"),
+    join(process.cwd(), "lib/payments/webhooks/ensure-channels.ts"),
     "utf8",
   );
 
@@ -115,15 +118,17 @@ describe("the handler actually does this", () => {
     // Without the include, the rung below reads a relation Prisma never
     // loaded — always undefined, and no type error to say so.
     expect(source).toContain("trialSession: {");
+    // #1446 narrowed the read to a `select` of the ids the step uses, so the
+    // relation is now loaded with its own `select` rather than `: true`. The
+    // contract the pin states is unchanged: trialSession is loaded, WITH its
+    // consultant.
     expect(source).toMatch(
-      /trialSession:\s*\{\s*include:\s*\{\s*consultantProfile:\s*true/,
+      /trialSession:\s*\{\s*(?:include|select):\s*\{\s*consultantProfile:/,
     );
   });
 
   it("has the trial rung in the resolution chain", () => {
-    expect(source).toContain(
-      "appointmentForChannel?.trialSession?.consultantProfile",
-    );
+    expect(source).toContain("appointment.trialSession?.consultantProfile");
   });
 
   it("uses TrialSession's own consultant, not the plan author's", () => {

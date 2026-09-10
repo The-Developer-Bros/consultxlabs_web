@@ -28,6 +28,9 @@ function outputToGitHubActions(result: ReleaseResult): void {
   if (outputFile) {
     const outputs = [
       `released_count=${result.releasedCount}`,
+      // #1471 — host-org earnings are released by the same run; a separate
+      // output keeps `released_count` meaning what downstream steps expect.
+      `org_released_count=${result.organizationEarningsReleased}`,
       `error_count=${result.errorCount}`,
       `success=${result.success}`,
     ].join("\n");
@@ -63,14 +66,17 @@ async function main(): Promise<void> {
 
     // Summary
     console.log(`\n📊 Release Summary:`);
-    console.log(`   ✅ Earnings released: ${result.releasedCount}`);
+    console.log(`   ✅ Consultant earnings released: ${result.releasedCount}`);
+    console.log(
+      `   ✅ Organization earnings released: ${result.organizationEarningsReleased}`,
+    );
     console.log(`   ❌ Errors: ${result.errorCount}`);
 
     // Output to GitHub Actions
     outputToGitHubActions(result);
 
     if (result.success) {
-      Sentry.logger.info("job:release-earnings finished", { releasedCount: result.releasedCount, errorCount: result.errorCount });
+      Sentry.logger.info("job:release-earnings finished", { releasedCount: result.releasedCount, organizationEarningsReleased: result.organizationEarningsReleased, errorCount: result.errorCount });
       console.log("🎉 Release earnings job completed successfully");
     } else {
       console.error("❌ Release earnings job completed with errors");

@@ -15,7 +15,6 @@ import {
   buildOccupiedAppointmentFilter,
 } from "@/utils/slotAllocation/occupancyPolicy";
 import { isOccupiedByLiveAppointment } from "@/utils/slotAllocation/SlotValidationService";
-import { minuteUtcToDate } from "@/utils/slotAllocation/slotTimeUtils";
 import { getSession } from "@/lib/auth-server";
 import {
   buildOverlapMetaIndex,
@@ -533,7 +532,6 @@ export async function GET(
 
     // Convert to utility interfaces with defensive validation
     // Weekly slots now use Int (minutes since midnight UTC 0-1439) instead of DateTime
-    const referenceDate = new Date("1970-01-05T00:00:00Z"); // Reference date for minuteUtcToDate
     const weeklySlots: WeeklySlot[] = consultant.slotsOfAvailabilityWeekly
       .filter((slot) => {
         // Defensive: Validate required fields exist
@@ -588,12 +586,18 @@ export async function GET(
 
         return true;
       })
+      // #1342 — the stored columns travel through as they are, including
+      // utcOffsetMinutes: the generator derives each occurrence's UTC weekday
+      // from the row's own frozen offset. Flattening the row onto a 1970
+      // reference date threw that offset away and left the grid matching rows
+      // against the viewer's weekday.
       .map((slot) => ({
         id: slot.id,
-        dayOfWeekforStartTimeInUTC: slot.startDay,
-        startsAt: minuteUtcToDate(slot.startTimeUtc, referenceDate),
-        dayOfWeekforEndTimeInUTC: slot.endDay,
-        endsAt: minuteUtcToDate(slot.endTimeUtc, referenceDate),
+        startDay: slot.startDay,
+        endDay: slot.endDay,
+        startTimeUtc: slot.startTimeUtc,
+        endTimeUtc: slot.endTimeUtc,
+        utcOffsetMinutes: slot.utcOffsetMinutes,
       }));
 
     const customSlots: CustomSlot[] = consultant.slotsOfAvailabilityCustom

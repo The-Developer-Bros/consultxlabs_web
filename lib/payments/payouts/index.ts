@@ -53,7 +53,7 @@ export type { OrgProcessingResult } from "./org-payout-service";
 // Earnings Service
 export {
   createEarningsFromPayment,
-  releaseEarningsFromHold,
+  resolvePaymentForEarnings,
   getConsultantEarningsSummary,
   getConsultantEarnings,
   refundEarnings,
@@ -64,4 +64,3 @@ export {
   getOrgEarningsSummary,
   getOrgEarnings,
 } from "./earnings-service";
-

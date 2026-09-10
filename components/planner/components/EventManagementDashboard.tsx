@@ -39,6 +39,8 @@ import {
   useConsultationPlanMutations,
   useSubscriptionPlans,
   useSubscriptionPlanMutations,
+  useWebinarPlanMutations,
+  useClassPlanMutations,
 } from "../hooks/usePlanner";
 import {
   LayoutTemplate,
@@ -86,10 +88,14 @@ export function EventManagementDashboard({
   // React Query mutations
   const { deleteWebinar } = useWebinarMutations(consultantId);
   const { deleteClass } = useClassMutations(consultantId);
+  const { archiveWebinarPlan } = useWebinarPlanMutations(consultantId);
+  const { archiveClassPlan } = useClassPlanMutations(consultantId);
   // Create/update moved to the offering editor, which owns its own save; the
   // planner only deletes now.
-  const { deleteConsultationPlan } = useConsultationPlanMutations(consultantId);
-  const { deleteSubscriptionPlan } = useSubscriptionPlanMutations(consultantId);
+  const { deleteConsultationPlan, archiveConsultationPlan } =
+    useConsultationPlanMutations(consultantId);
+  const { deleteSubscriptionPlan, archiveSubscriptionPlan } =
+    useSubscriptionPlanMutations(consultantId);
   const router = useRouter();
   const [joiningEventId, setJoiningEventId] = useState<string | null>(null);
   // #1280 2.7 — `joiningEventId` is state, and it is set AFTER the first await
@@ -446,6 +452,24 @@ export function EventManagementDashboard({
     deleteSubscriptionPlan.mutate(planId);
   };
 
+  // Archive/restore toggles (#1494) — one handler per plan family, each
+  // wired to the matching PATCH mutation.
+  const handleConsultationPlanArchiveToggle = (
+    planId: string,
+    archived: boolean,
+  ) => archiveConsultationPlan.mutate({ id: planId, archived });
+
+  const handleSubscriptionPlanArchiveToggle = (
+    planId: string,
+    archived: boolean,
+  ) => archiveSubscriptionPlan.mutate({ id: planId, archived });
+
+  const handleWebinarPlanArchiveToggle = (planId: string, archived: boolean) =>
+    archiveWebinarPlan.mutate({ id: planId, archived });
+
+  const handleClassPlanArchiveToggle = (planId: string, archived: boolean) =>
+    archiveClassPlan.mutate({ id: planId, archived });
+
   // Calculate stats
   const totalPlans =
     (consultationPlans?.length ?? 0) + (subscriptionPlans?.length ?? 0);
@@ -549,6 +573,12 @@ export function EventManagementDashboard({
                 onDelete={handleConsultationPlanDelete}
                 eventType="consultation"
                 participantCounts={{}}
+                onArchiveToggle={handleConsultationPlanArchiveToggle}
+                archivingPlanId={
+                  archiveConsultationPlan.isPending
+                    ? (archiveConsultationPlan.variables?.id ?? null)
+                    : null
+                }
               />
             )}
           </div>
@@ -608,6 +638,12 @@ export function EventManagementDashboard({
                 participantCounts={{}}
                 pendingTrialCounts={pendingTrialCounts}
                 onTrialsClick={handleTrialsClick}
+                onArchiveToggle={handleSubscriptionPlanArchiveToggle}
+                archivingPlanId={
+                  archiveSubscriptionPlan.isPending
+                    ? (archiveSubscriptionPlan.variables?.id ?? null)
+                    : null
+                }
               />
             )}
           </div>
@@ -667,6 +703,12 @@ export function EventManagementDashboard({
               onJoinMeeting={handleJoinWebinarMeeting}
               joinableEventIds={joinableEventIds}
               joiningEventId={joiningEventId}
+              onArchiveToggle={handleWebinarPlanArchiveToggle}
+              archivingPlanId={
+                archiveWebinarPlan.isPending
+                  ? (archiveWebinarPlan.variables?.id ?? null)
+                  : null
+              }
             />
           </div>
 
@@ -708,6 +750,12 @@ export function EventManagementDashboard({
               onJoinMeeting={handleJoinClassMeeting}
               joinableEventIds={joinableEventIds}
               joiningEventId={joiningEventId}
+              onArchiveToggle={handleClassPlanArchiveToggle}
+              archivingPlanId={
+                archiveClassPlan.isPending
+                  ? (archiveClassPlan.variables?.id ?? null)
+                  : null
+              }
             />
           </div>
         </motion.section>

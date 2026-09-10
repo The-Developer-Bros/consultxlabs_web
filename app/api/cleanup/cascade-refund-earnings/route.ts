@@ -8,13 +8,13 @@
  * Schedule: Every 15 minutes (via GitHub Actions or external cron)
  */
 
-import { cleanupRoute } from "@/lib/cron/cleanup-route";
+import { cleanupRoute, parseLimitParam } from "@/lib/cron/cleanup-route";
 import { cascadeRefundToEarnings } from "@/scripts/refunds/cascade-refund-earnings";
 import { cascadeRunFailed } from "@/scripts/refunds/cascade-run-outcome";
 
 export const { GET, POST } = cleanupRoute({
   job: "cascade-refund-earnings",
-  run: () => cascadeRefundToEarnings(),
+  run: (req) => cascadeRefundToEarnings({ limit: parseLimitParam(req) }),
   summarize: (r) => ({
     totalProcessed: r.totalProcessed,
     updatedCount: r.updatedCount,

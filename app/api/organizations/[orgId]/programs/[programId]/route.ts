@@ -16,6 +16,7 @@ import { requireOrgAccess } from "@/lib/auth-helpers";
 import { AUDIT_ACTIONS } from "@/lib/enterprise/audit-actions";
 import { transitionProgram } from "@/lib/enterprise/transitions";
 import { getProgramLockState } from "@/lib/enterprise/config-lock";
+import { overageBehaviorUnsupportedReason } from "@/lib/enterprise/reachable-paths";
 import { withSerializableRetry } from "@/lib/db/serializable-retry";
 
 const ProgramStatusSchema = z.enum([
@@ -154,7 +155,15 @@ async function applyProgramPatch(
   const touchesMoney = MONEY_FIELDS.some((f) => body[f] !== undefined);
   const current = await tx.program.findFirst({
     where: { id: programId, contract: { organizationId: orgId } },
-    include: { licensedSeatConfig: true, creditPoolConfig: true },
+    include: {
+      licensedSeatConfig: true,
+      creditPoolConfig: true,
+      // #1458 — the funding source decides which overage behaviours can
+      // actually be collected, so the merged-config check below needs it.
+      contract: {
+        select: { billingAccount: { select: { fundingSource: true } } },
+      },
+    },
   });
   if (!current) {
     throw Object.assign(new Error("Program not found"), {
@@ -235,6 +244,17 @@ async function applyProgramPatch(
         "overageSurchargeBps has no effect with overageBehavior=BLOCK — remove it or pick CHARGE_MEMBER/CHARGE_ORG.",
       );
     }
+    // #1458 — same funding-source rule the create route applies, re-checked on
+    // the merged config so a patch cannot assemble a combination the create
+    // route would have refused.
+    const overageReason = overageBehaviorUnsupportedReason(
+      current.contract.billingAccount?.fundingSource ?? null,
+      merged.overageBehavior,
+      // #1458 — merged, so a patch that adds a surcharge to an already-saved
+      // wallet CHARGE_ORG programme is refused as readily as one that sets both.
+      merged.overageSurchargeBps,
+    );
+    if (overageReason) fail(overageReason);
   }
 
   // #777 §B — archiving guard: an archived program is skipped by the cycle
