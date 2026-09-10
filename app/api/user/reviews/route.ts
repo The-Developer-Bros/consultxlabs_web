@@ -360,14 +360,15 @@ export async function POST(req: NextRequest) {
         { status: 409 },
       );
     }
-    // @@unique([consultantProfileId, consulteeProfileId, track]) — one per
-    // consultant per product.
+    // @@unique([consultantProfileId, consulteeProfileId]) — one per consultant.
+    // Widened to include `track` at #1549; the copy below already reads correctly
+    // under either, because both are per-consultant rather than per-session.
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2002"
     ) {
-      // Reachable only as a race: the upsert's own read-then-write can lose to
-      // a concurrent insert of the same pair. Not "this session" any more —
+      // Reachable only as a race: the find-then-create above can lose to a
+      // concurrent insert of the same pair. Not "this session" any more —
       // the unique is per CONSULTANT, and the copy has to say so or the reader
       // goes looking for a session they never double-reviewed.
       return NextResponse.json(
