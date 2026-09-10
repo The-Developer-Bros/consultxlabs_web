@@ -4,7 +4,7 @@
 
 ## The unit is the session, and the rater is a party to it
 
-The word "slot" in `slotOfAppointmentId` is the trap this page has to defuse first. The table below maps the words people use to the canonical names in [the glossary](../enterprise/00-foundations/07-slots-sessions-glossary.md); the feedback row hangs off the third line.
+The word "slot" in `slotOfAppointmentId` is the trap this page has to defuse first. The table below maps the words people use to the canonical names in [the glossary](../enterprise/00-foundations/07-slots-sessions-glossary.md); the feedback row hangs off the third line. For every booking shape and organisation relationship multiplied out, see [grid F](../support/02-the-grid.md#f--the-grid-multiplied-out-feedback-and-review-by-shape-and-organisation).
 
 | What people say           | Canonical name      | Model                                    | What it is                                                                                  |
 | ------------------------- | ------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------- |

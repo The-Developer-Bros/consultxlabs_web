@@ -1,6 +1,6 @@
 # Reviews
 
-Reviews are the public reputation rail: one review per consultee per consultant, rendered on the expert's profile and on the landing page, and folded into two published scores that order the explore directory. The models are `ConsultantReview`, its append-only edit trail `ConsultantReviewRevision`, the per-run `ScoringSnapshot`, and the score columns on `ConsultantProfile`. A review is about a person; the private per-call rating documented under [`docs/feedback/`](../feedback/README.md) is about a conversation, and the [grid](../support/02-the-grid.md) says how the two relate.
+Reviews are the public reputation rail: one review per consultee per consultant, rendered on the expert's profile and on the landing page, and folded into two published scores that order the explore directory. The models are `ConsultantReview`, its append-only edit trail `ConsultantReviewRevision`, the per-run `ScoringSnapshot`, and the score columns on `ConsultantProfile`. A review is about a person; the private per-call rating documented under [`docs/feedback/`](../feedback/README.md) is about a conversation, and the [grid](../support/02-the-grid.md) says how the two relate; its section F multiplies both objects out by booking shape and organisation relationship.
 
 This folder is the reference: how the subsystem works, what every column means, and the contracts the code keeps. The _decisions_ live in the ADRs, and the two link both ways.
 
