@@ -1,160 +1,249 @@
 import { faker } from "@faker-js/faker";
-import { Prisma } from "@prisma/client";
+import type { RatingCause, ReviewTrack } from "@prisma/client";
 import prisma from "../../lib/prisma";
+import { trackForAppointment } from "../../lib/reviews";
+import { recomputeAllConsultantRatings } from "../../lib/reviews-recompute";
 import { UserWithProfiles } from "./1a-create-users";
 
-type CompletedAppointment = Prisma.AppointmentGetPayload<{
-  include: {
-    slotsOfAppointment: {
-      include: {
-        user: {
-          include: {
-            consulteeProfile: true;
-          };
-        };
-      };
-    };
-  };
-}>;
+/**
+ * #1300 — one public review per (consultant, consultee) pair, on the track the
+ * session was, plus one private CSAT row per held call. Ends by running the same
+ * recompute production runs, so the seed leaves published scores rather than
+ * NULL = suppressed. Owns its tables: re-running replaces them.
+ */
 
-export async function createConsultantReviews(
-  consultants: UserWithProfiles[],
-  consultees: UserWithProfiles[],
-) {
-  console.log(`Creating consultant reviews...`);
-  let totalReviews = 0;
+// Skewed toward 4–5 the way a real marketplace corpus is; a flat 1–5 makes every
+// published score shrink to the midpoint and hides the design.
+const RATING_WEIGHTS = [
+  { value: 1, weight: 4 },
+  { value: 2, weight: 5 },
+  { value: 3, weight: 11 },
+  { value: 4, weight: 30 },
+  { value: 5, weight: 50 },
+];
 
-  for (const consultant of consultants) {
-    if (!consultant.consultantProfile) {
-      console.warn(`Skipping consultant ${consultant.id} - no profile found`);
-      continue;
-    }
+const LOW_SCORE_CAUSES: RatingCause[] = [
+  "CONSULTANT",
+  "CONSULTANT",
+  "PLATFORM_TECHNICAL",
+  "SCHEDULING",
+  "CONTENT",
+  "OTHER",
+];
 
-    try {
-      // Get completed appointments for this consultant
-      const completedAppointments = await prisma.appointment.findMany({
+const pickRating = () =>
+  faker.helpers.weightedArrayElement(RATING_WEIGHTS) as 1 | 2 | 3 | 4 | 5;
+
+type HeldSlot = {
+  slotId: string;
+  appointmentId: string;
+  endsAt: Date;
+  track: ReviewTrack;
+  ratingUnitId: string | null;
+  consultantProfileId: string;
+  userId: string;
+  consulteeProfileId: string | null;
+};
+
+// Every past, uncancelled slot with the consultee who held it — the same shape
+// `heldSlot` in lib/reviews.ts admits, minus the attendance arm that #1543 says
+// never fires.
+async function loadHeldSlots(now: Date): Promise<HeldSlot[]> {
+  const appointments = await prisma.appointment.findMany({
+    where: {
+      slotsOfAppointment: {
+        some: {
+          endsAt: { lt: now },
+          completionStatus: { in: ["UNVERIFIED", "COMPLETED"] },
+        },
+      },
+    },
+    select: {
+      id: true,
+      webinarId: true,
+      classId: true,
+      consultation: {
+        select: { consultationPlan: { select: { consultantProfileId: true } } },
+      },
+      subscription: {
+        select: { subscriptionPlan: { select: { consultantProfileId: true } } },
+      },
+      webinar: {
+        select: { webinarPlan: { select: { consultantProfileId: true } } },
+      },
+      class: {
+        select: { classPlan: { select: { consultantProfileId: true } } },
+      },
+      slotsOfAppointment: {
         where: {
-          OR: [
-            {
-              consultation: {
-                consultationPlan: {
-                  consultantProfile: { id: consultant.consultantProfile.id },
-                },
-                status: "APPROVED",
-              },
-            },
-            {
-              subscription: {
-                subscriptionPlan: {
-                  consultantProfile: { id: consultant.consultantProfile.id },
-                },
-                status: "APPROVED",
-              },
-            },
-            {
-              webinar: {
-                webinarPlan: {
-                  consultantProfile: { id: consultant.consultantProfile.id },
-                },
-                status: "COMPLETED",
-              },
-            },
-            {
-              class: {
-                classPlan: {
-                  consultantProfile: { id: consultant.consultantProfile.id },
-                },
-                status: "COMPLETED",
-              },
-            },
-          ],
+          endsAt: { lt: now },
+          completionStatus: { in: ["UNVERIFIED", "COMPLETED"] },
         },
-        include: {
-          slotsOfAppointment: {
-            include: {
-              user: {
-                include: {
-                  consulteeProfile: true,
-                },
-              },
-            },
+        select: {
+          id: true,
+          endsAt: true,
+          user: {
+            select: { id: true, consulteeProfile: { select: { id: true } } },
           },
         },
-      });
+      },
+    },
+  });
 
-      if (completedAppointments.length === 0) {
-        console.log(
-          `No completed appointments found for consultant ${consultant.id}`,
-        );
-        continue;
-      }
-
-      // Create reviews for a random subset of completed appointments
-      const numReviews = faker.number.int({
-        min: 1,
-        max: Math.max(1, Math.min(5, completedAppointments.length)),
-      });
-      const appointmentsToReview =
-        faker.helpers.arrayElements<CompletedAppointment>(
-          completedAppointments,
-          numReviews,
-        );
-
-      for (const appointment of appointmentsToReview) {
-        const consulteeProfile =
-          appointment.slotsOfAppointment[0]?.user[0]?.consulteeProfile;
-        if (!consulteeProfile) {
-          console.warn(
-            `Skipping review - no consultee profile found for appointment ${appointment.id}`,
-          );
-          continue;
-        }
-
-        const rating = faker.number.int({ min: 1, max: 5 });
-
-        await prisma.consultantReview.create({
-          data: {
-            rating: rating,
-            reviewDescription: faker.lorem.paragraph(),
-            consultantProfile: {
-              connect: { id: consultant.consultantProfile.id },
-            },
-            consulteeProfile: { connect: { id: consulteeProfile.id } },
-          },
+  const held: HeldSlot[] = [];
+  for (const a of appointments) {
+    const consultantProfileId =
+      a.consultation?.consultationPlan?.consultantProfileId ??
+      a.subscription?.subscriptionPlan?.consultantProfileId ??
+      a.webinar?.webinarPlan?.consultantProfileId ??
+      a.class?.classPlan?.consultantProfileId ??
+      null;
+    if (!consultantProfileId) continue;
+    const track = trackForAppointment(a);
+    const ratingUnitId = a.webinarId
+      ? `webinar:${a.webinarId}`
+      : a.classId
+        ? `class:${a.classId}`
+        : null;
+    for (const slot of a.slotsOfAppointment) {
+      if (!slot.endsAt) continue;
+      for (const u of slot.user) {
+        held.push({
+          slotId: slot.id,
+          appointmentId: a.id,
+          endsAt: slot.endsAt,
+          track,
+          ratingUnitId,
+          consultantProfileId,
+          userId: u.id,
+          consulteeProfileId: u.consulteeProfile?.id ?? null,
         });
-
-        // Update consultant's average rating
-        const allReviews = await prisma.consultantReview.findMany({
-          where: { consultantProfileId: consultant.consultantProfile.id },
-          select: { rating: true },
-        });
-
-        if (allReviews.length > 0) {
-          const totalRating = allReviews.reduce<number>(
-            (acc, review) => acc + review.rating,
-            0,
-          );
-          const averageRating = Number(
-            (totalRating / allReviews.length).toFixed(2),
-          );
-
-          await prisma.consultantProfile.update({
-            where: { id: consultant.consultantProfile.id },
-            data: { rating: averageRating },
-          });
-        }
-
-        totalReviews++;
-        if (totalReviews % 10 === 0) {
-          console.log(`Created ${totalReviews} reviews so far...`);
-        }
       }
-    } catch (error) {
-      console.error(
-        `Failed to create reviews for consultant ${consultant.id}:`,
-        error instanceof Error ? error.message : String(error),
-      );
     }
   }
-  console.log(`Created ${totalReviews} consultant reviews`);
+  return held;
+}
+
+async function createReviews(held: HeldSlot[]): Promise<number> {
+  // One review per pair, on the LAST session that pair held.
+  const latestByPair = new Map<string, HeldSlot>();
+  for (const h of held) {
+    if (!h.consulteeProfileId) continue;
+    const key = `${h.consultantProfileId}:${h.consulteeProfileId}`;
+    const prev = latestByPair.get(key);
+    if (!prev || h.endsAt > prev.endsAt) latestByPair.set(key, h);
+  }
+
+  // Every held pair reviews. Small mode holds at most five 1:1 clients and two
+  // past group events per consultant, so any drop-out leaves nobody published.
+  let created = 0;
+  for (const h of latestByPair.values()) {
+    const rating = pickRating();
+    const createdAt = faker.date.between({ from: h.endsAt, to: new Date() });
+    const edited = faker.datatype.boolean({ probability: 0.1 });
+    const replied = faker.datatype.boolean({ probability: 0.25 });
+    const repliedAt = replied
+      ? faker.date.between({ from: createdAt, to: new Date() })
+      : null;
+
+    const review = await prisma.consultantReview.create({
+      data: {
+        rating,
+        reviewDescription: faker.lorem.paragraph(),
+        consultantProfileId: h.consultantProfileId,
+        consulteeProfileId: h.consulteeProfileId!,
+        appointmentId: h.appointmentId,
+        track: h.track,
+        ratingUnitId: h.ratingUnitId,
+        ratedSessionAt: h.endsAt,
+        isAnonymous: faker.datatype.boolean({ probability: 0.2 }),
+        ratingCause:
+          rating <= 2 ? faker.helpers.arrayElement(LOW_SCORE_CAUSES) : null,
+        replyBody: replied ? faker.lorem.sentences(2) : null,
+        repliedAt,
+        revisionNo: edited ? 2 : 1,
+        editedAt: edited
+          ? faker.date.between({ from: createdAt, to: new Date() })
+          : null,
+        createdAt,
+      },
+      select: { id: true, editedAt: true },
+    });
+
+    if (edited && review.editedAt) {
+      await prisma.consultantReviewRevision.create({
+        data: {
+          reviewId: review.id,
+          revisionNo: 1,
+          rating: pickRating(),
+          reviewDescription: faker.lorem.paragraph(),
+          supersededAt: review.editedAt,
+          afterPublicReply: repliedAt !== null && review.editedAt > repliedAt,
+          editorUserId: h.userId,
+        },
+      });
+    }
+    created++;
+  }
+  return created;
+}
+
+async function createAppointmentFeedback(held: HeldSlot[]): Promise<number> {
+  // One private rating per (call, user), from roughly half the calls held.
+  const seen = new Set<string>();
+  const rows = [];
+  for (const h of held) {
+    const key = `${h.slotId}:${h.userId}`;
+    if (seen.has(key) || !faker.datatype.boolean({ probability: 0.5 }))
+      continue;
+    seen.add(key);
+    const rating = pickRating();
+    rows.push({
+      slotOfAppointmentId: h.slotId,
+      appointmentId: h.appointmentId,
+      userId: h.userId,
+      rating,
+      comment: faker.datatype.boolean({ probability: 0.6 })
+        ? faker.lorem.sentence()
+        : null,
+      raterRole: "CONSULTEE" as const,
+      ratingCause:
+        rating <= 2 ? faker.helpers.arrayElement(LOW_SCORE_CAUSES) : null,
+      createdAt: faker.date.between({ from: h.endsAt, to: new Date() }),
+    });
+  }
+  const { count } = await prisma.appointmentFeedback.createMany({ data: rows });
+  return count;
+}
+
+export async function createConsultantReviews(consultants: UserWithProfiles[]) {
+  console.log(`Creating consultant reviews and per-call feedback...`);
+  const now = new Date();
+
+  // Revisions first: the review relation is Restrict.
+  await prisma.consultantReviewRevision.deleteMany({});
+  await prisma.consultantReview.deleteMany({});
+  await prisma.appointmentFeedback.deleteMany({});
+
+  const held = await loadHeldSlots(now);
+  const reviews = await createReviews(held);
+  const feedback = await createAppointmentFeedback(held);
+  console.log(
+    `Created ${reviews} consultant reviews and ${feedback} feedback rows from ${held.length} held slots across ${consultants.length} consultants`,
+  );
+
+  const result = await recomputeAllConsultantRatings({ now });
+  const published = await prisma.consultantProfile.count({
+    where: {
+      OR: [
+        { publishedRatingOneToOne: { not: null } },
+        { publishedRatingGroup: { not: null } },
+      ],
+    },
+  });
+  console.log(
+    `Recomputed ${result.recomputed}/${result.profiles} profiles under snapshot ${result.snapshotId}; ${published} now publish a score` +
+      (result.failed.length ? `; ${result.failed.length} FAILED` : ""),
+  );
+  if (result.failed.length) console.error(result.failed);
 }

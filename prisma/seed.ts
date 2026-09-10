@@ -148,7 +148,7 @@ async function seed() {
     await createWaitlistSubscribers();
 
     console.log("Creating consultant reviews...");
-    await createConsultantReviews(consultants, consultees);
+    await createConsultantReviews(consultants);
 
     // Phase 8: Payment-related data
     console.log("\n[Phase 8] Creating payment-related data...");

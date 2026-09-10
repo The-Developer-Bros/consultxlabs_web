@@ -96,11 +96,15 @@ A single review mutation does not recompute the corpus on every star. `currentSc
 
 ## The recompute job
 
-`npm run db:recompute-ratings` runs `scripts/db/recompute-consultant-ratings.ts`. It is not a backfill migration: it is ordinary application code calling the same `recomputeConsultantRating` every mutation calls, it is idempotent and re-runnable, it touches no DDL, and nothing in the schema depends on it having run. What it prevents is a visible gap. The score columns arrive `NULL` and zero, and `NULL` means suppressed, so until it runs every consultant's public score is hidden.
+`npm run db:recompute-ratings` runs `scripts/db/recompute-consultant-ratings.ts`, a thin command over `recomputeAllConsultantRatings` in `lib/reviews-recompute.ts`; the seed's review step (`prisma/seedFiles/7b-create-consultant-reviews.ts`) ends by calling the same routine, so a freshly seeded database already carries published scores and one snapshot. It is not a backfill migration: it is ordinary application code calling the same `recomputeConsultantRating` every mutation calls, it is idempotent and re-runnable, it touches no DDL, and nothing in the schema depends on it having run. What it prevents is a visible gap. The score columns arrive `NULL` and zero, and `NULL` means suppressed, so until it runs every consultant's public score is hidden.
 
 It measures the priors once, mints one snapshot, walks every profile ordered by id, and wraps each in the same Serializable-with-retry the mutation paths use, so a review landing mid-run cannot lose-update the average it writes. One bad profile does not abandon the rest; failures are collected and reported. `--dry-run` calls the **real** scoring function against a capturing transaction and diffs the twelve data-determined columns against what is stored, rather than reimplementing the arithmetic; the previous dry run was a fourth copy of the formula and could agree with a version of the code that no longer existed. A dry run mints no snapshot.
 
 With a recency term in the weighting, recompute-on-mutation is no longer sufficient on its own: a consultant who receives no new reviews still drifts. `ratingAggregatedAt` therefore stops being a drift audit and becomes the selector a scheduled recompute would use to pick stale profiles. As of this branch there is **no scheduled twin** under `app/api/cleanup/` and the script walks every profile unconditionally; with the half-life at ten years the drift is immaterial, and scheduling the job (#1551) is what makes lowering the half-life a constant change rather than a migration.
+
+## What the seed produces
+
+The review seed writes one review per held (consultant, consultee) pair on the track the session was, with `ratedSessionAt`, `ratingUnitId` for group events, a spread of anonymous reviews, replies, low-score causes and a few revisions, plus one private `AppointmentFeedback` row for about half the held calls. In `small` mode the appointment seed holds at most five past one-to-one clients and two past group events per consultant, so three consultants publish a one-to-one score and none publishes a group score; the group threshold of five events with five responses each needs the appointment volumes raised, not the constants lowered.
 
 ## Displaying one number
 

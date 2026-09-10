@@ -32,7 +32,9 @@ The table below lists the files the reviews subsystem is built from.
 | `app/api/staff/moderation/reviews/route.ts`            | The staff queue                                                                                                             |
 | `app/api/staff/moderation/reviews/[reviewId]/route.ts` | The ADMIN-only soft delete                                                                                                  |
 | `app/api/report/route.ts`                              | `POST` a moderation report, including the `REVIEW` type                                                                     |
-| `scripts/db/recompute-consultant-ratings.ts`           | `npm run db:recompute-ratings`, the full recompute that mints a `ScoringSnapshot`                                           |
+| `lib/reviews-recompute.ts`                             | `recomputeAllConsultantRatings`, the full recompute that mints a `ScoringSnapshot`; shared by the script and the seed       |
+| `scripts/db/recompute-consultant-ratings.ts`           | `npm run db:recompute-ratings`, the command over it                                                                         |
+| `prisma/seedFiles/7b-create-consultant-reviews.ts`     | Seeds reviews per track and per-call feedback, then runs the recompute                                                      |
 | `scripts/db/preflight-push.ts`                         | `npm run db:preflight`, the destructive-push guard                                                                          |
 | `components/reviews/ProfileReviewComposer.tsx`         | The composer, a client island on the expert's profile                                                                       |
 | `__tests__/reviews/rating-aggregation.test.ts`         | The two-track scoring pins                                                                                                  |
