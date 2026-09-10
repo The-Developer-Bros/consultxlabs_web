@@ -64,11 +64,20 @@ export const ORG_QUALITY_MIN_RESPONDENTS_FOR_COMMENTS = 10;
  * windows describe the same people and there is nothing outside to recover.
  */
 export function suppressNarrowerWindow(
-  wider: { respondents: number },
-  narrower: { respondents: number },
+  /** The people who have a response OUTSIDE the narrower window — counted, not
+   *  inferred. Subtracting respondent counts is only a LOWER bound on this,
+   *  because somebody who answered both before and inside the window belongs to
+   *  both sets: `wider - narrower` counts the people with *no* recent response,
+   *  and the older responses come from those plus the overlap. The lower bound
+   *  errs toward suppressing, so it was safe rather than leaky — but it withheld
+   *  a published window that did not need withholding, and the caller already
+   *  holds the rows to count the real thing. */
+  complement: { respondents: number },
 ): boolean {
-  const complement = wider.respondents - narrower.respondents;
-  return complement > 0 && complement < ORG_QUALITY_MIN_RESPONDENTS;
+  return (
+    complement.respondents > 0 &&
+    complement.respondents < ORG_QUALITY_MIN_RESPONDENTS
+  );
 }
 
 export function applyCohortSuppression<T extends { respondents: number }>(

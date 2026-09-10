@@ -121,39 +121,49 @@ describe("secondary suppression", () => {
 });
 
 describe("overlapping time windows", () => {
-  /** The two windows this endpoint publishes side by side. `last30` is always a
-   *  subset of `overall`, so their difference is a cohort nobody chose to publish. */
-  const windows = (overall: number, last30: number) =>
-    suppressNarrowerWindow({ respondents: overall }, { respondents: last30 });
+  /** The people with a response OUTSIDE the narrower window. Counted from the
+   *  rows by the caller, not inferred: `overall − last30` is only a LOWER bound,
+   *  because anyone who answered both before and inside the window is in both
+   *  cohorts. */
+  const olderCohort = (respondents: number) =>
+    suppressNarrowerWindow({ respondents });
 
-  it("suppresses the recent window when six all-time meets five recent", () => {
+  it("suppresses the recent window when only one person answered earlier", () => {
     // The case the floor waves through and subtraction defeats: both windows clear
-    // 5, both averages are published, and 6 − 5 = 1 — so the sixth respondent's
-    // rating is (overall × 6) − (last30 × 5). One person, named by arithmetic.
-    expect(windows(6, 5)).toBe(true);
+    // 5, both averages publish, and the older cohort is one person — so their
+    // rating is (overall × n) − (last30 × m). One person, named by arithmetic.
+    expect(olderCohort(1)).toBe(true);
   });
 
   it("publishes both when the two windows hold the same people", () => {
     // Nothing sits outside the narrower window, so there is no complement to
     // recover. Suppressing here would hide a figure that leaks nothing.
-    expect(windows(6, 6)).toBe(false);
+    expect(olderCohort(0)).toBe(false);
   });
 
   it("publishes both when the older cohort clears the floor on its own", () => {
-    // Ten all-time and five recent leaves five older respondents — a cohort we
-    // would have published unaided, so the subtraction reveals an aggregate rather
-    // than a person.
-    expect(windows(10, 5)).toBe(false);
+    // Five older respondents is a cohort we would have published unaided, so the
+    // subtraction reveals an aggregate rather than a person.
+    expect(olderCohort(ORG_QUALITY_MIN_RESPONDENTS)).toBe(false);
   });
 
-  it("suppresses at every complement between one and the floor", () => {
-    for (
-      let complement = 1;
-      complement < ORG_QUALITY_MIN_RESPONDENTS;
-      complement++
-    ) {
-      expect(windows(20 + complement, 20)).toBe(true);
+  it("suppresses at every cohort size between one and the floor", () => {
+    for (let n = 1; n < ORG_QUALITY_MIN_RESPONDENTS; n++) {
+      expect(olderCohort(n)).toBe(true);
     }
-    expect(windows(20 + ORG_QUALITY_MIN_RESPONDENTS, 20)).toBe(false);
+    expect(olderCohort(ORG_QUALITY_MIN_RESPONDENTS)).toBe(false);
+  });
+
+  it("takes the real older cohort, not a difference of respondent counts", () => {
+    // The regression this guards. Six all-time respondents and five recent ones
+    // subtract to one, which would suppress — but if five of those six answered in
+    // BOTH windows, the people with an older response number six, not one, and the
+    // window was safe to publish all along. Subtraction lower-bounds the cohort, so
+    // it errs toward withholding: safe, but it hides figures that leak nothing.
+    //
+    // The helper takes the counted cohort, so the same 6-and-5 pair resolves either
+    // way depending on the overlap the caller measured.
+    expect(olderCohort(6)).toBe(false); // six people answered earlier — publishable
+    expect(olderCohort(1)).toBe(true); // one did — withhold
   });
 });

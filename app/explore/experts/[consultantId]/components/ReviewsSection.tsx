@@ -40,20 +40,35 @@ export function ReviewsSection({
   ratedEventsGroup,
   composer,
 }: ReviewsSectionProps) {
+  // A track appears when this consultant demonstrably does that kind of work.
+  //
+  // The counts alone are not that test: they count QUALIFYING data points, so a
+  // consultant who has run ten webinars that each drew two responses has
+  // `ratedEventsGroup === 0` and would have looked like somebody who never runs
+  // group sessions. The reviews on this page carry their own track, so "has any
+  // review of this kind" is available for free and is the honest signal.
+  //
+  // Still filtered rather than always rendering both: telling a consultant who
+  // has only ever done one-to-one work that they have "not enough rated group
+  // sessions yet" implies they run them.
+  const hasReviewIn = (track: "ONE_TO_ONE" | "GROUP") =>
+    reviews.some((r) => r.track === track);
   const tracks = [
     {
       label: "one-to-one",
       score: publishedRatingOneToOne,
       count: ratedClientsOneToOne,
       unit: "clients",
+      present: hasReviewIn("ONE_TO_ONE"),
     },
     {
       label: "group sessions",
       score: publishedRatingGroup,
       count: ratedEventsGroup,
       unit: "events",
+      present: hasReviewIn("GROUP"),
     },
-  ].filter((t) => t.score !== null || t.count > 0);
+  ].filter((t) => t.score !== null || t.count > 0 || t.present);
   // `id="reviews"` so the appointment page can deep-link here: the review
   // composer used to live there, and now only a link does.
   return (

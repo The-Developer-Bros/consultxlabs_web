@@ -174,7 +174,11 @@ export async function GET(
    *  subtraction. Six all-time respondents beside five recent ones is one
    *  person's exact rating. Same attack `applyCohortSuppression` handles for the
    *  per-consultant breakdown; it did not cover the two windows. */
-  const last30Reported = suppressNarrowerWindow(overall, last30)
+  // The people with a response OUTSIDE the window, counted from the rows rather
+  // than subtracted: somebody who answered both before and inside it belongs to
+  // both cohorts, so a subtraction only lower-bounds this.
+  const older = summarise(rows.filter((r) => r.createdAt < since30d));
+  const last30Reported = suppressNarrowerWindow(older)
     ? { average: null, responses: null, respondents: null }
     : reportable(last30);
 
