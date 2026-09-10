@@ -63,16 +63,44 @@ async function loadHeldSlots(now: Date): Promise<HeldSlot[]> {
       webinarId: true,
       classId: true,
       consultation: {
-        select: { consultationPlan: { select: { consultantProfileId: true } } },
+        select: {
+          consultationPlan: {
+            select: {
+              consultantProfileId: true,
+              consultantProfile: { select: { userId: true } },
+            },
+          },
+        },
       },
       subscription: {
-        select: { subscriptionPlan: { select: { consultantProfileId: true } } },
+        select: {
+          subscriptionPlan: {
+            select: {
+              consultantProfileId: true,
+              consultantProfile: { select: { userId: true } },
+            },
+          },
+        },
       },
       webinar: {
-        select: { webinarPlan: { select: { consultantProfileId: true } } },
+        select: {
+          webinarPlan: {
+            select: {
+              consultantProfileId: true,
+              consultantProfile: { select: { userId: true } },
+            },
+          },
+        },
       },
       class: {
-        select: { classPlan: { select: { consultantProfileId: true } } },
+        select: {
+          classPlan: {
+            select: {
+              consultantProfileId: true,
+              consultantProfile: { select: { userId: true } },
+            },
+          },
+        },
       },
       slotsOfAppointment: {
         where: {
@@ -99,6 +127,14 @@ async function loadHeldSlots(now: Date): Promise<HeldSlot[]> {
       a.class?.classPlan?.consultantProfileId ??
       null;
     if (!consultantProfileId) continue;
+    // The slot's user list holds the consultant too (the #827 double-booking
+    // guard); `appointmentRaterRole` ranks them PROVIDER, never CONSULTEE.
+    const consultantUserId =
+      a.consultation?.consultationPlan?.consultantProfile?.userId ??
+      a.subscription?.subscriptionPlan?.consultantProfile?.userId ??
+      a.webinar?.webinarPlan?.consultantProfile?.userId ??
+      a.class?.classPlan?.consultantProfile?.userId ??
+      null;
     const track = trackForAppointment(a);
     const ratingUnitId = a.webinarId
       ? `webinar:${a.webinarId}`
@@ -108,6 +144,7 @@ async function loadHeldSlots(now: Date): Promise<HeldSlot[]> {
     for (const slot of a.slotsOfAppointment) {
       if (!slot.endsAt) continue;
       for (const u of slot.user) {
+        if (u.id === consultantUserId) continue;
         held.push({
           slotId: slot.id,
           appointmentId: a.id,

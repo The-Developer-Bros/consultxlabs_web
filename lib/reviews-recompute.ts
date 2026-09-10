@@ -6,6 +6,7 @@ import {
   computePlatformPriors,
   recomputeConsultantRating,
   type ScoringPriors,
+  type ScoringTx,
 } from "@/lib/reviews";
 import { withSerializableRetry } from "@/lib/db/serializable-retry";
 
@@ -47,21 +48,19 @@ async function previewConsultantRating(
   run: Run,
 ): Promise<StoredScore> {
   let captured: StoredScore | null = null;
-  const capturingTx = {
+  // Typed as ScoringTx so a delegate the scorer starts using is a compile error
+  // here; only the one swallowed write is cast.
+  const capturingTx: ScoringTx = {
     consultantReview: prisma.consultantReview,
     scoringSnapshot: prisma.scoringSnapshot,
     consultantProfile: {
-      update: async ({ data }: { data: StoredScore }) => {
+      update: (async ({ data }: { data: StoredScore }) => {
         captured = data;
         return {};
-      },
+      }) as unknown as ScoringTx["consultantProfile"]["update"],
     },
   };
-  await recomputeConsultantRating(
-    capturingTx as never,
-    consultantProfileId,
-    run,
-  );
+  await recomputeConsultantRating(capturingTx, consultantProfileId, run);
   if (!captured) throw new Error("preview captured no write");
   return captured;
 }

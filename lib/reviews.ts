@@ -320,6 +320,16 @@ function groupPoints(rows: ScorableReview[], now: Date, halfLifeDays: number) {
     }));
 }
 
+/** The exact delegate methods scoring touches. Narrow on purpose: the dry run
+ *  in lib/reviews-recompute.ts stubs `consultantProfile.update` against this
+ *  type, so a new dependency here fails the build there, not an operator's
+ *  pre-flight against production data. */
+export type ScoringTx = {
+  consultantReview: Pick<Tx["consultantReview"], "findMany">;
+  scoringSnapshot: Pick<Tx["scoringSnapshot"], "findFirst">;
+  consultantProfile: Pick<Tx["consultantProfile"], "update">;
+};
+
 /**
  * The priors in force. Reads the newest `ScoringSnapshot`, so a review mutation
  * shrinks toward the same mean the last full run used rather than recomputing
@@ -329,7 +339,7 @@ function groupPoints(rows: ScorableReview[], now: Date, halfLifeDays: number) {
  * prior is the midpoint of the scale — no snapshot is pinned in that case,
  * because a run that invented its own priors must not claim to be reproducible.
  */
-export async function currentScoringPriors(tx: Tx): Promise<{
+export async function currentScoringPriors(tx: ScoringTx): Promise<{
   priors: ScoringPriors;
   snapshotId: string | null;
 }> {
@@ -421,7 +431,7 @@ export async function computePlatformPriors(
  * without the first review and the published score stays wrong.
  */
 export async function recomputeConsultantRating(
-  tx: Tx,
+  tx: ScoringTx,
   consultantProfileId: string,
   /** Supplied by the full recompute so every profile in a run shares one prior;
    *  omitted by mutation paths, which read the newest snapshot. */
