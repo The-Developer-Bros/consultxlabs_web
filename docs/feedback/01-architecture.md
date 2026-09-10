@@ -4,6 +4,16 @@
 
 ## The unit is the session, and the rater is a party to it
 
+The word "slot" in `slotOfAppointmentId` is the trap this page has to defuse first. The table below maps the words people use to the canonical names in [the glossary](../enterprise/00-foundations/07-slots-sessions-glossary.md); the feedback row hangs off the third line.
+
+| What people say           | Canonical name      | Model                                    | What it is                                                                                  |
+| ------------------------- | ------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------- |
+| "slot" on the calendar    | availability window | `SlotOfAvailabilityWeekly` / `...Custom` | The hours a consultant offers; never booked directly and never rated                        |
+| "slot" in the picker      | bookable slot       | transient `ProcessedSlot`                | A computed cut of availability that exists only until checkout                              |
+| "the session", "the call" | booked slot         | `SlotOfAppointment`                      | One held thirty-minute row with `startsAt`, `endsAt`, `completionStatus` and who attended   |
+| "the booking"             | appointment         | `Appointment`                            | The purchase wrapper around exactly one consultation, subscription, webinar, class or trial |
+| "the video call"          | meeting             | `MeetingSession`                         | The Stream record for one booked slot, created lazily at Start Call, so it may not exist    |
+
 A rating is about a conversation, so it anchors to the **session**: `slotOfAppointmentId` points at the run anchor, the first thirty-minute row of a contiguous run (#1061). The `POST` normalises whatever slot the client names onto that anchor by grouping the appointment's rows into runs first. Without that, an `UNVERIFIED` offline run has no `MeetingSession` to hold the identity together, every row in it satisfies the eligibility predicate independently, and one ninety-minute in-person session could take three separate ratings. Resolving to the anchor makes one-rating-per-meeting a rule rather than a UI convention, and `@@unique([slotOfAppointmentId, userId])` enforces it.
 
 Eligibility is `heldSlot(userId)` from `lib/reviews.ts`, the same predicate the public review uses: the slot completed or is `UNVERIFIED`, it was not cancelled or rescheduled, and either the caller has an attendance row and the call is over, or nobody could have recorded attendance because the session ran offline. A `COMPLETED` slot the user never joined used to qualify, so a no-show could rate a session they did not attend and it fed the consultant's quality signal.
