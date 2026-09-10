@@ -70,6 +70,7 @@ Each of the following is designed or diagnosed and tracked as an issue; none is 
 - #1548 — nothing asks for a rating, which is why the corpus is empty; placement is settled on the dashboard, never the meeting room.
 - #1549 — widen the review unique to include `track`, as argued above.
 - #1550 — denormalise `consultantProfileId` onto `AppointmentFeedback` so the organisation's quality breakdown becomes a `groupBy`.
+- #1551 — three things the schema's comments promised that the code does not yet do: the `review_revision_immutable` trigger, a scheduled recompute, and moving `/explore/experts` off the legacy blended score.
 
 ## Related
 

@@ -292,15 +292,15 @@ Internal team documentation — onboarding, testing guides, and contributor reso
 
 Competitor analysis and research.
 
-- [README.md](./competitors/README.md) - Competitors overview
-- [01-topmate-io.md](./competitors/01-topmate-io.md) - Topmate analysis
-- [02-preplaced-in.md](./competitors/02-preplaced-in.md) - Preplaced analysis
-- [03-metvy-com.md](./competitors/03-metvy-com.md) - Metvy analysis
-- [04-upgrad-com.md](./competitors/04-upgrad-com.md) - upGrad analysis
-- [05-propeers-in.md](./competitors/05-propeers-in.md) - ProPeers analysis
-- [06-growthschool-io.md](./competitors/06-growthschool-io.md) - GrowthSchool analysis
+- [README.md](./competition/competitors/README.md) - Competitors overview
+- [01-topmate-io.md](./competition/competitors/01-topmate-io.md) - Topmate analysis
+- [02-preplaced-in.md](./competition/competitors/02-preplaced-in.md) - Preplaced analysis
+- [03-metvy-com.md](./competition/competitors/03-metvy-com.md) - Metvy analysis
+- [04-upgrad-com.md](./competition/competitors/04-upgrad-com.md) - upGrad analysis
+- [05-propeers-in.md](./competition/competitors/05-propeers-in.md) - ProPeers analysis
+- [06-growthschool-io.md](./competition/competitors/06-growthschool-io.md) - GrowthSchool analysis
 
-- [competitor-analysis.md](./competitor-analysis.md) - Consolidated competitor analysis
+- [competitor-analysis.md](./competition/competitors/competitor-analysis.md) - Consolidated competitor analysis
 
 ---
 

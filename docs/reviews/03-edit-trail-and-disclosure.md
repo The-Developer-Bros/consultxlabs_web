@@ -30,7 +30,7 @@ It is recorded for moderation context and it does **not** decide whether the pub
 
 The revision table is append-only by design. No code path updates or deletes a revision row, there is no `updatedAt` column because a row that is only ever inserted has nothing to update and the column would invite a writer to try, and the review relation is `Restrict` rather than `Cascade` so a review with an edit history cannot be hard-deleted out from under its own evidence. Since nobody hard-deletes a review any more, that `Restrict` is belt and braces.
 
-ADR 29 and the pull request that shipped the table state that append-only is enforced by a `review_revision_immutable` trigger in `prisma/sql/check-constraints.sql`, on the argument that a trail an application bug can rewrite indicates nothing. As of this branch that trigger is **not** in the sidecar; append-only is held by convention and by the absence of any writer. Adding the trigger is outstanding work and should be done in the sidecar, not in the schema, because a trigger is not something `prisma db push` can express.
+ADR 29 and the pull request that shipped the table state that append-only is enforced by a `review_revision_immutable` trigger in `prisma/sql/check-constraints.sql`, on the argument that a trail an application bug can rewrite indicates nothing. As of this branch that trigger is **not** in the sidecar; append-only is held by convention and by the absence of any writer. Adding the trigger is tracked as #1551 and belongs in the sidecar, not in the schema, because a trigger is not something `prisma db push` can express.
 
 ## Related
 
