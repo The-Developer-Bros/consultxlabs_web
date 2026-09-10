@@ -112,4 +112,5 @@ Revisit if group volume grows enough that the group track needs its own weightin
 
 - [ADR 25 — Per-session reviews and the published score](25-per-session-reviews-and-published-score.md) — superseded by this one on the anchor; still live on the CSAT/review separation and the threshold.
 - [ADR 20 — Organizations see session metadata, never session content](20-org-visibility-into-member-sessions.md) — why the private per-call rating and the public review are different objects with different visibility.
-- [The support hub](../../support/support-hub.md) — the object-to-anchor grid this decision is one row of.
+- [The grid](../../support/02-the-grid.md) — the object-to-anchor grid this decision is one row of.
+- [The reviews reference](../../reviews/README.md) — how the subsystem this decision describes actually works: the scoring arithmetic and constants, the edit trail, the public read allowlist, the deployment order, and every column.
