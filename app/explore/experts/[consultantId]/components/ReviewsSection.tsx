@@ -1,11 +1,17 @@
 "use client";
 
 import { Star, MessageSquare } from "lucide-react";
-import { TPublicConsultantReview } from "@/types/review";
+import type {
+  TPublicConsultantReview,
+  TReviewTrackPresence,
+} from "@/types/review";
 import Review from "./Review";
 
 interface ReviewsSectionProps {
   reviews: TPublicConsultantReview[];
+  /** Which tracks hold any live review — from its own query, because
+   *  `reviews` is a 20-row page and a track can exist entirely outside it. */
+  reviewTracks: TReviewTrackPresence;
   /**
    * #705 — the published score, or null when too few sessions have been rated
    * to publish one. Passed in rather than derived here: this list is a `take`
@@ -32,6 +38,7 @@ interface ReviewsSectionProps {
 
 export function ReviewsSection({
   reviews,
+  reviewTracks,
   publishedRating,
   reviewCount,
   publishedRatingOneToOne,
@@ -45,28 +52,26 @@ export function ReviewsSection({
   // The counts alone are not that test: they count QUALIFYING data points, so a
   // consultant who has run ten webinars that each drew two responses has
   // `ratedEventsGroup === 0` and would have looked like somebody who never runs
-  // group sessions. The reviews on this page carry their own track, so "has any
-  // review of this kind" is available for free and is the honest signal.
+  // group sessions. `reviewTracks` is the honest signal, and it comes from the
+  // data layer rather than from `reviews`, which is one page.
   //
   // Still filtered rather than always rendering both: telling a consultant who
   // has only ever done one-to-one work that they have "not enough rated group
   // sessions yet" implies they run them.
-  const hasReviewIn = (track: "ONE_TO_ONE" | "GROUP") =>
-    reviews.some((r) => r.track === track);
   const tracks = [
     {
       label: "one-to-one",
       score: publishedRatingOneToOne,
       count: ratedClientsOneToOne,
       unit: "clients",
-      present: hasReviewIn("ONE_TO_ONE"),
+      present: reviewTracks.ONE_TO_ONE,
     },
     {
       label: "group sessions",
       score: publishedRatingGroup,
       count: ratedEventsGroup,
       unit: "events",
-      present: hasReviewIn("GROUP"),
+      present: reviewTracks.GROUP,
     },
   ].filter((t) => t.score !== null || t.count > 0 || t.present);
   // `id="reviews"` so the appointment page can deep-link here: the review

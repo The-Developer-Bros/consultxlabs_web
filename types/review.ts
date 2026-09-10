@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import type { Prisma, ReviewTrack } from "@prisma/client";
 import type {
   publicReviewSelect,
   PublicReview,
@@ -21,3 +21,10 @@ export type TConsultantReview = Prisma.ConsultantReviewGetPayload<{
  * absent rather than be typed as though they are always there.
  */
 export type TPublicConsultantReview = PublicReview<TConsultantReview>;
+
+/**
+ * Which tracks a consultant has at least one live review in. Answered by its own
+ * query, never derived from a paginated review list: a GROUP review past the
+ * page would otherwise hide the whole track.
+ */
+export type TReviewTrackPresence = Record<ReviewTrack, boolean>;

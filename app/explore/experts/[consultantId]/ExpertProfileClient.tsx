@@ -4,7 +4,10 @@ import { useToast } from "@/components/ui/use-toast";
 import type { ConsultantDetailData } from "./types";
 import { TSlotTiming } from "@/types/slots";
 import { TUserWithProfessionalBackground } from "@/types/user";
-import { TPublicConsultantReview } from "@/types/review";
+import type {
+  TPublicConsultantReview,
+  TReviewTrackPresence,
+} from "@/types/review";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
@@ -26,12 +29,14 @@ interface ExpertProfileClientProps {
   consultantDetails: ConsultantDetailData;
   userDetails: TUserWithProfessionalBackground;
   reviews: TPublicConsultantReview[];
+  reviewTracks: TReviewTrackPresence;
 }
 
 export function ExpertProfileClient({
   consultantDetails,
   userDetails,
   reviews,
+  reviewTracks,
 }: ExpertProfileClientProps) {
   const searchParams = useSearchParams();
   const { data: session } = useSession();
@@ -378,6 +383,7 @@ export function ExpertProfileClient({
           >
             <ReviewsSection
               reviews={reviews}
+              reviewTracks={reviewTracks}
               publishedRating={consultantDetails.publishedRating}
               reviewCount={consultantDetails.reviewCount}
               publishedRatingOneToOne={

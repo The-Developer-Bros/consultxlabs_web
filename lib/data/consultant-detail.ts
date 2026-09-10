@@ -1,6 +1,7 @@
 import { cache } from "react";
 import { reportSentryError } from "@/lib/observability/report";
 import prisma from "@/lib/prisma";
+import type { TReviewTrackPresence } from "@/types/review";
 import {
   publicReviewSelect,
   sanitisePublicReviews,
@@ -141,5 +142,26 @@ export const getConsultantReviews = cache(
     });
     // The reviewer chose to be unnamed; that has to hold in the payload.
     return sanitisePublicReviews(reviews);
+  },
+);
+
+/**
+ * Which tracks this consultant has any live review in. Its own query rather
+ * than a scan of `getConsultantReviews`, which is a 20-row page ordered by
+ * rating: a GROUP review past that page, on an event still below
+ * MIN_GROUP_RESPONSES_PER_EVENT, would otherwise hide the group track entirely
+ * instead of rendering it as "not enough rated group sessions yet".
+ */
+export const getConsultantReviewTracks = cache(
+  async (consultantProfileId: string): Promise<TReviewTrackPresence> => {
+    const rows = await prisma.consultantReview.groupBy({
+      by: ["track"],
+      where: { consultantProfileId, deletedAt: null, track: { not: null } },
+    });
+    const present = new Set(rows.map((r) => r.track));
+    return {
+      ONE_TO_ONE: present.has("ONE_TO_ONE"),
+      GROUP: present.has("GROUP"),
+    };
   },
 );
