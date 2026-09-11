@@ -251,8 +251,18 @@ export async function POST(
           userId: auth.userId,
         },
       },
-      select: { rating: true, comment: true },
+      select: { rating: true, comment: true, deletedAt: true },
     });
+    // A rating moderation removed cannot be re-rated back into view: GET hides
+    // it, so a 200 here would report a save nothing shows.
+    if (previous?.deletedAt) {
+      return supportError({
+        status: 409,
+        code: "CONFLICT",
+        message: "This rating was removed by our moderation team.",
+        context: { route: FEEDBACK_ROUTE, action: "save", appointmentId },
+      });
+    }
     const opinionChanged =
       previous !== null &&
       (previous.rating !== body.data.rating ||

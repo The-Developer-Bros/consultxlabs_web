@@ -4,7 +4,11 @@ import {
   publicReviewSelect,
   sanitisePublicReviews,
 } from "@/lib/data/review-public";
-import { displayedScore, displayedScoreCount } from "@/lib/reviews-display";
+import {
+  displayedScore,
+  displayedScoreCount,
+  PERSON_SCORE_ORDER,
+} from "@/lib/reviews-display";
 import { toPlain } from "@/lib/data/serialize";
 import { consultantPublicScalars } from "@/lib/data/consultant-public";
 import { deriveDirectoryRating } from "@/lib/data/public-stats";
@@ -32,7 +36,9 @@ export const getHomeExperts = unstable_cache(
     const consultants = await prisma.consultantProfile.findMany({
       // #781 §B — soft-deleted profiles leave public surfaces
       where: { verificationStatus: "VERIFIED", deletedAt: null },
-      orderBy: { rating: "desc" },
+      // Chosen by the same score the card shows — the raw mean picked ten by a
+      // number the card then hid.
+      orderBy: [...PERSON_SCORE_ORDER],
       take: 10,
       select: {
         ...consultantPublicScalars,
@@ -81,10 +87,11 @@ export const getHomeExperts = unstable_cache(
     // earned. NULL stays NULL: the card renders "not enough yet", never 0.0.
     return toPlain(
       consultants.map((c) => {
-        const { score, track } = displayedScore(c);
+        const { score, track, fellBack } = displayedScore(c);
         return {
           ...c,
           rating: score,
+          ratingTrack: fellBack ? track : null,
           reviewCount: displayedScoreCount(c, track),
         };
       }),
@@ -144,19 +151,16 @@ export const getHomeStats = unstable_cache(
         prisma.consultantProfile.count({
           where: { verificationStatus: "VERIFIED", deletedAt: null },
         }),
-        // The PUBLISHED score, not the raw `rating` mean: `rating` defaults to
-        // 0 and every unreviewed profile carries that default. `publishedRating`
-        // is NULL below the #705 suppression threshold, so filtering it out
-        // leaves only publishable scores. Weighting by review happens in the
-        // shared `deriveDirectoryRating`, which `/explore/experts` calls too so
-        // the landing hero and the directory cannot drift (#1485).
+        // The PUBLISHED 1:1 score, never the raw `rating` mean (0 on every
+        // unreviewed profile). Weighted by rated clients in the shared
+        // `deriveDirectoryRating`, which /explore/experts calls too (#1485).
         prisma.consultantProfile.findMany({
           where: {
             verificationStatus: "VERIFIED",
             deletedAt: null,
-            publishedRating: { not: null },
+            publishedRatingOneToOne: { not: null },
           },
-          select: { publishedRating: true, reviewCount: true },
+          select: { publishedRatingOneToOne: true, ratedClientsOneToOne: true },
         }),
         // Meetings actually held. The unit is the SLOT: an Appointment carries
         // no status of its own and a subscription spans many meetings.
@@ -179,7 +183,12 @@ export const getHomeStats = unstable_cache(
 
     return {
       totalConsultants,
-      ...deriveDirectoryRating(ratedProfiles),
+      ...deriveDirectoryRating(
+        ratedProfiles.map((p) => ({
+          publishedRating: p.publishedRatingOneToOne,
+          reviewCount: p.ratedClientsOneToOne,
+        })),
+      ),
       completedSessions,
       // Keyed lowercase so the hardcoded category labels can look themselves up
       // without depending on how a domain happens to be capitalised.

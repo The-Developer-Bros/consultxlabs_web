@@ -71,6 +71,7 @@ const failedBan = (overrides: Record<string, unknown> = {}) => ({
   },
   report: {
     id: "r1",
+    type: "PROFILE",
     targetUserId: "u1",
     reviewId: null,
     streamMessageId: null,
@@ -181,6 +182,7 @@ describe("retryModerationEnforcement", () => {
         actionType: "CONTENT_REMOVED",
         report: {
           id: "r2",
+          type: "MESSAGE",
           targetUserId: "u1",
           reviewId: null,
           streamMessageId: "msg-1",
@@ -194,11 +196,11 @@ describe("retryModerationEnforcement", () => {
     expect(enforce).toHaveBeenCalledWith(
       "CONTENT_REMOVED",
       expect.objectContaining({
-          streamMessageId: "msg-1",
-          // The cid travels with the id — the delete needs both, and asserting
-          // only the id passed while the sweep forwarded neither.
-          streamChannelCid: "messaging:chan-1",
-        }),
+        streamMessageId: "msg-1",
+        // The cid travels with the id — the delete needs both, and asserting
+        // only the id passed while the sweep forwarded neither.
+        streamChannelCid: "messaging:chan-1",
+      }),
     );
     // The ban state is irrelevant to a message delete, so it is not consulted.
     expect(findUser).not.toHaveBeenCalled();

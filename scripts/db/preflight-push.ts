@@ -22,6 +22,12 @@
  *
  * Additive plans pass silently. Nothing here can make a safe push fail.
  *
+ * It is a heuristic over Prisma's SQL text, not a proof. It does NOT catch a
+ * column type narrowing (`ALTER COLUMN … SET DATA TYPE`), `SET NOT NULL`, a
+ * primary-key `DROP CONSTRAINT`, or the drop of a hand-applied partial index
+ * whose name does not end in `_key`; and `npx prisma db push` run directly never
+ * executes it. Read the `--print` plan when a change is not plainly additive.
+ *
  * Usage: `npm run db:preflight`            — gate (exit 1 on a destructive plan)
  *        `npm run db:preflight -- --print` — print the plan and exit 0
  *

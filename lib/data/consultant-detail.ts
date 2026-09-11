@@ -31,9 +31,9 @@ export const getConsultantDetail = cache(async (consultantId: string) => {
       id: true,
       description: true,
       experience: true,
-      rating: true,
-      // #705 — the published score and the count behind it. `rating` above is
-      // the RAW mean and stays internal; the profile shows this one.
+      // The raw `rating` mean is INTERNAL (CONSULTANT_INTERNAL_SCORE_FIELDS)
+      // and is not selected into public client props; the profile shows the
+      // two published scores below.
       publishedRating: true,
       reviewCount: true,
       // #1300 (ADR 29) — the two tracks the profile shows side by side. A

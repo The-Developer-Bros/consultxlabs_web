@@ -101,6 +101,7 @@ export async function GET(
   const summarise = (subset: typeof rows) => {
     const raters = new Set(subset.map((r) => r.userId));
     return {
+      respondentIds: raters as ReadonlySet<string>,
       respondents: raters.size,
       responses: subset.length,
       average: subset.length
@@ -112,12 +113,14 @@ export async function GET(
   const overall = summarise(rows);
   const last30 = summarise(rows.filter((r) => r.createdAt >= since30d));
 
-  // Per consultant. A row whose slot carries no consultant cannot be attributed
-  // to one, so it counts toward the org total and toward nobody's breakdown.
+  // Per consultant. Rows whose slot carries no consultant (a group plan with no
+  // named expert) form their own cohort under a sentinel key: never a line in
+  // the breakdown, but in the suppression arithmetic, because they are exactly
+  // what "total minus the published lines" would otherwise isolate.
+  const UNATTRIBUTED = "";
   const byConsultant = new Map<string, typeof rows>();
   for (const row of rows) {
-    const id = row.slotOfAppointment?.consultantProfileId;
-    if (!id) continue;
+    const id = row.slotOfAppointment?.consultantProfileId ?? UNATTRIBUTED;
     const entry = byConsultant.get(id);
     if (entry) entry.push(row);
     else byConsultant.set(id, [row]);
@@ -126,11 +129,12 @@ export async function GET(
   // One query for the names, keyed by the ids we actually have. A name is
   // metadata the organisation already sees on its own appointments feed, so it
   // crosses the ADR 20 line the same way a plan title does.
-  const names = byConsultant.size
+  const namedIds = [...byConsultant.keys()].filter((k) => k !== UNATTRIBUTED);
+  const names = namedIds.length
     ? new Map(
         (
           await prisma.consultantProfile.findMany({
-            where: { id: { in: [...byConsultant.keys()] } },
+            where: { id: { in: namedIds } },
             select: { id: true, user: { select: { name: true } } },
           })
         ).map((c) => [c.id, c.user?.name ?? null]),
@@ -145,7 +149,16 @@ export async function GET(
     }))
     .sort((a, b) => b.respondents - a.respondents);
 
-  const { published, suppressed } = applyCohortSuppression(cohorts);
+  const suppression = applyCohortSuppression(cohorts);
+  const published = suppression.published.filter(
+    (c) => c.consultantProfileId !== UNATTRIBUTED,
+  );
+  // Named cohorts only: the unattributed one is not an expert being withheld.
+  const consultantsSuppressed =
+    suppression.suppressed === 0
+      ? 0
+      : suppression.hidden.filter((c) => c.consultantProfileId !== UNATTRIBUTED)
+          .length;
 
   /** Below the floor NOTHING is reported — not the average, and not the counts.
    *  ADR 20's stated reason for suppressing is that the count makes the
@@ -200,10 +213,10 @@ export async function GET(
         name: c.name,
         ...reportable(c),
       })),
-      /** How many experts are hidden. A count of hidden cohorts is safe to state
-       *  and is the difference between "we have no data on them" and "we are not
-       *  telling you" — never one, by construction. */
-      consultantsSuppressed: suppressed,
+      /** How many experts are hidden: the difference between "no data on them"
+       *  and "not telling you". Stated only when the hidden people themselves
+       *  clear the floor; below that it is 0 and nothing is published at all. */
+      consultantsSuppressed,
     },
   });
 }

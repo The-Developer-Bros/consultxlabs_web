@@ -25,11 +25,9 @@ export const MIN_RATED_UNITS_FOR_PUBLIC_SCORE = 5;
 /**
  * #1300 — the publication gate, per track.
  *
- * 1:1 counts distinct CLIENTS, which the unique on
- * (consultantProfileId, consulteeProfileId, track) already guarantees is what a
- * review row is. So "five" here means five different people, which is the honest
- * reading of a published score — under a per-purchase model it could have meant
- * five bookings from two people.
+ * 1:1 counts distinct CLIENTS: a 1:1 review row is one per (consultant, client)
+ * pair, so "five" means five different people — under a per-purchase model it
+ * could have meant five bookings from two people.
  */
 export const MIN_RATED_CLIENTS_ONE_TO_ONE = 5;
 
@@ -261,13 +259,8 @@ function scoreTrack(
 }
 
 /**
- * The 1:1 track: one review IS one data point.
- *
- * No grouping, because `@@unique([consultantProfileId, consulteeProfileId,
- * track])` already guarantees one review per client per track. That is the
- * simplification the two-track split buys — the old blended score needed a
- * denormalised bucket key to stop a webinar dominating, and this track needs
- * none.
+ * The 1:1 track: one review IS one data point, because a 1:1 row is one per
+ * client. No bucket key needed — that is the simplification the split buys.
  */
 function oneToOnePoints(
   rows: ScorableReview[],
@@ -440,24 +433,22 @@ export async function recomputeConsultantRating(
   const now = run?.now ?? new Date();
   const { priors, snapshotId } = run ?? (await currentScoringPriors(tx));
 
-  const rows: ScorableReview[] = await tx.consultantReview.findMany({
-    where: {
-      consultantProfileId,
-      // #693 — soft-removed reviews must not count.
-      deletedAt: null,
-      // #1300 — nor may a rating whose cause we adjudicated as ours. The row
-      // still renders on the profile with its text; it just stops arithmetically
-      // punishing someone who did not cause it.
-      excludedFromAggregateAt: null,
-    },
+  // Live rows. An excluded row (#1300 ratings protection) still renders on the
+  // profile, so it stays in `reviewCount`; it just leaves the arithmetic.
+  const liveRows = await tx.consultantReview.findMany({
+    where: { consultantProfileId, deletedAt: null },
     select: {
       rating: true,
       track: true,
       ratingUnitId: true,
       ratedSessionAt: true,
       createdAt: true,
+      excludedFromAggregateAt: true,
     },
   });
+  const rows: ScorableReview[] = liveRows.filter(
+    (r) => r.excludedFromAggregateAt === null,
+  );
 
   const half = SCORE_HALF_LIFE_DAYS;
   const one = scoreTrack(
@@ -511,7 +502,7 @@ export async function recomputeConsultantRating(
       scoringSnapshotId: snapshotId,
       rating: legacyMean,
       ratingUnitCount: legacyUnitCount,
-      reviewCount: rows.length,
+      reviewCount: liveRows.length,
       publishedRating:
         legacyUnitCount >= MIN_RATED_UNITS_FOR_PUBLIC_SCORE ? legacyMean : null,
       ratingAggregatedAt: now,
@@ -622,6 +613,7 @@ function loadReviewableAppointments(
       appointmentType: true,
       webinarId: true,
       classId: true,
+      organizationId: true,
       consultation: {
         select: {
           consultationPlan: {
@@ -760,11 +752,8 @@ function describe(
 
 /** This consultee's existing review of each of the given consultants.
  *
- *  Keyed by consultant alone, because the unique is
- *  `(consultantProfileId, consulteeProfileId)` — one review per pair, whatever
- *  its track. Keying by `(consultant, track)` is what #1549 wants once the key
- *  is widened; until then it would hide a GROUP review from the composer on a
- *  1:1 session, which renders an empty form and then 409s on submit. */
+ *  Keyed by consultant alone while the unique is the pair. #1549 keys 1:1 by
+ *  (consultant, track) and GROUP by (consultant, event). */
 async function reviewsByConsultant(
   consulteeProfileId: string,
   consultantProfileIds: string[],
@@ -785,10 +774,6 @@ async function reviewsByConsultant(
       track: true,
     },
   });
-  // Whatever its track, it is THE review this person wrote about that consultant,
-  // so it is what the composer must load — for a legacy row with no track, and
-  // for a GROUP row being edited from a 1:1 session alike. #1549 splits this per
-  // track once the unique can express it.
   return new Map(
     rows.map(({ consultantProfileId, track: _track, ...r }) => [
       consultantProfileId,
@@ -797,24 +782,75 @@ async function reviewsByConsultant(
   );
 }
 
+/**
+ * Grid E: an org-hosted engagement — the booking's own organisation's EXPERT,
+ * paid through the organisation, delivering to its member — is internal, not a
+ * marketplace transaction, and publishes no review. Decided at #1300 (rule 8);
+ * this is the enforcement. Current membership stands in for the booking-time
+ * fact until #1554 snapshots the deliverer.
+ */
+async function orgHostedAppointmentIds(
+  rows: {
+    id: string;
+    organizationId: string | null;
+    consultantProfileId: string;
+  }[],
+): Promise<Set<string>> {
+  const scoped = rows.filter((r) => r.organizationId !== null);
+  if (scoped.length === 0) return new Set();
+  const hosted = await prisma.membership.findMany({
+    where: {
+      role: "EXPERT",
+      status: "ACTIVE",
+      payoutRecipient: "ORGANIZATION",
+      OR: scoped.map((r) => ({
+        organizationId: r.organizationId!,
+        consultantProfileId: r.consultantProfileId,
+      })),
+    },
+    select: { organizationId: true, consultantProfileId: true },
+  });
+  const key = (org: string, consultant: string) => `${org}:${consultant}`;
+  const hostedKeys = new Set(
+    hosted.map((m) => key(m.organizationId, m.consultantProfileId!)),
+  );
+  return new Set(
+    scoped
+      .filter((r) =>
+        hostedKeys.has(key(r.organizationId!, r.consultantProfileId)),
+      )
+      .map((r) => r.id),
+  );
+}
+
 /** Resolve a batch of appointment rows into reviewable sessions. */
 async function describeAll(
   rows: AppointmentRow[],
   consulteeProfileId: string,
 ): Promise<ReviewableSession[]> {
+  const described = rows
+    .map((row) => ({ row, session: describe(row, new Map()) }))
+    .filter(
+      (d): d is { row: AppointmentRow; session: ReviewableSession } =>
+        d.session !== null,
+    );
+  const hostedIds = await orgHostedAppointmentIds(
+    described.map(({ row, session }) => ({
+      id: row.id,
+      organizationId: row.organizationId,
+      consultantProfileId: session.consultantProfileId,
+    })),
+  );
+  const eligible = described.filter(({ row }) => !hostedIds.has(row.id));
   const consultantIds = [
-    ...new Set(
-      rows
-        .map((r) => describe(r, new Map())?.consultantProfileId)
-        .filter((id): id is string => !!id),
-    ),
+    ...new Set(eligible.map(({ session }) => session.consultantProfileId)),
   ];
   const byConsultant = await reviewsByConsultant(
     consulteeProfileId,
     consultantIds,
   );
-  return rows
-    .map((r) => describe(r, byConsultant))
+  return eligible
+    .map(({ row }) => describe(row, byConsultant))
     .filter((s): s is ReviewableSession => s !== null);
 }
 

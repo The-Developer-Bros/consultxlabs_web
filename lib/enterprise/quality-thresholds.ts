@@ -36,19 +36,6 @@ export const ORG_QUALITY_MIN_RESPONDENTS = 5;
 export const ORG_QUALITY_MIN_RESPONDENTS_FOR_COMMENTS = 10;
 
 /**
- * Apply the floor, plus SECONDARY suppression.
- *
- * The floor alone is not enough when cohorts are published beside a total. If
- * exactly one cohort is hidden, its value is the total minus the published ones —
- * so an administrator with a calculator recovers precisely the thing the floor
- * exists to hide. Glint solves this with a second minimum on the number of
- * suppressed groups; the standard form is that you never hide exactly one.
- *
- * So: hide every cohort below the floor, and if that leaves exactly one hidden,
- * hide the smallest surviving cohort too. Either nothing is hidden or at least two
- * are, and the sum of the hidden ones is all that can be derived.
- */
-/**
  * Whether a narrower TIME WINDOW may be published beside the wider one it sits
  * inside.
  *
@@ -80,32 +67,54 @@ export function suppressNarrowerWindow(
   );
 }
 
-export function applyCohortSuppression<T extends { respondents: number }>(
-  cohorts: readonly T[],
-): { published: T[]; suppressed: number } {
-  let hidden = new Set(
-    cohorts.filter((c) => c.respondents < ORG_QUALITY_MIN_RESPONDENTS),
+/**
+ * Apply the floor, plus SECONDARY suppression.
+ *
+ * The floor alone is not enough when cohorts are published beside a total: the
+ * hidden cohorts are, collectively, the total minus the published ones. So the
+ * HIDDEN set must itself clear the floor — counted in distinct PEOPLE, because
+ * one respondent can sit in several cohorts, and "two hidden groups" can be two
+ * ratings by the same person. Glint's form is a minimum count of suppressed
+ * groups; this is the same rule stated on respondents.
+ *
+ * Hide every cohort below the floor; while the hidden people number fewer than
+ * the floor, hide the smallest survivor too; with no survivor left, hide all.
+ * Every cohort the caller wants in the arithmetic belongs in `cohorts`, including
+ * an unattributed one, or its complement is a hidden group this never sees.
+ *
+ * `suppressed` is the count of hidden cohorts, stated only when the hidden
+ * people clear the floor. Below it nothing is published at all, and "N
+ * withheld" would describe a group too small to describe.
+ */
+export function applyCohortSuppression<
+  T extends { respondentIds: ReadonlySet<string> },
+>(cohorts: readonly T[]): { published: T[]; hidden: T[]; suppressed: number } {
+  const people = (set: Iterable<T>) => {
+    const ids = new Set<string>();
+    for (const c of set) for (const id of c.respondentIds) ids.add(id);
+    return ids.size;
+  };
+  const hidden = new Set(
+    cohorts.filter((c) => c.respondentIds.size < ORG_QUALITY_MIN_RESPONDENTS),
   );
-
-  if (hidden.size === 1) {
-    // Hiding exactly one is the same as publishing it. Take the smallest cohort
-    // that would otherwise have survived; ties break arbitrarily, which is fine
-    // because either of two equal cohorts leaves the same arithmetic.
+  while (hidden.size > 0 && people(hidden) < ORG_QUALITY_MIN_RESPONDENTS) {
     const smallestSurvivor = cohorts
       .filter((c) => !hidden.has(c))
       .reduce<T | null>(
-        (min, c) => (min === null || c.respondents < min.respondents ? c : min),
+        (min, c) =>
+          min === null || c.respondentIds.size < min.respondentIds.size
+            ? c
+            : min,
         null,
       );
-    // If there is no survivor to pair it with, only one cohort exists and it is
-    // below the floor: publish nothing rather than publish it.
-    hidden = smallestSurvivor
-      ? new Set([...hidden, smallestSurvivor])
-      : new Set(cohorts);
+    if (!smallestSurvivor) break;
+    hidden.add(smallestSurvivor);
   }
-
+  const hiddenList = cohorts.filter((c) => hidden.has(c));
   return {
     published: cohorts.filter((c) => !hidden.has(c)),
-    suppressed: hidden.size,
+    hidden: hiddenList,
+    suppressed:
+      people(hiddenList) >= ORG_QUALITY_MIN_RESPONDENTS ? hiddenList.length : 0,
   };
 }

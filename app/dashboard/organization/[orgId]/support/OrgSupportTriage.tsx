@@ -63,7 +63,8 @@ interface FeedbackSummary {
     responses: number | null;
     respondents: number | null;
   }[];
-  /** How many experts are withheld. Never one, by construction. */
+  /** How many experts are withheld. 0 whenever the withheld people are too few
+   *  to describe, so a count here is always about a group of five or more. */
   consultantsSuppressed: number;
 }
 
@@ -148,8 +149,12 @@ export function OrgSupportTriage({ orgId }: { orgId: string }) {
   const summary = useQuery({
     queryKey: ["org-feedback-summary", orgId],
     enabled: allowed,
-    queryFn: async (): Promise<FeedbackSummary> => {
+    queryFn: async (): Promise<FeedbackSummary | null> => {
       const res = await fetch(`/api/organizations/${orgId}/feedback-summary`);
+      // The summary is behind `quality.read`, a narrower grant than the
+      // `operations.read` this page needs: a 403 is "not your permission", not
+      // a failure to retry.
+      if (res.status === 403) return null;
       if (!res.ok) throw new Error("Failed to load quality summary");
       const { data } = await res.json();
       return data;
@@ -253,9 +258,8 @@ export function OrgSupportTriage({ orgId }: { orgId: string }) {
           )}
         </div>
         {/* #1300 — the question an enterprise buyer actually has is per expert,
-            not per organisation. Still aggregate, still floored, and the endpoint
-            has already applied secondary suppression so this never renders
-            exactly one withheld expert. */}
+            not per organisation. Still aggregate, still floored; the endpoint
+            has already applied secondary suppression on distinct people. */}
         {!summary.isLoading && (s?.byConsultant?.length ?? 0) > 0 && (
           <div className="mt-4">
             <p className="mb-2 text-xs font-medium text-foreground">

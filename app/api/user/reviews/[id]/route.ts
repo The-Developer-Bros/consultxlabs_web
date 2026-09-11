@@ -5,7 +5,6 @@ import prisma from "@/lib/prisma";
 import { consultantPublicScalars } from "@/lib/data/consultant-public";
 import {
   requireApiAuth,
-  isPrivileged,
   checkOwnership,
   forbiddenResponse,
 } from "@/lib/auth-helpers";
@@ -63,7 +62,9 @@ export async function GET(
   }
 }
 
-// PUT: Requires auth + ownership
+// PUT: the AUTHOR edits their words. Staff never write here — a staff member
+// rewriting or un-anonymising a consumer review is impersonation, however well
+// it is logged; moderation removes or excludes through its own routes.
 export async function PUT(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -91,13 +92,7 @@ export async function PUT(
       return NextResponse.json({ error: "Review not found" }, { status: 404 });
     }
 
-    // Check authorization: privileged users can update any, others only their own
-    const isOwner = checkOwnership(
-      session,
-      review.consulteeProfileId,
-      "consultee",
-    );
-    if (!isPrivileged(session.user.role) && !isOwner) {
+    if (!checkOwnership(session, review.consulteeProfileId, "consultee")) {
       return forbiddenResponse("You can only update your own reviews");
     }
 
@@ -127,23 +122,14 @@ export async function PUT(
               deletedAt: true,
               rating: true,
               reviewDescription: true,
-              revisionNo: true,
               repliedAt: true,
               replyDeletedAt: true,
             },
           });
           if (current?.deletedAt) throw new ModeratedReviewError();
 
-          // #1300 — the edit trail, and the only attribution this write has.
-          // `isPrivileged` admits STAFF and ADMIN into this handler, so before
-          // the trail existed a staff member could rewrite the text of a consumer
-          // review and the row afterwards was indistinguishable from an author
-          // edit: no ModerationAction, no audit row, no `updatedById`. Under FTC
-          // 16 CFR §465 that is the highest-exposure write in the subsystem.
-          // `editorUserId` now records who did it, whoever they are.
-          //
-          // Only a changed OPINION counts. `isAnonymous` is a display choice, not
-          // a change to what was said, so toggling it alone is not a revision.
+          // Only a changed OPINION is a revision. `isAnonymous` is a display
+          // choice, not a change to what was said.
           const textChanged =
             current !== null &&
             ((body.rating !== undefined && body.rating !== current.rating) ||
@@ -151,10 +137,18 @@ export async function PUT(
                 (body.reviewDescription ?? null) !==
                   (current.reviewDescription ?? null)));
           if (textChanged && current) {
+            // Allocated by an atomic increment, not from the read above — see the
+            // POST route: the row lock turns a concurrent editor's P2002 into a
+            // retried P2034.
+            const bumped = await tx.consultantReview.update({
+              where: { id: id },
+              data: { revisionNo: { increment: 1 }, editedAt: new Date() },
+              select: { revisionNo: true },
+            });
             await tx.consultantReviewRevision.create({
               data: {
                 reviewId: id,
-                revisionNo: current.revisionNo,
+                revisionNo: bumped.revisionNo - 1,
                 rating: current.rating,
                 reviewDescription: current.reviewDescription,
                 afterPublicReply:
@@ -170,9 +164,6 @@ export async function PUT(
               rating: body.rating,
               reviewDescription: body.reviewDescription,
               isAnonymous: body.isAnonymous,
-              ...(textChanged
-                ? { revisionNo: { increment: 1 }, editedAt: new Date() }
-                : {}),
             },
             include: {
               consultantProfile: { select: consultantPublicScalars },
@@ -217,7 +208,8 @@ export async function PUT(
   }
 }
 
-// DELETE: Requires auth + ownership
+// DELETE: the AUTHOR withdraws their review (soft, revivable by them). Staff
+// take a review down through /api/staff/moderation, which is attributed as such.
 export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -246,34 +238,12 @@ export async function DELETE(
       return NextResponse.json({ error: "Review not found" }, { status: 404 });
     }
 
-    // Check authorization: privileged users can delete any, others only their own
-    const isOwner = checkOwnership(
-      session,
-      review.consulteeProfileId,
-      "consultee",
-    );
-    if (!isPrivileged(session.user.role) && !isOwner) {
+    if (!checkOwnership(session, review.consulteeProfileId, "consultee")) {
       return forbiddenResponse("You can only delete your own reviews");
     }
 
-    // #1300 — SOFT delete, for the author and for staff alike. This was a hard
-    // `delete()`, which had two consequences the code around it argued against.
-    //
-    // The unique on (consultantProfileId, consulteeProfileId, track) is
-    // deliberately NOT partial on `deletedAt`, so that a removed row keeps
-    // occupying the slot and the same person cannot re-post the text that was
-    // taken down — the comment two lines up used to say exactly that, and then
-    // the next statement destroyed the row for the live case, leaving the
-    // invariant holding only against reviews moderation had already removed. An
-    // unlimited post/delete/re-post cycle was available to anyone.
-    //
-    // And a privileged caller could hard-delete ANY review, while the sibling
-    // moderation route restricts even the SOFT delete to ADMIN — the stricter
-    // gate sat on the safer operation. Upwork had to retire exactly this kind of
-    // "remove a review" privilege after granting it.
-    //
-    // `deletedByUserId` is what makes the author's withdrawal revivable while a
-    // moderation removal is not; see the schema comment.
+    // Soft, never hard: the unique is not partial on `deletedAt`, so the withdrawn
+    // row keeps its slot and `deletedByUserId` is what lets the author revive it.
     await withSerializableRetry(() =>
       prisma.$transaction(
         async (tx) => {

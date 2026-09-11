@@ -37,6 +37,8 @@ const pickRating = () =>
 type HeldSlot = {
   slotId: string;
   appointmentId: string;
+  /** The booking's organisation, copied onto feedback so the org rollup sees it. */
+  organizationId: string | null;
   endsAt: Date;
   track: ReviewTrack;
   ratingUnitId: string | null;
@@ -62,6 +64,7 @@ async function loadHeldSlots(now: Date): Promise<HeldSlot[]> {
       id: true,
       webinarId: true,
       classId: true,
+      organizationId: true,
       consultation: {
         select: {
           consultationPlan: {
@@ -148,6 +151,7 @@ async function loadHeldSlots(now: Date): Promise<HeldSlot[]> {
         held.push({
           slotId: slot.id,
           appointmentId: a.id,
+          organizationId: a.organizationId,
           endsAt: slot.endsAt,
           track,
           ratingUnitId,
@@ -238,6 +242,7 @@ async function createAppointmentFeedback(held: HeldSlot[]): Promise<number> {
     rows.push({
       slotOfAppointmentId: h.slotId,
       appointmentId: h.appointmentId,
+      organizationId: h.organizationId,
       userId: h.userId,
       rating,
       comment: faker.datatype.boolean({ probability: 0.6 })
@@ -257,7 +262,6 @@ export async function createConsultantReviews(consultants: UserWithProfiles[]) {
   console.log(`Creating consultant reviews and per-call feedback...`);
   const now = new Date();
 
-  // Revisions first: the review relation is Restrict.
   await prisma.consultantReviewRevision.deleteMany({});
   await prisma.consultantReview.deleteMany({});
   await prisma.appointmentFeedback.deleteMany({});

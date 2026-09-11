@@ -10,6 +10,7 @@ import {
 } from "@/lib/data/explore-experts";
 import { apiError } from "@/lib/errors";
 import { isTransientDbError, reportTransient } from "@/lib/data/fail-open";
+import { personScoreAtLeast } from "@/lib/reviews-display";
 
 export async function GET(request: NextRequest) {
   // Hoisted out of the try so the fail-open branch can echo them back in `meta`.
@@ -43,8 +44,7 @@ export async function GET(request: NextRequest) {
     const minRating = rawMinRating ? parseFloat(rawMinRating) : undefined;
 
     // Admin/staff can list unverified; public listings are verified-only.
-    const includeUnverified =
-      searchParams.get("includeUnverified") === "true";
+    const includeUnverified = searchParams.get("includeUnverified") === "true";
 
     // The unfiltered first page is the explore landing's default view — serve it
     // from the Next data cache (getDefaultConsultantsPage) so it doesn't open a
@@ -126,9 +126,9 @@ export async function GET(request: NextRequest) {
       });
     }
     if (minRating !== undefined && !isNaN(minRating)) {
-      // #705 — filter on the published score, so a suppressed consultant is
-      // not surfaced by a rating the profile page refuses to display.
-      conditions.push({ publishedRating: { gte: minRating } });
+      // The score the card SHOWS (1:1, else group), so a filter never surfaces
+      // a consultant under a number the card then refuses to display.
+      conditions.push(personScoreAtLeast(minRating));
     }
     if (companies.length > 0) {
       conditions.push({
@@ -158,7 +158,9 @@ export async function GET(request: NextRequest) {
               some: { name: { contains: search, mode: "insensitive" } },
             },
           },
-          { tags: { some: { name: { contains: search, mode: "insensitive" } } } },
+          {
+            tags: { some: { name: { contains: search, mode: "insensitive" } } },
+          },
         ],
       });
     }

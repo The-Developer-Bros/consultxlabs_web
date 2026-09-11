@@ -7,6 +7,7 @@ import {
   sanitisePublicReviews,
 } from "@/lib/data/review-public";
 import { deriveDirectoryRating } from "@/lib/data/public-stats";
+import { displayedScore, PERSON_SCORE_ORDER } from "@/lib/reviews-display";
 
 /**
  * Server-side data access for the explore experts page.
@@ -127,12 +128,13 @@ type ConsultantCardRow = Prisma.Result<
 export function toConsultantCard(row: ConsultantCardRow): IConsultantCardData {
   const { memberships, ...c } = row;
   const firstOrg = memberships[0]?.organization ?? null;
+  // #1300 — a person card shows the 1:1 score and falls back, labelled, to the
+  // group one. Null renders as "not enough reviews yet", never 0.0.
+  const shown = displayedScore(c);
   return {
     id: c.id,
-    // #705 — the suppressed-below-threshold score, never the raw mean. Null
-    // renders as "not enough reviews yet" rather than a number one client can
-    // define.
-    rating: c.publishedRating,
+    rating: shown.score,
+    ratingTrack: shown.fellBack ? shown.track : null,
     reviewCount: c.reviewCount,
     headline: c.headline,
     experience: c.experience,
@@ -173,7 +175,9 @@ export function toConsultantCard(row: ConsultantCardRow): IConsultantCardData {
 // default page below). Unknown/absent sort falls back to name A→Z.
 export function orderByForSort(
   sort: string,
-): Prisma.ConsultantProfileOrderByWithRelationInput {
+):
+  | Prisma.ConsultantProfileOrderByWithRelationInput
+  | Prisma.ConsultantProfileOrderByWithRelationInput[] {
   switch (sort) {
     case "nameDesc":
       return { user: { name: "desc" } };
@@ -185,9 +189,10 @@ export function orderByForSort(
       // pushing its consultant up the trending list.
       return { reviewCount: "desc" };
     case "rating":
-      // The PUBLISHED score, nulls last. Sorting on the raw mean let a 5.0 from
-      // a single session outrank a 4.8 from two hundred.
-      return { publishedRating: { sort: "desc", nulls: "last" } };
+      // The same two-track policy as the card's star, so the order and the
+      // number shown agree. Sorting on the raw mean let a 5.0 from a single
+      // session outrank a 4.8 from two hundred.
+      return [...PERSON_SCORE_ORDER];
     case "newest":
       return { createdAt: "desc" };
     case "nameAsc":
@@ -246,20 +251,17 @@ export async function fetchExpertsMetadata() {
             },
           },
         }),
-        // #1485 — the PUBLISHED score, not the raw `rating` mean. `rating`
-        // defaults to 0 and every unreviewed profile carries that default, so
-        // averaging it across the directory was not a number anyone could
-        // defend. `publishedRating` is NULL below the #705 suppression
-        // threshold, so filtering it out leaves only publishable scores. The
-        // rows are weighted by review in `deriveDirectoryRating` rather than
-        // by `_avg`, which cannot express a weighted mean.
+        // #1485 / #1300 — the PUBLISHED 1:1 score, never the raw `rating`
+        // mean (which defaults to 0 on every unreviewed profile). NULL below the
+        // publication gate, so filtering it out leaves publishable scores only;
+        // `deriveDirectoryRating` weights them by rated clients.
         prisma.consultantProfile.findMany({
           where: {
             verificationStatus: "VERIFIED",
             deletedAt: null,
-            publishedRating: { not: null },
+            publishedRatingOneToOne: { not: null },
           },
-          select: { publishedRating: true, reviewCount: true },
+          select: { publishedRatingOneToOne: true, ratedClientsOneToOne: true },
         }),
         // #1485 — the real "sessions completed" figure, replacing a hardcoded
         // "50K+". The unit is the SLOT, not the appointment: a slot is one
@@ -280,7 +282,12 @@ export async function fetchExpertsMetadata() {
           name: d.name,
           consultantCount: d._count.consultantProfiles,
         })),
-        ...deriveDirectoryRating(ratedProfiles),
+        ...deriveDirectoryRating(
+          ratedProfiles.map((p) => ({
+            publishedRating: p.publishedRatingOneToOne,
+            reviewCount: p.ratedClientsOneToOne,
+          })),
+        ),
         completedSessions,
       };
     })(),

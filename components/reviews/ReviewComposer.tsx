@@ -84,17 +84,14 @@ export function ReviewComposer({
         reviewDescription: text.trim() || null,
         isAnonymous: anonymous,
       };
-      const res = existing
-        ? await fetch(`/api/user/reviews/${existing.id}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          })
-        : await fetch(`/api/user/reviews`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ...body, appointmentId }),
-          });
+      // Always POST with the session, edit or not: the server moves the
+      // review's provenance and session clock to this session. PUT is the
+      // session-less edit (a "my reviews" page), not the post-session composer.
+      const res = await fetch(`/api/user/reviews`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...body, appointmentId }),
+      });
       if (!res.ok) await throwSupportError(res, "review save");
       return res.json();
     },

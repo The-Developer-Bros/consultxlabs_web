@@ -43,6 +43,8 @@ async function authorizeReply(reviewId: string, userId: string, role?: string) {
     select: {
       id: true,
       deletedAt: true,
+      replyDeletedAt: true,
+      replyDeletedByUserId: true,
       consultantProfileId: true,
       consultantProfile: { select: { userId: true } },
     },
@@ -94,7 +96,7 @@ export async function PUT(
       );
     }
 
-    const parsed = ReplySchema.safeParse(await req.json());
+    const parsed = ReplySchema.safeParse(await req.json().catch(() => null));
     if (!parsed.success) {
       return NextResponse.json(
         {
@@ -105,24 +107,32 @@ export async function PUT(
       );
     }
 
-    // The liveness predicate goes in the WRITE, not only in the authorization
-    // read. `authorizeReply` checked `deletedAt` a moment ago and the `update`
-    // keyed on the id alone, so a review soft-deleted in between still got its
-    // reply saved and a 200 — answering success for a reply that publishes
-    // nothing, on a review the reader is being told is still there. `updateMany`
-    // so the check and the write are one statement; the same shape DELETE below
-    // already uses.
+    // A reply moderation removed stays removed: overwriting it would destroy the
+    // evidence for the takedown. The consultant's own withdrawal is theirs to
+    // replace. A NULL remover on a removed reply reads as moderation.
+    const takenDown =
+      auth.review.replyDeletedAt !== null &&
+      auth.review.replyDeletedByUserId !== session.user.id;
+    if (takenDown) {
+      return NextResponse.json(
+        {
+          error:
+            "Your previous reply was removed by our moderation team. Contact support to reply again.",
+        },
+        { status: 409 },
+      );
+    }
+
+    // Liveness in the WRITE, not only in the authorization read, so a review
+    // soft-deleted in between cannot take a reply and answer 200.
     const repliedAt = new Date();
     const written = await prisma.consultantReview.updateMany({
       where: { id, deletedAt: null },
       data: {
         replyBody: parsed.data.body,
         repliedAt,
-        // Replacing a reply staff had removed un-removes it, which is correct:
-        // the takedown was of the previous text. Their next removal is one call
-        // away, and the alternative — a permanent ban on replying — is a
-        // punishment nobody chose.
         replyDeletedAt: null,
+        replyDeletedByUserId: null,
       },
     });
     // Zero rows means the review stopped being live between the two statements.
@@ -178,12 +188,15 @@ export async function DELETE(
       );
     }
 
-    // Idempotent: removing an already-removed reply is a no-op, not a 409. The
-    // CAS is in the WHERE so two staff acting at once cannot move the stamp
-    // twice and lose the earlier removal time.
+    // Idempotent and CAS'd: two staff acting at once cannot move the stamp
+    // twice. Attributed, because the consultant may replace their own
+    // withdrawal and may not replace a takedown.
     const removed = await prisma.consultantReview.updateMany({
       where: { id, replyDeletedAt: null, replyBody: { not: null } },
-      data: { replyDeletedAt: new Date() },
+      data: {
+        replyDeletedAt: new Date(),
+        replyDeletedByUserId: session.user.id,
+      },
     });
     if (removed.count > 0) {
       purgeReviewSurfaces(auth.review.consultantProfileId);

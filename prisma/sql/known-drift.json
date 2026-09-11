@@ -15,5 +15,12 @@
     "whitespace-insensitive. The reset is the only occasion that should add any."
   ],
   "enumLabelsInDbNotInSchema": [],
-  "destructiveStatementsAllowed": []
+  "destructiveStatementsAllowed": [
+    {
+      "statement": "ALTER TABLE \"ConsultantReviewRevision\" DROP CONSTRAINT \"ConsultantReviewRevision_reviewId_fkey\";",
+      "reason": "PR #1542 re-points the revision FK from Restrict to Cascade; Prisma compiles that as DROP + ADD of the same constraint. Nothing is lost: the ADD in the same plan recreates it with ON DELETE CASCADE.",
+      "trackedBy": "#1542",
+      "expires": "2026-09-30"
+    }
+  ]
 }

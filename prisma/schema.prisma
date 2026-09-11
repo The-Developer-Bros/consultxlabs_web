@@ -90,6 +90,7 @@ model User {
   // #1300 — review moderation and the edit trail.
   reviewsExcludedFromAggregate ConsultantReview[]         @relation("ReviewAggregateExcluder")
   reviewsRemoved               ConsultantReview[]         @relation("ReviewRemover")
+  reviewRepliesRemoved         ConsultantReview[]         @relation("ReplyRemover")
   reviewRevisionsEdited        ConsultantReviewRevision[] @relation("ReviewRevisionEditor")
 
   accounts         Account[] // BetterAuth Accounts
@@ -3223,9 +3224,12 @@ model ConsultantReview {
   // rather than a table: every read of a review already loads this row.
   // replyDeletedAt is separate from the review's own deletedAt so staff can
   // remove an abusive reply without erasing the consumer review beneath it.
-  replyBody      String?   @db.Text
-  repliedAt      DateTime? @db.Timestamptz
-  replyDeletedAt DateTime? @db.Timestamptz
+  replyBody            String?   @db.Text
+  repliedAt            DateTime? @db.Timestamptz
+  replyDeletedAt       DateTime? @db.Timestamptz
+  // WHO removed the reply: the consultant may write again after their own withdrawal, not after a takedown.
+  replyDeletedBy       User?     @relation("ReplyRemover", fields: [replyDeletedByUserId], references: [id], onDelete: SetNull)
+  replyDeletedByUserId String?
 
   // Display choice only. Authenticity never depends on it: the review is welded
   // to a paid, attended session either way, which is what separates this from
@@ -3252,8 +3256,8 @@ model ConsultantReview {
   // the same client; the reviewer edits theirs as the relationship develops, and
   // `appointmentId` above records which session last prompted that.
   //
-  // #1549 widens this to (…, track). Deferred because replacing a unique renames
-  // Prisma's compound key under deployed code; see docs/reviews/07-deployment-and-deferred-work.md.
+  // #1549 widens this to (…, track, ratingUnitId): 1:1 stays one per pair, GROUP becomes one per
+  // attendee per event. Deferred because replacing a unique renames Prisma's compound key under deployed code.
   //
   // This is NOT partial on deletedAt: a moderation-removed review must not free
   // the slot for the same person to re-post it. POST maps P2002 here to 409,
@@ -3287,8 +3291,8 @@ enum ReviewTrack {
 model ConsultantReviewRevision {
   id String @id @default(uuid())
 
-  /// Restrict, not Cascade: a review with an edit history cannot be hard-deleted out from under its evidence.
-  review   ConsultantReview @relation(fields: [reviewId], references: [id], onDelete: Restrict)
+  /// Cascade: the trail is the review's own history, and account erasure reaches the review through two cascades.
+  review   ConsultantReview @relation(fields: [reviewId], references: [id], onDelete: Cascade)
   reviewId String
 
   /// The version this snapshot WAS, allocated from ConsultantReview.revisionNo in the same transaction.

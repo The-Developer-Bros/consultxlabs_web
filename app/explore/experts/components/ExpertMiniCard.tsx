@@ -1,10 +1,19 @@
 "use client";
 
+import { trackLabel } from "@/lib/reviews-display";
 import { memo } from "react";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import Link from "next/link";
-import { User, Star, ArrowRight, Flame, Clock, BadgeCheck, Globe } from "lucide-react";
+import {
+  User,
+  Star,
+  ArrowRight,
+  Flame,
+  Clock,
+  BadgeCheck,
+  Globe,
+} from "lucide-react";
 import { CompanyLogo } from "@/components/ui/company-logo";
 import type { IConsultantCardData } from "@/types/consultant";
 
@@ -70,6 +79,7 @@ function ExpertMiniCardImpl({ expert, badge }: ExpertMiniCardProps) {
                 <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
                 <span className="text-xs font-medium text-muted-foreground">
                   {expert.rating.toFixed(1)}
+                  {expert.ratingTrack && ` · ${trackLabel(expert.ratingTrack)}`}
                 </span>
               </div>
             )}

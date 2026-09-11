@@ -11,21 +11,20 @@
  * `import type` is erased at compile time, so the `ReviewTrack` import costs
  * nothing at runtime.
  */
-import type { ReviewTrack } from "@prisma/client";
+import type { Prisma, ReviewTrack } from "@prisma/client";
 
 /**
  * The ONE score a single-slot surface should show — a card, a directory row.
  *
- * Two published numbers do not fit in one star, so the surface has to choose, and
- * the honest choice is the track that matches what it is selling: a person card
- * prefers their 1:1 reputation, a webinar or class card prefers the group one.
- * Falling back to the other track is deliberate — a consultant who only ever runs
- * webinars has a real, earned score, and hiding it because the card happens to be
- * a person card would be worse than labelling it.
+ * The surface asks for the track that matches what it is selling: a person card
+ * prefers 1:1, a webinar or class card prefers group. Falling back to the other
+ * track is allowed — a consultant who only runs webinars has an earned score —
+ * but a fallback is `fellBack: true` and MUST be labelled (`trackLabel`), or a
+ * group product silently wears a 1:1 reputation, the inference the split exists
+ * to prevent.
  *
  * NULL means SUPPRESSED, and every caller must render that as "not enough rated
- * sessions yet" rather than as 0.0. That is the whole reason the raw mean is no
- * longer in the public allowlist.
+ * sessions yet" rather than as 0.0.
  */
 export function displayedScore(
   profile: {
@@ -33,7 +32,7 @@ export function displayedScore(
     publishedRatingGroup: number | null;
   },
   prefer: ReviewTrack = "ONE_TO_ONE",
-): { score: number | null; track: ReviewTrack | null } {
+): { score: number | null; track: ReviewTrack | null; fellBack: boolean } {
   const first =
     prefer === "GROUP"
       ? ([profile.publishedRatingGroup, "GROUP"] as const)
@@ -42,9 +41,46 @@ export function displayedScore(
     prefer === "GROUP"
       ? ([profile.publishedRatingOneToOne, "ONE_TO_ONE"] as const)
       : ([profile.publishedRatingGroup, "GROUP"] as const);
-  if (first[0] !== null) return { score: first[0], track: first[1] };
-  if (second[0] !== null) return { score: second[0], track: second[1] };
-  return { score: null, track: null };
+  if (first[0] !== null) {
+    return { score: first[0], track: first[1], fellBack: false };
+  }
+  if (second[0] !== null) {
+    return { score: second[0], track: second[1], fellBack: true };
+  }
+  return { score: null, track: null, fellBack: false };
+}
+
+/** The short label a card shows beside a score that came from the OTHER track. */
+export function trackLabel(track: ReviewTrack | null): string | null {
+  if (track === "GROUP") return "group sessions";
+  if (track === "ONE_TO_ONE") return "1:1 sessions";
+  return null;
+}
+
+/**
+ * The Prisma `orderBy` for "best rated" on a person-level list: the 1:1 score
+ * first, then the group score for consultants who have only that. Both indexed.
+ * Matches `displayedScore(profile, "ONE_TO_ONE")`, so the sort and the star agree.
+ */
+export const PERSON_SCORE_ORDER: Prisma.ConsultantProfileOrderByWithRelationInput[] =
+  [
+    { publishedRatingOneToOne: { sort: "desc", nulls: "last" } },
+    { publishedRatingGroup: { sort: "desc", nulls: "last" } },
+  ];
+
+/**
+ * The Prisma `where` for "displayed score ≥ min" on a person-level list: the 1:1
+ * score when there is one, else the group score. Same policy as the star.
+ */
+export function personScoreAtLeast(
+  min: number,
+): Prisma.ConsultantProfileWhereInput {
+  return {
+    OR: [
+      { publishedRatingOneToOne: { gte: min } },
+      { publishedRatingOneToOne: null, publishedRatingGroup: { gte: min } },
+    ],
+  };
 }
 
 /** How many data points a displayed score rests on — "based on N". */

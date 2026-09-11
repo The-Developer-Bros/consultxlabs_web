@@ -14,7 +14,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import prisma from "@/lib/prisma";
-import { displayedScore } from "@/lib/reviews-display";
+import { displayedScore, trackLabel } from "@/lib/reviews-display";
 import { eventPlanDiscoverableWhere } from "@/lib/api/plans/visibility";
 
 import {
@@ -268,6 +268,7 @@ function ExpertMiniCard({
               <Star className="w-3 h-3 text-amber-400 fill-amber-400" />
               <span className="text-xs font-medium text-muted-foreground">
                 {expertScore.score.toFixed(1)}
+                {expertScore.fellBack && ` · ${trackLabel(expertScore.track)}`}
               </span>
             </div>
           )}

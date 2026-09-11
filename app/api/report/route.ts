@@ -25,7 +25,8 @@ const CreateReportSchema = z.object({
   type: z.nativeEnum(ModerationReportType),
   reason: z.string().min(1).max(MAX_TITLE_LENGTH),
   description: z.string().max(MAX_TEXT_LENGTH).optional(),
-  targetUserId: z.string().min(1).max(MAX_TITLE_LENGTH),
+  // Optional on a REVIEW report, whose target is the review's author.
+  targetUserId: z.string().min(1).max(MAX_TITLE_LENGTH).optional(),
   contentText: z.string().max(MAX_TEXT_LENGTH).optional(),
   contentUrl: z.string().max(MAX_TITLE_LENGTH).optional(),
   reviewId: z.string().max(MAX_TITLE_LENGTH).optional(),
@@ -157,7 +158,7 @@ export async function POST(req: NextRequest) {
     } = parsed.data;
 
     // Validate required fields
-    if (!type || !reason || !targetUserId) {
+    if (!type || !reason || (type !== "REVIEW" && !targetUserId)) {
       return NextResponse.json(
         { error: "Type, reason, and targetUserId are required" },
         { status: 400 },
@@ -179,32 +180,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Prevent self-reporting
-    if (targetUserId === session.user.id) {
-      return NextResponse.json(
-        { error: "You cannot report yourself" },
-        { status: 400 },
-      );
-    }
-
-    // Check if target user exists
-    const targetUser = await prisma.user.findUnique({
-      where: { id: targetUserId },
-    });
-
-    if (!targetUser) {
-      return NextResponse.json(
-        { error: "Target user not found" },
-        { status: 404 },
-      );
-    }
-
-    // #1300 — a REVIEW report has to name a review that exists, belongs to the
-    // person being reported, and is still live. None of that was checked: the
-    // caller's `reviewId` went straight into the row, so a report could sit in the
-    // queue naming content that does not exist — and `softDeleteReview` no-ops on
-    // a dangling id, so CONTENT_REMOVED would report success and remove nothing.
-    // That is the same failure #1270 fixed for MESSAGE reports.
+    // The content a report points at is derived from its TYPE, never stored as
+    // sent: a PROFILE report carrying somebody's review id used to let "Remove
+    // content" soft-delete that review. Only a REVIEW report keeps a reviewId,
+    // only a MESSAGE report keeps a message identity, and the rest keep neither.
+    let target = targetUserId ?? "";
+    let reportedReviewId: string | null = null;
     if (type === "REVIEW") {
       if (!reviewId) {
         return NextResponse.json(
@@ -222,24 +203,44 @@ export async function POST(req: NextRequest) {
           { status: 404 },
         );
       }
-      // The target of a review report is its AUTHOR. Without this, a report could
-      // name one person's review while pointing moderation's enforcement — the
-      // suspension, the ban, the bulk cancellation — at somebody else entirely.
-      if (reported.consulteeProfile.userId !== targetUserId) {
-        return NextResponse.json(
-          { error: "That review was not written by the reported user" },
-          { status: 400 },
-        );
-      }
+      // The target of a review report IS its author, read from the review. The
+      // caller's `targetUserId` is not compared against it: answering "wrong
+      // person" told a consultant which of their clients wrote an anonymous review.
+      target = reported.consulteeProfile.userId;
+      reportedReviewId = reviewId;
     }
 
-    const contentScope = contentScopeFor(type, reviewId, streamMessageId);
+    // Prevent self-reporting
+    if (target === session.user.id) {
+      return NextResponse.json(
+        { error: "You cannot report yourself" },
+        { status: 400 },
+      );
+    }
+
+    // Check if target user exists
+    const targetUser = await prisma.user.findUnique({
+      where: { id: target },
+    });
+
+    if (!targetUser) {
+      return NextResponse.json(
+        { error: "Target user not found" },
+        { status: 404 },
+      );
+    }
+
+    const contentScope = contentScopeFor(
+      type,
+      reportedReviewId ?? undefined,
+      streamMessageId,
+    );
 
     // Check for existing report from same user for same content
     const existingReport = await prisma.moderationReport.findFirst({
       where: {
         reportedById: session.user.id,
-        targetUserId,
+        targetUserId: target,
         type,
         ...contentScope,
         status: { in: ["PENDING", "UNDER_REVIEW"] },
@@ -257,7 +258,7 @@ export async function POST(req: NextRequest) {
     // If so, increment reportCount instead of creating new
     const similarReport = await prisma.moderationReport.findFirst({
       where: {
-        targetUserId,
+        targetUserId: target,
         type,
         ...contentScope,
         status: { in: ["PENDING", "UNDER_REVIEW"] },
@@ -289,11 +290,11 @@ export async function POST(req: NextRequest) {
     }
 
     // Verified against Stream, not trusted from the caller — see
-    // resolveReportedMessage.
-    const verifiedMessage = await resolveReportedMessage(
-      streamMessageId,
-      targetUserId,
-    );
+    // resolveReportedMessage. Only a MESSAGE report may carry a message at all.
+    const verifiedMessage =
+      type === "MESSAGE"
+        ? await resolveReportedMessage(streamMessageId, target)
+        : { streamMessageId: null, streamChannelCid: null };
 
     // Create new report
     const report = await prisma.moderationReport.create({
@@ -302,10 +303,10 @@ export async function POST(req: NextRequest) {
         reason,
         description,
         reportedById: session.user.id,
-        targetUserId,
+        targetUserId: target,
         contentText,
         contentUrl,
-        reviewId,
+        reviewId: reportedReviewId,
         ...verifiedMessage,
       },
     });

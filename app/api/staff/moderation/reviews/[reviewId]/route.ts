@@ -33,36 +33,39 @@ export async function DELETE(req: NextRequest, { params }: RouteParams) {
 
     const review = await prisma.consultantReview.findUnique({
       where: { id: reviewId },
-      select: { consultantProfileId: true, rating: true, deletedAt: true },
+      select: {
+        consultantProfileId: true,
+        deletedAt: true,
+        deletedByUserId: true,
+        consulteeProfile: { select: { userId: true } },
+      },
     });
 
     if (!review) {
       return NextResponse.json({ error: "Review not found" }, { status: 404 });
     }
 
-    // #705 — SOFT delete, matching `softDeleteReview` and the model's own #693
-    // comment. A hard delete destroyed the moderation audit trail, and now that
-    // the unique is (appointmentId, consulteeProfileId) it would also free the
-    // slot for the same person to re-post the review that was just removed.
-    // Idempotent: a second removal is a no-op rather than a second recompute.
-    if (!review.deletedAt) {
-      // Serializable + retry, matching the three consultee-facing paths. At
-      // READ COMMITTED a concurrent review write reads the same pre-image and
-      // the second UPDATE overwrites an average computed without the first, so
-      // the published score stays wrong with nothing to show for it.
-      await withSerializableRetry(() =>
-        prisma.$transaction(
-          async (tx) => {
-            await tx.consultantReview.update({
-              where: { id: reviewId },
-              data: { deletedAt: new Date() },
-            });
-            await recomputeConsultantRating(tx, review.consultantProfileId);
-          },
-          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-        ),
-      );
-    }
+    // Soft, attributed, and CAS'd in the WHERE. A takedown also lands on an
+    // AUTHOR-withdrawn row (moderation wins; the author could otherwise revive
+    // it), and is a no-op on a row moderation already removed. Serializable +
+    // retry so the recompute cannot lose-update against a concurrent review write.
+    const authorId = review.consulteeProfile.userId;
+    await withSerializableRetry(() =>
+      prisma.$transaction(
+        async (tx) => {
+          const removed = await tx.consultantReview.updateMany({
+            where: {
+              id: reviewId,
+              OR: [{ deletedAt: null }, { deletedByUserId: authorId }],
+            },
+            data: { deletedAt: new Date(), deletedByUserId: session.user.id },
+          });
+          if (removed.count === 0) return;
+          await recomputeConsultantRating(tx, review.consultantProfileId);
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      ),
+    );
 
     // #705 — the moderation paths never purged, so a removed review kept
     // rendering on the landing page and explore for up to an hour.

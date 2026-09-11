@@ -338,18 +338,68 @@ describe("POST /api/report — message reports aggregate per message", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it("refuses a review report pointed at the wrong person", async () => {
-    // The target of a review report is its AUTHOR. Reporting review-1 — written
-    // by target-1 — while naming somebody else as the target would aim the
-    // suspension, the ban and the bulk cancellation at the wrong user.
-    const res = await post({
+  it("targets the review's author whatever the caller guessed, and answers the same either way", async () => {
+    // The target of a review report is its AUTHOR, read from the review. It used
+    // to be COMPARED with the caller's `targetUserId` and answer 400 on a
+    // mismatch — which let a consultant de-anonymise a review by probing their
+    // clients one id at a time until the answer changed. Now the guess is
+    // ignored: the row names the author, and a wrong guess and a right one are
+    // indistinguishable from outside.
+    const wrong = await post({
       type: "REVIEW",
       reason: "Fake review",
       targetUserId: "someone-else",
       reviewId: "review-1",
     });
-    expect(res.status).toBe(400);
-    expect(create).not.toHaveBeenCalled();
+    expect(wrong.status).toBe(201);
+    expect(rows[0].targetUserId).toBe("target-1");
+
+    (getSession as jest.Mock).mockResolvedValue({ user: { id: "reporter-2" } });
+    const right = await post({
+      type: "REVIEW",
+      reason: "Fake review",
+      targetUserId: "target-1",
+      reviewId: "review-1",
+    });
+    // Same content, second reporter: aggregated onto the same row, 200 either way.
+    expect(right.status).toBe(200);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].reportCount).toBe(2);
+  });
+
+  it("needs no targetUserId at all on a review report", async () => {
+    const res = await post({
+      type: "REVIEW",
+      reason: "Fake review",
+      reviewId: "review-1",
+    });
+    expect(res.status).toBe(201);
+    expect(rows[0].targetUserId).toBe("target-1");
+  });
+
+  it("never stores a review id on a report that is not about a review", async () => {
+    // A PROFILE report carrying somebody's review id used to be persisted as
+    // sent, "Remove content" was offered on it, and CONTENT_REMOVED soft-deleted
+    // the unrelated review. The id is derived from the type now.
+    const res = await post({
+      type: "PROFILE",
+      reason: "Fake profile",
+      targetUserId: "target-1",
+      reviewId: "review-1",
+      streamMessageId: "msg-1",
+    });
+    expect(res.status).toBe(201);
+    expect(rows[0].reviewId).toBeNull();
+    expect(rows[0].streamMessageId).toBeNull();
+    expect(mockGetMessage).not.toHaveBeenCalled();
+  });
+
+  it("never stores a review id on a message report", async () => {
+    await post(
+      messageReport({ streamMessageId: "msg-1", reviewId: "review-1" }),
+    );
+    expect(rows[0].reviewId).toBeNull();
+    expect(rows[0].streamMessageId).toBe("msg-1");
   });
 
   it("refuses a review report that names a review moderation removed", async () => {

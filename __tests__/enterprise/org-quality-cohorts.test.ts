@@ -24,9 +24,16 @@ import {
   suppressNarrowerWindow,
 } from "@/lib/enterprise/quality-thresholds";
 
-const cohort = (respondents: number, id = `c${respondents}`) => ({
+/** A cohort of `respondents` DISTINCT people. `prefix` names them, so two
+ *  cohorts built with the same prefix share people and two with different
+ *  prefixes do not — which is the whole point of counting the hidden set in
+ *  people rather than in cohorts. */
+const cohort = (respondents: number, id = `c${respondents}`, prefix = id) => ({
   consultantProfileId: id,
   respondents,
+  respondentIds: new Set(
+    Array.from({ length: respondents }, (_, i) => `${prefix}-${i}`),
+  ) as ReadonlySet<string>,
 });
 
 const FLOOR = ORG_QUALITY_MIN_RESPONDENTS;
@@ -76,14 +83,15 @@ describe("secondary suppression", () => {
     expect(ids).toEqual(["big"]);
   });
 
-  it("leaves two already-hidden cohorts alone", () => {
-    // Two below the floor is already enough: only their sum is derivable, which
-    // is what the rule is for. Pulling in a third would be gratuitous.
+  it("leaves already-hidden cohorts alone once they hold five people between them", () => {
+    // Three and two below the floor are five distinct people hidden: only their
+    // sum is derivable, and that sum is a group the floor would publish. Pulling
+    // in a third cohort would be gratuitous.
     const { published, suppressed } = applyCohortSuppression([
       cohort(20, "big"),
       cohort(9, "also-big"),
-      cohort(2, "tiny-a"),
-      cohort(1, "tiny-b"),
+      cohort(3, "tiny-a"),
+      cohort(2, "tiny-b"),
     ]);
     expect(suppressed).toBe(2);
     expect(published.map((c) => c.consultantProfileId)).toEqual([
@@ -92,20 +100,49 @@ describe("secondary suppression", () => {
     ]);
   });
 
-  it("publishes nothing when the only cohort is below the floor", () => {
+  it("publishes nothing when the only cohort is below the floor, and says nothing about it", () => {
     // There is no survivor to pair it with, so the choice is publish it or
     // publish nothing. An organisation with one expert and one respondent must not
-    // be handed that respondent's rating.
+    // be handed that respondent's rating — nor told "1 expert withheld", which
+    // names the expert and bounds their raters at once. Below the floor the
+    // hidden set is too small to describe, so the count is 0.
     const { published, suppressed } = applyCohortSuppression([
       cohort(1, "only"),
     ]);
     expect(published).toEqual([]);
-    expect(suppressed).toBe(1);
+    expect(suppressed).toBe(0);
+  });
+
+  it("counts the hidden set in PEOPLE, not in cohorts", () => {
+    // Two hidden cohorts rated by the same three people are three people, not
+    // two groups: "total minus published" would isolate exactly them. The
+    // smallest survivor is pulled in until the hidden people clear the floor.
+    const { published, suppressed } = applyCohortSuppression([
+      cohort(20, "big"),
+      cohort(6, "small-but-over"),
+      cohort(3, "shared-a", "same"),
+      cohort(3, "shared-b", "same"),
+    ]);
+    expect(published.map((c) => c.consultantProfileId)).toEqual(["big"]);
+    expect(suppressed).toBe(3);
+  });
+
+  it("states a count only when the hidden people clear the floor", () => {
+    // Everything hidden, but by six distinct people: the org already sees an
+    // overall figure from those six, so "2 experts withheld" describes a group
+    // the floor would have published on its own. Safe to say.
+    const { published, suppressed } = applyCohortSuppression([
+      cohort(3, "a"),
+      cohort(3, "b"),
+    ]);
+    expect(published).toEqual([]);
+    expect(suppressed).toBe(2);
   });
 
   it("handles no cohorts at all", () => {
     expect(applyCohortSuppression([])).toEqual({
       published: [],
+      hidden: [],
       suppressed: 0,
     });
   });

@@ -49,6 +49,7 @@ type Row = {
   ratingUnitId: string | null;
   ratedSessionAt: Date | null;
   createdAt: Date;
+  excludedFromAggregateAt: Date | null;
 };
 
 const NOW = new Date("2026-09-10T00:00:00Z");
@@ -67,6 +68,7 @@ const solo = (rating: number): Row => ({
   ratingUnitId: null,
   ratedSessionAt: NOW,
   createdAt: NOW,
+  excludedFromAggregateAt: null,
 });
 
 /** `n` attendees of one group event, all giving `rating`. */
@@ -77,6 +79,7 @@ const event = (id: string, rating: number, n: number): Row[] =>
     ratingUnitId: id,
     ratedSessionAt: NOW,
     createdAt: NOW,
+    excludedFromAggregateAt: null,
   }));
 
 /** A row written before `track` existed. */
@@ -86,6 +89,7 @@ const legacy = (rating: number): Row => ({
   ratingUnitId: null,
   ratedSessionAt: null,
   createdAt: NOW,
+  excludedFromAggregateAt: null,
 });
 
 type Written = {
@@ -237,6 +241,20 @@ describe("shrinkage", () => {
     // exactly when someone will need to know why their score drifted.
     const s = await score(Array.from({ length: 5 }, () => solo(5)));
     expect(s.effectiveSampleOneToOne).toBe(5);
+  });
+});
+
+describe("ratings protection", () => {
+  it("keeps an excluded review in the count and out of the score", async () => {
+    // The row still renders on the profile, so "Reviews (N)" must count it; it
+    // only leaves the arithmetic. Five clients plus one excluded 1-star: the
+    // score is the five, the count is six.
+    const five = [5, 5, 5, 5, 5].map(solo);
+    const excluded = { ...solo(1), excludedFromAggregateAt: NOW };
+    const written = await score([...five, excluded]);
+    expect(written.reviewCount).toBe(6);
+    expect(written.ratedClientsOneToOne).toBe(5);
+    expect(written.publishedRatingOneToOne).toBe(shrunk([5, 5, 5, 5, 5]));
   });
 });
 
