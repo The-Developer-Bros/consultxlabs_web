@@ -123,11 +123,19 @@ export async function PUT(
       );
     }
 
-    // Liveness in the WRITE, not only in the authorization read, so a review
-    // soft-deleted in between cannot take a reply and answer 200.
+    // Liveness AND the takedown decision in the WRITE, not only in the
+    // authorization read: a staff removal landing between the two must not be
+    // overwritten, nor its attribution nulled.
     const repliedAt = new Date();
     const written = await prisma.consultantReview.updateMany({
-      where: { id, deletedAt: null },
+      where: {
+        id,
+        deletedAt: null,
+        OR: [
+          { replyDeletedAt: null },
+          { replyDeletedByUserId: session.user.id },
+        ],
+      },
       data: {
         replyBody: parsed.data.body,
         repliedAt,
@@ -135,10 +143,22 @@ export async function PUT(
         replyDeletedByUserId: null,
       },
     });
-    // Zero rows means the review stopped being live between the two statements.
-    // 404 and not 409, matching what `authorizeReply` would have answered a
-    // moment earlier: there is nothing to retry against.
+    // Zero rows: the review stopped being live, or staff removed the reply,
+    // between the two statements. Re-read to answer with the right one.
     if (written.count === 0) {
+      const now = await prisma.consultantReview.findUnique({
+        where: { id },
+        select: { deletedAt: true, replyDeletedAt: true },
+      });
+      if (now && now.deletedAt === null && now.replyDeletedAt !== null) {
+        return NextResponse.json(
+          {
+            error:
+              "Your previous reply was removed by our moderation team. Contact support to reply again.",
+          },
+          { status: 409 },
+        );
+      }
       return NextResponse.json({ error: "Review not found" }, { status: 404 });
     }
 

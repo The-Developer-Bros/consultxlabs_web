@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import {
   publicReviewSelect,
+  sanitisePublicReview,
   sanitisePublicReviews,
 } from "@/lib/data/review-public";
 import { Prisma } from "@prisma/client";
@@ -328,8 +329,16 @@ export async function POST(req: NextRequest) {
     // until purged, and the landing page's window is an hour.
     purgeReviewSurfaces(newReview.consultantProfileId);
 
-    // 201 only when something was created; an edit is a 200.
-    return NextResponse.json(newReview, { status: isNew ? 201 : 200 });
+    // The public shape, exactly as a reader would get it: a removed reply is
+    // stripped and the consultant's user id (notification-only) does not travel.
+    const { consultantProfile, ...publicRow } = newReview;
+    return NextResponse.json(
+      sanitisePublicReview({
+        ...publicRow,
+        consultantProfile: { user: consultantProfile.user },
+      }),
+      { status: isNew ? 201 : 200 },
+    );
   } catch (error) {
     if (error instanceof ModeratedReviewError) {
       return NextResponse.json(

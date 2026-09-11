@@ -178,7 +178,9 @@ export async function PUT(
 
     purgeReviewSurfaces(review.consultantProfileId);
 
-    return NextResponse.json(updatedReview, { status: 200 });
+    return NextResponse.json(sanitisePublicReview(updatedReview), {
+      status: 200,
+    });
   } catch (error) {
     // The re-read inside the transaction throws this when moderation removed
     // the row mid-edit. Without a branch here it fell through to the generic

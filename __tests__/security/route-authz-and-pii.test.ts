@@ -99,13 +99,16 @@ describe("consultant statutory PII is never returned by a bare include", () => {
   });
 
   it("the public reviews list is not serving PII to anonymous callers", () => {
-    const src = read("app/api/user/reviews/route.ts");
+    // Comments stripped: the route's own comments name the anti-pattern.
+    const src = read("app/api/user/reviews/route.ts")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
     // middleware.ts marks this route public and the response is CDN-cached,
     // so a leak here is world-readable and persisted at the edge.
     expect(src).toContain("Cache-Control");
     expect(src).toContain("select: publicReviewSelect");
     // The write paths too: `include` returns every scalar on the row.
-    expect(src).not.toMatch(/\binclude,\n/);
+    expect(src).not.toMatch(/\binclude\s*(?::|,)/);
   });
 });
 
