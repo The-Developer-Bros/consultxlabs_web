@@ -20,6 +20,7 @@ import {
 import { upsertUserToStream } from "@/actions/stream/chat/user.action";
 import { syncUserEventChannels } from "@/actions/stream/chat/event-channel.action";
 import { useUserData } from "@/hooks/useUserData";
+import { useSession } from "@/lib/auth-client";
 import { mapRoleToStream } from "@/lib/user";
 import { streamLogger } from "@/lib/stream-logger";
 import { setStreamConnection } from "@/lib/stream/connection-store";
@@ -114,6 +115,24 @@ const StreamProviderImpl = ({
 
   const { userDetails, isLoading } = useUserData(userId);
 
+  // The token action refuses to mint without a session, and a tab whose cookie
+  // expired while it sat open kept calling it anyway — 8 unauthorized throws on
+  // the error feed with nobody to show them to (FAMILIARISE_WEB-10). The
+  // client's own copy of the session is the cheap gate.
+  //
+  // `isPending` counts as ALLOWED on purpose: blocking the first mint on the
+  // session round trip would put a serial wait back on the join path, which is
+  // exactly what the prefetch effect below exists to remove (#248).
+  const { data: clientSession, isPending: isSessionPending } = useSession();
+  const signedOut = !isSessionPending && !clientSession?.user?.id;
+  // The video SDK calls `tokenProvider` again on its own schedule, long after
+  // this render; the ref is how that callback sees the current answer without
+  // changing `getCachedToken`'s identity and re-firing the connect effect.
+  const signedOutRef = useRef(false);
+  useEffect(() => {
+    signedOutRef.current = signedOut;
+  }, [signedOut]);
+
   // Token caching with expiry tracking — use ref to avoid triggering re-renders
   // (useState here caused getCachedToken → connectChat → connectServices to
   //  be recreated on every token fetch, making the connectUser useEffect fire
@@ -169,14 +188,19 @@ const StreamProviderImpl = ({
         return type === "chat" ? cache.chatToken! : cache.videoToken!;
       }
 
-      const existing = type === "chat" ? tokenPromiseRef.current.chat : tokenPromiseRef.current.video;
+      const existing =
+        type === "chat"
+          ? tokenPromiseRef.current.chat
+          : tokenPromiseRef.current.video;
       if (existing) return existing;
+
+      if (signedOutRef.current) {
+        throw new Error("Stream token skipped: no signed-in session");
+      }
 
       // Generate new token
       const request =
-        type === "chat"
-          ? chatTokenProvider(userId)
-          : tokenProvider(userId);
+        type === "chat" ? chatTokenProvider(userId) : tokenProvider(userId);
       if (type === "chat") tokenPromiseRef.current.chat = request;
       else tokenPromiseRef.current.video = request;
 
@@ -198,15 +222,17 @@ const StreamProviderImpl = ({
       // fails; left unattached that is an unhandled rejection on every failed
       // mint. The catch swallows exactly that derived rejection — the original
       // still propagates to `return request` callers.
-      void request.finally(() => {
-        if (tokenPromiseRef.current.userId !== userId) return;
-        if (type === "chat" && tokenPromiseRef.current.chat === request) {
-          delete tokenPromiseRef.current.chat;
-        }
-        if (type === "video" && tokenPromiseRef.current.video === request) {
-          delete tokenPromiseRef.current.video;
-        }
-      }).catch(() => {});
+      void request
+        .finally(() => {
+          if (tokenPromiseRef.current.userId !== userId) return;
+          if (type === "chat" && tokenPromiseRef.current.chat === request) {
+            delete tokenPromiseRef.current.chat;
+          }
+          if (type === "video" && tokenPromiseRef.current.video === request) {
+            delete tokenPromiseRef.current.video;
+          }
+        })
+        .catch(() => {});
 
       return request;
     },
@@ -222,14 +248,21 @@ const StreamProviderImpl = ({
   // failures are handled by the normal connect paths, which re-request via
   // getCachedToken (cleared promise ref → fresh attempt).
   useEffect(() => {
-    if (!apiKey || !userId) return;
+    if (!apiKey || !userId || signedOut) return;
     if (enableChat && !isTokenValid("chat", userId)) {
       void getCachedToken("chat").catch(() => {});
     }
     if (enableVideo && !isTokenValid("video", userId)) {
       void getCachedToken("video").catch(() => {});
     }
-  }, [userId, enableChat, enableVideo, getCachedToken, isTokenValid]);
+  }, [
+    userId,
+    enableChat,
+    enableVideo,
+    getCachedToken,
+    isTokenValid,
+    signedOut,
+  ]);
 
   // Exponential backoff retry logic
   const getRetryDelay = useCallback((attempt: number) => {
@@ -442,6 +475,10 @@ const StreamProviderImpl = ({
   // Stable connectServices function using ref pattern for retry logic
   const connectServices = useCallback(async () => {
     if (isLoading || !userDetails) return;
+    // A scheduled idle-callback or retry timeout can still fire after
+    // sign-out; getCachedToken then rejects and the catch below would queue
+    // up to 5 more retries for a session that is never coming back.
+    if (signedOutRef.current) return;
 
     setIsConnecting(true);
     setError(null);
@@ -478,7 +515,7 @@ const StreamProviderImpl = ({
       setRetryCount(connectionAttemptsRef.current); // Sync state for UI display
       const currentAttempts = connectionAttemptsRef.current;
 
-      if (currentAttempts < 5) {
+      if (currentAttempts < 5 && !signedOutRef.current) {
         // Max 5 attempts
         const delay = getRetryDelay(currentAttempts);
         streamLogger.debug(`Retrying connection in ${delay}ms`, {
@@ -490,6 +527,10 @@ const StreamProviderImpl = ({
           connectServices();
         }, delay);
         return;
+      } else if (signedOutRef.current) {
+        streamLogger.debug("Skipping retry — signed out", {
+          attempt: currentAttempts,
+        });
       } else {
         streamLogger.error("Max connection attempts reached", error);
       }

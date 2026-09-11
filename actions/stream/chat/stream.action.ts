@@ -9,6 +9,7 @@ import {
 import { streamLogger } from "@/lib/stream-logger";
 import { getSession } from "@/lib/auth-server";
 import { isPrivileged } from "@/lib/auth-helpers";
+import { markExpected } from "@/lib/observability/expected";
 import * as Sentry from "@sentry/nextjs";
 
 // Token expiry for both chat and video (1 hour)
@@ -29,7 +30,13 @@ async function assertCanMintToken(forUserId: string): Promise<void> {
   // expires (#899).
   const session = await getSession(true);
   if (!session?.user?.id) {
-    throw new Error("Unauthorized: sign in to request a Stream token");
+    // The connector now gates the mint on its own session, so reaching here is
+    // a tab whose cookie expired while it sat open — an answer, not a fault.
+    // The throw stays as the backstop; the marker keeps it off the error feed
+    // (FAMILIARISE_WEB-10).
+    throw markExpected(
+      new Error("Unauthorized: sign in to request a Stream token"),
+    );
   }
   // Never mint for a banned/suspended user (#693).
   if (session.user.banned) {
@@ -66,7 +73,10 @@ export async function tokenProvider(userId: string): Promise<string> {
     streamLogger.error("Failed to generate video token", error, {
       userId: validatedUserId,
     });
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "stream" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "stream" } },
+    );
     throw error;
   }
 }
@@ -97,7 +107,10 @@ export async function chatTokenProvider(userId: string): Promise<string> {
     streamLogger.error("Failed to generate chat token", error, {
       userId: validatedUserId,
     });
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "stream" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "stream" } },
+    );
     throw error;
   }
 }

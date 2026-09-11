@@ -98,6 +98,93 @@ function reportNotConfigured(workflowId: string): void {
   }
 }
 
+/**
+ * What the SDK actually told us about a failed trigger.
+ *
+ * `@novu/api` validates the RESPONSE against its own generated Zod schema and
+ * throws `ResponseValidationError` before handing back the status. Its 422
+ * schema requires an `errors` record, but the two 422s Novu documents for this
+ * endpoint — an unknown or unpublished workflow (`workflow_not_found`) and an
+ * idempotency key reused with a different body — both answer with `statusCode`
+ * and `message` only. So all that reached Sentry was a ZodError about a field
+ * of the SDK's own error envelope: the status and Novu's reason were both lost
+ * (FAMILIARISE_WEB-1B). No published `@novu/api` relaxes that field (checked
+ * through 3.19.1), so read the status off the error instead of chasing a bump.
+ *
+ * Duck-typed on `statusCode`: every `NovuError` subclass carries it, and the
+ * class itself is not re-exported from the package root, so an `instanceof`
+ * would mean deep-importing generated internals.
+ */
+function describeNovuFailure(error: unknown): {
+  statusCode?: number;
+  /** Novu's own error text. Never the whole body — it can echo payload values. */
+  novuMessage?: string;
+  /** True when the SDK rejected a body Novu had already accepted. */
+  accepted: boolean;
+} {
+  if (!error || typeof error !== "object") return { accepted: false };
+  const { statusCode, body } = error as {
+    statusCode?: unknown;
+    body?: unknown;
+  };
+  if (typeof statusCode !== "number") return { accepted: false };
+
+  let novuMessage: string | undefined;
+  if (typeof body === "string" && body.length > 0) {
+    try {
+      const parsed: unknown = JSON.parse(body);
+      const message =
+        parsed && typeof parsed === "object"
+          ? (parsed as { message?: unknown }).message
+          : undefined;
+      if (typeof message === "string") novuMessage = message.slice(0, 200);
+    } catch {
+      // Not JSON (an HTML gateway page); the status alone is the signal.
+    }
+  }
+
+  return {
+    statusCode,
+    novuMessage,
+    accepted: statusCode >= 200 && statusCode < 300,
+  };
+}
+
+/**
+ * One report shape for every `novu.trigger` failure. `accepted` means the
+ * notification is already queued at Novu and only the SDK's response parsing
+ * failed, so it is an expected outcome rather than a lost notification.
+ */
+function reportTriggerFailure(
+  error: unknown,
+  workflowId: string,
+  recipientCount: number,
+): { accepted: boolean } {
+  const { statusCode, novuMessage, accepted } = describeNovuFailure(error);
+  // Never pass the raw SDK error: `NovuError.body` is the submitted payload
+  // echoed back on validation failures, so it can carry notification PII.
+  console.error(`[Novu] Failed to trigger ${workflowId}:`, {
+    workflowId,
+    statusCode,
+    novuMessage,
+    recipientCount,
+    accepted,
+  });
+  Sentry.captureException(
+    error instanceof Error ? error : new Error(String(error)),
+    {
+      tags: {
+        subsystem: "novu",
+        op: "trigger",
+        expected: String(accepted),
+      },
+      level: "warning",
+      extra: { workflowId, statusCode, novuMessage, recipientCount },
+    },
+  );
+  return { accepted };
+}
+
 // Deterministic transactionId so app-level retries can't double-notify: Novu
 // rejects a repeated transactionId. Derived from recipient(s) + workflow +
 // canonical payload (the payloads carry the entity ids). `dedupeKey` lets a
@@ -150,11 +237,11 @@ async function triggerWorkflow<T extends NovuPayload>(
     console.log(`[Novu] Triggered ${workflowId} for ${subscriberId}`);
     return { success: true };
   } catch (error) {
-    console.error(`[Novu] Failed to trigger ${workflowId}:`, error);
-    Sentry.captureException(
-      error instanceof Error ? error : new Error(String(error)),
-      { tags: { subsystem: "novu" }, level: "warning" },
-    );
+    // A 2xx the SDK could not parse still queued the notification; reporting it
+    // as a failed send made callers retry a send Novu had already accepted.
+    if (reportTriggerFailure(error, workflowId, 1).accepted) {
+      return { success: true };
+    }
     return {
       success: false,
       error: error instanceof Error ? error : String(error),
@@ -207,7 +294,10 @@ async function triggerForMultiple<T extends NovuPayload>(
       );
       results.push(...batch.map(() => ({ success: true }) as TriggerResult));
     } catch (error) {
-      console.error(`[Novu] Failed to trigger ${workflowId} for batch:`, error);
+      if (reportTriggerFailure(error, workflowId, batch.length).accepted) {
+        results.push(...batch.map(() => ({ success: true }) as TriggerResult));
+        continue;
+      }
       const err: TriggerResult = {
         success: false,
         error: error instanceof Error ? error : String(error),
