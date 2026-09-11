@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import * as Sentry from "@sentry/nextjs";
+import { ApiResponseError, requireJsonResponse } from "@/lib/fetch-helpers";
+import { reportSentryError } from "@/lib/observability/report";
 import { useToast } from "@/hooks/use-toast";
 import { useParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
@@ -21,6 +22,26 @@ interface UseEventActionsOptions {
   /** #1163 — the org detail route has no `[consulteeId]` param, so a caller
    * that resolved the id another way must thread it or invalidation no-ops. */
   consulteeId?: string;
+}
+
+/**
+ * One report shape for both write actions on this page.
+ *
+ * These two catch blocks used to send whatever they caught at error level, and
+ * because both parsed the body before checking `res.ok`, an HTML error page
+ * arrived as `SyntaxError: Unexpected token '<'` — in Sentry and in the toast
+ * (FAMILIARISE_WEB-1C). With the status carried on the error, a 4xx is a server
+ * ANSWER rather than a fault, and everything with a status reports at warning.
+ */
+function reportActionFailure(error: unknown, op: string): void {
+  const status = error instanceof ApiResponseError ? error.status : undefined;
+  reportSentryError(error, {
+    subsystem: "client",
+    op,
+    expected: status !== undefined && status >= 400 && status < 500,
+    ...(status !== undefined ? { level: "warning" as const } : {}),
+    extra: { httpStatus: status },
+  });
 }
 
 /**
@@ -214,10 +235,14 @@ export function useEventActions({
         body: Object.keys(payload).length ? JSON.stringify(payload) : undefined,
       });
 
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to request reschedule");
-      }
+      const data = (await requireJsonResponse(
+        response,
+        "Failed to request reschedule",
+      )) as {
+        sessionsAffected?: number;
+        slotsAffected?: number;
+        autoConfirmed?: boolean;
+      };
 
       // #448 — show the SESSION count, not the slot count: a 1-hour session is
       // 2 × 30-min slots, so the old slotsAffected label read "2 sessions" for a
@@ -236,10 +261,7 @@ export function useEventActions({
       invalidateBookingData();
       return true;
     } catch (error) {
-      Sentry.captureException(
-        error instanceof Error ? error : new Error(String(error)),
-        { tags: { subsystem: "client" } },
-      );
+      reportActionFailure(error, "appointment.reschedule");
       console.error("Error requesting reschedule:", error);
       toast({
         title: "Error",
@@ -274,23 +296,10 @@ export function useEventActions({
         `/api/appointments/${appointmentId}/cancel`,
         { method: "POST", headers: { "Content-Type": "application/json" } },
       );
-      const data = await response.json();
-      if (!response.ok) {
-        // 409 = the CAS transition guard matched zero rows: the booking
-        // already changed state (double-cancel, consultant approved a
-        // stale tab, …). The list refresh IS the answer — not an error.
-        if (response.status === 409) {
-          toast({
-            title: "Booking already updated",
-            description:
-              "This booking changed state in the meantime — refreshing.",
-          });
-          setShowCancelDialog(false);
-          invalidateBookingData();
-          return;
-        }
-        throw new Error(data.error || "Failed to cancel appointment");
-      }
+      const data = (await requireJsonResponse(
+        response,
+        "Failed to cancel appointment",
+      )) as { refund?: CancelRefund };
       // The route reports what happened to the money on `refund`. Discarding
       // it meant a cancellation that refunded nothing — or failed to refund —
       // looked exactly like one that paid out in full.
@@ -298,7 +307,7 @@ export function useEventActions({
         title: "Appointment cancelled",
         description: [
           `Your ${type.toLowerCase()} "${title}" has been cancelled.`,
-          describeRefund(data.refund),
+          describeRefund(data.refund ?? null),
         ]
           .filter(Boolean)
           .join(" "),
@@ -306,10 +315,20 @@ export function useEventActions({
       setShowCancelDialog(false);
       invalidateBookingData();
     } catch (error) {
-      Sentry.captureException(
-        error instanceof Error ? error : new Error(String(error)),
-        { tags: { subsystem: "client" } },
-      );
+      // 409 = the CAS transition guard matched zero rows: the booking already
+      // changed state (double-cancel, consultant approved a stale tab, …).
+      // The list refresh IS the answer — not an error.
+      if (error instanceof ApiResponseError && error.status === 409) {
+        toast({
+          title: "Booking already updated",
+          description:
+            "This booking changed state in the meantime — refreshing.",
+        });
+        setShowCancelDialog(false);
+        invalidateBookingData();
+        return;
+      }
+      reportActionFailure(error, "appointment.cancel");
       console.error("Error cancelling appointment:", error);
       toast({
         title: "Error",

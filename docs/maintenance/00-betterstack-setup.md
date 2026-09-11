@@ -61,9 +61,21 @@ Monitors check your URLs on a schedule and alert you when they go down.
    - **URL to monitor**: `https://familiarisenow.com/api/health`
    - **Monitor type**: HTTP
    - **Check frequency**: `3 minutes`
-   - **Confirmation period**: `30 seconds`
+   - **Request timeout**: `60 seconds` (Advanced settings — NOT the 30s default)
+   - **Confirmation period**: `1 minute` (Advanced settings — NOT the 30s default)
    - **Alert via**: Email
 3. Click **"Create monitor"**
+
+> **Why 60s / 1 minute on this monitor (#1557).** This route runs in the
+> Next.js server handler, and a brand-new instance of that handler blocks its
+> event loop for 24–39 s before doing any work (#1124, platform-side, open).
+> At the 30 s default, ~8 checks a day landed on such an instance, timed out,
+> and the confirmation re-checks from two more regions — arriving concurrently
+> a few seconds later — each spawned another stalled instance and confirmed a
+> "down" that never was: 100 false incidents in the 30 days to 2026-09-11,
+> every one on the public status page. A 60 s timeout lets the stall pass; a
+> real outage still pages within ~2 minutes. The stall itself stays visible in
+> the response-time graph and in the payload's `platform.eventLoopStallMs`.
 
 After a few minutes, both monitors should show **"Up"** status. The monitors page will show:
 
@@ -207,6 +219,13 @@ Expected response:
 ```json
 {
   "status": "healthy",
+  "database": "connected",
+  "platform": {
+    "eventLoopStallMs": 1,
+    "processUptimeMs": 184203,
+    "databaseLatencyMs": 41,
+    "databaseProbeRetried": false
+  },
   "maintenance": { "phase": "OFF", "reason": null, "estimatedEnd": null },
   "betterstack": {
     "configured": true,
@@ -222,6 +241,14 @@ Expected response:
 
 If `betterstack.configured` is `false`, the `BETTERSTACK_API_KEY` env var is missing.
 If `betterstack.reachable` is `false`, the API key is wrong or BetterStack is unreachable.
+
+`platform` reports the instance the check landed on, not a dependency, and never
+changes `status`. `eventLoopStallMs` is 0–2 on a warm instance and 24 000–39 000
+on a brand-new one under concurrent creation (#1124); a value over 1 s is also
+logged to Sentry as `Cold-instance event-loop stall`, so the stall's frequency is
+queryable. `databaseProbeRetried` is true when the first probe's deadline fired
+during such a stall and the route re-probed — the retry is what keeps a cold
+instance from reporting the database `unreachable` (#1557).
 
 ### Step 11: Test via direct API call
 
@@ -248,18 +275,19 @@ This tests the full OFFLINE → incident created → maintenance ended → incid
 
 ## Account Details (Current Setup)
 
-| Item                | Value                                                          |
-| ------------------- | -------------------------------------------------------------- |
-| **BetterStack URL** | https://uptime.betterstack.com/team/t332379                    |
-| **Email**           | teetangh@gmail.com                                             |
-| **Plan**            | Free                                                           |
-| **Monitor 1**       | `https://familiarisenow.com` (public: "Website")               |
-| **Monitor 2**       | `https://familiarisenow.com/api/health` (public: "API Health") |
-| **Check frequency** | 3 minutes (free plan minimum)                                  |
-| **Alert type**      | Email only (push/SMS require paid plan)                        |
-| **Status page**     | https://familiarise.betteruptime.com                           |
-| **API token name**  | "Familiarise Production"                                       |
-| **API base URL**    | `https://uptime.betterstack.com/api/v2`                        |
+| Item                   | Value                                                          |
+| ---------------------- | -------------------------------------------------------------- |
+| **BetterStack URL**    | https://uptime.betterstack.com/team/t332379                    |
+| **Email**              | teetangh@gmail.com                                             |
+| **Plan**               | Free                                                           |
+| **Monitor 1**          | `https://familiarisenow.com` (public: "Website")               |
+| **Monitor 2**          | `https://familiarisenow.com/api/health` (public: "API Health") |
+| **Check frequency**    | 3 minutes (free plan minimum)                                  |
+| **API Health timeout** | 60 s request timeout, 1 min confirmation (see Step 3, #1557)   |
+| **Alert type**         | Email only (push/SMS require paid plan)                        |
+| **Status page**        | https://familiarise.betteruptime.com                           |
+| **API token name**     | "Familiarise Production"                                       |
+| **API base URL**       | `https://uptime.betterstack.com/api/v2`                        |
 
 ---
 
