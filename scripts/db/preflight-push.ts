@@ -61,9 +61,10 @@ type AllowedEntry = {
  * legitimately drop and re-add their own CHECK constraints on every run, and
  * gating those would refuse every sidecar apply.
  */
-/** Collapse whitespace so an allowlist entry does not have to match Prisma's
- *  line breaking, which changes between versions. */
-const normalise = (s: string) => s.replace(/\s+/g, " ").trim();
+/** Collapse whitespace and drop a trailing `;`, so an allowlist entry can be
+ *  pasted from `migrate diff --script` verbatim while the plan is split on `;`. */
+export const normalise = (s: string) =>
+  s.replace(/\s+/g, " ").trim().replace(/;$/, "").trim();
 
 export const DESTRUCTIVE: {
   label: string;

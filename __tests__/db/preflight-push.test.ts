@@ -13,7 +13,11 @@
  * circumstance. A test that fabricated its input would not have caught that.
  */
 
-import { findDestructive, planStatements } from "@/scripts/db/preflight-push";
+import {
+  findDestructive,
+  normalise,
+  planStatements,
+} from "@/scripts/db/preflight-push";
 
 /** Verbatim output of
  *  `prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --script`
@@ -124,5 +128,19 @@ describe("db:push preflight", () => {
 
   it("reads an empty plan as nothing to do, not as a pass on garbage", () => {
     expect(planStatements("-- This is an empty migration.")).toEqual([]);
+  });
+});
+
+describe("the allowlist match", () => {
+  it("accepts an entry pasted verbatim from `migrate diff --script`, semicolon and all", () => {
+    // The plan is split on `;`, so a planned statement never carries one; the
+    // allowlist entry, copied from the script output, always does. The first
+    // real entry (#1542's FK swap) was refused on exactly this mismatch.
+    const planned = planStatements(
+      '-- DropForeignKey\nALTER TABLE "ConsultantReviewRevision" DROP CONSTRAINT "ConsultantReviewRevision_reviewId_fkey";\n',
+    )[0];
+    const entry =
+      'ALTER TABLE "ConsultantReviewRevision"\n  DROP CONSTRAINT "ConsultantReviewRevision_reviewId_fkey";';
+    expect(normalise(entry)).toBe(normalise(planned));
   });
 });
