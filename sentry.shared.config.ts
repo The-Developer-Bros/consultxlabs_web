@@ -5,6 +5,7 @@
 // centralizes the one config so a sampling/PII/env tweak lands in one place. (#913)
 
 import * as Sentry from "@sentry/nextjs";
+import { isExpectedError } from "@/lib/observability/expected";
 import {
   isNotDevelopmentEnvironment,
   isProductionEnvironment,
@@ -81,6 +82,19 @@ export function initSentry(overrides?: Partial<SentryInitOptions>): void {
       /^safari-extension:\/\//i,
       /^safari-web-extension:\/\//i,
     ],
+
+    // Errors captured by Next's `onRequestError` hook carry no per-call
+    // options, so a guard that fires by design (an expired cookie reaching an
+    // auth check) arrives looking like a fault. `markExpected` puts a marker on
+    // the thrown error and this stamps the tag. Never drops an event — it only
+    // re-levels one. (FAMILIARISE_WEB-10)
+    beforeSend(event, hint) {
+      if (isExpectedError(hint?.originalException)) {
+        event.level = "warning";
+        event.tags = { ...event.tags, expected: "true" };
+      }
+      return event;
+    },
 
     // Last, so a caller can narrow a knob it has better information about.
     // Undefined spreads to nothing, which is what every app entrypoint does.
