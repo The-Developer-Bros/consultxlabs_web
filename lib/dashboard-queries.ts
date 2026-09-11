@@ -23,6 +23,7 @@ import type {
   PlannerClassEvent,
 } from "@/types/planner-events";
 import type { RecordingData } from "@/types/recording";
+import { requireJsonResponse } from "@/lib/fetch-helpers";
 
 // =============================================================================
 // Types
@@ -56,11 +57,15 @@ async function fetchWithErrorHandling<T>(
   errorPrefix: string,
 ): Promise<T> {
   const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`${errorPrefix}: ${response.statusText}`);
-  }
-  const json = await response.json();
-  return json.data ?? json;
+  // `requireJsonResponse` carries the status on the thrown error and refuses to
+  // parse an HTML body, so a Netlify crash page or a sign-in redirect reaches
+  // the dashboard as "… (HTTP 502)" rather than a JSON syntax error
+  // (FAMILIARISE_WEB-1C). `statusText` is empty over HTTP/2, which is why the
+  // old message ended in a colon and nothing.
+  const json = (await requireJsonResponse(response, errorPrefix)) as {
+    data?: T;
+  } | null;
+  return (json?.data ?? json) as T;
 }
 
 // Consultant fetchers

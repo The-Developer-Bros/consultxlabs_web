@@ -39,10 +39,7 @@ export const apiErrorSchema = z.object({
  * or when the `error` field is absent — both happen when the server
  * crashes before the route handler can serialise its own error envelope.
  */
-export function errorMessageFromBody(
-  raw: unknown,
-  fallback: string,
-): string {
+export function errorMessageFromBody(raw: unknown, fallback: string): string {
   const parsed = apiErrorSchema.safeParse(raw);
   return parsed.success && parsed.data.error ? parsed.data.error : fallback;
 }
@@ -73,6 +70,76 @@ export class ApiResponseError extends Error {
   }
 }
 
+/** Does this response actually claim to be JSON? */
+function isJsonResponse(res: Response): boolean {
+  return (res.headers.get("content-type") ?? "").includes("json");
+}
+
+/**
+ * Read a response body as JSON without ever letting markup reach `JSON.parse`,
+ * and throw {@link ApiResponseError} — which carries the status — for anything
+ * that is not a 2xx JSON body.
+ *
+ * The failure this closes: a Netlify function crash, a function timeout and a
+ * middleware redirect to the sign-in page all answer with `<!DOCTYPE html>`,
+ * and the redirect answers with it at status 200. A bare `res.json()` turned
+ * that into `SyntaxError: Unexpected token '<'`, which the appointments page
+ * then put in a toast and sent to Sentry in place of the status anyone could
+ * have acted on (FAMILIARISE_WEB-1C).
+ *
+ * Returns the raw parsed body; callers that want a schema use
+ * {@link parseJsonResponse}, which is built on this.
+ */
+// Distinguishes "the body parsed to a literal `null`" from "JSON.parse threw"
+// — collapsing both to `null` let malformed JSON resolve as a successful
+// empty response instead of throwing.
+const JSON_PARSE_FAILED = Symbol("json-parse-failed");
+
+export async function requireJsonResponse(
+  res: Response,
+  fallbackError = "Request failed",
+): Promise<unknown> {
+  const raw = isJsonResponse(res)
+    ? await res.json().catch(() => JSON_PARSE_FAILED)
+    : null;
+
+  if (!res.ok) {
+    const parsedErr =
+      raw === JSON_PARSE_FAILED
+        ? apiErrorSchema.safeParse(undefined)
+        : apiErrorSchema.safeParse(raw);
+    const envelope = parsedErr.success ? parsedErr.data : {};
+    // Without an `error` field (a 5xx with an empty or HTML body) the status is
+    // the only thing that distinguishes "the server crashed" from "validation
+    // failed", so it goes in the message the user reads.
+    throw new ApiResponseError(
+      envelope.error ?? `${fallbackError} (HTTP ${res.status})`,
+      { status: res.status, code: envelope.code, detail: envelope.detail },
+    );
+  }
+
+  if (raw === JSON_PARSE_FAILED) {
+    // A 2xx response that claims to be JSON but isn't valid JSON — a
+    // truncated or corrupted body. Never resolve this as a successful
+    // `null` payload; the caller needs the status to react correctly.
+    throw new ApiResponseError(
+      `${fallbackError} (HTTP ${res.status}, malformed JSON response)`,
+      { status: res.status },
+    );
+  }
+
+  if (raw === null && !isJsonResponse(res)) {
+    // A 2xx that is not JSON is a redirect `fetch` followed for us, or a proxy
+    // page wearing a success status. Neither is an answer this caller can use.
+    throw new ApiResponseError(
+      `${fallbackError} (HTTP ${res.status}, non-JSON response)`,
+      { status: res.status },
+    );
+  }
+
+  return raw;
+}
+
 /**
  * Parse a successful JSON response through a Zod schema. Throws a typed
  * error when the network call failed (`!res.ok`) using `errorMessageFromBody`,
@@ -94,22 +161,7 @@ export async function parseJsonResponse<S extends z.ZodTypeAny>(
   schema: S,
   fallbackError = "Request failed",
 ): Promise<z.infer<S>> {
-  const raw = await res.json().catch(() => null);
-  if (!res.ok) {
-    const parsedErr = apiErrorSchema.safeParse(raw);
-    const envelope = parsedErr.success ? parsedErr.data : {};
-    // When the server didn't include an `error` field (typically a 5xx
-    // with empty/HTML body), append the HTTP status so the toast at
-    // least pinpoints "the server crashed" vs "validation failed". This
-    // is what made the old fallback "Failed to create organization"
-    // actively misleading — every cause produced the same string.
-    const message = envelope.error ?? `${fallbackError} (HTTP ${res.status})`;
-    throw new ApiResponseError(message, {
-      status: res.status,
-      code: envelope.code,
-      detail: envelope.detail,
-    });
-  }
+  const raw = await requireJsonResponse(res, fallbackError);
   const parsed = schema.safeParse(raw);
   if (!parsed.success) {
     // Surfacing the issues in the error message keeps the failure mode
@@ -121,9 +173,7 @@ export async function parseJsonResponse<S extends z.ZodTypeAny>(
       .slice(0, 3)
       .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
       .join("; ");
-    throw new Error(
-      `Server response did not match expected shape (${issues})`,
-    );
+    throw new Error(`Server response did not match expected shape (${issues})`);
   }
   return parsed.data;
 }
