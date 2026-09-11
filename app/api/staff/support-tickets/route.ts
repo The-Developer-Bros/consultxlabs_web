@@ -147,7 +147,10 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "staff" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "staff" } },
+    );
     console.error("Error fetching support tickets:", error);
     return NextResponse.json(
       { error: "Failed to fetch support tickets" },

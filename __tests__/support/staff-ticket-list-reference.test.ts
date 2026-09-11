@@ -65,7 +65,9 @@ const TICKET_ROW = {
 };
 
 beforeEach(() => {
-  mockedAuth.mockResolvedValue({ session: { user: { id: "s1", role: "STAFF" } } });
+  mockedAuth.mockResolvedValue({
+    session: { user: { id: "s1", role: "STAFF" } },
+  });
   mockedFindMany.mockResolvedValue([TICKET_ROW]);
   mockedCount.mockResolvedValue(1);
   mockedGroupBy.mockResolvedValue([]);
