@@ -18,6 +18,7 @@ import {
 } from "@/lib/api/plans/archive";
 
 import { getSession } from "@/lib/auth-server";
+import { planConsultantSelect } from "@/lib/api/plans/consultant-projection";
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ subscriptionPlanId: string }> },
@@ -27,39 +28,9 @@ export async function GET(
     const subscriptionPlan = await prisma.subscriptionPlan.findUniqueOrThrow({
       where: { id: subscriptionPlanId },
       include: {
-        consultantProfile: {
-          include: {
-            user: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                image: true,
-                workExperiences: {
-                  select: { company: true, companyDomain: true, isCurrent: true },
-                  orderBy: [{ isCurrent: "desc" as const }, { startDate: "desc" as const }],
-                  take: 3,
-                },
-              },
-            },
-          },
-        },
-        subscriptions: {
-          include: {
-            requestedBy: {
-              include: {
-                user: {
-                  select: {
-                    id: true,
-                    name: true,
-                    email: true,
-                    image: true,
-                  },
-                },
-              },
-            },
-          },
-        },
+        consultantProfile: { select: planConsultantSelect },
+        // The booking rows only: another subscriber's name and email are not part of a plan.
+        subscriptions: true,
         topics: true,
         faqs: { orderBy: { order: "asc" } },
         subscriptionContents: {
@@ -82,7 +53,10 @@ export async function GET(
         { status: 404 },
       );
     }
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "plans" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "plans" } },
+    );
     console.error("Error fetching subscription plan:", error);
     return NextResponse.json(
       { error: "An error occurred while fetching the subscription plan" },
@@ -321,7 +295,10 @@ export async function PUT(
         { status: 404 },
       );
     }
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "plans" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "plans" } },
+    );
     console.error("Error updating subscription plan:", error);
     return NextResponse.json(
       { error: "An error occurred while updating the subscription plan" },
@@ -394,7 +371,10 @@ export async function PATCH(
 
     return NextResponse.json(
       {
-        data: { id: subscriptionPlan.id, archivedAt: subscriptionPlan.archivedAt },
+        data: {
+          id: subscriptionPlan.id,
+          archivedAt: subscriptionPlan.archivedAt,
+        },
         message: PLAN_ARCHIVE_RESPONSE_NOTE,
       },
       { status: 200 },
@@ -409,7 +389,10 @@ export async function PATCH(
         { status: 404 },
       );
     }
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "plans" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "plans" } },
+    );
     console.error("Error archiving subscription plan:", error);
     return NextResponse.json(
       { error: "An error occurred while updating the subscription plan" },
@@ -504,7 +487,10 @@ export async function DELETE(
         { status: 404 },
       );
     }
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "plans" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "plans" } },
+    );
     console.error("Error deleting subscription plan:", error);
     return NextResponse.json(
       { error: "An error occurred while deleting the subscription plan" },
