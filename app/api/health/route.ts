@@ -1,6 +1,7 @@
 import * as Sentry from "@sentry/nextjs";
 import { NextResponse } from "next/server";
 
+import { measureEventLoopStall, probeWithStallRetry } from "@/lib/health/probe";
 import { getMaintenanceState } from "@/lib/maintenance";
 import { getStreamStatus } from "@/lib/stream/health";
 import prisma from "@/lib/prisma";
@@ -116,30 +117,65 @@ async function checkCronHeartbeat(): Promise<CronHeartbeat> {
   }
 }
 
+// Above the ~3 s pg connect budget in lib/prisma.ts, well under the function
+// ceiling. Armed AFTER the stall yield below, so it measures the database.
+const DB_PROBE_BUDGET_MS = 5_000;
+
+// A yield that takes longer than this was not a yield. Warm instances measure
+// 0–2 ms; #1124's stall is 24 000–39 000 ms; nothing lives in between.
+const STALL_REPORT_THRESHOLD_MS = 1_000;
+
+async function probeDatabase(): Promise<{
+  database: "connected" | "unreachable";
+  latencyMs: number;
+  retried: boolean;
+}> {
+  const outcome = await probeWithStallRetry(
+    // ORM connectivity probe (no raw SQL) — a cheap LIMIT 1 read proves the
+    // connection is alive; null (empty table) still means "connected".
+    () => prisma.user.findFirst({ select: { id: true } }),
+    DB_PROBE_BUDGET_MS,
+  );
+  if (!outcome.ok) {
+    const err = outcome.error;
+    Sentry.logger.warn("DB health probe failed", {
+      tags: { subsystem: "api" },
+      extra: {
+        message: err instanceof Error ? err.message : String(err),
+        elapsedMs: outcome.elapsedMs,
+        timedOut: outcome.timedOut,
+        retried: outcome.retried,
+      },
+    });
+  }
+  return {
+    database: outcome.ok ? "connected" : "unreachable",
+    latencyMs: outcome.elapsedMs,
+    retried: outcome.retried,
+  };
+}
+
 export async function GET(request: Request) {
   const includeBetterStack =
     new URL(request.url).searchParams.get("includeBetterStack") === "1";
 
-  let database: "connected" | "unreachable" = "connected";
-  try {
-    let timeoutId: ReturnType<typeof setTimeout>;
-    await Promise.race([
-      // ORM connectivity probe (no raw SQL) — a cheap LIMIT 1 read proves the
-      // connection is alive; null (empty table) still means "connected".
-      prisma.user
-        .findFirst({ select: { id: true } })
-        .finally(() => clearTimeout(timeoutId)),
-      new Promise((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error("DB timeout")), 5000);
-      }),
-    ]);
-  } catch (err) {
-    Sentry.logger.warn("DB health probe failed", {
+  // #1557 / #1124 — first thing, before any timer is armed: absorb the
+  // cold-instance stall and measure it. Everything below runs on a loop that
+  // is actually running. See lib/health/probe.ts for why the order matters.
+  const eventLoopStallMs = await measureEventLoopStall();
+  const processUptimeMs = Math.round(process.uptime() * 1000);
+  if (eventLoopStallMs > STALL_REPORT_THRESHOLD_MS) {
+    Sentry.logger.warn("Cold-instance event-loop stall", {
       tags: { subsystem: "api" },
-      extra: { message: err instanceof Error ? err.message : String(err) },
+      extra: { eventLoopStallMs, processUptimeMs },
     });
-    database = "unreachable";
   }
+
+  const {
+    database,
+    latencyMs: databaseLatencyMs,
+    retried,
+  } = await probeDatabase();
 
   const [maintenanceState, stream, betterstack, cron] = await Promise.all([
     getMaintenanceState(),
@@ -163,6 +199,14 @@ export async function GET(request: Request) {
   return NextResponse.json({
     status,
     database,
+    // #1124's stall is a platform latency, not a dependency failure: it is
+    // reported here, and in the Sentry log above, but never changes `status`.
+    platform: {
+      eventLoopStallMs,
+      processUptimeMs,
+      databaseLatencyMs,
+      databaseProbeRetried: retried,
+    },
     maintenance: {
       phase: maintenanceState.phase,
       reason: maintenanceState.reason,
