@@ -161,10 +161,15 @@ function reportTriggerFailure(
   recipientCount: number,
 ): { accepted: boolean } {
   const { statusCode, novuMessage, accepted } = describeNovuFailure(error);
-  console.error(
-    `[Novu] Failed to trigger ${workflowId} (status ${statusCode ?? "none"}):`,
-    error,
-  );
+  // Never pass the raw SDK error: `NovuError.body` is the submitted payload
+  // echoed back on validation failures, so it can carry notification PII.
+  console.error(`[Novu] Failed to trigger ${workflowId}:`, {
+    workflowId,
+    statusCode,
+    novuMessage,
+    recipientCount,
+    accepted,
+  });
   Sentry.captureException(
     error instanceof Error ? error : new Error(String(error)),
     {

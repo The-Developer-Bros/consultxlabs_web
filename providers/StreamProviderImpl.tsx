@@ -475,6 +475,10 @@ const StreamProviderImpl = ({
   // Stable connectServices function using ref pattern for retry logic
   const connectServices = useCallback(async () => {
     if (isLoading || !userDetails) return;
+    // A scheduled idle-callback or retry timeout can still fire after
+    // sign-out; getCachedToken then rejects and the catch below would queue
+    // up to 5 more retries for a session that is never coming back.
+    if (signedOutRef.current) return;
 
     setIsConnecting(true);
     setError(null);
@@ -511,7 +515,7 @@ const StreamProviderImpl = ({
       setRetryCount(connectionAttemptsRef.current); // Sync state for UI display
       const currentAttempts = connectionAttemptsRef.current;
 
-      if (currentAttempts < 5) {
+      if (currentAttempts < 5 && !signedOutRef.current) {
         // Max 5 attempts
         const delay = getRetryDelay(currentAttempts);
         streamLogger.debug(`Retrying connection in ${delay}ms`, {
@@ -523,6 +527,10 @@ const StreamProviderImpl = ({
           connectServices();
         }, delay);
         return;
+      } else if (signedOutRef.current) {
+        streamLogger.debug("Skipping retry — signed out", {
+          attempt: currentAttempts,
+        });
       } else {
         streamLogger.error("Max connection attempts reached", error);
       }

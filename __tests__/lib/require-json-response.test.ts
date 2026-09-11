@@ -70,4 +70,30 @@ describe("requireJsonResponse", () => {
       requireJsonResponse(jsonResponse(200, { refund: { status: "FAILED" } })),
     ).resolves.toEqual({ refund: { status: "FAILED" } });
   });
+
+  it("rejects malformed JSON on a 2xx instead of resolving it as null", async () => {
+    const malformed = new Response("{not valid json", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+    const error = await requireJsonResponse(
+      malformed,
+      "Failed to load plan",
+    ).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ApiResponseError);
+    expect((error as ApiResponseError).status).toBe(200);
+  });
+
+  it("still surfaces the status when an error response body is malformed JSON", async () => {
+    const malformed = new Response("{not valid json", {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
+    await expect(
+      requireJsonResponse(malformed, "Failed to load plan"),
+    ).rejects.toMatchObject({
+      status: 500,
+      message: "Failed to load plan (HTTP 500)",
+    });
+  });
 });

@@ -90,14 +90,24 @@ function isJsonResponse(res: Response): boolean {
  * Returns the raw parsed body; callers that want a schema use
  * {@link parseJsonResponse}, which is built on this.
  */
+// Distinguishes "the body parsed to a literal `null`" from "JSON.parse threw"
+// — collapsing both to `null` let malformed JSON resolve as a successful
+// empty response instead of throwing.
+const JSON_PARSE_FAILED = Symbol("json-parse-failed");
+
 export async function requireJsonResponse(
   res: Response,
   fallbackError = "Request failed",
 ): Promise<unknown> {
-  const raw = isJsonResponse(res) ? await res.json().catch(() => null) : null;
+  const raw = isJsonResponse(res)
+    ? await res.json().catch(() => JSON_PARSE_FAILED)
+    : null;
 
   if (!res.ok) {
-    const parsedErr = apiErrorSchema.safeParse(raw);
+    const parsedErr =
+      raw === JSON_PARSE_FAILED
+        ? apiErrorSchema.safeParse(undefined)
+        : apiErrorSchema.safeParse(raw);
     const envelope = parsedErr.success ? parsedErr.data : {};
     // Without an `error` field (a 5xx with an empty or HTML body) the status is
     // the only thing that distinguishes "the server crashed" from "validation
@@ -105,6 +115,16 @@ export async function requireJsonResponse(
     throw new ApiResponseError(
       envelope.error ?? `${fallbackError} (HTTP ${res.status})`,
       { status: res.status, code: envelope.code, detail: envelope.detail },
+    );
+  }
+
+  if (raw === JSON_PARSE_FAILED) {
+    // A 2xx response that claims to be JSON but isn't valid JSON — a
+    // truncated or corrupted body. Never resolve this as a successful
+    // `null` payload; the caller needs the status to react correctly.
+    throw new ApiResponseError(
+      `${fallbackError} (HTTP ${res.status}, malformed JSON response)`,
+      { status: res.status },
     );
   }
 
