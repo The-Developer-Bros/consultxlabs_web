@@ -120,10 +120,11 @@ export function ReviewComposer({
 
   return (
     <div>
-      <h3 className="text-sm font-medium text-foreground">
-        {existing ? "Your review of " : "Review "}
+      {/* Verb-led so it reads as a form and never as a posted review. */}
+      <h4 className="text-sm font-medium text-foreground">
+        {existing ? "Edit your review of " : "Write a review of "}
         {consultantName ?? "this expert"}
-      </h3>
+      </h4>
       <p className="mt-0.5 text-xs text-muted-foreground">
         {contextLine ? `${contextLine} · ` : ""}
         Public — it appears on their profile with the date. One review per

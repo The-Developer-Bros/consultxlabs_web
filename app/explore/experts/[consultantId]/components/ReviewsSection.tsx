@@ -138,13 +138,16 @@ export function ReviewsSection({
         </div>
       </div>
 
+      {/* Header, the viewer's own form, the list: three flat siblings sharing
+          one left edge. The island draws its own heading and the rule below it,
+          because only it knows whether it rendered anything at all. */}
       {composer}
 
-      <div className="space-y-4">
+      <div className="space-y-3">
         {reviews && reviews.length > 0 ? (
           reviews.map((review) => <Review key={review.id} {...review} />)
         ) : (
-          <div className="text-center py-12">
+          <div className="text-center py-10">
             <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-muted flex items-center justify-center">
               <MessageSquare className="w-8 h-8 text-muted-foreground/70" />
             </div>

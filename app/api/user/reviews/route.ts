@@ -5,7 +5,6 @@ import {
   publicReviewSelect,
   sanitisePublicReviews,
 } from "@/lib/data/review-public";
-import { consultantPublicScalars } from "@/lib/data/consultant-public";
 import { Prisma } from "@prisma/client";
 import { notifyNewReview } from "@/lib/novu";
 import { CreateReviewSchema } from "@/schemas/feedbacks";
@@ -182,18 +181,17 @@ export async function POST(req: NextRequest) {
             throw new ModeratedReviewError();
           }
 
-          const include = {
-            // #946 allowlist — the response goes back to the consultee who wrote
-            // the review; a bare `include:` handed them the consultant's PAN and
-            // bank account.
+          // An explicit select, never `include`: `include` returns every scalar on
+          // the row, which (a) hands the author staff-only columns and (b) fails
+          // with P2022 whenever the schema is pushed ahead of the deploy — the
+          // documented order. Only what the notification below reads.
+          const select = {
+            ...publicReviewSelect,
             consultantProfile: {
-              select: {
-                ...consultantPublicScalars,
-                user: { select: { name: true } },
-              },
+              select: { userId: true, user: { select: { name: true } } },
             },
             consulteeProfile: {
-              include: { user: { select: { name: true, image: true } } },
+              select: { user: { select: { name: true, image: true } } },
             },
           } as const;
 
@@ -267,7 +265,7 @@ export async function POST(req: NextRequest) {
                   ? { deletedAt: null, deletedByUserId: null }
                   : {}),
               },
-              include,
+              select,
             });
           } else {
             created = await tx.consultantReview.create({
@@ -287,7 +285,7 @@ export async function POST(req: NextRequest) {
                 // review this week has not held a recent session.
                 ratedSessionAt: reviewable.heldAt,
               },
-              include,
+              select,
             });
           }
 

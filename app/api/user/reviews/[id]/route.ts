@@ -2,7 +2,6 @@ import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import prisma from "@/lib/prisma";
-import { consultantPublicScalars } from "@/lib/data/consultant-public";
 import {
   requireApiAuth,
   checkOwnership,
@@ -165,10 +164,8 @@ export async function PUT(
               reviewDescription: body.reviewDescription,
               isAnonymous: body.isAnonymous,
             },
-            include: {
-              consultantProfile: { select: consultantPublicScalars },
-              consulteeProfile: { select: { id: true, userId: true } },
-            },
+            // Explicit select, never `include` — see the POST route.
+            select: publicReviewSelect,
           });
 
           await recomputeConsultantRating(tx, review.consultantProfileId);

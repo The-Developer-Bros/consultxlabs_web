@@ -7,6 +7,7 @@ import React from "react";
 
 const Review: React.FC<Readonly<TPublicConsultantReview>> = ({
   consulteeProfile,
+  consultantProfile,
   createdAt,
   rating,
   reviewDescription,
@@ -20,16 +21,19 @@ const Review: React.FC<Readonly<TPublicConsultantReview>> = ({
   // name — this is the label for that, not the mechanism.
   const reviewerName = consulteeProfile?.user?.name || "Verified client";
   const reviewerImage = consulteeProfile?.user?.image || null;
+  const consultantName = consultantProfile?.user?.name || null;
 
+  // Same radius, border and padding as the composer above it: a flat list of
+  // siblings, with nothing that reads as nested under anything else.
   return (
-    <div className="flex items-start space-x-4 p-4 bg-card rounded-lg shadow-sm">
+    <div className="flex items-start gap-4 rounded-xl border border-border bg-card p-4">
       <Avatar className="w-10 h-10">
         {reviewerImage && (
           <AvatarImage src={reviewerImage} alt={reviewerName} />
         )}
         <AvatarFallback>{reviewerName.charAt(0).toUpperCase()}</AvatarFallback>
       </Avatar>
-      <div className="flex-1">
+      <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between mb-2">
           <div>
             <h4 className="text-md font-semibold text-foreground">
@@ -62,10 +66,14 @@ const Review: React.FC<Readonly<TPublicConsultantReview>> = ({
             one that is meant to be read. A public review of a named professional
             with no way to answer it is the shape every benchmarked platform has
             moved away from. */}
+        {/* A flat footer of the same card, not an inset box: the reply is a
+            property of this review, and there is no thread beneath it. */}
         {replyBody && (
-          <div className="mt-3 rounded-lg border border-border bg-muted/40 p-3">
+          <div className="mt-3 pt-3 border-t border-border">
             <p className="text-xs font-medium text-foreground">
-              Response from the expert
+              {consultantName
+                ? `Reply from ${consultantName}`
+                : "Response from the expert"}
               {repliedAt && (
                 <span className="ml-1.5 font-normal text-muted-foreground">
                   · {new Date(repliedAt).toLocaleDateString("en-IN")}
