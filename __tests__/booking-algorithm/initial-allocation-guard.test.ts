@@ -167,7 +167,7 @@ describe("manual allocation: transaction race window", () => {
     mockRevalidateConflictsFn.mockResolvedValue({ isValid: true, errors: [] });
 
     const mockTx = {
-      $queryRaw: jest.fn().mockResolvedValue([]),
+      $executeRaw: jest.fn().mockResolvedValue(1),
       slotOfAppointment: { count: jest.fn().mockResolvedValue(2) },
     };
     mockPrisma.$transaction.mockImplementation(
@@ -185,7 +185,7 @@ describe("manual allocation: transaction race window", () => {
     expect(result.success).toBe(false);
     expect(result.httpStatus).toBe(409);
     // The advisory lock is taken before the in-txn count
-    expect(mockTx.$queryRaw).toHaveBeenCalled();
+    expect(mockTx.$executeRaw).toHaveBeenCalled();
     expect(mockTx.slotOfAppointment.count).toHaveBeenCalled();
   });
 });
@@ -211,7 +211,7 @@ describe("requested allocation with initialAllocation", () => {
   it("re-checks the guard INSIDE the transaction and 409s", async () => {
     const mockTx = {
       // Advisory xact lock taken before the guard count (ADR B10 atomicity)
-      $queryRaw: jest.fn().mockResolvedValue([]),
+      $executeRaw: jest.fn().mockResolvedValue(1),
       slotOfAppointment: { count: jest.fn().mockResolvedValue(2) },
     };
     mockPrisma.$transaction.mockImplementation(
@@ -228,5 +228,41 @@ describe("requested allocation with initialAllocation", () => {
     expect(result.success).toBe(false);
     expect(result.httpStatus).toBe(409);
     expect(mockTx.slotOfAppointment.count).toHaveBeenCalled();
+  });
+});
+
+describe("advisory lock statement shape (#1518)", () => {
+  it("takes the lock through $executeRaw with the per-event key, then continues", async () => {
+    // pg_advisory_xact_lock returns void; $queryRaw made the Prisma 7 driver
+    // adapter deserialise that column and throw before allocation began.
+    const mockTx = {
+      $executeRaw: jest.fn().mockResolvedValue(1),
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      slotOfAppointment: { count: jest.fn().mockResolvedValue(0) },
+    };
+    mockPrisma.$transaction.mockImplementation(
+      async (fn: (tx: unknown) => Promise<unknown>) => fn(mockTx),
+    );
+
+    const result = await SlotAllocationService.allocate({
+      eventType: "subscription",
+      eventId: "sub-1",
+      mode: "requested",
+      initialAllocation: true,
+    });
+
+    expect(mockTx.$queryRaw).not.toHaveBeenCalled();
+    expect(mockTx.$executeRaw).toHaveBeenCalledTimes(1);
+    const [fragments, key] = mockTx.$executeRaw.mock.calls[0] as [
+      TemplateStringsArray,
+      string,
+    ];
+    expect(Array.from(fragments).join("")).toContain(
+      "SELECT pg_advisory_xact_lock(hashtextextended(",
+    );
+    expect(key).toBe("initial-allocation:subscription:sub-1");
+    // The guard ran on past the lock: zero confirmed slots, so no 409.
+    expect(mockTx.slotOfAppointment.count).toHaveBeenCalled();
+    expect(result.httpStatus).not.toBe(409);
   });
 });

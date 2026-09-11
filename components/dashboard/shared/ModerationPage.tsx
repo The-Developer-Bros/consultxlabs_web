@@ -7,15 +7,11 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import {
-  Card,
-  CardContent,
-} from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-
 
 import {
   ResponsiveModal,
@@ -45,12 +41,18 @@ import {
   RefreshCw,
   ExternalLink,
   AlertTriangle,
+  Trash2,
+  ShieldOff,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type {
   ProfileVerification,
+  ModerationCapabilities,
+  ModerationLatestAction,
   ModerationReport,
   ModerationReview,
+  ModerationSideEffects,
   ModerationStats,
 } from "@/types/moderation";
 
@@ -96,6 +98,127 @@ const formatDate = (dateString: string) => {
   });
 };
 
+/**
+ * The enforcement suffix shown beside a target's role. Extracted from a nested
+ * ternary (Sonar S3358): "banned" and "suspended until X" are different states,
+ * not two branches of one, and reading them as a lookup makes that plain.
+ */
+function describeEnforcementState(target: {
+  banned?: boolean | null;
+  banExpires?: string | null;
+}): string {
+  if (!target.banned) return "";
+  if (!target.banExpires) return " • banned";
+  return ` • suspended until ${formatDate(target.banExpires)}`;
+}
+
+/** Statuses the action route still accepts; anything else answers 409. */
+const OPEN_REPORT_STATUSES = new Set<string>([
+  "PENDING",
+  "UNDER_REVIEW",
+  "ESCALATED",
+]);
+
+const REPORT_STATUS_FILTERS = [
+  { value: "PENDING", label: "Pending" },
+  { value: "UNDER_REVIEW", label: "Under review" },
+  { value: "ESCALATED", label: "Escalated" },
+  { value: "ACTION_TAKEN", label: "Action taken" },
+  { value: "DISMISSED", label: "Dismissed" },
+] as const;
+
+/**
+ * What is still true about the target when the Stream half of an action never
+ * landed (#1270). Written for the moderator, not for the log: "stream: failed"
+ * on its own does not tell an admin that the account they just banned can still
+ * message the person who reported it.
+ */
+const STREAM_GAP_BY_ACTION: Record<string, string> = {
+  USER_BANNED:
+    "the ban did NOT reach chat — the account's existing chat token still works and it has not been deactivated",
+  USER_SUSPENDED:
+    "the suspension did NOT reach chat — the account's existing chat token still works",
+  CONTENT_REMOVED:
+    "the message was NOT deleted — it is still visible in the conversation",
+  USER_REINSTATED:
+    "chat access was NOT restored — the account still cannot connect to chat",
+};
+
+const describeStreamGap = (actionType: string) =>
+  STREAM_GAP_BY_ACTION[actionType] ??
+  "the Stream side of this action did not land";
+
+const enforcementIncomplete = (
+  sideEffects: ModerationSideEffects | null | undefined,
+) => sideEffects?.stream === "failed" || sideEffects?.stream === "gave_up";
+
+/**
+ * The persisted record of what an action actually did. `sideEffects` has been
+ * written since #693 and read by nothing, which is how a ban that never reached
+ * Stream looked identical to one that did.
+ */
+function EnforcementSummary({
+  action,
+}: Readonly<{ action: ModerationLatestAction }>) {
+  const sideEffects = action.sideEffects;
+  const incomplete = enforcementIncomplete(sideEffects);
+  const cancelled = sideEffects?.cancellations?.engagementsCancelled ?? 0;
+  const refunded = sideEffects?.cancellations?.refundsIssued ?? 0;
+
+  return (
+    <div
+      className={`rounded-lg border p-4 ${
+        incomplete ? "border-destructive/50 bg-destructive/10" : "bg-muted"
+      }`}
+    >
+      <div className="flex items-center gap-2">
+        {incomplete ? (
+          <AlertTriangle className="h-4 w-4 text-destructive" />
+        ) : (
+          <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400" />
+        )}
+        <Label className="text-sm font-medium">
+          {action.actionType.replace(/_/g, " ")} —{" "}
+          {formatDate(action.createdAt)}
+        </Label>
+      </div>
+      {incomplete && (
+        <p className="mt-2 text-sm text-destructive">
+          Enforcement incomplete: {describeStreamGap(action.actionType)}.
+          {sideEffects?.stream === "gave_up"
+            ? " Automatic retries have been exhausted; this needs to be applied by hand."
+            : " It will be retried automatically."}
+        </p>
+      )}
+      <ul className="mt-2 space-y-0.5 text-xs text-muted-foreground">
+        {sideEffects?.sessionsRevoked !== undefined && (
+          <li>{sideEffects.sessionsRevoked} session(s) revoked</li>
+        )}
+        {(cancelled > 0 || refunded > 0) && (
+          <li>
+            {cancelled} appointment(s) cancelled, {refunded} refund(s) issued
+          </li>
+        )}
+        {sideEffects?.earningsHeld !== undefined && (
+          <li>{sideEffects.earningsHeld} earning(s) held</li>
+        )}
+        {sideEffects?.reviewRemoved && <li>Review removed</li>}
+        {sideEffects?.stream && <li>Chat enforcement: {sideEffects.stream}</li>}
+        {sideEffects?.notification && (
+          <li>Notification: {sideEffects.notification}</li>
+        )}
+      </ul>
+      {sideEffects?.errors?.length ? (
+        <ul className="mt-2 space-y-0.5 text-xs text-destructive">
+          {sideEffects.errors.map((e) => (
+            <li key={e}>{e}</li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 export function ModerationPage() {
   const [activeTab, setActiveTab] = useState("reports");
   const [searchQuery, setSearchQuery] = useState("");
@@ -110,6 +233,10 @@ export function ModerationPage() {
     useState<ProfileVerification | null>(null);
   const [moderationNote, setModerationNote] = useState("");
   const [suspensionDays, setSuspensionDays] = useState(7);
+  // #1270 — a report whose enforcement half-failed leaves the PENDING queue the
+  // moment it is actioned, so without a way to look at resolved reports the
+  // persisted failure was unreachable from this page.
+  const [statusFilter, setStatusFilter] = useState("PENDING");
 
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -148,19 +275,23 @@ export function ModerationPage() {
     isError: reportsError,
     refetch: refetchReports,
   } = useQuery({
-    queryKey: ["staff-moderation-reports", "PENDING", debouncedSearch],
-    queryFn: async (): Promise<{ reports: ModerationReport[] }> => {
-      const params = new URLSearchParams({ status: "PENDING" });
+    queryKey: ["staff-moderation-reports", statusFilter, debouncedSearch],
+    queryFn: async (): Promise<{
+      reports: ModerationReport[];
+      capabilities?: ModerationCapabilities;
+    }> => {
+      const params = new URLSearchParams({ status: statusFilter });
       if (debouncedSearch) params.set("search", debouncedSearch);
-      const response = await fetch(
-        `/api/staff/moderation/reports?${params}`,
-      );
+      const response = await fetch(`/api/staff/moderation/reports?${params}`);
       if (!response.ok) throw new Error("Failed to fetch reports");
       return response.json();
     },
     placeholderData: keepPreviousData,
   });
   const reports = reportsData?.reports ?? [];
+  // Banning is ADMIN-only server-side. Trusting the server's answer rather than
+  // guessing from the session keeps the button and the 403 in agreement.
+  const canModerateUsers = reportsData?.capabilities?.canModerateUsers ?? false;
 
   // Fetch profile verifications
   const {
@@ -215,9 +346,11 @@ export function ModerationPage() {
   const REPORT_ACTION_TYPE = {
     DISMISS: "NO_ACTION",
     WARN: "WARNING_ISSUED",
+    REMOVE_CONTENT: "CONTENT_REMOVED",
     SUSPEND: "USER_SUSPENDED",
     BAN: "USER_BANNED",
   } as const;
+  type ReportActionKey = keyof typeof REPORT_ACTION_TYPE;
 
   const reportActionMutation = useMutation({
     mutationFn: async ({
@@ -225,7 +358,7 @@ export function ModerationPage() {
       action,
     }: {
       reportId: string;
-      action: "DISMISS" | "WARN" | "SUSPEND" | "BAN";
+      action: ReportActionKey;
     }) => {
       const response = await fetch(
         `/api/staff/moderation/reports/${reportId}/action`,
@@ -245,28 +378,37 @@ export function ModerationPage() {
         const body = await response.json().catch(() => null);
         throw new Error(body?.error ?? "Failed to process action");
       }
+      // The route has always returned `stream` and `errors`; this type omitted
+      // them, so the toast below congratulated the moderator on a ban that
+      // never reached chat (#1270).
       return response.json() as Promise<{
-        sideEffects?: {
-          sessionsRevoked?: number;
-          earningsHeld?: number;
-          cancellations?: {
-            engagementsCancelled: number;
-            refundsIssued: number;
-          };
-        };
+        sideEffects?: ModerationSideEffects;
       }>;
     },
     onSuccess: (data, { action }) => {
-      const cancelled = data?.sideEffects?.cancellations?.engagementsCancelled;
-      const refunded = data?.sideEffects?.cancellations?.refundsIssued;
+      const sideEffects = data?.sideEffects;
+      const cancelled = sideEffects?.cancellations?.engagementsCancelled;
+      const refunded = sideEffects?.cancellations?.refundsIssued;
       const detail =
         cancelled || refunded
           ? ` ${cancelled ?? 0} appointment(s) cancelled, ${refunded ?? 0} refund(s) issued.`
           : "";
-      toast({
-        title: "Action Completed",
-        description: `Report has been ${action === "DISMISS" ? "dismissed" : "processed"} successfully.${detail}`,
-      });
+
+      if (enforcementIncomplete(sideEffects)) {
+        toast({
+          title: "Action recorded — enforcement incomplete",
+          description: `The decision was saved and ${describeStreamGap(REPORT_ACTION_TYPE[action])}. It will be retried automatically; the report now shows what landed.`,
+          variant: "destructive",
+        });
+        // Move the queue to where the report just went, so the incomplete
+        // enforcement is on screen instead of one filter away.
+        setStatusFilter("ACTION_TAKEN");
+      } else {
+        toast({
+          title: "Action Completed",
+          description: `Report has been ${action === "DISMISS" ? "dismissed" : "processed"} successfully.${detail}`,
+        });
+      }
 
       setSelectedReport(null);
       setModerationNote("");
@@ -286,10 +428,115 @@ export function ModerationPage() {
     },
   });
 
-  const handleReportAction = (
-    reportId: string,
-    action: "DISMISS" | "WARN" | "SUSPEND" | "BAN",
-  ) => reportActionMutation.mutate({ reportId, action });
+  const handleReportAction = (reportId: string, action: ReportActionKey) =>
+    reportActionMutation.mutate({ reportId, action });
+
+  /**
+   * #1270 — lifting a ban. USER_BANNED deactivates the target on Stream, which
+   * is permanent, so an admin who reversed a ban by hand left an account that
+   * could sign in but never chat again.
+   */
+  const unbanMutation = useMutation({
+    mutationFn: async (reportId: string) => {
+      const response = await fetch(
+        `/api/staff/moderation/reports/${reportId}/unban`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ notes: moderationNote }),
+        },
+      );
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error ?? "Failed to lift the ban");
+      }
+      return response.json() as Promise<{
+        sideEffects?: ModerationSideEffects;
+      }>;
+    },
+    onSuccess: (data) => {
+      if (enforcementIncomplete(data?.sideEffects)) {
+        toast({
+          title: "Ban lifted — chat not restored",
+          description: `The account can sign in again, but ${describeStreamGap("USER_REINSTATED")}. It will be retried automatically.`,
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Ban lifted",
+          description: "The account is reinstated and can use chat again.",
+        });
+      }
+      setSelectedReport(null);
+      setModerationNote("");
+      queryClient.invalidateQueries({
+        queryKey: ["staff-moderation-reports"],
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "Error",
+        description:
+          error instanceof Error ? error.message : "Failed to lift the ban",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const busy = reportActionMutation.isPending || unbanMutation.isPending;
+
+  interface ReportActionButton {
+    key: ReportActionKey;
+    label: string;
+    icon: LucideIcon;
+    variant: "outline" | "destructive";
+    className?: string;
+    disabled?: boolean;
+  }
+
+  /**
+   * Which decisions are actually available on this report right now. A resolved
+   * report offers none, because the route answers 409; Suspend and Ban are
+   * withheld unless the server says this account holds `users.moderate`, rather
+   * than being shown to every moderator and answering 403 on click.
+   */
+  const availableActions = (report: ModerationReport): ReportActionButton[] => {
+    if (!OPEN_REPORT_STATUSES.has(report.status)) return [];
+    const actions: ReportActionButton[] = [
+      {
+        key: "DISMISS",
+        label: "Dismiss",
+        icon: CheckCircle2,
+        variant: "outline",
+        className: "text-green-600 dark:text-green-400",
+      },
+      { key: "WARN", label: "Warn", icon: XCircle, variant: "outline" },
+    ];
+    // CONTENT_REMOVED only removes something when the report points at one:
+    // offering it on a report with neither a message nor a review resolves the
+    // report and deletes nothing, which is the defect it was added to fix.
+    if (report.streamMessageId || report.reviewId) {
+      actions.push({
+        key: "REMOVE_CONTENT",
+        label: "Remove content",
+        icon: Trash2,
+        variant: "outline",
+      });
+    }
+    if (canModerateUsers) {
+      actions.push(
+        {
+          key: "SUSPEND",
+          label: "Suspend",
+          icon: XCircle,
+          variant: "destructive",
+          disabled: !Number.isFinite(suspensionDays),
+        },
+        { key: "BAN", label: "Ban", icon: XCircle, variant: "destructive" },
+      );
+    }
+    return actions;
+  };
 
   // Handle profile verification
   const profileVerificationMutation = useMutation({
@@ -444,7 +691,9 @@ export function ModerationPage() {
                   {stats?.pendingProfiles ?? 0}
                 </p>
               )}
-              <p className="text-sm text-muted-foreground">Profiles to Verify</p>
+              <p className="text-sm text-muted-foreground">
+                Profiles to Verify
+              </p>
             </div>
           </CardContent>
         </Card>
@@ -513,7 +762,7 @@ export function ModerationPage() {
         {/* Reports Tab */}
         <TabsContent value="reports" className="space-y-4">
           <Card>
-            <CardContent className="p-4">
+            <CardContent className="space-y-3 p-4">
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
@@ -522,6 +771,21 @@ export function ModerationPage() {
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                 />
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {REPORT_STATUS_FILTERS.map((filter) => (
+                  <Button
+                    key={filter.value}
+                    type="button"
+                    size="sm"
+                    variant={
+                      statusFilter === filter.value ? "default" : "outline"
+                    }
+                    onClick={() => setStatusFilter(filter.value)}
+                  >
+                    {filter.label}
+                  </Button>
+                ))}
               </div>
             </CardContent>
           </Card>
@@ -580,19 +844,36 @@ export function ModerationPage() {
                             </Badge>
                           </div>
                           <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
-                            {report.description || report.reason}
+                            {report.contentText ||
+                              report.description ||
+                              report.reason}
                           </p>
-                          <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
+                          <div className="flex flex-wrap items-center gap-4 mt-2 text-xs text-muted-foreground">
                             <span>
-                              Reported by: {report.reporter.name || "Anonymous"}
+                              Reported by:{" "}
+                              {report.reportedBy?.name || "Anonymous"}
                             </span>
                             <span>
                               Against:{" "}
-                              {report.reportedUser.name ||
-                                report.reportedUser.email}
+                              {report.targetUser.name ||
+                                report.targetUser.email}
                             </span>
                             <span>Reason: {report.reason}</span>
+                            {report.reportCount > 1 && (
+                              <span>{report.reportCount} reports</span>
+                            )}
                           </div>
+                          {enforcementIncomplete(
+                            report.latestAction?.sideEffects,
+                          ) && (
+                            <p className="mt-2 flex items-center gap-1 text-xs text-destructive">
+                              <AlertTriangle className="h-3 w-3" />
+                              Enforcement incomplete —{" "}
+                              {describeStreamGap(
+                                report.latestAction?.actionType ?? "",
+                              )}
+                            </p>
+                          )}
                         </div>
                       </div>
                       <span className="text-xs text-muted-foreground/70">
@@ -763,7 +1044,9 @@ export function ModerationPage() {
                           <div>
                             <div className="flex items-center gap-2">
                               <p className="font-medium">{consulteeName}</p>
-                              <span className="text-muted-foreground/70">→</span>
+                              <span className="text-muted-foreground/70">
+                                →
+                              </span>
                               <p className="text-muted-foreground">
                                 {consultantName}
                               </p>
@@ -833,32 +1116,62 @@ export function ModerationPage() {
                 </ResponsiveModalDescription>
               </ResponsiveModalHeader>
               <div className="space-y-4">
-                <div className="p-4 rounded-lg bg-muted">
-                  <Label className="text-sm font-medium">
-                    Reported Content
-                  </Label>
-                  <p className="mt-1 text-sm">
-                    {selectedReport.description || selectedReport.reason}
-                  </p>
-                </div>
+                {/* #1270 — the excerpt has been captured at report time since
+                    the report button shipped and was never rendered, so bans
+                    were decided on a reason string alone. */}
+                {selectedReport.contentText ? (
+                  <div className="p-4 rounded-lg border bg-muted">
+                    <Label className="text-sm font-medium">
+                      Reported content
+                    </Label>
+                    <p className="mt-1 whitespace-pre-wrap break-words text-sm">
+                      {selectedReport.contentText}
+                    </p>
+                    {selectedReport.streamChannelCid && (
+                      <p className="mt-2 text-xs text-muted-foreground/70">
+                        Channel {selectedReport.streamChannelCid}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="p-4 rounded-lg border border-dashed">
+                    <Label className="text-sm font-medium">
+                      Reported content
+                    </Label>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      The reporter sent no excerpt with this report.
+                    </p>
+                  </div>
+                )}
+                {selectedReport.description && (
+                  <div>
+                    <Label className="text-sm font-medium">
+                      Reporter&apos;s description
+                    </Label>
+                    <p className="text-sm text-muted-foreground">
+                      {selectedReport.description}
+                    </p>
+                  </div>
+                )}
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div>
                     <Label className="text-sm font-medium">Reported By</Label>
                     <p className="text-sm text-muted-foreground">
-                      {selectedReport.reporter.name || "Anonymous"}
+                      {selectedReport.reportedBy?.name || "Anonymous"}
                     </p>
                     <p className="text-xs text-muted-foreground/70">
-                      {selectedReport.reporter.email}
+                      {selectedReport.reportedBy?.email}
                     </p>
                   </div>
                   <div>
                     <Label className="text-sm font-medium">Target User</Label>
                     <p className="text-sm text-muted-foreground">
-                      {selectedReport.reportedUser.name ||
-                        selectedReport.reportedUser.email}
+                      {selectedReport.targetUser.name ||
+                        selectedReport.targetUser.email}
                     </p>
                     <p className="text-xs text-muted-foreground/70">
-                      {selectedReport.reportedUser.role}
+                      {selectedReport.targetUser.role}
+                      {describeEnforcementState(selectedReport.targetUser)}
                     </p>
                   </div>
                 </div>
@@ -866,8 +1179,14 @@ export function ModerationPage() {
                   <Label className="text-sm font-medium">Reason</Label>
                   <p className="text-sm text-muted-foreground">
                     {selectedReport.reason}
+                    {selectedReport.reportCount > 1
+                      ? ` (${selectedReport.reportCount} reports)`
+                      : ""}
                   </p>
                 </div>
+                {selectedReport.latestAction && (
+                  <EnforcementSummary action={selectedReport.latestAction} />
+                )}
                 <div>
                   <Label htmlFor="note">Moderation Note</Label>
                   <Textarea
@@ -878,7 +1197,7 @@ export function ModerationPage() {
                     onChange={(e) => setModerationNote(e.target.value)}
                   />
                 </div>
-                <div>
+                <div className={canModerateUsers ? "" : "hidden"}>
                   <Label className="text-sm font-medium">
                     Suspension duration (applies to Suspend only)
                   </Label>
@@ -902,7 +1221,9 @@ export function ModerationPage() {
                       min={1}
                       max={365}
                       className="w-24"
-                      value={Number.isFinite(suspensionDays) ? suspensionDays : ""}
+                      value={
+                        Number.isFinite(suspensionDays) ? suspensionDays : ""
+                      }
                       onChange={(e) => {
                         // NaN sentinel lets the field be cleared while typing;
                         // the Suspend button disables until a valid number is back
@@ -931,66 +1252,54 @@ export function ModerationPage() {
                 <Button
                   variant="outline"
                   onClick={() => setSelectedReport(null)}
-                  disabled={reportActionMutation.isPending}
+                  disabled={busy}
                 >
-                  Cancel
+                  Close
                 </Button>
-                <Button
-                  variant="outline"
-                  className="text-green-600 dark:text-green-400"
-                  onClick={() =>
-                    handleReportAction(selectedReport.id, "DISMISS")
-                  }
-                  disabled={reportActionMutation.isPending}
-                >
-                  {reportActionMutation.isPending ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <CheckCircle2 className="h-4 w-4 mr-2" />
-                  )}
-                  Dismiss
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => handleReportAction(selectedReport.id, "WARN")}
-                  disabled={reportActionMutation.isPending}
-                >
-                  {reportActionMutation.isPending ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <XCircle className="h-4 w-4 mr-2" />
-                  )}
-                  Warn
-                </Button>
-                <Button
-                  variant="destructive"
-                  onClick={() =>
-                    handleReportAction(selectedReport.id, "SUSPEND")
-                  }
-                  disabled={
-                    reportActionMutation.isPending ||
-                    !Number.isFinite(suspensionDays)
-                  }
-                >
-                  {reportActionMutation.isPending ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <XCircle className="h-4 w-4 mr-2" />
-                  )}
-                  Suspend
-                </Button>
-                <Button
-                  variant="destructive"
-                  onClick={() => handleReportAction(selectedReport.id, "BAN")}
-                  disabled={reportActionMutation.isPending}
-                >
-                  {reportActionMutation.isPending ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <XCircle className="h-4 w-4 mr-2" />
-                  )}
-                  Ban
-                </Button>
+                {/* One button per available action, from a list, so adding
+                    "Remove content" did not mean a sixth copy of the same
+                    twelve lines. */}
+                {availableActions(selectedReport).map((action) => {
+                  const Icon = action.icon;
+                  return (
+                    <Button
+                      key={action.key}
+                      variant={action.variant}
+                      className={action.className}
+                      onClick={() =>
+                        handleReportAction(selectedReport.id, action.key)
+                      }
+                      disabled={busy || action.disabled}
+                    >
+                      {/* #1270 review — the CLICKED button only. `isPending`
+                          is shared by every generated action, so one running
+                          action used to spin all of them and read as though the
+                          whole panel were busy. */}
+                      {reportActionMutation.isPending &&
+                      reportActionMutation.variables?.action ===
+                        action.key ? (
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      ) : (
+                        <Icon className="h-4 w-4 mr-2" />
+                      )}
+                      {action.label}
+                    </Button>
+                  );
+                })}
+                {canModerateUsers && selectedReport.targetUser.banned && (
+                  <Button
+                    variant="outline"
+                    onClick={() => unbanMutation.mutate(selectedReport.id)}
+                    disabled={busy}
+                  >
+                    {unbanMutation.isPending ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <ShieldOff className="h-4 w-4 mr-2" />
+                    )}
+                    Lift ban
+                  </Button>
+                )}
               </ResponsiveModalFooter>
             </>
           )}

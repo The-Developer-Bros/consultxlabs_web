@@ -37,7 +37,10 @@
  * the paise.
  */
 
-import { reportSentryError, reportSentryMessage } from "@/lib/observability/report";
+import {
+  reportSentryError,
+  reportSentryMessage,
+} from "@/lib/observability/report";
 import prisma, { type Tx } from "@/lib/prisma";
 import {
   EarningStatus,
@@ -47,7 +50,12 @@ import {
   RefundStatus,
 } from "@prisma/client";
 
-import { createRefund as createGatewayRefund } from "@/lib/payments";
+// Type-only on purpose: the gateway barrel loads lib/payments/core/razorpay,
+// whose #1219 guard throws at module load on a TEST key in production. A
+// value import here put that throw into every bundle that merely quotes or
+// previews a refund (cancel preview, cancel, reject all 500'd on prod). The
+// barrel is imported at the single gateway call below instead.
+import type { createRefund as createGatewayRefund } from "@/lib/payments";
 import { walletCredit } from "@/lib/api/organizations/wallet";
 import { reverseBookingUtilization } from "@/lib/api/organizations/program-helpers";
 import { transitionOverage } from "@/lib/payments/billing/overage-transitions";
@@ -57,6 +65,7 @@ import { AUDIT_ACTIONS } from "@/lib/enterprise/audit-actions";
 import { postLedgerTxn, type Posting } from "@/lib/payments/ledger/post";
 import { recordTdsReversal } from "@/lib/payments/tax/tds-service";
 import { generateOrgCreditNoteNumber } from "@/lib/payments/billing/credit-note-numbering";
+import { mintConsumerCreditNote } from "@/lib/payments/billing/consumer-invoice";
 import { recordSystemError } from "@/lib/enterprise/system-events";
 import { sumPaise } from "@/lib/payments/utils/money";
 import { withSerializableRetry } from "@/lib/db/serializable-retry";
@@ -267,6 +276,12 @@ export async function refundPayment(input: RefundInput): Promise<RefundResult> {
     throw err;
   }
 
+  // The gateway barrel is loaded here, BEFORE the reservation. Its module-load
+  // guard (#1219) is deterministic, so a throw here must not leave a PENDING
+  // placeholder that keeps reducing the refundable balance for the length of
+  // the reconciler's grace period.
+  const { createRefund } = await import("@/lib/payments");
+
   // PHASE 1 — reserve. Create the Refund row in PENDING with a `pending_`
   // placeholder id inside a Serializable tx: the balance re-check and the
   // reservation are atomic, so racing refunds can't oversubscribe, and the
@@ -360,7 +375,11 @@ export async function refundPayment(input: RefundInput): Promise<RefundResult> {
           },
         });
       },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, maxWait: 10_000, timeout: 15_000 },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        maxWait: 10_000,
+        timeout: 15_000,
+      },
     ),
   );
 
@@ -371,7 +390,7 @@ export async function refundPayment(input: RefundInput): Promise<RefundResult> {
   // the gateway. Mirrors actions/maintenance/freeze-appointments.ts.
   let gateway: Awaited<ReturnType<typeof createGatewayRefund>>;
   try {
-    gateway = await createGatewayRefund({
+    gateway = await createRefund({
       paymentIntentId: payment.paymentIntent,
       amount: requested,
       reason: input.reason,
@@ -536,7 +555,10 @@ export async function refundPayment(input: RefundInput): Promise<RefundResult> {
         {
           subsystem: "payments",
           tags: { feature: "refund" },
-          extra: { placeholderRowId: reserved.id, gatewayRefundId: gateway.refundId },
+          extra: {
+            placeholderRowId: reserved.id,
+            gatewayRefundId: gateway.refundId,
+          },
         },
       );
     }
@@ -637,7 +659,11 @@ export async function refundPayment(input: RefundInput): Promise<RefundResult> {
           gatewayRefundId: gateway.refundId || undefined,
         };
       },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, maxWait: 10_000, timeout: 15_000 },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        maxWait: 10_000,
+        timeout: 15_000,
+      },
     ),
   );
 
@@ -1145,6 +1171,15 @@ export async function applyRefundCascade(
     reason: input.reason,
   });
 
+  // #1365 — the B2C sibling: a personal buyer's invoice is reversed by its own
+  // s.34 credit note on the platform series, never by deleting the invoice.
+  await mintConsumerCreditNote(tx, {
+    paymentId: payment.id,
+    refundId: input.refundId,
+    amountPaise: input.amountPaise,
+    reason: input.reason,
+  });
+
   // -----------------------------------------------------------------------
   // Step 7.6 (#715/#716): credit-back for an ALREADY-CHARGED overage on full
   // refund. reverseBookingUtilization only cancels UNCOLLECTED overages; a
@@ -1164,11 +1199,23 @@ export async function applyRefundCascade(
         bookingUtilizationId: payment.bookingUtilization.id,
         chargeStatus: "CHARGED",
       },
-      select: { id: true, overageBehavior: true, paymentId: true },
+      select: {
+        id: true,
+        overageBehavior: true,
+        paymentId: true,
+        invoiceLineItemId: true,
+      },
     });
+    // #1458 — the wallet rail collects a CHARGE_ORG marginal inside this very
+    // payment's WALLET debit, so the leg reversal above has already credited it
+    // back. There is no invoice behind it and therefore no credit note to wait
+    // for; gating on one left the event permanently CHARGED, still eating the
+    // programme's per-cycle overage ceiling after the booking was refunded.
+    const walletCollected =
+      charged?.paymentId === payment.id && charged?.invoiceLineItemId === null;
     if (
       charged?.overageBehavior === "CHARGE_ORG" &&
-      refundCreditNote.creditNoteId
+      (refundCreditNote.creditNoteId || walletCollected)
     ) {
       await transitionOverage(
         tx,

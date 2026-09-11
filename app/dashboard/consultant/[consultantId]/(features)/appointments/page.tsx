@@ -31,8 +31,9 @@ export default async function AppointmentsPage({
   // We prefetch only "personal" — the deterministic, session-independent
   // default — mirroring the existing client prefetch hook
   // (useConsultantPrefetchDashboard). Org/all-scope landings correctly fall
-  // back to a client fetch (acceptable per #890). The "personal" filter is
-  // { organizationId: null }, matching the route's resolveOrgScope output.
+  // back to a client fetch (acceptable per #890). The scope handed down is the
+  // same `Scope` the route's resolveOrgScope produces, so both paths project
+  // it identically (#674 defect 13).
   // allSettled so a read failure degrades to a client-side fetch rather
   // than crashing the route.
   await Promise.allSettled([
@@ -41,7 +42,7 @@ export default async function AppointmentsPage({
       queryFn: () =>
         getConsultantAppointments({
           consultantProfileId: consultantId,
-          orgScopeFilter: { organizationId: null },
+          scope: { kind: "personal" },
         }),
     }),
   ]);

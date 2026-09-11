@@ -405,6 +405,187 @@ export async function recordTdsReversal(
 }
 
 // ============================================================================
+// Org rail (#1354)
+//
+// Host-organisation payouts computed and stamped their withholding on
+// `OrganizationPayout` from day one, but never wrote a `TDSRecord`. Everything
+// downstream of withholding — the quarterly return draft, the TDS dashboard,
+// the reversal cap — reads TDSRecord, so an entire rail of real statutory
+// deductions was invisible to the filing side.
+//
+// These are siblings of the consultant writers above rather than a widening of
+// them: the consultant bodies are load-bearing for the 194-O/194J question that
+// is still open on CA sign-off (#778 §E), and the two rails key, dedupe and
+// reverse differently. What they share is the FY/quarter arithmetic and the
+// filed-aware correction policy, which are called, not copied.
+// ============================================================================
+
+/**
+ * Record an org-rail TDS deduction. Mirrors {@link recordTDSDeduction} with
+ * the consultant columns left null; the XOR CHECK in
+ * prisma/sql/check-constraints.sql is what makes that structurally correct.
+ */
+export async function recordOrgTDSDeduction(params: {
+  organizationId: string;
+  financialYear: string;
+  tdsDeducted: number;
+  /** #781 §C — integer basis points (194-O/§393 = 10, no-PAN §397(2) = 500). */
+  tdsRateBps: number;
+  cumulativeAmountCredited: number;
+  orgPayoutId: string;
+  /**
+   * Fiscal quarter the deduction is dated in. Callers that already know the
+   * instant the withholding happened MUST pass it together with the matching
+   * `financialYear`: deriving one from the caller and the other from "now"
+   * yields impossible periods such as FY 2025-26 Q1.
+   */
+  quarter?: number;
+  /** #776 — statutory section applied, for the return's line classification. */
+  tdsSection?: string;
+  db?: Tx | typeof prisma;
+}) {
+  const quarter = params.quarter ?? getIndianFYQuarter();
+  const db = params.db || prisma;
+
+  return db.tDSRecord.create({
+    data: {
+      consultantProfileId: null,
+      organizationId: params.organizationId,
+      financialYear: params.financialYear,
+      quarter,
+      cumulativeAmountCredited: params.cumulativeAmountCredited,
+      tdsDeducted: params.tdsDeducted,
+      tdsRateBps: params.tdsRateBps,
+      tdsSection: params.tdsSection ?? null,
+      payoutId: null,
+      orgPayoutId: params.orgPayoutId,
+    },
+  });
+}
+
+/**
+ * How much of an org payout's withholding a reversal takes back.
+ *
+ * A bank-returned payout (`markOrgPayoutReversed`, COMPLETED → REVERSED) undoes
+ * the whole disbursement, so the whole deduction goes with it. PROPORTIONAL is
+ * the refund-cascade shape the consultant rail already uses; no caller reaches
+ * it yet, and it is declared here so the org refund cascade does not have to
+ * re-open this function's contract to arrive.
+ */
+export type OrgTdsReversalBasis =
+  | { kind: "FULL" }
+  | {
+      kind: "PROPORTIONAL";
+      refundAmountPaise: number;
+      payoutAmountPaise: number;
+    };
+
+/**
+ * #1354 — org-rail counterpart of {@link recordTdsReversal}: writes the
+ * negative `TDSRecord` that nets the withholding back out of the quarter, plus
+ * the `TdsAdjustment` the return generator exports as the revised-statement
+ * line. Returns null when there is nothing to reverse.
+ *
+ * All reads and writes go through the passed tx so the reversal commits
+ * atomically with the payout's own state change.
+ */
+export async function recordOrgTdsReversal(
+  tx: Tx | typeof prisma,
+  params: {
+    orgPayoutId: string;
+    organizationId: string;
+    reversalBasis: OrgTdsReversalBasis;
+    /** Triggering Refund row, when the reversal arises from one (#778 §D). */
+    refundId?: string;
+  },
+) {
+  const original = await tx.tDSRecord.findFirst({
+    where: {
+      orgPayoutId: params.orgPayoutId,
+      organizationId: params.organizationId,
+      isReversal: false,
+    },
+  });
+  if (!original || original.tdsDeducted <= 0) return null;
+
+  let tdsToReverse: number;
+  if (params.reversalBasis.kind === "FULL") {
+    tdsToReverse = original.tdsDeducted;
+  } else {
+    const { refundAmountPaise, payoutAmountPaise } = params.reversalBasis;
+    if (payoutAmountPaise <= 0) return null;
+    // Integer paise proportion (floor — never reverse more than the refund earns).
+    tdsToReverse = Math.floor(
+      (original.tdsDeducted * refundAmountPaise) / payoutAmountPaise,
+    );
+  }
+  if (tdsToReverse <= 0) return null;
+
+  // Dedup + cap, same contract as the consultant rail: prior reversals carry
+  // negative tdsDeducted, so their sum negated is what has already been taken
+  // back. Without the cap a redelivered `payout.reversed` webhook would reverse
+  // the deduction twice and the quarter would report negative withholding.
+  const priorReversals = await tx.tDSRecord.findMany({
+    where: {
+      orgPayoutId: params.orgPayoutId,
+      organizationId: params.organizationId,
+      isReversal: true,
+    },
+    select: { tdsDeducted: true },
+  });
+  const alreadyReversed = priorReversals.reduce(
+    (sum, r) => sum - r.tdsDeducted,
+    0,
+  );
+  tdsToReverse = Math.min(tdsToReverse, original.tdsDeducted - alreadyReversed);
+  if (tdsToReverse <= 0) return null;
+
+  // Same filed-aware FY/quarter policy as the consultant rail: an unfiled
+  // original is corrected in place; a filed one is adjusted against the current
+  // quarter, because a correction statement for a filed quarter is a manual CA
+  // action rather than an automated rewrite.
+  const filed = original.reportedInForm26Q === true;
+  const financialYear = filed
+    ? getIndianFinancialYear()
+    : original.financialYear;
+  const quarter = filed ? getIndianFYQuarter() : original.quarter;
+
+  const reversal = await tx.tDSRecord.create({
+    data: {
+      consultantProfileId: null,
+      organizationId: params.organizationId,
+      financialYear,
+      quarter,
+      cumulativeAmountCredited: original.cumulativeAmountCredited,
+      tdsDeducted: -tdsToReverse, // signed: reverses prior withholding
+      tdsRateBps: original.tdsRateBps,
+      tdsSection: original.tdsSection,
+      payoutId: null,
+      orgPayoutId: params.orgPayoutId,
+      isReversal: true,
+    },
+  });
+
+  await tx.tdsAdjustment.create({
+    data: {
+      consultantProfileId: null,
+      organizationId: params.organizationId,
+      tdsRecordId: reversal.id,
+      orgPayoutId: params.orgPayoutId,
+      refundId: params.refundId ?? null,
+      financialYear,
+      quarter,
+      amountPaise: -tdsToReverse,
+      reason: filed
+        ? "org payout reversal — original quarter already filed; adjust current quarter"
+        : "org payout reversal — original quarter unfiled; corrected in place",
+    },
+  });
+
+  return reversal;
+}
+
+// ============================================================================
 // Admin Queries
 // ============================================================================
 

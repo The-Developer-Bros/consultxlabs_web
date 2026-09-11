@@ -54,7 +54,11 @@ let payoutRow: Row;
 // — a let/const would still be in its TDZ when the factory assigns to it.
 // eslint-disable-next-line no-var
 var prismaStub: {
-  consultantPayout: { findMany: jest.Mock; update: jest.Mock };
+  consultantPayout: {
+    findMany: jest.Mock;
+    update: jest.Mock;
+    updateMany: jest.Mock;
+  };
   consultantEarnings: { updateMany: jest.Mock };
   $disconnect: jest.Mock;
 };
@@ -67,6 +71,9 @@ jest.mock("../../lib/prisma", () => {
         Object.assign(payoutRow, data);
         return payoutRow;
       }),
+      // #1407 — the retry reset is a CAS updateMany now; the count is what
+      // each test decides the race produced.
+      updateMany: jest.fn(async () => ({ count: 1 })),
     },
     consultantEarnings: {
       updateMany: jest.fn(async () => ({ count: 0 })),
@@ -138,6 +145,27 @@ describe("PM-15 — stuck-payout reconcile delegates to handlePayoutWebhook", ()
     );
   });
 
+  // #1407 — RazorpayX `failed` (bank refused a queued payout) had no arm here
+  // while Stripe's did, so the payout fell through as an unknown status and was
+  // skipped: PROCESSING forever, earnings still linked to money that never left.
+  it("gateway `failed` → delegates FAILED, not skipped as an unknown status", async () => {
+    (global as unknown as { fetch: jest.Mock }).fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: "failed", failure_reason: "account closed" }),
+    });
+
+    const result = await handleStuckPayouts();
+
+    expect(handlePayoutWebhook).toHaveBeenCalledWith(
+      "RAZORPAY",
+      "pout_live_1",
+      "FAILED",
+      "account closed",
+      undefined,
+    );
+    expect(result.skippedCount).toBe(0);
+  });
+
   it("still-processing payout → no delegation (status unchanged)", async () => {
     (global as unknown as { fetch: jest.Mock }).fetch = jest.fn().mockResolvedValue({
       ok: true,
@@ -147,5 +175,49 @@ describe("PM-15 — stuck-payout reconcile delegates to handlePayoutWebhook", ()
     await handleStuckPayouts();
 
     expect(handlePayoutWebhook).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #1407 — the retry reset must be a CAS. The cohort is read once and each
+ * payout then costs a gateway round-trip, so a concurrent process-payouts run
+ * or a payout webhook can move a row while this job is out. A bare `update`
+ * stamped it back to APPROVED and the next batch paid it twice.
+ */
+describe("#1407 — retry reset loses the CAS", () => {
+  it("count 0 → no second payout is armed and the row is reported skipped", async () => {
+    // Never reached the gateway, so this is the retry branch.
+    payoutRow = { ...STUCK_PAYOUT, providerPayoutId: null, retryCount: 0 };
+    prismaStub.consultantPayout.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    const result = await handleStuckPayouts();
+
+    expect(prismaStub.consultantPayout.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "po_stuck_1",
+        status: "PROCESSING",
+        providerPayoutId: null,
+      },
+      data: { status: "APPROVED", retryCount: { increment: 1 } },
+    });
+    // Not re-armed for a second disbursement, and no bare write behind the CAS.
+    expect(result.retriedCount).toBe(0);
+    expect(payoutRow.status).toBe("PROCESSING");
+    expect(prismaStub.consultantPayout.update).not.toHaveBeenCalled();
+    expect(result.skippedCount).toBe(1);
+  });
+
+  it("count 1 → the winner re-arms once and the increment rides the CAS", async () => {
+    payoutRow = { ...STUCK_PAYOUT, providerPayoutId: null, retryCount: 0 };
+    prismaStub.consultantPayout.updateMany.mockResolvedValueOnce({ count: 1 });
+
+    const result = await handleStuckPayouts();
+
+    // Exactly one reset attempt for the one stuck row, and the retryCount bump
+    // is part of the same guarded write rather than a follow-up update.
+    expect(prismaStub.consultantPayout.updateMany).toHaveBeenCalledTimes(1);
+    expect(result.retriedCount).toBe(1);
+    expect(result.skippedCount).toBe(0);
+    expect(prismaStub.consultantPayout.update).not.toHaveBeenCalled();
   });
 });

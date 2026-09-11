@@ -60,6 +60,26 @@ export interface PaymentsPageProps {
   basePath: string;
 }
 
+/**
+ * #1365 — the B2C tax invoice for a payment. Defined at module scope, not
+ * inside the page, so it is never re-created on a render (S6478). An empty
+ * cell means the payment was org-funded and is invoiced to the organization
+ * instead, which is the correct answer rather than a gap to chase.
+ */
+function renderInvoiceCell(payment: Payment) {
+  if (!payment.consumerInvoice) {
+    return <span className="text-muted-foreground/70">—</span>;
+  }
+  return (
+    <a
+      href={`/api/payments/${payment.id}/invoice/pdf`}
+      className="text-sm font-medium text-foreground underline underline-offset-4 hover:text-muted-foreground"
+    >
+      {payment.consumerInvoice.invoiceNumber}
+    </a>
+  );
+}
+
 export function PaymentsPage({ basePath }: PaymentsPageProps) {
   const [page, setPage] = useState(1);
   const [status, setStatus] = useState<PaymentStatus | undefined>();
@@ -156,6 +176,11 @@ export function PaymentsPage({ basePath }: PaymentsPageProps) {
         ) : (
           <span className="text-muted-foreground/70">—</span>
         ),
+    },
+    {
+      key: "invoice",
+      header: "Invoice",
+      cell: renderInvoiceCell,
     },
     {
       key: "date",

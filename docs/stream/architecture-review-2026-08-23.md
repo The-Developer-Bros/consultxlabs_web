@@ -5,6 +5,16 @@
 
 Severity roll-up: **3 HIGH · 9 MED-HIGH/MED · 9 LOW/INFO**. All three HIGH findings are actionable this week.
 
+> **Status addendum (2026-08-30):** this is a dated snapshot and is left
+> unmodified below, but one part of it has since been superseded. #1270 moved
+> call creation out of the browser entirely, so where §1.3 “Meeting lifecycle” says "First Join mints
+> deterministically (`getOrCreateAppointmentMeeting`)" the mint is now the
+> server action `provisionAppointmentMeeting`, the call's author is the
+> appointment's host rather than whoever clicked, and members are named
+> `call_member` at creation instead of `host`/`user`. Ending a call for everyone
+> also moved to `POST /api/meetings/[meetingId]/end`. See
+> `docs/decisions/2026-08-30-server-side-call-creation.md`.
+
 ---
 
 ## 1. HLD — what the system is

@@ -39,6 +39,8 @@ import {
   findRecentOpenEscalation,
 } from "@/lib/support/create-ticket";
 import { priorityForReason } from "@/lib/support/priority";
+import { recordFlowOutcome } from "@/lib/support/deflection";
+import { mentionsHumanKeyword } from "@/lib/support/escalation";
 
 const turnSchema = z
   .object({
@@ -138,15 +140,66 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const turn = walkFlow(
+    const walked = walkFlow(
       flow,
       input.nodeId ?? null,
       { chosenOptionId: input.chosenOptionId, userMessage: input.userMessage },
       // Platform scope has no cancellation preview — refund % stays null.
       { refundPctIfCancelledNow: null },
     );
+    // Asking for a person gets you one, in this scope too. The appointment
+    // thread honours these keywords through `decideEscalation`; nothing was
+    // checking here, so the unrecognized-input nudge — which tells the user to
+    // type "agent" — dead-ended in this drawer and simply re-presented itself.
+    const turn = mentionsHumanKeyword(input.userMessage)
+      ? {
+          ...walked,
+          escalate: true,
+          resolved: false,
+          reason: walked.reason ?? "general_human",
+        }
+      : walked;
+
+    // Org attribution is resolved BEFORE the resolved-turn branch, because the
+    // outcome row is attributed too. Writing `input.orgId` straight through
+    // would have let a caller stamp an outcome with an org they do not belong
+    // to — exactly the forgery `resolveOrgAttribution` exists to refuse.
+    const attribution = resolveOrgAttribution({
+      flowId: flow.id,
+      requestedOrgId: input.orgId,
+      activeOrganizationIds: ctx.organizationIds,
+    });
+    if (!attribution.ok) {
+      return supportError({
+        status: 403,
+        code: "FORBIDDEN",
+        context: {
+          route: "support.platform",
+          action: "turn",
+          flowId: flow.id,
+          attemptedOrgId: input.orgId,
+        },
+      });
+    }
+    const organizationId = attribution.organizationId;
 
     if (!turn.escalate) {
+      // #705 — the platform scope persisted NOTHING on a resolved turn, so a
+      // user the tree helped left no trace and deflection was unanswerable
+      // even after the fact. This is a counter only: no message bodies.
+      if (turn.resolved) {
+        await recordFlowOutcome({
+          scope: "PLATFORM",
+          flowKey: flow.id,
+          terminalNodeId:
+            (turn.messages[0]?.metadata as { nodeId?: string } | undefined)
+              ?.nodeId ?? null,
+          reason: turn.reason ?? null,
+          outcome: "RESOLVED",
+          userId: session.user.id,
+          organizationId,
+        });
+      }
       return NextResponse.json({
         data: {
           flowId: flow.id,
@@ -169,27 +222,6 @@ export async function POST(req: NextRequest) {
     const reason = turn.reason ?? "platform_escalated";
     const issueType = issueTypeForFlow(flow, reason);
     const priority = priorityForReason(reason);
-
-    // Org attribution — the rule lives in resolveOrgAttribution so it is
-    // unit-testable and shared with any future intake surface.
-    const attribution = resolveOrgAttribution({
-      flowId: flow.id,
-      requestedOrgId: input.orgId,
-      activeOrganizationIds: ctx.organizationIds,
-    });
-    if (!attribution.ok) {
-      return supportError({
-        status: 403,
-        code: "FORBIDDEN",
-        context: {
-          route: "support.platform",
-          action: "turn",
-          flowId: flow.id,
-          attemptedOrgId: input.orgId,
-        },
-      });
-    }
-    const organizationId = attribution.organizationId;
 
     const walkedPath = input.nodeId
       ? `Flow ${flow.id} at node ${input.nodeId}`
@@ -220,6 +252,7 @@ export async function POST(req: NextRequest) {
           escalated: true,
           actions: turn.actions,
           supportTicketId: recent.id,
+          supportTicketReference: recent.referenceNumber,
           deduped: true,
         },
       });
@@ -234,6 +267,15 @@ export async function POST(req: NextRequest) {
       organizationId,
     });
 
+    await recordFlowOutcome({
+      scope: "PLATFORM",
+      flowKey: flow.id,
+      reason,
+      outcome: "ESCALATED",
+      userId: session.user.id,
+      organizationId,
+    });
+
     return NextResponse.json({
       data: {
         flowId: flow.id,
@@ -243,6 +285,7 @@ export async function POST(req: NextRequest) {
         escalated: true,
         actions: turn.actions,
         supportTicketId: ticket.id,
+        supportTicketReference: ticket.referenceNumber,
       },
     });
   } catch (cause) {

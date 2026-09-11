@@ -65,3 +65,57 @@ describe("validateWebhookMetadata — slot-key rename dual-read", () => {
     expect(() => validateWebhookMetadata({ ...BASE })).toThrow();
   });
 });
+
+/**
+ * #1462 — a scheduling-period subscription carries no direct slots, and the
+ * builder used to send `startsAt`/`endsAt` to the gateway as empty strings.
+ * `z.string().datetime().optional()` admits an ABSENT key and rejects `""`, so
+ * every capture for such a sale failed validation and was stamped
+ * REQUIRES_MANUAL_RECOVERY with the money already taken. The builder no longer
+ * emits those keys, but Razorpay orders never expire, so orders already minted
+ * with empty strings keep replaying and the validator has to absorb them.
+ */
+describe("validateWebhookMetadata — empty-string notes are absent fields", () => {
+  const SUBSCRIPTION_BASE = {
+    ...BASE,
+    appointmentType: "SUBSCRIPTION",
+    schedulingPeriodStartsAt: "2026-09-01T00:00:00.000Z",
+    schedulingPeriodEndsAt: "2026-12-01T00:00:00.000Z",
+  };
+
+  it("validates an in-flight scheduling-period order carrying startsAt/endsAt as empty strings", () => {
+    const parsed = validateWebhookMetadata({
+      ...SUBSCRIPTION_BASE,
+      startsAt: "",
+      endsAt: "",
+      slotOfAvailabilityWeeklyId: "",
+      notes: "",
+    });
+
+    if (parsed.appointmentType !== "SUBSCRIPTION") {
+      throw new Error("expected subscription metadata");
+    }
+    expect(parsed.startsAt).toBeUndefined();
+    expect(parsed.endsAt).toBeUndefined();
+    expect(parsed.notes).toBeUndefined();
+    expect(parsed.schedulingPeriodStartsAt).toBe(
+      SUBSCRIPTION_BASE.schedulingPeriodStartsAt,
+    );
+  });
+
+  it("does not let an empty legacy key shadow a real slot time", () => {
+    const parsed = validateWebhookMetadata({
+      ...BASE,
+      slotStartTimeInUTC: NEW_KEYS.startsAt,
+      slotEndTimeInUTC: NEW_KEYS.endsAt,
+      startsAt: "",
+      endsAt: "",
+    });
+
+    if (parsed.appointmentType !== "CONSULTATION") {
+      throw new Error("expected consultation metadata");
+    }
+    expect(parsed.startsAt).toBe(NEW_KEYS.startsAt);
+    expect(parsed.endsAt).toBe(NEW_KEYS.endsAt);
+  });
+});

@@ -189,7 +189,6 @@ ledger triggers re-applied per the sidecar contract), after which all seven
 implemented scenarios pass. The production deploy must follow the same
 order: push before deploy, or the same route families 500.
 
-
 **17. Flash-sale hot-slot + hot-event storm (staged — needs k6 or equivalent
 load generator against staging; booking-journey hardening train #1201–#1211).**
 Simulates a popular consultant releasing availability: 50+ concurrent
@@ -213,6 +212,27 @@ confirmations; zero double charges; zero raw 502/504 responses (structured
 4xx only); P95 under 26s. The pass condition is that every non-winner
 receives either a clean sold-out/busy/retry-later 4xx with honest copy, or
 a successful auto-retry after a brief pause.
+
+## Scenarios 6, 14c and 17 now have a harness
+
+The three scenarios above that were recorded as staged — the load ramp to
+twice the expected peak, the enterprise allocation races, and the flash-sale
+storm — needed a load generator that drives the real write paths, and until
+#1319 there was none. That harness now exists under `load-tests/booking/`,
+composed by `scenarios.js` and dispatched by the `Load Gate` workflow, with its
+own operating instructions in
+[08-load-gate-runbook.md](08-load-gate-runbook.md). It is built and has not yet
+been executed; #874 is closed by running it and recording the numbers.
+
+Two things it discovered are worth reading before planning any run of the
+scenarios above. The `isMockPayment` flag is honoured only when the server runs
+with `NODE_ENV=development`, so a Netlify deploy preview — a production build —
+silently ignores it and leaves a real gateway hold instead of a confirmed
+booking, which changes what a run measures. And the availability read limiter
+is thirty requests per minute per IP and does not skip localhost, so a browse
+mix driven from a single runner measures Upstash rather than the application
+above roughly half a request per second.
+
 ## Go/no-go
 
 Scenarios 1 through 4 must pass with zero duplicate charges and zero double

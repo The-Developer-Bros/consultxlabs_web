@@ -1,4 +1,6 @@
 import prisma from "@/lib/prisma";
+import type { Scope } from "@/lib/api/scope/parse";
+import { scopeToWhereOrgId } from "@/lib/api/scope/parse";
 
 /**
  * Cross-context "needs you" roll-up for a consultant.
@@ -30,36 +32,46 @@ export interface NeedsYouSummary {
   total: number;
 }
 
-function pendingConsultationWhere(
+/**
+ * #674 defect 13 — the org dimension comes from the shared projector, so
+ * "what personal means" is defined once (lib/api/scope/parse.ts) instead of
+ * being re-typed as a literal at each call site. The extra `appointment: null`
+ * arm below is this surface's own business rule, not a scope rule: a request
+ * has no appointment until it is allocated, and an unallocated request is by
+ * definition not org-funded.
+ *
+ * #1345 — exported because the consultant Home badge counts the same cohort a
+ * few inches above NeedsYou, and re-typing the predicate there let the two
+ * numbers drift into different scopes.
+ */
+export function pendingConsultationWhere(
   consultantProfileId: string,
-  organizationId: string | null,
+  scope: Scope,
 ) {
-  const isPersonal = organizationId === null;
+  const orgWhere = scopeToWhereOrgId(scope);
   return {
     status: "PENDING" as const,
     consultationPlan: { consultantProfileId },
-    ...(isPersonal
-      ? {
-          OR: [
-            { appointment: null },
-            { appointment: { organizationId: null } },
-          ],
-        }
-      : { appointment: { organizationId } }),
+    ...(scope.kind === "personal"
+      ? { OR: [{ appointment: null }, { appointment: orgWhere }] }
+      : { appointment: orgWhere }),
   };
 }
 
-function pendingSubscriptionWhere(
+export function pendingSubscriptionWhere(
   consultantProfileId: string,
-  organizationId: string | null,
+  scope: Scope,
 ) {
-  const isPersonal = organizationId === null;
   return {
     status: "PENDING" as const,
     subscriptionPlan: { consultantProfileId },
-    appointments: isPersonal
-      ? { none: { organizationId: { not: null } } }
-      : { some: { organizationId } },
+    // The personal arm cannot use the projector: a subscription spans many
+    // appointments, so "personal" is the absence of ANY org-tagged child
+    // rather than a pin on one row.
+    appointments:
+      scope.kind === "personal"
+        ? { none: { organizationId: { not: null } } }
+        : { some: scopeToWhereOrgId(scope) },
   };
 }
 
@@ -88,10 +100,14 @@ export async function getNeedsYouSummary(
         },
       }),
       prisma.consultation.count({
-        where: pendingConsultationWhere(consultantProfileId, null),
+        where: pendingConsultationWhere(consultantProfileId, {
+          kind: "personal",
+        }),
       }),
       prisma.subscription.count({
-        where: pendingSubscriptionWhere(consultantProfileId, null),
+        where: pendingSubscriptionWhere(consultantProfileId, {
+          kind: "personal",
+        }),
       }),
     ]);
 
@@ -105,16 +121,16 @@ export async function getNeedsYouSummary(
     orgScopes.map(async (scope) => {
       const [consultations, subscriptions] = await Promise.all([
         prisma.consultation.count({
-          where: pendingConsultationWhere(
-            consultantProfileId,
-            scope.organizationId,
-          ),
+          where: pendingConsultationWhere(consultantProfileId, {
+            kind: "org",
+            orgId: scope.organizationId,
+          }),
         }),
         prisma.subscription.count({
-          where: pendingSubscriptionWhere(
-            consultantProfileId,
-            scope.organizationId,
-          ),
+          where: pendingSubscriptionWhere(consultantProfileId, {
+            kind: "org",
+            orgId: scope.organizationId,
+          }),
         }),
       ]);
       return {

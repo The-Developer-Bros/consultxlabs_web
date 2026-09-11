@@ -19,7 +19,17 @@
 
 ## Overview
 
-The payment system uses **Razorpay** as the sole active payment gateway, with Stripe retained as a secondary rail for Connect transfers. `DODO_PAYMENTS` exists in the `PaymentGateway` enum as a post-MVP placeholder with no implementation behind it; `POST_MVP_GATEWAY_STUBS` in `lib/payments/constants.ts` is the list, and `assertGatewayUsable` refuses one at runtime. The gateway comparison that led here is recorded in [gateways/gateway-evaluation-mar-2026.md](./gateways/gateway-evaluation-mar-2026.md). It handles four appointment types:
+The payment system uses **Razorpay** as the sole active payment gateway. Stripe is implemented but fenced off, and `DODO_PAYMENTS` exists in the `PaymentGateway` enum as a post-MVP placeholder with no implementation behind it. `POST_MVP_GATEWAY_STUBS` in `lib/payments/constants.ts` is the placeholder list, and `assertGatewayUsable` in `lib/payments/validation/gateway-guards.ts` refuses both a placeholder and a fenced-off gateway at runtime. The gateway comparison that led here is recorded in [gateways/gateway-evaluation-mar-2026.md](./gateways/gateway-evaluation-mar-2026.md).
+
+| Gateway           | Status                  | How it is gated                                                                                                                                                                                                                                                                                                             |
+| ----------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Razorpay**      | Live, primary           | No flag. `routeGateway` selects it for every buyer country, domestic directly and international over IBT.                                                                                                                                                                                                                   |
+| **Stripe**        | Implemented, fenced off | `STRIPE_ENABLED=true` on the server and `NEXT_PUBLIC_STRIPE_ENABLED=true` in the checkout UI. Auto-routing never selects it; only an explicit request reaches it, and `assertGatewayUsable` throws a `DisabledGatewayError` when the flag is unset. Refunds of existing Stripe payments are deliberately outside the fence. |
+| **Dodo Payments** | Schema placeholder      | Listed in `POST_MVP_GATEWAY_STUBS`. Any use throws `UnsupportedGatewayError`.                                                                                                                                                                                                                                               |
+
+Stripe is retained as a contingency rail in case RBI rules make Razorpay unusable for a class of collections, and for Connect transfers if international payouts are ever turned on. It is not a live payment method, so no customer should ever see the Stripe button.
+
+The system handles four appointment types:
 
 | Type             | Description          | Slot Handling                      |
 | ---------------- | -------------------- | ---------------------------------- |
@@ -963,12 +973,17 @@ AppointmentStatus:
 
 ### Gateway Support Matrix
 
-| Feature             | Stripe | Razorpay            |
-| ------------------- | ------ | ------------------- |
-| Dispute Webhooks    | Yes    | Yes                 |
-| List Disputes API   | Yes    | No (Dashboard only) |
-| Submit Evidence API | Yes    | No (Dashboard only) |
-| Retrieve Dispute    | Yes    | No                  |
+The matrix below covers the dispute surface, where the two gateways differ most, and the settlement currency, where they deliberately do not differ at all.
+
+| Feature              | Stripe                          | Razorpay                        |
+| -------------------- | ------------------------------- | ------------------------------- |
+| Dispute Webhooks     | Yes                             | Yes                             |
+| List Disputes API    | Yes                             | No (Dashboard only)             |
+| Submit Evidence API  | Yes                             | No (Dashboard only)             |
+| Retrieve Dispute     | Yes                             | No                              |
+| Settlement currency  | INR only, enforced at order creation | INR only, enforced at order creation |
+
+Settlement is INR-only by design, per [ADR 15](../enterprise/70-design-decisions/15-currency-as-enum-with-display-fields.md): every stored amount is an integer count of INR paise and the double-entry ledger is INR-denominated. That is enforced rather than assumed. `assertInrSettlement`, in `lib/payments/validation/currency-guards.ts`, is the first statement of both `createRazorpayOrder` and `createStripeCheckoutSession`, and it throws a `PaymentError` with code `NON_INR_SETTLEMENT` for anything else. The assertion sits at the gateway boundary rather than at each caller because callers read a currency out of the database — an organisation's billing account, an invoice's display currency, an overage event — and any one of them forwarding a stale non-INR value would otherwise mint an order denominated in that currency's own subunit while the platform recorded rupees. An international buyer is still served an INR order; their card issuer performs the conversion. See [multi-currency/01-architecture.md](./multi-currency/01-architecture.md) for the display-side story.
 
 ---
 

@@ -48,6 +48,8 @@ model User {
   cookiePreferences       CookiePreference?
   notificationPreferences NotificationPreference?
   Payment                 Payment[]
+  // #1365 — B2C tax invoices issued to this buyer.
+  consumerInvoices        ConsumerInvoice[]
 
   // Relations
   consultantProfile     ConsultantProfile?
@@ -64,6 +66,11 @@ model User {
   slotsOfAppointment SlotOfAppointment[] @relation("SlotOfAppointmentToUser")
 
   rescheduleRequestsInitiated RescheduleRequest[]      @relation("RescheduleInitiator")
+  // #1319 — A9 participant edge, A12 status-history actor, cancelledBy FKs.
+  appointmentParticipations   AppointmentParticipant[]
+  bookingStatusActions        BookingStatusHistory[]   @relation("BookingStatusHistoryActor")
+  consultationsCancelled      Consultation[]           @relation("ConsultationCancelledBy")
+  subscriptionsCancelled      Subscription[]           @relation("SubscriptionCancelledBy")
   rescheduleRequestsResolved  RescheduleRequest[]      @relation("RescheduleResolver")
   rescheduleSlotsProposed     RescheduleProposedSlot[] @relation("ProposedSlotAuthor")
 
@@ -77,6 +84,9 @@ model User {
   appointmentSupportThreads AppointmentSupportThread[]
   appointmentFeedback       AppointmentFeedback[]
   supportResponses          SupportResponse[]
+  supportTicketsAssigned    SupportTicket[]            @relation("SupportTicketAssignee")
+  supportMessagesAuthored   SupportMessage[]           @relation("SupportMessageAuthor")
+  supportFlowOutcomes       SupportFlowOutcome[]
 
   accounts         Account[] // BetterAuth Accounts
   sessions         Session[] // BetterAuth Sessions
@@ -136,25 +146,27 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  invitations               Invitation[]
-  ssoproviders              SsoProvider[]
-  erasureRequests           ErasureRequest[]
+  invitations                   Invitation[]
+  ssoproviders                  SsoProvider[]
+  erasureRequests               ErasureRequest[]
   /// Erasure requests this user processed as an admin. Named relation
   /// distinguishes it from `erasureRequests` above (requests filed
   /// against this user) — Prisma requires the disambiguation since
   /// both edges target ErasureRequest.
-  erasureRequestsProcessed  ErasureRequest[]      @relation("ErasureRequestProcessor")
+  erasureRequestsProcessed      ErasureRequest[]      @relation("ErasureRequestProcessor")
   // Disputes this admin owns (#269).
-  disputesAssigned          Dispute[]             @relation("DisputeAssignee")
+  disputesAssigned              Dispute[]             @relation("DisputeAssignee")
   // A8 — documents this consultant reviewed (back-relation for the FK-ified
   // AppointmentDocument.reviewedById; named to avoid the implicit-relation guess).
-  documentsReviewed         AppointmentDocument[] @relation("DocumentReviewer")
+  documentsReviewed             AppointmentDocument[] @relation("DocumentReviewer")
   // Soft-delete audit — who tombstoned an appointment document.
-  documentsDeleted          AppointmentDocument[] @relation("DocumentDeleter")
+  documentsDeleted              AppointmentDocument[] @relation("DocumentDeleter")
   // #366 — publish-time redistribution-consent attestations made by consultants.
-  recordingsConsentAttested Recording[]           @relation("RecordingConsentAttestor")
+  recordingsConsentAttested     Recording[]           @relation("RecordingConsentAttestor")
   // #366 — replay purchases this user made.
-  recordingPurchases        RecordingPurchase[]   @relation("RecordingPurchaseBuyer")
+  recordingPurchases            RecordingPurchase[]   @relation("RecordingPurchaseBuyer")
+  // #1499 — cancellation-policy versions this OWNER published, for the audit trail.
+  publishedCancellationPolicies CancellationPolicy[]  @relation("CancellationPolicyPublisher")
 
   @@index([consultantProfileId])
   @@index([consulteeProfileId])
@@ -270,6 +282,15 @@ model SupportTicket {
   organization   Organization?       @relation(fields: [organizationId], references: [id], onDelete: SetNull)
   issueType      SupportIssueType?
 
+  // #705 — a speakable handle for email subjects and phone support. A uuid
+  // cannot be read back over a phone line, so the two staff surfaces had each
+  // invented their own truncation (one took the first 8 chars, the other the
+  // last) and users were given nothing at all. Year-scoped so the series leaks
+  // this year's volume rather than the all-time count. Nullable because it is
+  // minted forward-only: a unique index permits unlimited NULLs, so tickets
+  // that predate it keep their uuid and no backfill is owed.
+  referenceNumber String? @unique @db.VarChar(20)
+
   user   User   @relation(fields: [userId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   userId String
 
@@ -290,8 +311,41 @@ model SupportTicket {
   paymentId      String?
   refundId       String? // If refund was initiated from this ticket
 
-  // Staff assignment
+  // Staff assignment. #705 — was a bare String, so it could name a user who no
+  // longer exists and the ops queue could not render a name without a second
+  // query. SetNull, never Cascade: a staff departure must not delete tickets.
+  assignedTo   User?   @relation("SupportTicketAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
   assignedToId String?
+
+  // #705 — SLA deadlines, STORED at intake rather than derived at read time so
+  // a later policy change never retroactively re-dates an open ticket's breach
+  // (same rationale as Appointment.cancellationPolicySnapshot). Sized to the
+  // IT Rules 2021 numbers — acknowledge <= 24h, dispose <= 15 days — because
+  // they are tighter than the Consumer Protection (E-Commerce) Rules 2020, so
+  // meeting them satisfies both. No `slaState` column: every state is derivable
+  // from these stamps plus now(), and a stored one would go stale between cron
+  // runs. NULL on tickets that predate this; lib/support/sla.ts falls back to
+  // createdAt + the statutory window, which is why no backfill is owed.
+  ackDueAt          DateTime? @db.Timestamptz
+  acknowledgedAt    DateTime? @db.Timestamptz
+  resolutionDueAt   DateTime? @db.Timestamptz
+  resolvedAt        DateTime? @db.Timestamptz
+  closedAt          DateTime? @db.Timestamptz
+  // First reply from a person. Distinct from acknowledgedAt, which an automated
+  // acknowledgement satisfies; this is the number that actually predicts CSAT.
+  firstAgentReplyAt DateTime? @db.Timestamptz
+  // The resolution clock stops while the ball is in the user's court, or every
+  // slow-replying customer reads as a team breach. Staff's reply sets
+  // `awaitingUserSince`; the user's reply folds the elapsed wait into
+  // `pausedSeconds` and clears it. Effective deadline =
+  // resolutionDueAt + pausedSeconds.
+  //
+  // SECONDS, not milliseconds: an Int of ms overflows at 24.8 days, which a
+  // ticket that sits on the user for a couple of months would reach. Seconds
+  // buy 68 years, and sub-second precision is meaningless against a deadline
+  // measured in days.
+  awaitingUserSince DateTime? @db.Timestamptz
+  pausedSeconds     Int       @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -308,6 +362,24 @@ model SupportTicket {
   // Postgres reads a composite's leftmost prefix, so that index was pure
   // write cost. Removed here rather than left shadowing this one.
   @@index([organizationId, status])
+  // #705 — breach sweeps: "unacknowledged and past due", "unresolved and past
+  // due". Without these, finding a breach means scanning the whole queue.
+  @@index([acknowledgedAt, ackDueAt])
+  @@index([resolvedAt, resolutionDueAt])
+}
+
+// #705 — per-year counter behind SupportTicket.referenceNumber. Allocation is
+// an INSERT…ON CONFLICT DO UPDATE…RETURNING, so concurrent ticket creation
+// queues on this single row and each caller gets a distinct number instead of
+// two tickets reading the same "next" value. Same shape as OrgInvoiceCounter,
+// but unlike a GST series gaps are fine here: a rolled-back ticket burning a
+// number costs nothing, whereas CGST Rule 46 would not allow it.
+model SupportTicketCounter {
+  year      Int      @id
+  nextSeq   Int      @default(1)
+  updatedAt DateTime @updatedAt
+
+  @@map("support_ticket_counters")
 }
 
 model SupportResponse {
@@ -381,6 +453,12 @@ model AppointmentSupportThread {
   // every message write (same rationale as SupportTicket.lastMessageAt).
   lastMessageAt DateTime?
 
+  // #705 — allocator for SupportMessage.seq. Incremented inside the same
+  // transaction that writes the messages, so the row lock it takes IS the
+  // serialization point between a user typing on their phone and an agent
+  // replying on desktop. Free: every message write already updates this row.
+  messageSeq Int @default(0)
+
   // One support conversation per (appointment, user) — reused across intents,
   // like a per-order support chat. Also the concurrency guard for find-or-create.
   @@unique([appointmentId, userId])
@@ -401,16 +479,101 @@ model SupportMessage {
   // Resolver metadata — flow node id, AI model, action refs. Free-form.
   metadata Json?
 
+  // #705 — createdAt alone cannot order this table. The user's turn and the
+  // bot's reply are written in ONE transaction, and Postgres CURRENT_TIMESTAMP
+  // is transaction START time, so they can carry a byte-identical timestamp;
+  // the sort then falls to the planner and the answer renders above the
+  // question. Ordering by [createdAt, id] only makes that deterministic, not
+  // correct — id is a random uuid, so it would put the reply first about half
+  // the time. `seq` is a strict per-thread total order from
+  // AppointmentSupportThread.messageSeq. Rows written before this column keep
+  // 0 and sort first, which is chronologically right: they all predate it.
+  seq Int @default(0)
+
+  // Which staff member wrote an AGENT message. NULL for USER/BOT/SYSTEM (the
+  // thread's own userId identifies the user side) and for AGENT rows written
+  // before this column, which honestly record "no longer known". SetNull, never
+  // Cascade: a staff departure must not delete a customer's support history.
+  authorUser   User?   @relation("SupportMessageAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+  authorUserId String?
+
   createdAt DateTime @default(now())
 
+  @@index([threadId, seq])
   @@index([threadId, createdAt])
+  // Postgres does not index a foreign key for you; the SetNull scans by this.
+  @@index([authorUserId])
+}
+
+// #705 — one row per TERMINAL support turn, in both scopes.
+//
+// "What fraction of conversations the tree resolves without a human" is the
+// number that says whether the tree works — Swiggy call it bot efficacy, Airbnb
+// measured it as "help 15% more people" — and it was unanswerable here, even
+// after the fact: platform-scope resolutions persisted nothing at all, so a
+// user self-served by the payments flow left no trace whatsoever.
+//
+// Deliberately NOT derived from thread status. A thread is reused across
+// intents, so its final status describes the last thing that happened to it,
+// not each flow run; and the platform scope has no thread to read.
+//
+// Carries no message bodies. This is a counter, not a transcript — the same
+// separation Amazon Connect ships by construction, where the contact record
+// holds counts and timings and the transcript lives somewhere else.
+model SupportFlowOutcome {
+  id String @id @default(uuid())
+
+  // "APPOINTMENT" or "PLATFORM". A string rather than an enum: the scope is a
+  // reporting dimension, not a state machine, and a third intake surface should
+  // not need a migration to be counted.
+  scope          String  @db.VarChar(32)
+  // Flow registry key — SupportThreadCategory for appointment scope, the
+  // PlatformFlowId for platform scope.
+  flowKey        String  @db.VarChar(64)
+  terminalNodeId String? @db.VarChar(64)
+  // The terminal's machine-readable `reason` — the same value that types the
+  // escalated ticket. Null when the walk failed safe with no terminal.
+  reason         String? @db.VarChar(64)
+
+  outcome SupportFlowOutcomeKind
+
+  userId         String
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @db.Timestamptz
+
+  // The deflection rate itself, and the per-flow breakdown behind it.
+  @@index([createdAt, outcome])
+  @@index([flowKey, outcome])
+  // Re-contact: deflection alone scores a user who gave up as a success, so the
+  // honest reading needs "did this person come back within a few days".
+  @@index([userId, createdAt])
+  @@index([organizationId, createdAt])
+}
+
+enum SupportFlowOutcomeKind {
+  /// The tree answered and the user did not need a person.
+  RESOLVED
+  /// The turn handed off to a human.
+  ESCALATED
 }
 
 // #appt-support — per-appointment private CSAT (1-5), distinct from the public
 // ConsultantReview. Gives webinar/class a feedback path they lack today and
 // feeds the org-level quality signal. One per (appointment, user).
 model AppointmentFeedback {
-  id             String        @id @default(uuid())
+  id String @id @default(uuid())
+
+  // The call being rated. Nullable only for rows written before feedback moved
+  // to the per-call unit; the API requires it.
+  slotOfAppointment   SlotOfAppointment? @relation(fields: [slotOfAppointmentId], references: [id], onDelete: Cascade)
+  slotOfAppointmentId String?
+
+  // Kept alongside the slot: the org quality aggregate and every appointment-
+  // scoped read filter on this, and denormalizing it avoids a join on the
+  // hottest path.
   appointmentId  String
   appointment    Appointment   @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
   userId         String
@@ -420,10 +583,31 @@ model AppointmentFeedback {
   rating         Int           @db.SmallInt
   comment        String?       @db.Text
 
+  // #705 — who is rating whom. The POST authorizes any participant, so without
+  // this a consultant's rating of their OWN session is indistinguishable from
+  // an attendee's and lands in the org quality average. Nullable and never
+  // backfilled: rows written before this column cannot be attributed, and
+  // asserting CONSULTEE over them would re-admit the very self-ratings being
+  // excluded. Aggregates filter on CONSULTEE, so unknown provenance fails
+  // closed.
+  raterRole AppointmentFeedbackRole?
+
   createdAt DateTime @default(now())
 
-  @@unique([appointmentId, userId])
-  @@index([organizationId, createdAt])
+  // One rating per person per CALL. Rows predating the column carry a NULL slot
+  // and Postgres treats a NULL key as distinct, so they coexist rather than
+  // colliding on the appointment they share.
+  @@unique([slotOfAppointmentId, userId])
+  // Still the unit for "show me this booking's feedback".
+  @@index([appointmentId, userId])
+  // The org aggregate filters raterRole before the date range, so
+  // (organizationId, createdAt) is no longer a usable prefix for it.
+  @@index([organizationId, raterRole, createdAt])
+}
+
+enum AppointmentFeedbackRole {
+  CONSULTEE
+  PROVIDER
 }
 
 enum SupportThreadStatus {
@@ -816,9 +1000,13 @@ model Organization {
   billingAccount   BillingAccount? @relation(fields: [billingAccountId], references: [id])
 
   // Hosting side (canHost=true)
-  payoutAccount OrganizationPayoutAccount?
-  payouts       OrganizationPayout[]
-  earnings      OrganizationEarnings[]
+  payoutAccount  OrganizationPayoutAccount?
+  payouts        OrganizationPayout[]
+  earnings       OrganizationEarnings[]
+  // #1354 — statutory withholding on the org rail. Restrict on both sides: a
+  // deleted org must not orphan a row the quarterly return has to file.
+  tdsRecords     TDSRecord[]
+  tdsAdjustments TdsAdjustment[]
 
   // BetterAuth (kept for invite-token flow)
   members     Member[]
@@ -859,15 +1047,19 @@ model Organization {
 
   // #674 personal-vs-org scope split — appointments / recordings booked or
   // produced by org members. Mirrors TrialsByOrg.
-  appointmentsByOrg   Appointment[]       @relation("AppointmentByOrg")
-  rescheduleRequests  RescheduleRequest[] @relation("RescheduleByOrg")
-  recordingsByOrg     Recording[]         @relation("RecordingByOrg")
+  appointmentsByOrg       Appointment[]            @relation("AppointmentByOrg")
+  // #1499 — every version of this org's cancellation ladder, live and archived.
+  cancellationPolicies    CancellationPolicy[]     @relation("CancellationPolicyByOrg")
+  rescheduleRequests      RescheduleRequest[]      @relation("RescheduleByOrg")
+  appointmentParticipants AppointmentParticipant[] @relation("AppointmentParticipantByOrg")
+  bookingStatusHistory    BookingStatusHistory[]   @relation("BookingStatusHistoryByOrg")
+  recordingsByOrg         Recording[]              @relation("RecordingByOrg")
   // Org-tagged plan materials (mirrored from the owning plan's organizationId)
   // so org dashboards manage handouts without polymorphic joins.
-  planMaterialsByOrg  PlanMaterial[]      @relation("PlanMaterialByOrg")
+  planMaterialsByOrg      PlanMaterial[]           @relation("PlanMaterialByOrg")
   // Denormalized for org-scoped Stream call audit (#674). See
   // `MeetingSession.organizationId` for the write-side rationale.
-  streamSessionsByOrg MeetingSession[]    @relation("StreamSessionByOrg")
+  streamSessionsByOrg     MeetingSession[]         @relation("StreamSessionByOrg")
 
   // Payment attribution
   payments Payment[] @relation("PaymentOrgTag")
@@ -883,6 +1075,26 @@ model Organization {
   /// Default 90d matches the platform-wide minimum for compliance
   /// (most large enterprises require ≥90d for grievance / audit).
   streamRecordingRetentionDays Int @default(90)
+
+  /// How long a CHAT channel survives after its conversation goes dormant.
+  ///
+  /// A separate dial from `streamRecordingRetentionDays`, which this used to
+  /// borrow. The two are not the same question: a recording is a stored asset
+  /// with a storage bill attached, while a chat channel is the written record
+  /// of a professional consultation, and an org may reasonably want to keep the
+  /// second far longer than the first.
+  ///
+  /// Default 365 rather than 90 because chat is the cheaper of the two to keep
+  /// and the more expensive to have thrown away. Deliberately NOT clamped to a
+  /// floor: DPDP Rule 8(3) is a narrow preservation-for-State-access duty that
+  /// does not commence until 13 May 2027 (see PR #1266), so a hard minimum here
+  /// would over-state what binds us and rule out a shorter-retention tier.
+  ///
+  /// Any value is honoured. `jobs/stream/expire-event-channels.ts` derives its
+  /// scan window from the LARGEST value configured across all organizations
+  /// rather than from its own constant, so setting this above the 365-day
+  /// default widens the scan instead of silently falling outside it.
+  chatRetentionDays Int @default(365)
 
   // Outbound integration surfaces (Batch 3 + 4 + 5 of PR #655 lockdown).
   webhookEndpoints   WebhookEndpoint[]
@@ -906,15 +1118,16 @@ model Organization {
   appointmentFeedback       AppointmentFeedback[]
   // #support-hub — tickets attributed to this org (operator intake + escalated
   // org-appointment threads). Powers the org-filtered ops queue.
-  supportTickets SupportTicket[]
+  supportTickets            SupportTicket[]
 
   // #778 §D — annual aggregate turnover ≥ ₹5cr makes IRN/e-invoice mandatory
   // (CGST e-invoicing threshold). Drives whether OrganizationInvoice must upload
   // to the IRP. Flag frozen now; enforcement deferred.
   aatoAboveEinvoiceThreshold Boolean @default(false)
 
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  supportFlowOutcomes SupportFlowOutcome[]
 
   @@index([status])
   @@index([canSponsor, canHost])
@@ -1149,6 +1362,10 @@ enum PayoutRecipient {
 model OrganizationTaxInfo {
   organizationId  String          @id
   organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  // #1354 — the deductee name a TDS return carries has to be the name on the
+  // PAN. `Organization.name` is the trade name and is user-editable, so the
+  // return falls back to it only when this is unset.
+  legalName       String?
   gstin           String?         @db.VarChar(15)
   gstStateCode    String?         @db.VarChar(2)
   gstRegStatus    GstRegStatus    @default(UNREGISTERED)
@@ -1579,7 +1796,7 @@ model BookingUtilization {
   // is expressed as an opposing UsageLedgerEntry plus this timestamp.
   // This keeps history queryable ("was this member using a seat on
   // 2026-04-10?") and makes partial reversals auditable.
-  reversedAt     DateTime?
+  reversedAt     DateTime? @db.Timestamptz
   reversalReason String?
 
   /// PR-1e (G3): tracks which Appointment IDs have already been counted
@@ -1592,7 +1809,10 @@ model BookingUtilization {
   /// call, so the set diff returns the full count).
   appointmentIds String[] @default([])
 
-  createdAt    DateTime      @default(now())
+  // #1319 A-series hygiene — soft-delete tombstone; mirrors Appointment.deletedAt.
+  deletedAt DateTime? @db.Timestamptz
+
+  createdAt    DateTime      @default(now()) @db.Timestamptz
   overageEvent OverageEvent?
 
   // #781 §D — createdAt-ordered utilization scans (statements / reconcile). The
@@ -1811,6 +2031,9 @@ model OrganizationPayout {
   organizationId String
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
 
+  /// #1470 — POST-withholding: the sum the payout rail actually transfers to
+  /// the host org, i.e. `netPayoutPaise - tdsAmountPaise`. The ORG_PAYOUT
+  /// journal credits CASH at this figure.
   amountPaise    BigInt
   currency       Currency       @default(INR)
   status         PayoutStatus
@@ -1822,10 +2045,21 @@ model OrganizationPayout {
   grossRevenuePaise BigInt
   platformFeePaise  BigInt
   refundsPaise      BigInt @default(0)
+  /// #1470 — PRE-withholding: the host org's share net of platform fee and
+  /// refunds, which is also the base TDS is computed on. The ORG_PAYOUT
+  /// journal debits ORG_PAYABLE at this figure, so
+  /// `amountPaise + tdsAmountPaise` must always equal it.
   netPayoutPaise    BigInt
 
   // India statutory (fields final; cron + derivation stubbed in v1)
   tdsSectionApplied String? // "194J" | "194O" | "194C"
+  // #1354 — the rate and the FY the withholding was reckoned in, mirroring
+  // ConsultantPayout. The TDSRecord written at COMPLETED reads both, so
+  // without them a re-derivation at completion time could pick a different
+  // rate (rate cards are effective-dated) or file the row under the wrong FY
+  // when a batch built in March settles in April.
+  tdsRateAppliedBps Int?
+  tdsFinancialYear  String?
   tdsAmountPaise    BigInt?
   mustPayByDate     DateTime?           @db.Timestamptz // derived from MSME 15/45-day rule
   // #781 §A — rail the batch was (or will be) submitted on.
@@ -1871,7 +2105,8 @@ model OrganizationPayout {
   /// present so two cron runs cannot both insert the same key.
   idempotencyKey String? @unique
 
-  earnings OrganizationEarnings[]
+  earnings   OrganizationEarnings[]
+  tdsRecords TDSRecord[]
 
   // A6/A7/PM-16 — Timestamptz on the money models (#676).
   createdAt DateTime @default(now()) @db.Timestamptz
@@ -2020,10 +2255,16 @@ model OrganizationInvoice {
   /// set when overdue triggered the (config-gated) booking-suspend cascade.
   dunningSuspendedAt    DateTime?
 
+  /// #1370 — stamped by the monthly outward-supplies register export so a
+  /// re-run does not re-stamp an already-reported document. The CSV is always
+  /// a full-period snapshot, so this is a reporting marker, not a filter.
+  gstr1ExportedAt DateTime? @db.Timestamptz
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@unique([organizationId, invoiceNumber])
+  @@index([gstr1ExportedAt])
   // CR #1243 — keyset pagination for the invoices CSV export.
   @@index([organizationId, createdAt, id])
   @@index([organizationId, status, dueDate])
@@ -2095,6 +2336,163 @@ model OrgCreditNoteCounter {
 
   @@id([organizationId, fiscalYear])
   @@map("org_credit_note_counters")
+}
+
+/// #1365 — the statutory tax invoice a personal (B2C) buyer is owed for a
+/// single Payment. The platform bills as PRINCIPAL supplier (ADR 26), so every
+/// consumer supply is our outward supply and needs its own Rule 46 document.
+///
+/// This is deliberately NOT a nullable-FK variant of OrganizationInvoice.
+/// That model's required organization, billingAccount and dueDate are
+/// load-bearing for dunning, and its per-org gapless unique is load-bearing
+/// for the IRP e-invoice series; a B2C invoice has no org, no due date (it is
+/// paid before it is issued) and needs ONE platform-wide series instead of one
+/// series per buyer. Forcing both shapes into one model would make every one of
+/// those columns optional and silently weaken the B2B guarantees.
+///
+/// Document only: this model posts nothing to the ledger and derives no tax
+/// from a rate. The tax heads are split out of the tax the buyer was actually
+/// charged at checkout, so the document agrees with GST_PAYABLE to the paise.
+model ConsumerInvoice {
+  id        String  @id @default(cuid())
+  paymentId String  @unique
+  payment   Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  invoiceNumber String @unique
+  fiscalYear    Int
+
+  // Supplier + buyer snapshots. A tax invoice must keep saying what it said on
+  // the day it was issued, so neither side is read through a live relation.
+  supplierName      String
+  supplierGstin     String  @db.VarChar(15)
+  supplierAddress   String
+  supplierStateCode String  @db.VarChar(2)
+  buyerName         String
+  buyerEmail        String
+  buyerAddress      String?
+  buyerStateCode    String? @db.VarChar(2)
+
+  /// How the place of supply was decided — an audit trail for the s.12(2)(b)
+  /// default, which is indistinguishable from a declared home-state supply
+  /// once it is written down.
+  placeOfSupplySource PlaceOfSupplySource
+  placeOfSupply       String?             @db.VarChar(2)
+
+  taxableValuePaise BigInt
+  cgstPaise         BigInt @default(0)
+  sgstPaise         BigInt @default(0)
+  igstPaise         BigInt @default(0)
+  totalPaise        BigInt
+
+  currency   Currency @default(INR)
+  sacCode    String   @default("999293")
+  /// Rate in basis points, recorded for the document only. The tax heads are
+  /// never re-derived from it.
+  taxRateBps Int      @default(1800)
+
+  supplyDate DateTime @db.Timestamptz
+  issuedAt   DateTime @db.Timestamptz
+
+  pdfStoragePath  String?
+  pdfGeneratedAt  DateTime? @db.Timestamptz
+  /// Stamped by the monthly outward-supplies register export so a re-run does
+  /// not re-stamp; the CSV itself is always a full-period snapshot.
+  gstr1ExportedAt DateTime? @db.Timestamptz
+
+  /// Rule 46 requires the recipient's name, address and state on a B2C invoice
+  /// of ₹50,000 or more. We still mint the invoice — a missing address is not a
+  /// reason to leave a buyer without a document — and flag it for follow-up.
+  needsBuyerAddress Boolean @default(false)
+
+  creditNotes ConsumerCreditNote[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, issuedAt])
+  @@index([fiscalYear, issuedAt])
+  @@index([gstr1ExportedAt])
+  /// The monthly register scans on `issuedAt` alone; the composite indexes
+  /// above both lead with a column that query does not constrain, so without
+  /// this it sequentially scans every consumer invoice ever issued.
+  @@index([issuedAt])
+}
+
+/// #1365 — CGST s.34 credit note against a ConsumerInvoice, minted when a B2C
+/// payment is refunded or a chargeback is lost. The invoice is never deleted
+/// or rewritten; the credit note is what reverses it.
+model ConsumerCreditNote {
+  id               String @id @default(cuid())
+  creditNoteNumber String @unique
+  fiscalYear       Int
+
+  consumerInvoiceId String
+  consumerInvoice   ConsumerInvoice @relation(fields: [consumerInvoiceId], references: [id], onDelete: Restrict)
+
+  /// Exactly one trigger keys the note. Both are @unique, so a webhook
+  /// redelivery or a cron retry re-reads the existing note instead of minting a
+  /// second one and burning a gapless number.
+  refundId  String? @unique
+  disputeId String? @unique
+  reason    String?
+
+  taxableValuePaise BigInt
+  cgstPaise         BigInt @default(0)
+  sgstPaise         BigInt @default(0)
+  igstPaise         BigInt @default(0)
+  totalPaise        BigInt
+
+  issuedAt DateTime @db.Timestamptz
+
+  pdfStoragePath  String?
+  pdfGeneratedAt  DateTime? @db.Timestamptz
+  gstr1ExportedAt DateTime? @db.Timestamptz
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([consumerInvoiceId])
+  @@index([fiscalYear, issuedAt])
+  @@index([gstr1ExportedAt])
+  /// Same period scan as ConsumerInvoice, same reason.
+  @@index([issuedAt])
+}
+
+/// Platform-wide (not per-org) gapless invoice sequence, same atomic
+/// upsert-and-return-the-pre-increment pattern as OrgInvoiceCounter.
+///
+/// A sentinel "platform" Organization row reusing OrgInvoiceCounter was
+/// rejected: OrgInvoiceCounter.organizationId is a real FK to Organization, so
+/// the sentinel would surface in org lists, member counts and payout runs, and
+/// every org-scoped query would need to remember to exclude it.
+model PlatformInvoiceCounter {
+  fiscalYear Int      @id
+  nextSeq    Int      @default(1)
+  updatedAt  DateTime @updatedAt
+
+  @@map("platform_invoice_counters")
+}
+
+/// Rule 53 requires the credit-note series to run independently of the invoice
+/// series, so this is a second counter rather than a shared one.
+model PlatformCreditNoteCounter {
+  fiscalYear Int      @id
+  nextSeq    Int      @default(1)
+  updatedAt  DateTime @updatedAt
+
+  @@map("platform_credit_note_counters")
+}
+
+/// Which rule decided the place of supply on a consumer invoice. The statutory
+/// default matters for audit: under s.12(2)(b) IGST Act a B2C supply with no
+/// address of the recipient on record is supplied at the SUPPLIER's location,
+/// which is the opposite of the B2B unknown-state fallback to IGST.
+enum PlaceOfSupplySource {
+  DECLARED_AT_CHECKOUT
+  PROFILE_ON_RECORD
+  SUPPLIER_DEFAULT_12_2_B
 }
 
 model PurchaseOrder {
@@ -2523,6 +2921,31 @@ model ConsultantProfile {
   experience  Float?
   rating      Float     @default(0)
 
+  // #705 — `rating` above stays the RAW mean over rating units and remains the
+  // internal/staff number. It is NOT the public one, because a 5.0 from a
+  // single session must not outrank a 4.8 from two hundred in explore's
+  // `{ rating: "desc" }` sort.
+  //
+  // NULL = suppressed: fewer than MIN_RATED_UNITS_FOR_PUBLIC_SCORE
+  // (lib/reviews.ts) distinct sessions have been rated, so one review cannot
+  // define a new consultant and there is nothing to gain by gaming the first.
+  // Public reads, the minRating filter and the rating sort read THIS column
+  // with `nulls: "last"`. NULL is also the safe default, which is why the
+  // column needs no backfill to be CORRECT on day one — only to stop being
+  // conservative.
+  publishedRating    Float?
+  // Denominator behind `rating`: rating UNITS, not review rows. This is what
+  // the minimum-N gate tests, so one 200-seat webinar cannot buy a published
+  // score off a single data point.
+  ratingUnitCount    Int       @default(0)
+  // Display only ("based on N reviews"). Also retires the trending sort's
+  // `{ reviews: { _count: "desc" } }`, which counts soft-deleted rows because
+  // Prisma cannot filter a relation _count inside orderBy.
+  reviewCount        Int       @default(0)
+  // Drift audit: finds profiles whose aggregates predate their newest review
+  // without recomputing every profile to find out.
+  ratingAggregatedAt DateTime? @db.Timestamptz
+
   // New fields for enhanced consultant profile
   headline                    String?                      @db.VarChar(120) // Professional headline, max 120 chars
   websiteUrl                  String?
@@ -2629,6 +3052,8 @@ model ConsultantProfile {
   @@index([domainId])
   @@index([isVerified])
   @@index([verificationStatus])
+  // #705 — explore sorts and filters on the published score, not the raw mean.
+  @@index([publishedRating])
 }
 
 model Domain {
@@ -2683,6 +3108,42 @@ model ConsultantReview {
   consulteeProfile   ConsulteeProfile @relation(fields: [consulteeProfileId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   consulteeProfileId String
 
+  // #705 — PROVENANCE, not subject. The review is about the consultant and
+  // renders on their profile; this records which session prompted or last
+  // updated it, which is what makes "verified booking" a fact rather than a
+  // claim. SetNull, not Cascade: tombstoning an appointment must not silently
+  // delete published consumer reviews. Nullable only for rows written before
+  // the column existed — the API requires it, so NULL means legacy.
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  appointmentId String?
+
+  // #705 — the unit that contributes exactly ONE data point to
+  // ConsultantProfile.rating, so a 200-seat webinar cannot dominate a
+  // consultant whose 1:1 work is the real offering, and one bad event cannot
+  // tank them. Denormalized at write time because Prisma `groupBy` can only
+  // group on this model's own scalars.
+  // Format: "appointment:<id>" for 1:1, "webinar:<id>", "class:<id>".
+  // A plain sessionType enum cannot do this job: a WEBINAR shares one
+  // Appointment across every attendee, but a CLASS mints one per enrolment, so
+  // grouping by type alone would collapse every class the consultant ever ran
+  // into a single point — worse than the problem being fixed.
+  ratingUnitId String?
+
+  // #705 — the consultant's right of reply. One reply per review, so columns
+  // rather than a table: every read of a review already loads this row.
+  // replyDeletedAt is separate from the review's own deletedAt so staff can
+  // remove an abusive reply without erasing the consumer review beneath it.
+  replyBody      String?   @db.Text
+  repliedAt      DateTime? @db.Timestamptz
+  replyDeletedAt DateTime? @db.Timestamptz
+
+  // Display choice only. Authenticity never depends on it: the review is welded
+  // to a paid, attended session either way, which is what separates this from
+  // the anonymous public reviews Google stepped away from. What it buys is
+  // candour — a consultee who wants to book this person again has an obvious
+  // reason to soften criticism that carries their name.
+  isAnonymous Boolean @default(false)
+
   // Moderation CONTENT_REMOVED soft-delete (#693); public reads filter on
   // null, staff moderation surfaces keep seeing the row.
   deletedAt DateTime? @db.Timestamptz
@@ -2690,8 +3151,18 @@ model ConsultantReview {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // One review per consultee per consultant — POST maps P2002 here to 409.
+  // ONE review per consultee per consultant, ever — Practo's model. A reader
+  // wants one considered opinion of a person, not four near-identical ones from
+  // the same client; the reviewer edits theirs as the relationship develops, and
+  // `appointmentId` above records which session last prompted that.
+  //
+  // This is NOT partial on deletedAt: a moderation-removed review must not free
+  // the slot for the same person to re-post it. POST maps P2002 here to 409,
+  // which the client turns into "update your review" rather than an error.
   @@unique([consultantProfileId, consulteeProfileId])
+  // Serves recomputeConsultantRating's groupBy — the only hot aggregate.
+  @@index([consultantProfileId, deletedAt, ratingUnitId])
+  @@index([appointmentId])
   // #696 — explore "trending" sort orders ConsultantProfile by
   // reviews._count; without this the per-profile aggregate seq-scans the
   // whole review table. Also serves the FK join + rating>=4 social-proof reads.
@@ -2723,6 +3194,12 @@ model ConsulteeProfile {
   // Enterprise: optional org memberships as MEMBER/LEARNER role.
   memberships   Membership[] @relation("ConsulteeMembership")
   isIndependent Boolean      @default(true)
+
+  /// #1365 — the buyer's GST state (2-digit numeric), remembered from checkout
+  /// so a repeat buyer is never asked twice. Sec 12(2)(b) IGST Act makes this
+  /// optional: null means the supply is placed at the supplier's own location,
+  /// which is the statutory default, not a missing value to chase.
+  billingStateCode String? @db.VarChar(2)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -2934,9 +3411,10 @@ model SlotOfAvailabilityWeekly {
   // the frozen utcOffsetMinutes above is the live source of truth. The columns
   // below are the DST-correct representation (RFC 5545 / Calendly-style: local
   // wall-clock + IANA zone, materialized to UTC per occurrence — a frozen offset
-  // drifts across DST). They are frozen into the launch schema now but left
-  // nullable + UNWRITTEN until the post-MVP algorithm + UI lands, so going
-  // DST-aware needs no post-launch migration.
+  // drifts across DST). They are WRITTEN from 2026-09-05 by every weekly save
+  // path (lib/scheduling/weeklyUtcOffset.ts) and READ BY NOTHING until the
+  // reader flip lands with the post-MVP algorithm + UI, so going DST-aware
+  // needs no post-launch migration and no backfill.
   timezone          String?    @db.VarChar(64) // IANA zone, e.g. "Asia/Kolkata"
   localStartMinutes Int?       @db.SmallInt
   localEndMinutes   Int?       @db.SmallInt
@@ -2945,6 +3423,9 @@ model SlotOfAvailabilityWeekly {
 
   consultantProfile   ConsultantProfile @relation(fields: [consultantProfileId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   consultantProfileId String
+
+  // #1319 A-series hygiene — soft-delete tombstone; mirrors Appointment.deletedAt.
+  deletedAt DateTime? @db.Timestamptz
 
   createdAt DateTime @default(now()) @db.Timestamptz
   updatedAt DateTime @updatedAt @db.Timestamptz
@@ -2959,6 +3440,9 @@ model SlotOfAvailabilityCustom {
 
   consultantProfile   ConsultantProfile @relation(fields: [consultantProfileId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   consultantProfileId String
+
+  // #1319 A-series hygiene — soft-delete tombstone; mirrors Appointment.deletedAt.
+  deletedAt DateTime? @db.Timestamptz
 
   createdAt DateTime @default(now()) @db.Timestamptz
   updatedAt DateTime @updatedAt @db.Timestamptz
@@ -3053,15 +3537,31 @@ model Consultation {
   cancellationReason CancellationReason?
   cancellationNotes  String?             @db.Text
   cancelledAt        DateTime?           @db.Timestamptz
-  cancelledBy        String? // userId who cancelled
+  // #1319 — was a bare userId string; the FK makes the actor queryable and
+  // survives user deletion as NULL. Column name kept so no writer changes.
+  cancelledByUser    User?               @relation("ConsultationCancelledBy", fields: [cancelledBy], references: [id], onDelete: SetNull)
+  cancelledBy        String?
+
+  /// Freeze ledger for this pair's DIRECT MESSAGE channel, not for a channel of
+  /// this booking's own — see `Webinar.chatFrozenAt` for the group-chat twin.
+  ///
+  /// DM channel ids are keyed on the PAIR (`dm-<a>-<b>`), never on the
+  /// appointment, and `DM_ELIGIBLE_STATUSES` deliberately includes `COMPLETED`
+  /// so a finished booking keeps the conversation open. So the thing that goes
+  /// dormant is the relationship, not the row — and the ledger is read as
+  /// MAX(chatFrozenAt) across every booking the pair shares, and cleared across
+  /// all of them when they book again. Stamping one row would let a second
+  /// booking in the pair look unfrozen while the channel was not.
+  chatFrozenAt DateTime? @db.Timestamptz
 
   appointment Appointment?
+
+  // #1319 A-series hygiene — soft-delete tombstone; mirrors Appointment.deletedAt.
+  deletedAt DateTime? @db.Timestamptz
 
   createdAt DateTime @default(now()) @db.Timestamptz
   updatedAt DateTime @updatedAt @db.Timestamptz
 
-  @@index([requestedById])
-  @@index([consultationPlanId])
   // Requests-tab hot path: all consultations for a plan filtered by status,
   // newest first — without this the planner-side list falls back to the
   // single-column indexes + sort.
@@ -3170,7 +3670,13 @@ model Subscription {
   cancellationReason CancellationReason?
   cancellationNotes  String?             @db.Text
   cancelledAt        DateTime?           @db.Timestamptz
-  cancelledBy        String? // userId who cancelled
+  // #1319 — see Consultation.cancelledBy.
+  cancelledByUser    User?               @relation("SubscriptionCancelledBy", fields: [cancelledBy], references: [id], onDelete: SetNull)
+  cancelledBy        String?
+
+  /// Freeze ledger for this pair's DM channel. See `Consultation.chatFrozenAt`
+  /// for why it is read as a MAX across the pair rather than per row.
+  chatFrozenAt DateTime? @db.Timestamptz
 
   subscriptionPlan   SubscriptionPlan @relation(fields: [subscriptionPlanId], references: [id], onUpdate: Cascade, onDelete: Cascade)
   subscriptionPlanId String
@@ -3178,11 +3684,12 @@ model Subscription {
   appointments       Appointment[]
   convertedFromTrial TrialSession?
 
+  // #1319 A-series hygiene — soft-delete tombstone; mirrors Appointment.deletedAt.
+  deletedAt DateTime? @db.Timestamptz
+
   createdAt DateTime @default(now()) @db.Timestamptz
   updatedAt DateTime @updatedAt @db.Timestamptz
 
-  @@index([requestedById])
-  @@index([subscriptionPlanId])
   // Requests-tab hot path — mirror of the Consultation composite.
   @@index([subscriptionPlanId, status, requestedAt])
   // #1169 PR 9 — availability/allocation scans bound by the scheduling window.
@@ -3251,17 +3758,20 @@ model TrialSession {
   organization   Organization? @relation("TrialsByOrg", fields: [organizationId], references: [id], onDelete: SetNull)
   organizationId String?
 
-  requestedAt DateTime  @default(now())
-  completedAt DateTime?
+  requestedAt DateTime  @default(now()) @db.Timestamptz
+  completedAt DateTime? @db.Timestamptz
 
   /// Deadline for a paid trial's pay-link, set when the consultant accepts.
   /// 24h from acceptance, or the session start if that comes first — a slot
   /// three hours out must not stay payable past the slot itself. The expiry
   /// job cancels AWAITING_PAYMENT trials past this and frees the slot.
-  paymentDueAt DateTime?
+  paymentDueAt DateTime? @db.Timestamptz
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  // #1319 A-series hygiene — soft-delete tombstone; mirrors Appointment.deletedAt.
+  deletedAt DateTime? @db.Timestamptz
+
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
 
   // One LIVE trial per consultant. The pair is unique, so re-requesting after
   // a terminal outcome requires clearing the old row — see
@@ -3428,8 +3938,11 @@ model Webinar {
 
   appointment Appointment?
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  // #1319 A-series hygiene — soft-delete tombstone; mirrors Appointment.deletedAt.
+  deletedAt DateTime? @db.Timestamptz
+
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
 
   @@index([webinarPlanId])
   @@index([status])
@@ -3554,6 +4067,9 @@ model Class {
   classPlanId String
 
   appointments Appointment[]
+
+  // #1319 A-series hygiene — soft-delete tombstone; mirrors Appointment.deletedAt.
+  deletedAt DateTime? @db.Timestamptz
 
   createdAt DateTime @default(now()) @db.Timestamptz
   updatedAt DateTime @updatedAt @db.Timestamptz
@@ -3688,22 +4204,34 @@ enum WaitlistSource {
 // Generic Appointment Model
 
 model Appointment {
-  /// Refund-policy snapshot taken at booking (2026-06-10 decision): tiered
-  /// time-based windows (e.g. [{hoursBefore:24,refundPct:100},...]) resolved
-  /// from org/platform defaults at checkout, so later policy edits never
-  /// retroactively change a buyer's terms. Read by the cancel flow; null =
-  /// pre-snapshot booking (platform default tiers apply).
+  /// FROZEN as of #1499 (2026-09-05): never written and never read. The refund terms
+  /// that govern a booking now live in typed versioned rows behind
+  /// `cancellationPolicyId`. The column stays because production code read it until
+  /// this release and a column a running deploy still reads must never be dropped
+  /// under it; it is removed at the pre-MVP reset (doctrine section 6, no backfill).
   cancellationPolicySnapshot Json?
+
+  /// #1499 — the exact CancellationPolicy version that governed this sale. NULL means
+  /// the platform ladder applies, which is also what a pre-feature row reads as, so the
+  /// two are deliberately indistinguishable. SetNull rather than Cascade: a booking must
+  /// survive its org being torn down, and losing the pointer degrades to the platform
+  /// ladder rather than deleting money history.
+  cancellationPolicy   CancellationPolicy? @relation(fields: [cancellationPolicyId], references: [id], onDelete: SetNull)
+  cancellationPolicyId String?
 
   id                 String              @id @default(uuid())
   appointmentType    AppointmentsType
   slotsOfAppointment SlotOfAppointment[]
 
-  // Reserved dedupe surface for allocation retries (client double-submit,
-  // webhook redelivery): a batch will stamp its first appointment with the
-  // originating idempotency key so a replay trips @unique (P2002 → 409) instead
-  // of double-booking. Nullable by design — only real keys dedupe, NULLs don't
-  // collide. Column frozen now (schema gate); wiring tracked in #837.
+  // Dedupe surface for allocation retries (client double-submit, webhook
+  // redelivery): the allocate routes read the Idempotency-Key header and
+  // SlotAllocationService stamps it on the batch's first appointment. A
+  // sequential replay (key already committed) is caught by the pre-check
+  // and returns the original batch; a concurrent replay that races past
+  // that pre-check instead trips @unique (P2002) and is converted to a 409
+  // rather than replayed as success — a known gap, not the intended
+  // contract. Nullable by design — only real keys dedupe, NULLs don't
+  // collide. #1373.
   allocationIdempotencyKey String? @unique
 
   consultation   Consultation? @relation(fields: [consultationId], references: [id], onUpdate: Cascade, onDelete: Cascade)
@@ -3720,13 +4248,20 @@ model Appointment {
 
   trialSession TrialSession?
 
-  payment         Payment[]
-  documents       AppointmentDocument[]
+  payment           Payment[]
+  documents         AppointmentDocument[]
   // #appt-support — per-appointment support conversations + private CSAT.
-  supportThreads  AppointmentSupportThread[]
-  supportFeedback AppointmentFeedback[]
+  supportThreads    AppointmentSupportThread[]
+  supportFeedback   AppointmentFeedback[]
+  // #705 — the public reviews this session earned. Distinct from
+  // supportFeedback: that is private CSAT, this is a consumer review.
+  consultantReviews ConsultantReview[]
 
   rescheduleRequests RescheduleRequest[]
+
+  // #1319 A9 / A12 — shadow-written participant edge + append-only status log.
+  participants  AppointmentParticipant[]
+  statusHistory BookingStatusHistory[]
 
   // #674 personal-vs-org scope split — set at checkout for org-context bookings.
   organization   Organization? @relation("AppointmentByOrg", fields: [organizationId], references: [id], onDelete: SetNull)
@@ -3736,21 +4271,133 @@ model Appointment {
   // Restrict their parents, so removal is a soft-delete, not a hard delete.
   deletedAt DateTime? @db.Timestamptz
 
+  /// #1356 — state-as-outbox stamp for the post-payment chat leg. Creating the
+  /// buyer's Stream channel happens after the confirmation transaction commits,
+  /// fire-and-forget, so a crash or a Stream outage in that window used to leave
+  /// a confirmed booking with no conversation and nothing that could tell.
+  /// Stamped only once the channel calls have actually succeeded, which makes
+  /// `NULL` on a confirmed appointment the exact work queue the reconcile sweep
+  /// re-drives — no separate outbox table, because the appointment row already
+  /// is the durable record of the work.
+  chatChannelEnsuredAt DateTime? @db.Timestamptz
+
   createdAt DateTime @default(now()) @db.Timestamptz
   updatedAt DateTime @updatedAt @db.Timestamptz
 
-  @@index([subscriptionId])
-  @@index([classId])
   @@index([consultationId])
   @@index([webinarId])
-  @@index([appointmentType])
   @@index([organizationId, createdAt])
+  // #1319 — every org-scoped read filters organizationId AND deletedAt: null;
+  // the bare [deletedAt] index on a ~99%-NULL column cannot serve that.
+  @@index([organizationId, deletedAt, createdAt])
   // #997 — the PENDING request lists anti-join on `appointments.none.
   // organizationId != null`; these composites let it probe instead of scan.
   @@index([subscriptionId, organizationId])
   @@index([classId, organizationId])
+  // #1356 — the chat-leg work queue. The reconcile sweep asks for
+  // `chatChannelEnsuredAt IS NULL AND deletedAt IS NULL AND createdAt >= cutoff`
+  // ordered by createdAt, and nothing above serves that: the leading column is
+  // the stamp, which every other index ignores. Postgres cannot express the
+  // partial index this really wants through Prisma, but leading with the two
+  // equality columns gets the same seek, and the queue shrinks to the rows that
+  // genuinely failed once the stamp is written on the happy path.
+  @@index([chatChannelEnsuredAt, deletedAt, createdAt])
   // #1169 PR 9 — `deletedAt: null` rides nearly every hot filter unindexed.
   @@index([deletedAt])
+  // #1499 — the org policy editor asks "how many bookings cite this version" and the
+  // SetNull on teardown scans by policy id.
+  @@index([cancellationPolicyId])
+}
+
+/// #1319 A9 (adopted, schema-only) — the participant edge the implicit
+/// SlotOfAppointment↔User m:n cannot carry: role, per-seat status, and which
+/// Payment funded the seat. Written by every slot-connect writer in the SAME
+/// transaction; read by nothing in production yet (readers flip in a later
+/// epic), so it is a shadow write whose only consumer is the drift assertion
+/// in scripts/appointments/reconcile-slot-availability.ts. Added before the
+/// pre-MVP reset so it is populated from day one and never backfilled.
+model AppointmentParticipant {
+  id String @id @default(uuid())
+
+  appointment   Appointment @relation(fields: [appointmentId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  appointmentId String
+
+  user   User   @relation(fields: [userId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  userId String
+
+  role   ParticipantRole
+  status ParticipantStatus @default(HELD)
+
+  /// Which money row funded this seat. SetNull, not Cascade: a soft-deleted
+  /// Payment must not take the participation record with it (#781 §B).
+  payment   Payment? @relation(fields: [paymentId], references: [id], onUpdate: Cascade, onDelete: SetNull)
+  paymentId String?
+
+  organization   Organization? @relation("AppointmentParticipantByOrg", fields: [organizationId], references: [id], onDelete: SetNull)
+  organizationId String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+
+  @@unique([appointmentId, userId])
+  @@index([appointmentId, status])
+  @@index([userId, status])
+  // Prisma does not index FKs; without this the SetNull on Payment delete scans.
+  @@index([paymentId])
+}
+
+enum ParticipantRole {
+  CONSULTANT
+  CONSULTEE
+  COLLABORATOR
+}
+
+enum ParticipantStatus {
+  HELD
+  CONFIRMED
+  CANCELLED
+  REFUNDED
+  ATTENDED
+}
+
+/// #1319 A12 (adopted) — one append-only row per guarded status transition.
+/// Written inside lib/booking/transitions.ts, which already receives `tx`, so
+/// the history row and the state change commit or fail together. `entityId` is
+/// polymorphic and deliberately unconstrained: seven lifecycles share one log
+/// and a real FK per entity would mean seven nullable columns. `fromStatus` and
+/// `toStatus` are strings because three different status enums share the log.
+model BookingStatusHistory {
+  id String @id @default(uuid())
+
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  appointmentId String?
+
+  entity     BookingHistoryEntity
+  entityId   String
+  fromStatus String
+  toStatus   String
+
+  actorUser   User?   @relation("BookingStatusHistoryActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  actorUserId String?
+  reason      String?
+
+  organization   Organization? @relation("BookingStatusHistoryByOrg", fields: [organizationId], references: [id], onDelete: SetNull)
+  organizationId String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz
+
+  @@index([entityId, createdAt])
+  @@index([appointmentId, createdAt])
+}
+
+enum BookingHistoryEntity {
+  CONSULTATION
+  SUBSCRIPTION
+  WEBINAR
+  CLASS
+  TRIAL
+  RESCHEDULE_REQUEST
+  SLOT
 }
 
 enum AppointmentsType {
@@ -3759,6 +4406,58 @@ enum AppointmentsType {
   WEBINAR
   CLASS
   TRIAL
+}
+
+/// #1499 — the refund policy that governed a booking, as typed versioned rows.
+/// A published version is IMMUTABLE: an edit publishes a NEW row at version+1 and
+/// archives the old one, because Appointment.cancellationPolicyId points at the exact
+/// row that governed the sale.
+/// Scope: exactly one row has organizationId = NULL (the platform default, fixed id
+/// PLATFORM_CANCELLATION_POLICY_ID, provisioned by the seed and idempotently on first
+/// use); every other row belongs to one organization. At most one ACTIVE row per scope,
+/// enforced by the Serializable rotation in publishOrgCancellationPolicy; the structural
+/// partial unique index is staged for the reset in prisma/sql/check-constraints.sql
+/// (doctrine section 6).
+model CancellationPolicy {
+  id                     String                   @id @default(uuid())
+  organization           Organization?            @relation("CancellationPolicyByOrg", fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationId         String?
+  version                Int                      @default(1)
+  status                 CancellationPolicyStatus @default(ACTIVE)
+  /// Basis points (repo integer convention: RateCard.platformBps, TdsRate.rateBps);
+  /// the API speaks percent.
+  consultantInitiatedBps Int                      @default(10000)
+  /// The org's prose policy at publication time, for the support trail; never read by
+  /// the maths.
+  policyText             String?                  @db.Text
+  tiers                  CancellationPolicyTier[]
+  appointments           Appointment[]
+  publishedBy            User?                    @relation("CancellationPolicyPublisher", fields: [publishedByUserId], references: [id], onDelete: SetNull)
+  publishedByUserId      String?
+  createdAt              DateTime                 @default(now()) @db.Timestamptz
+  archivedAt             DateTime?                @db.Timestamptz
+
+  @@unique([organizationId, version])
+  @@index([organizationId, status])
+}
+
+/// One rung of a version's notice ladder. Immutable with its parent. The lowest rung is
+/// always hoursBefore 0, so the ladder is total.
+model CancellationPolicyTier {
+  id          String             @id @default(uuid())
+  policy      CancellationPolicy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  policyId    String
+  hoursBefore Int
+  /// 0-10000. Basis points for the same reason consultantInitiatedBps is.
+  refundBps   Int
+
+  @@unique([policyId, hoursBefore])
+  @@index([policyId])
+}
+
+enum CancellationPolicyStatus {
+  ACTIVE
+  ARCHIVED
 }
 
 /// A request to move booked slots, carrying the concrete times proposed to
@@ -3839,6 +4538,9 @@ model RescheduleRequest {
 
   proposedSlots RescheduleProposedSlot[]
 
+  // #1319 A-series hygiene — soft-delete tombstone; mirrors Appointment.deletedAt.
+  deletedAt DateTime? @db.Timestamptz
+
   createdAt DateTime @default(now()) @db.Timestamptz
   updatedAt DateTime @updatedAt @db.Timestamptz
 
@@ -3862,6 +4564,9 @@ model RescheduleProposedSlot {
 
   proposedBy   User   @relation("ProposedSlotAuthor", fields: [proposedById], references: [id], onDelete: Cascade)
   proposedById String
+
+  // #1319 A-series hygiene — soft-delete tombstone; mirrors Appointment.deletedAt.
+  deletedAt DateTime? @db.Timestamptz
 
   createdAt DateTime @default(now()) @db.Timestamptz
 
@@ -4075,7 +4780,9 @@ model SlotOfAppointment {
   /// load-bearing: it makes concurrent checkout `connect` calls
   /// double-assignment-safe. Restored automatically at every push/reset;
   /// do not convert to an explicit join model without re-declaring it.
-  user User[] @relation("SlotOfAppointmentToUser")
+  user     User[]                @relation("SlotOfAppointmentToUser")
+  // #705 — the per-call private rating.
+  feedback AppointmentFeedback[]
 
   startsAt    DateTime @db.Timestamptz
   endsAt      DateTime @db.Timestamptz
@@ -4242,15 +4949,15 @@ model MeetingAttendance {
 // Recording storage types
 
 enum RecordingStorageType {
-  STREAM_S3 // Default: expires in 2 weeks
-  SUPABASE // Permanent storage
+  STREAM_S3 // Stream's own bucket — Stream deletes it after 14 days
+  PLATFORM // Our bucket, whichever vendor backs it — no expiry
 }
 
 // Recording storage policy for plans (determines where recordings are stored)
 
 enum RecordingStoragePolicy {
   STREAM_ONLY // 2-week temporary storage (free tier)
-  SUPABASE_PERMANENT // Permanent storage (premium tier)
+  PERMANENT // Kept in our own bucket indefinitely (premium tier)
 }
 
 // Recording status lifecycle
@@ -4332,9 +5039,11 @@ model Recording {
   storageType RecordingStorageType @default(STREAM_S3)
   status      RecordingStatus      @default(READY)
 
-  // Supabase permanent storage
-  supabaseUrl  String?
-  supabasePath String?
+  // #1280 — vendor-neutral: Stream can write straight into our bucket via
+  // recording_external_storage, and the bucket behind it is a deployment
+  // choice, so neither the column nor the enum names one.
+  storageUrl  String?
+  storagePath String?
 
   // Media metadata
   thumbnailUrl String?
@@ -4359,8 +5068,8 @@ model Recording {
   transferFailureAlertedAt DateTime? @db.Timestamptz
 
   // #366 curated marketplace listing — opt-in per recording. Publishing is
-  // only valid for status=AVAILABLE && storageType=SUPABASE (Stream URLs die
-  // in ≤14d, so a STREAM_ONLY recording must never be sold) on webinar/class
+  // only valid once the recording is durably ours (Stream URLs die in ≤14d,
+  // so a STREAM_ONLY recording must never be sold) on webinar/class
   // plans, with consultant redistribution-consent attestation (audit-logged).
   listingStatus      RecordingListingStatus @default(DRAFT)
   listPricePaise     BigInt?
@@ -4431,6 +5140,15 @@ model Payment {
   receiptUrl           String?
   paymentMethod        String
   paymentIntent        String         @unique
+  /// #1353 — the gateway's PAYMENT id (`pay_…` on Razorpay, `ch_…` on Stripe),
+  /// as distinct from `paymentIntent`, which holds the ORDER id. Refund and
+  /// dispute webhooks arrive carrying only the payment id, so without this
+  /// column every one of them had to spend a live `payments.fetch` round trip
+  /// just to learn the order id — and when that call failed the event could not
+  /// be matched at all and was deferred for up to a week. Written once, by the
+  /// confirmation pipeline, at capture (ADR 21). Unique so a second Payment can
+  /// never claim the same gateway capture.
+  gatewayPaymentId     String?        @unique
   paymentGateway       PaymentGateway
   paymentStatus        PaymentStatus
   /// #828 — client-minted key, one per logical checkout attempt. The unique
@@ -4452,9 +5170,12 @@ model Payment {
   // #778 §D — GST place-of-supply (Sec 12/13) for B2C: buyer's state code, else
   // every interstate sale wrongly defaults. Derivation/IGST-vs-CGST split deferred.
   consumerStateCode    String? @db.VarChar(2)
-  // #778 §D — GST TCS u/s 52 collected on this payment (we're likely an e-commerce
-  // operator owing 1% on registered consultants). paise; #780 widens to BigInt.
-  // Collection + GSTR-8 filing flag-gated/deferred pending CA signoff.
+  // #778 §D — GST TCS u/s 52 collected on this payment. The rate is 0.5%
+  // (0.25% CGST + 0.25% SGST, or 0.5% IGST) w.e.f. 10-Jul-2024, Notification
+  // 15/2024-CT — halved from the 1% this comment used to state. paise; #780
+  // widens to BigInt. #1360 — collection stays CA-gated because the platform
+  // bills as PRINCIPAL supplier (18% GST charged at checkout, GST_PAYABLE
+  // booked in earnings-service), so §52 does not currently bite.
   gstTcsCollectedPaise BigInt?
 
   user           User          @relation(fields: [userId], references: [id], onUpdate: Cascade, onDelete: Cascade)
@@ -4466,6 +5187,9 @@ model Payment {
 
   refunds  Refund[] // Refunds associated with this payment
   disputes Dispute[] // Disputes associated with this payment
+
+  // #1365 — the statutory B2C tax invoice for this payment, at most one.
+  consumerInvoice ConsumerInvoice?
 
   // Payout relations
   earnings     ConsultantEarnings[]
@@ -4488,14 +5212,17 @@ model Payment {
 
   // Back-relations for org settlement flows
   organizationEarnings       OrganizationEarnings[] // PROVIDER/HYBRID 3-way split (one per org)
-  organizationInvoiceSettled OrganizationInvoice?   @relation("OrgInvoicePayment") // back-relation for OrganizationInvoice.payment
-  trialSessionPaid           TrialSession?          @relation("TrialSessionPayment") // back-relation for TrialSession.payment
-  bookingUtilization         BookingUtilization?    @relation("PaymentBookingUtilization") // Program entitlement usage
+  organizationInvoiceSettled OrganizationInvoice?     @relation("OrgInvoicePayment") // back-relation for OrganizationInvoice.payment
+  trialSessionPaid           TrialSession?            @relation("TrialSessionPayment") // back-relation for TrialSession.payment
+  appointmentParticipants    AppointmentParticipant[]
+  bookingUtilization         BookingUtilization?      @relation("PaymentBookingUtilization") // Program entitlement usage
   invoiceLineItems           InvoiceLineItem[] // back-relation for InvoiceLineItem.payment
 
   // Stackable funding. A Payment may be split across multiple sources
   // — e.g. ₹500 referral credit + ₹1,500 card. When `legs.length > 0`,
-  // sum(legs.amountPaise) MUST equal `amount`. Single-source checkouts
+  // sum(legs.amountPaise) over non-reversal, non-REFERRAL_CREDIT legs MUST
+  // equal `amount` — the credit is already netted out of it (#1347).
+  // Single-source checkouts
   // leave `legs` empty (back-compat: old Payments had no legs and worked
   // off `amount` + `paymentMethod` alone).
   legs PaymentLeg[]
@@ -4551,8 +5278,11 @@ model Payment {
 //   { source: REFERRAL_CREDIT, amountPaise:  50000, sourceRef: <ReferralCreditUsage.id> }
 //   { source: WALLET,          amountPaise: 100000, sourceRef: <ProgramAssignment.id> }
 //
-// Invariant: sum(non-reversal legs.amountPaise) == Payment.amount when legs
-// are present (LICENSE legs contribute 0 so they don't skew the total).
+// Invariant: sum(non-reversal, non-REFERRAL_CREDIT legs.amountPaise) ==
+// Payment.amount when legs are present (LICENSE legs contribute 0 so they
+// don't skew the total). REFERRAL_CREDIT is excluded because Payment.amount
+// is already the post-credit gateway charge, so counting the leg would demand
+// the same credit twice (#1347).
 // *_REVERSAL legs are negative refund counter-entries netting against their
 // original sibling — |reversal| never exceeds the original (#786).
 model PaymentLeg {
@@ -4777,7 +5507,11 @@ model ConsultantEarnings {
   consultantSharePaise BigInt // Consultant cut (80%)
   refundedShareAmount  BigInt  @default(0) // Cumulative refunded amount in paise
   // #778 §D — GST TCS u/s 52 accrued against this consultant's supply (owed to
-  // govt, reconciled into GstTcsBatch). paise; #780 widens to BigInt. Impl deferred.
+  // govt, reconciled into GstTcsBatch) at 0.5% (0.25% CGST + 0.25% SGST, or
+  // 0.5% IGST) w.e.f. 10-Jul-2024, Notification 15/2024-CT. paise; #780 widens
+  // to BigInt. #1360 — impl stays CA-gated because the platform bills as
+  // PRINCIPAL supplier (18% GST charged at checkout, GST_PAYABLE booked in
+  // earnings-service), so §52 does not currently bite.
   gstTcsAccruedPaise   BigInt?
 
   // Collaborator support
@@ -4936,8 +5670,12 @@ model ConsultantTaxInfo {
 }
 
 model TDSRecord {
-  id                  String @id @default(cuid())
-  consultantProfileId String
+  id                  String  @id @default(cuid())
+  // #1354 — the deductee is a consultant XOR a host organisation. Both are
+  // nullable so one table carries both rails; `tds_record_deductee_xor` in
+  // prisma/sql/check-constraints.sql is what makes "exactly one" structural.
+  consultantProfileId String?
+  organizationId      String?
   financialYear       String // "2026-27" format (Apr-Mar)
   quarter             Int // 1=Apr-Jun, 2=Jul-Sep, 3=Oct-Dec, 4=Jan-Mar
 
@@ -4950,9 +5688,12 @@ model TDSRecord {
   // post-consolidation; org payouts already stamp the section on OrganizationPayout.
   tdsSection               String?
 
-  // Link to the payout that triggered this deduction
-  payoutId   String?
-  earningsId String?
+  // Link to the payout that triggered this deduction. #1354 — one column per
+  // rail rather than a polymorphic id, so both stay real foreign keys;
+  // `tds_record_payout_rail_matches` stops a row citing the other rail's payout.
+  payoutId    String?
+  orgPayoutId String?
+  earningsId  String?
 
   // Reversal flag (for refund-triggered TDS reversals — negative tdsDeducted)
   isReversal Boolean @default(false)
@@ -4967,8 +5708,10 @@ model TDSRecord {
   certificateNumber String?
   ackNumber         String?
 
-  consultantProfile ConsultantProfile @relation(fields: [consultantProfileId], references: [id], onUpdate: Cascade, onDelete: Restrict)
-  payout            ConsultantPayout? @relation(fields: [payoutId], references: [id])
+  consultantProfile ConsultantProfile?  @relation(fields: [consultantProfileId], references: [id], onUpdate: Cascade, onDelete: Restrict)
+  organization      Organization?       @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  payout            ConsultantPayout?   @relation(fields: [payoutId], references: [id])
+  orgPayout         OrganizationPayout? @relation(fields: [orgPayoutId], references: [id])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -4984,11 +5727,24 @@ model TDSRecord {
   /// distinct, so rows with a null `payoutId` (adjustments not tied to a
   /// disbursement) are unaffected — those are guarded by the Serializable
   /// transaction in recordTdsReversal.
+  ///
+  /// #1354 — the org rail gets its OWN unique rather than joining the
+  /// consultant one. A single key spanning both rails would be useless in
+  /// exactly the way that matters: Postgres treats NULLs as distinct, so
+  /// `(NULL, "2026-27", 2, NULL, orgPayoutId, false)` never conflicts with
+  /// itself and every org row would dedupe against nothing. Two keys, one per
+  /// rail, each with its own rail's payout column, each doing real work.
+  /// Nothing here says a row belongs to exactly one rail — that is
+  /// `tds_record_deductee_xor` + `tds_record_payout_rail_matches` in
+  /// prisma/sql/check-constraints.sql, because Prisma cannot express a CHECK.
   @@unique([consultantProfileId, financialYear, quarter, payoutId, isReversal])
+  @@unique([organizationId, financialYear, quarter, orgPayoutId, isReversal])
   @@index([consultantProfileId, financialYear])
+  @@index([organizationId, financialYear])
   @@index([financialYear, quarter])
   @@index([reportedInForm26Q])
   @@index([payoutId])
+  @@index([orgPayoutId])
 }
 
 // #778 §D / #784 — effective-dated TDS rate lookup, law-aware. The Income-tax
@@ -5089,12 +5845,16 @@ model CreditNote {
   irpLastAttemptAt DateTime?
   irpRetryCount    Int       @default(0)
 
+  /// #1370 — see OrganizationInvoice.gstr1ExportedAt.
+  gstr1ExportedAt DateTime? @db.Timestamptz
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@unique([organizationId, creditNoteNumber])
   @@index([organizationId, fiscalYear])
   @@index([invoiceId])
+  @@index([gstr1ExportedAt])
 }
 
 // #778 §D — IRP document type for the note. DBN reserved for supplementary
@@ -5108,12 +5868,17 @@ enum CreditNoteDocType {
 // when previously-withheld TDS is reversed on refund. Schema now; FVU export (§F)
 // deferred.
 model TdsAdjustment {
-  id                  String            @id @default(cuid())
-  consultantProfileId String
-  consultantProfile   ConsultantProfile @relation(fields: [consultantProfileId], references: [id], onDelete: Restrict)
+  id                  String             @id @default(cuid())
+  // #1354 — deductee is a consultant XOR a host organisation, mirroring
+  // TDSRecord. `tds_adjustment_deductee_xor` enforces the "exactly one".
+  consultantProfileId String?
+  consultantProfile   ConsultantProfile? @relation(fields: [consultantProfileId], references: [id], onDelete: Restrict)
+  organizationId      String?
+  organization        Organization?      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   // What this adjusts.
   tdsRecordId         String?
   payoutId            String?
+  orgPayoutId         String?
   refundId            String? // triggering refund
 
   financialYear String // "2026-27"
@@ -5127,14 +5892,19 @@ model TdsAdjustment {
   createdAt DateTime @default(now())
 
   @@index([consultantProfileId, financialYear])
+  @@index([organizationId, financialYear])
   @@index([payoutId])
 }
 
-// #778 §D — GST TCS u/s 52 monthly aggregation for GSTR-8. We're very likely an
-// e-commerce operator owing 1% TCS on registered consultants. Per-payment
-// collection (Payment.gstTcsCollectedPaise) + per-earning accrual
+// #778 §D — GST TCS u/s 52 monthly aggregation for GSTR-8. Were we an
+// e-commerce operator collecting on registered consultants, the rate would be
+// 0.5% (0.25% CGST + 0.25% SGST, or 0.5% IGST) w.e.f. 10-Jul-2024,
+// Notification 15/2024-CT — this block used to say 1%, the pre-July-2024 rate.
+// Per-payment collection (Payment.gstTcsCollectedPaise) + per-earning accrual
 // (ConsultantEarnings.gstTcsAccruedPaise) reconcile into one batch per month.
-// Collection + filing flag-gated pending CA signoff (§F).
+// #1360 — collection + filing stay CA-gated because the platform bills as
+// PRINCIPAL supplier (18% GST charged at checkout, GST_PAYABLE booked in
+// earnings-service), so §52 does not currently bite.
 enum GstTcsBatchStatus {
   OPEN
   FILED
@@ -5244,6 +6014,14 @@ model WebhookEvent {
   // permanently-failing row dodge the give-up cap forever. The stale selector
   // reads (receivedAt, claimedAt) together; giveUp aging stays on receivedAt.
   claimedAt   DateTime?
+  /// #1356 6.2 — how many times a handler answered this event with a
+  /// DeferSignal instead of processing it. A deferral is invisible on the row
+  /// itself (it deliberately looks identical to "crashed before recording
+  /// anything": processed=false, error=null), so an event that defers forever
+  /// was indistinguishable from one that had just arrived until the 168h
+  /// give-up cap finally fired. The counter is what lets the sweeper alert on a
+  /// stubborn event days before that cap.
+  deferCount  Int       @default(0)
 
   @@index([provider])
   @@index([processed])
@@ -5587,6 +6365,11 @@ enum ModerationActionType {
   USER_BANNED
   PROFILE_UNVERIFIED
   NO_ACTION
+  // #1270 — the inverse of USER_BANNED. A permanent ban deactivates the target
+  // on Stream, and nothing ever undid that, so a reversed ban left an account
+  // that could sign in but never chat again. Recording the reversal here keeps
+  // the whole enforcement history on one report.
+  USER_REINSTATED
 }
 
 enum ProfileVerificationStatus {
@@ -5629,6 +6412,14 @@ model ModerationReport {
   // Optional entity references
   reviewId String? // If reporting a ConsultantReview
 
+  // #1270 — a MESSAGE report carried no pointer to the message it was about.
+  // CONTENT_REMOVED therefore had nothing to delete (it fell through to the
+  // review soft-delete, which no-ops on a null reviewId), and dedup collapsed
+  // every message report against a user onto one row. Both are the message
+  // identity Stream's server-side deleteMessage needs.
+  streamMessageId  String?
+  streamChannelCid String? // "messaging:<id>" — for the staff link back to the thread
+
   // Staff assignment
   assignedToId String?
 
@@ -5647,6 +6438,8 @@ model ModerationReport {
   @@index([targetUserId])
   @@index([assignedToId])
   @@index([createdAt])
+  // #1270 — the per-message dedup lookup in POST /api/report.
+  @@index([streamMessageId])
 }
 
 model ModerationAction {
@@ -6160,7 +6953,9 @@ model OverageEvent {
   currency             Currency            @default(INR)
   chargeStatus         OverageChargeStatus @default(PENDING)
   /// CHARGE_MEMBER: Payment row for the instant overage charge.
-  /// CHARGE_ORG: Payment row of the rolled-up cycle invoice.
+  /// CHARGE_ORG: Payment row of the rolled-up cycle invoice, or — on the WALLET
+  /// rail (#1458) — the booking Payment whose WALLET leg already collected the
+  /// marginal, in which case the event is born CHARGED with no invoiceLineItemId.
   paymentId            String?
   // #781 §B — SetNull kept deliberately: the abandoned-side-charge sweep
   // deletes never-captured PENDING payments; the event row (and its

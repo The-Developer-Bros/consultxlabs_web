@@ -1,0 +1,91 @@
+name: Retry Moderation Enforcement
+
+# #1270 — a ban whose Stream revocation failed leaves the database saying
+# "banned", the moderator told it worked, and the target's existing chat token
+# still working for up to an hour. Nothing retried it and nothing surfaced it,
+# so the only way anyone learned was the harasser carrying on posting.
+#
+# This re-drives exactly the Stream step, reusing the outbox pattern the webhook
+# sweeper established: the failure is recorded on the row it belongs to, and a
+# scheduled job walks the failures. Scheduled rather than on-demand because the
+# failure is invisible from the product — nobody would think to press a button.
+#
+# cron-runtime-minutes: 3
+
+on:
+  schedule:
+    # Every 30 minutes, on a minute no other job claims. Enforcement that has
+    # already been reported as done should not wait an hour to become true.
+    # ADR 22 — this schedule is an upper bound on frequency, not a delivered cadence; ADR 27 — the Netlify ticker (netlify/functions/cron-tick.mts) is what actually holds the cadence for the money sweeps.
+    - cron: "8-59/30 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+  # A second workflow_dispatch while one is already pending would replace it
+  # under the default single-pending-run policy; queue: max keeps every
+  # trigger instead of silently dropping one.
+  queue: max
+
+permissions:
+  contents: read
+
+jobs:
+  retry-moderation-enforcement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      # #1066 — bare Node process, so Sentry only sees what this env carries.
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      # #476 — fail-closed cron lock: without these the job refuses to run.
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      # The whole point of the job: re-issuing the Stream revocation.
+      STREAM_API_KEY: ${{ secrets.STREAM_API_KEY }}
+      STREAM_API_SECRET: ${{ secrets.STREAM_API_SECRET }}
+      NEXT_PUBLIC_STREAM_API_KEY: ${{ secrets.NEXT_PUBLIC_STREAM_API_KEY }}
+      # #1270 — the moderation import graph reaches lib/supabase, which throws
+      # at module scope without these. Five workflows had never run for exactly
+      # this reason; the import-env guard now fails the build instead.
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          # No git write happens here, so the runner has no use for a token that
+          # can push. Leaving it persisted is a credential sitting in a process
+          # that runs third-party package code.
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        # --ignore-scripts (S6505): a cron runner has no business executing
+        # arbitrary package lifecycle hooks. Prisma is generated explicitly
+        # below, which is the only postinstall this job actually needs.
+        run: npm ci --ignore-scripts
+
+      - name: Generate Prisma client
+        run: npx --no-install --ignore-scripts prisma generate
+
+      - name: Retry failed moderation enforcement
+        run: npx --yes --ignore-scripts tsx@4.23.1 jobs/moderation/retry-moderation-enforcement.ts
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "retry-moderation-enforcement"

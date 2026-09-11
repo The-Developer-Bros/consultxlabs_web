@@ -268,7 +268,13 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
           );
         }
       }
-      updateData.assignedToId = validatedData.assignedToId;
+      // #705 — assignedToId is now a real relation, so an unchecked update goes
+      // through connect/disconnect. The validation above is what keeps the FK
+      // satisfiable; this just expresses the same write.
+      updateData.assignedTo =
+        validatedData.assignedToId === null
+          ? { disconnect: true }
+          : { connect: { id: validatedData.assignedToId } };
     }
 
     // Link to refund if provided

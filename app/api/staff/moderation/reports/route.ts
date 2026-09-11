@@ -7,10 +7,12 @@ import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { requirePrivilegedAuth } from "@/lib/auth-helpers";
+import { hasBackofficePermission } from "@/lib/auth/backoffice-permissions";
 import {
   ModerationReportType,
   ModerationReportStatus,
   Prisma,
+  type UserRole,
 } from "@prisma/client";
 
 /**
@@ -64,6 +66,25 @@ export async function GET(req: NextRequest) {
               email: true,
               image: true,
               role: true,
+              // #1270 — the unban path needs to know the target is still
+              // banned, and a moderator looking at a second report about an
+              // already-banned account should see that before acting again.
+              banned: true,
+              banExpires: true,
+            },
+          },
+          // #1270 — the enforcement outcome of the last action taken. It has
+          // been written to ModerationAction.sideEffects since #693 and read by
+          // nothing, so a ban whose Stream revocation failed looked identical
+          // to one that landed.
+          actions: {
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            select: {
+              id: true,
+              actionType: true,
+              createdAt: true,
+              sideEffects: true,
             },
           },
           _count: {
@@ -89,12 +110,15 @@ export async function GET(req: NextRequest) {
       description: report.description,
       contentText: report.contentText,
       contentUrl: report.contentUrl,
+      streamMessageId: report.streamMessageId,
+      streamChannelCid: report.streamChannelCid,
       reportCount: report.reportCount,
       reportedBy: report.reportedBy,
       targetUser: report.targetUser,
       reviewId: report.reviewId,
       assignedToId: report.assignedToId,
       actionCount: report._count.actions,
+      latestAction: report.actions[0] ?? null,
       createdAt: report.createdAt,
       resolvedAt: report.resolvedAt,
     }));
@@ -121,6 +145,15 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       reports: formattedReports,
       counts,
+      // #1270 — banning is ADMIN-only (`users.moderate`), but the queue showed
+      // every moderator a Ban button that answered 403. Ship the capability so
+      // the UI can offer what the caller may actually do.
+      capabilities: {
+        canModerateUsers: hasBackofficePermission(
+          auth.session.user.role as UserRole,
+          "users.moderate",
+        ),
+      },
       pagination: {
         total,
         page,

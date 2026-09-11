@@ -117,7 +117,8 @@ export function handleSummary(data) {
     stdout: JSON.stringify(
       {
         vus_max: data.metrics.vus_max?.values?.max,
-        http_req_duration_p95: data.metrics.http_req_duration?.values?.["p(95)"],
+        http_req_duration_p95:
+          data.metrics.http_req_duration?.values?.["p(95)"],
         error_rate: data.metrics.errors?.values?.rate,
         total_requests: data.metrics.http_reqs?.values?.count,
         slot_availability_p95:

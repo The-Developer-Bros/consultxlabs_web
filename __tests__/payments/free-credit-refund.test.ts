@@ -31,6 +31,9 @@ const mockRecordTdsReversal = jest.fn();
 const mockPaymentFindUnique = jest.fn();
 
 const tx = {
+  appointmentParticipant: {
+    updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+  },
   refund: {
     findFirst: jest.fn(),
     create: jest.fn(),
@@ -88,8 +91,7 @@ jest.mock("../../lib/referrals/service", () => ({
 }));
 
 jest.mock("../../lib/api/organizations/program-helpers", () => ({
-  reverseBookingUtilization: (...a: unknown[]) =>
-    mockReverseUtilization(...a),
+  reverseBookingUtilization: (...a: unknown[]) => mockReverseUtilization(...a),
 }));
 
 jest.mock("../../lib/payments/payouts/earning-status", () => ({
@@ -132,7 +134,10 @@ function freeCreditSettlement() {
   };
 }
 
-function sum(postings: Array<{ direction: string; amountPaise: number }>, d: string) {
+function sum(
+  postings: Array<{ direction: string; amountPaise: number }>,
+  d: string,
+) {
   return postings
     .filter((p) => p.direction === d)
     .reduce((s, p) => s + p.amountPaise, 0);
@@ -372,7 +377,10 @@ describe("free_ credit rail — org clawback + TDS reversal branches", () => {
       ],
     });
 
-    await refundBookingPayment({ paymentId: PAYMENT_ID, reason: "cancellation" });
+    await refundBookingPayment({
+      paymentId: PAYMENT_ID,
+      reason: "cancellation",
+    });
 
     // The paid share nets to REFUNDED…
     const earningUpdate = tx.consultantEarnings.update.mock.calls.find(
@@ -421,7 +429,10 @@ describe("free_ credit rail — org clawback + TDS reversal branches", () => {
       },
     );
 
-    await refundBookingPayment({ paymentId: PAYMENT_ID, reason: "cancellation" });
+    await refundBookingPayment({
+      paymentId: PAYMENT_ID,
+      reason: "cancellation",
+    });
 
     // Org share flips to REFUNDED with the full proration.
     expect(orgEarningUpdates[0]?.data).toMatchObject({

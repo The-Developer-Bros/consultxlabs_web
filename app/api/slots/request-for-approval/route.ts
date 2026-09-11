@@ -11,11 +11,10 @@ import {
 } from "@/utils/appointmentlock";
 import { SlotLockError } from "@/utils/errors/SlotLockError";
 import { SlotValidationService } from "@/utils/slotAllocation/SlotValidationService";
-import {
-  notifyNewBookingRequest,
-} from "@/lib/novu";
+import { notifyNewBookingRequest } from "@/lib/novu";
 import { notificationScope } from "@/lib/novu/workflows";
 import { scopedHref } from "@/lib/novu/resolve-href";
+import { appendCreationHistory } from "@/lib/booking/transitions";
 import { RequestForApprovalSchema } from "@/schemas/slots";
 import { requestApprovalLimiter, applyRateLimit } from "@/lib/rate-limit";
 import { ensureConsulteeProfile } from "@/lib/profiles/ensure-consultee-profile";
@@ -155,9 +154,8 @@ export async function POST(req: NextRequest) {
     // without it the same user could race this route against their own
     // checkout on a DIFFERENT consultant and double-book themselves — the
     // GiST guard is consultant-keyed and cannot see it.
-    let consulteeLock: Awaited<
-      ReturnType<typeof lockConsulteeBooking>
-    > | null = null;
+    let consulteeLock: Awaited<ReturnType<typeof lockConsulteeBooking>> | null =
+      null;
     let lock;
 
     try {
@@ -190,226 +188,251 @@ export async function POST(req: NextRequest) {
         // Use default 60s TTL (15s was too short for slow database operations)
         lock = await lockSlotBooking(consultantProfileId, startsAt, endsAt);
 
-      console.log(
-        JSON.stringify({
-          event: "slot_booking_lock_acquired",
-          consultant: consultantProfileId,
-          slot: startsAt,
-          user: session.user.id,
-          timestamp: new Date().toISOString(),
-        }),
-      );
-
-      // Generate 30-minute slot chunks from startTime to endTime.
-      // SlotOfAppointment records are always 30 minutes each — consistent with
-      // manual and auto allocation paths in SlotAllocationService.
-      const SLOT_DURATION_MS = 30 * 60 * 1000;
-      const slotChunkStarts: Date[] = [];
-      let current = new Date(startTime);
-      while (current < endTime) {
-        slotChunkStarts.push(new Date(current));
-        current = new Date(current.getTime() + SLOT_DURATION_MS);
-      }
-      if (slotChunkStarts.length === 0) {
-        return NextResponse.json(
-          { error: "Invalid slot: start time must be before end time" },
-          { status: 400 },
-        );
-      }
-
-      // RE-VALIDATE inside lock: Ensure ALL 30-min chunks are still available
-      // This is the critical missing piece - prevents double-booking even after lock
-      const validationService = new SlotValidationService(prisma);
-      const validation = await validationService.checkSlotAvailability(
-        slotChunkStarts,
-        consultationPlan.consultantProfile.user.id,
-      );
-
-      if (!validation.isValid) {
         console.log(
           JSON.stringify({
-            event: "slot_booking_validation_failed",
+            event: "slot_booking_lock_acquired",
             consultant: consultantProfileId,
             slot: startsAt,
             user: session.user.id,
-            errors: validation.errors,
             timestamp: new Date().toISOString(),
           }),
         );
 
-        return NextResponse.json(
-          {
-            error: "Slot no longer available",
-            details: validation.errors,
-          },
-          { status: 409 },
+        // Generate 30-minute slot chunks from startTime to endTime.
+        // SlotOfAppointment records are always 30 minutes each — consistent with
+        // manual and auto allocation paths in SlotAllocationService.
+        const SLOT_DURATION_MS = 30 * 60 * 1000;
+        const slotChunkStarts: Date[] = [];
+        let current = new Date(startTime);
+        while (current < endTime) {
+          slotChunkStarts.push(new Date(current));
+          current = new Date(current.getTime() + SLOT_DURATION_MS);
+        }
+        if (slotChunkStarts.length === 0) {
+          return NextResponse.json(
+            { error: "Invalid slot: start time must be before end time" },
+            { status: 400 },
+          );
+        }
+
+        // RE-VALIDATE inside lock: Ensure ALL 30-min chunks are still available
+        // This is the critical missing piece - prevents double-booking even after lock
+        const validationService = new SlotValidationService(prisma);
+        const validation = await validationService.checkSlotAvailability(
+          slotChunkStarts,
+          consultationPlan.consultantProfile.user.id,
         );
-      }
 
-      console.log(
-        JSON.stringify({
-          event: "slot_booking_validation_passed",
-          consultant: consultantProfileId,
-          slot: startsAt,
-          user: session.user.id,
-          timestamp: new Date().toISOString(),
-        }),
-      );
+        if (!validation.isValid) {
+          console.log(
+            JSON.stringify({
+              event: "slot_booking_validation_failed",
+              consultant: consultantProfileId,
+              slot: startsAt,
+              user: session.user.id,
+              errors: validation.errors,
+              timestamp: new Date().toISOString(),
+            }),
+          );
 
-      // CRITICAL SECTION: Create consultation (protected by lock AND validated)
-      // Create one SlotOfAppointment per 30-min chunk — consistent with
-      // SlotAllocationService which also uses 30-min granularity.
-      const slotChunksToCreate = slotChunkStarts.map((chunkStart) => ({
-        startsAt: chunkStart,
-        endsAt: new Date(chunkStart.getTime() + SLOT_DURATION_MS),
-        isTentative: true, // Mark as tentative since it's pending approval
-        // #440 — the overlap-guard column must be set at CREATE time even on
-        // tentative rows: approval/webhook confirm flips isTentative via
-        // updateMany, so whatever is on the row rides into confirmed state.
-        consultantProfileId,
-        user: {
-          connect: [
-            { id: session.user.id }, // Consultee
-            { id: consultationPlan.consultantProfile.user.id }, // Consultant
-          ],
-        },
-      }));
-
-      const consultation = await prisma.consultation.create({
-        data: {
-          consultationPlanId: consultationPlanId,
-          requestedById: consulteeProfile.id,
-          status: AppointmentStatus.PENDING,
-          requestNotes: requestNotes,
-          appointment: {
-            create: {
-              appointmentType: "CONSULTATION",
-              // #1166 ORG-9 — org attribution rides the appointment from the
-              // moment the request exists.
-              organizationId: organizationId ?? null,
-              slotsOfAppointment: {
-                create: slotChunksToCreate,
-              },
+          return NextResponse.json(
+            {
+              error: "Slot no longer available",
+              details: validation.errors,
             },
+            { status: 409 },
+          );
+        }
+
+        console.log(
+          JSON.stringify({
+            event: "slot_booking_validation_passed",
+            consultant: consultantProfileId,
+            slot: startsAt,
+            user: session.user.id,
+            timestamp: new Date().toISOString(),
+          }),
+        );
+
+        // CRITICAL SECTION: Create consultation (protected by lock AND validated)
+        // Create one SlotOfAppointment per 30-min chunk — consistent with
+        // SlotAllocationService which also uses 30-min granularity.
+        const slotChunksToCreate = slotChunkStarts.map((chunkStart) => ({
+          startsAt: chunkStart,
+          endsAt: new Date(chunkStart.getTime() + SLOT_DURATION_MS),
+          isTentative: true, // Mark as tentative since it's pending approval
+          // #440 — the overlap-guard column must be set at CREATE time even on
+          // tentative rows: approval/webhook confirm flips isTentative via
+          // updateMany, so whatever is on the row rides into confirmed state.
+          consultantProfileId,
+          user: {
+            connect: [
+              { id: session.user.id }, // Consultee
+              { id: consultationPlan.consultantProfile.user.id }, // Consultant
+            ],
           },
-        },
-        include: {
-          consultationPlan: {
-            include: {
-              consultantProfile: {
-                include: {
-                  user: true,
+        }));
+
+        // #1333 — the request and its opening timeline row commit together, so
+        // a booking that exists is never one the staff timeline has nothing to
+        // say about. The nested create was already atomic on its own; the
+        // transaction is what extends that atomicity to the audit row. The
+        // budget sits well inside the 60 s slot lock held above.
+        const consultation = await prisma.$transaction(
+          async (tx) => {
+            const created = await tx.consultation.create({
+              data: {
+                consultationPlanId: consultationPlanId,
+                requestedById: consulteeProfile.id,
+                status: AppointmentStatus.PENDING,
+                requestNotes: requestNotes,
+                appointment: {
+                  create: {
+                    appointmentType: "CONSULTATION",
+                    // #1166 ORG-9 — org attribution rides the appointment from
+                    // the moment the request exists.
+                    organizationId: organizationId ?? null,
+                    slotsOfAppointment: {
+                      create: slotChunksToCreate,
+                    },
+                  },
                 },
               },
-            },
+              include: {
+                consultationPlan: {
+                  include: {
+                    consultantProfile: {
+                      include: {
+                        user: true,
+                      },
+                    },
+                  },
+                },
+                requestedBy: {
+                  include: {
+                    user: true,
+                  },
+                },
+                appointment: {
+                  include: {
+                    slotsOfAppointment: true,
+                  },
+                },
+              },
+            });
+            await appendCreationHistory(
+              tx,
+              "CONSULTATION",
+              created.id,
+              AppointmentStatus.PENDING,
+              {
+                appointmentId: created.appointment?.id ?? null,
+                actorUserId: session.user.id,
+                organizationId: created.appointment?.organizationId ?? null,
+              },
+            );
+            return created;
           },
-          requestedBy: {
-            include: {
-              user: true,
-            },
-          },
-          appointment: {
-            include: {
-              slotsOfAppointment: true,
-            },
-          },
-        },
-      });
-
-      console.log(
-        JSON.stringify({
-          event: "slot_booking_success",
-          consultationId: consultation.id,
-          consultant: consultantProfileId,
-          slot: startsAt,
-          user: session.user.id,
-          timestamp: new Date().toISOString(),
-        }),
-      );
-
-      // Fire-and-forget: notify consultant of new booking request.
-      //
-      // ADR 23 — the link used to hardcode the personal Requests page even for
-      // an org-hosted plan, where the request is not listed: the personal scope
-      // pins organizationId: null. Single recipient with a known side, so this
-      // resolves to a precise route rather than the /dashboard bounce.
-      const requestOrgId = consultation.appointment?.organizationId ?? null;
-      void notifyNewBookingRequest(
-        consultation.consultationPlan.consultantProfile.user.id,
-        {
-          ...notificationScope(requestOrgId),
-          consulteeName: consultation.requestedBy.user.name || "A consultee",
-          planTitle: consultation.consultationPlan.title,
-          appointmentType: "CONSULTATION",
-          requestedDateTime: startTime.toISOString(),
-          dashboardUrl: scopedHref({
-            organizationId: requestOrgId,
-            surface: "requests",
-            personal: {
-              kind: "consultant",
-              profileId: consultation.consultationPlan.consultantProfile.id,
-            },
-          }),
-        },
-      );
-
-      return NextResponse.json(
-        {
-          message: "Request for approval submitted successfully",
-          data: consultation,
-        },
-        { status: 201 },
-      );
-    } catch (lockError) {
-      console.error(
-        JSON.stringify({
-          event: "slot_booking_error",
-          consultant: consultantProfileId,
-          slot: startsAt,
-          user: session.user.id,
-          error:
-            lockError instanceof Error ? lockError.message : "Unknown error",
-          timestamp: new Date().toISOString(),
-        }),
-      );
-
-      // #1169 PR 1 — Redis-down fails closed with a structured 503; without
-      // this branch the outage fell through to the generic 500 below.
-      if (lockError instanceof BookingLockUnavailableError) {
-        return NextResponse.json(
-          { error: lockError.message },
-          { status: lockError.httpStatus },
+          { maxWait: 10_000, timeout: 15_000 },
         );
-      }
 
-      // Check if error is lock acquisition failure (type-safe)
-      if (lockError instanceof SlotLockError) {
-        return NextResponse.json(
-          {
-            error: lockError.message,
-            retryAfter: lockError.retryAfterSeconds,
-          },
-          { status: 409 }, // 409 Conflict
-        );
-      }
-
-      Sentry.captureException(lockError instanceof Error ? lockError : new Error(String(lockError)), { tags: { subsystem: "scheduling" } });
-      throw lockError; // Re-throw other errors for general error handler
-    } finally {
-      // ALWAYS release lock (even on error)
-      if (lock) {
-        await unlockSlotBooking(lock);
         console.log(
           JSON.stringify({
-            event: "slot_booking_lock_released",
+            event: "slot_booking_success",
+            consultationId: consultation.id,
             consultant: consultantProfileId,
             slot: startsAt,
             user: session.user.id,
             timestamp: new Date().toISOString(),
           }),
         );
+
+        // Fire-and-forget: notify consultant of new booking request.
+        //
+        // ADR 23 — the link used to hardcode the personal Requests page even for
+        // an org-hosted plan, where the request is not listed: the personal scope
+        // pins organizationId: null. Single recipient with a known side, so this
+        // resolves to a precise route rather than the /dashboard bounce.
+        const requestOrgId = consultation.appointment?.organizationId ?? null;
+        void notifyNewBookingRequest(
+          consultation.consultationPlan.consultantProfile.user.id,
+          {
+            ...notificationScope(requestOrgId),
+            consulteeName: consultation.requestedBy.user.name || "A consultee",
+            planTitle: consultation.consultationPlan.title,
+            appointmentType: "CONSULTATION",
+            requestedDateTime: startTime.toISOString(),
+            dashboardUrl: scopedHref({
+              organizationId: requestOrgId,
+              surface: "requests",
+              personal: {
+                kind: "consultant",
+                profileId: consultation.consultationPlan.consultantProfile.id,
+              },
+            }),
+          },
+        );
+
+        return NextResponse.json(
+          {
+            message: "Request for approval submitted successfully",
+            data: consultation,
+          },
+          { status: 201 },
+        );
+      } catch (lockError) {
+        console.error(
+          JSON.stringify({
+            event: "slot_booking_error",
+            consultant: consultantProfileId,
+            slot: startsAt,
+            user: session.user.id,
+            error:
+              lockError instanceof Error ? lockError.message : "Unknown error",
+            timestamp: new Date().toISOString(),
+          }),
+        );
+
+        // #1169 PR 1 — Redis-down fails closed with a structured 503; without
+        // this branch the outage fell through to the generic 500 below.
+        if (lockError instanceof BookingLockUnavailableError) {
+          return NextResponse.json(
+            { error: lockError.message },
+            { status: lockError.httpStatus },
+          );
+        }
+
+        // Check if error is lock acquisition failure (type-safe)
+        if (lockError instanceof SlotLockError) {
+          return NextResponse.json(
+            {
+              error: lockError.message,
+              retryAfter: lockError.retryAfterSeconds,
+            },
+            { status: 409 }, // 409 Conflict
+          );
+        }
+
+        Sentry.captureException(
+          lockError instanceof Error ? lockError : new Error(String(lockError)),
+          { tags: { subsystem: "scheduling" } },
+        );
+        throw lockError; // Re-throw other errors for general error handler
+      } finally {
+        // ALWAYS release lock (even on error)
+        if (lock) {
+          await unlockSlotBooking(lock);
+          console.log(
+            JSON.stringify({
+              event: "slot_booking_lock_released",
+              consultant: consultantProfileId,
+              slot: startsAt,
+              user: session.user.id,
+              timestamp: new Date().toISOString(),
+            }),
+          );
+        }
       }
-    }
     } finally {
       // Release the consultee arm last (reverse acquisition order).
       if (consulteeLock) {
@@ -442,7 +465,10 @@ export async function POST(req: NextRequest) {
     }
 
     console.error("Error creating approval request:", error);
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "scheduling" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "scheduling" } },
+    );
     return NextResponse.json(
       { error: "An error occurred while creating the approval request" },
       { status: 500 },

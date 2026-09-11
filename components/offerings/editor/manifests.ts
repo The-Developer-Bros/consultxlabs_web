@@ -181,7 +181,7 @@ const extrasSection = (withCertificate: boolean): SectionSpec => ({
       span: 3,
       options: [
         { value: "STREAM_ONLY", label: "Stream only" },
-        { value: "SUPABASE_PERMANENT", label: "Permanent library" },
+        { value: "PERMANENT", label: "Permanent library" },
       ],
     },
     ...(withCertificate

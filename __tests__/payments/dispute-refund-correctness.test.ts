@@ -87,6 +87,28 @@ const store: {
 function txStub() {
   return {
     payment: {
+      // #1353 — the handlers resolve by EITHER id now (order id or the gateway
+      // payment id), so the stub answers the `OR` shape they actually send.
+      findFirst: jest.fn(
+        async ({
+          where,
+        }: {
+          where: { OR?: Array<Record<string, string | undefined>> };
+        }) => {
+          const clauses = where.OR ?? [];
+          return (
+            Array.from(store.payments.values()).find((p) =>
+              clauses.some(
+                (clause) =>
+                  (clause.paymentIntent !== undefined &&
+                    clause.paymentIntent === p.paymentIntent) ||
+                  (clause.gatewayPaymentId !== undefined &&
+                    clause.gatewayPaymentId === p.gatewayPaymentId),
+              ),
+            ) ?? null
+          );
+        },
+      ),
       findUnique: jest.fn(async ({ where }: { where: Row }) => {
         // Lookup is by paymentIntent for the B2C path.
         if (where.paymentIntent) {

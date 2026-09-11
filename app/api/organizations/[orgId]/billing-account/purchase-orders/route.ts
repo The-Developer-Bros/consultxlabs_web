@@ -25,7 +25,12 @@ import { requireOrgAccess } from "@/lib/auth-helpers";
 import { requireOrgBillingAdminOrOwner } from "@/lib/auth/billing-admin-gate";
 import { AUDIT_ACTIONS } from "@/lib/enterprise/audit-actions";
 
-const CurrencySchema = z.enum(["INR", "USD", "EUR", "GBP"]);
+// #1396 — the `Currency` enum stays on the column (ADR 15 keeps the type), but
+// this API refuses to write anything except INR. Nothing downstream compares a
+// PO's currency against what is drawn from it: the invoice route decrements
+// `remainingAmountPaise` by an INR total, and the dashboard rollup sums
+// remainders across currencies. A USD PO was therefore spent in rupees.
+const CurrencySchema = z.literal("INR");
 const PoStatusSchema = z.enum(["ACTIVE", "CLOSED", "CANCELLED"]);
 
 const CreateBodySchema = z.object({

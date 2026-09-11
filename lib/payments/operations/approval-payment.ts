@@ -14,9 +14,18 @@
 
 import prisma from "@/lib/prisma";
 import { validatePlanCurrency } from "@/lib/payments/validation/currency-guards";
-import { Currency, PaymentGateway, PaymentStatus } from "@prisma/client";
-import { createPaymentIntent } from "../index";
-import { acquireLock, releaseLock } from "@/lib/redis";
+import {
+  AppointmentStatus,
+  Currency,
+  PaymentGateway,
+  PaymentStatus,
+  TrialSessionStatus,
+} from "@prisma/client";
+import {
+  lockApprovalPaymentMint,
+  unlockApproval,
+  type ApprovalLock,
+} from "@/utils/appointmentlock";
 
 // ============================================================================
 // Type Definitions
@@ -82,6 +91,24 @@ export interface ApprovalPaymentResult {
  */
 const APPROVAL_PAYMENT_LOCK_TTL = 30_000; // 30 seconds
 
+/** How long an approval pay-link stays payable once minted. */
+const APPROVAL_PAYMENT_WINDOW_MS = 48 * 60 * 60 * 1000;
+
+/**
+ * #1319 review — the request behind a dead intent is already gone, so there is
+ * nothing to re-mint against. Raised instead of silently issuing a pay-link
+ * for a consultation the sweep has since REJECTED (or a trial it CANCELLED);
+ * the approval routes map it to a 409 telling the consultee to re-request.
+ */
+export class ApprovalWindowLapsedError extends Error {
+  constructor() {
+    super(
+      "The payment window for this approval has lapsed. Ask the consultee to submit the request again.",
+    );
+    this.name = "ApprovalWindowLapsedError";
+  }
+}
+
 export async function createApprovalPaymentIntent(
   params: CreateApprovalPaymentParams,
 ): Promise<ApprovalPaymentResult> {
@@ -100,17 +127,30 @@ export async function createApprovalPaymentIntent(
     throw new Error("trialId required for TRIAL appointment type");
   }
 
-  // H3 FIX: Acquire distributed lock keyed on the resource
-  const resourceId =
-    params.consultationId || params.subscriptionId || params.trialId;
-  const lockKey = `lock:approval_payment:${resourceId}`;
-  const lockToken = await acquireLock(lockKey, APPROVAL_PAYMENT_LOCK_TTL);
-
-  if (!lockToken) {
+  // #1319 — the mint is its own guarded atom, nested under the approval lock
+  // the routes still hold while they call this (see lockApprovalPaymentMint).
+  // Keyed by appointmentType, the validated discriminator, not by whichever
+  // id happens to be set.
+  const mintTargetId = (() => {
+    switch (params.appointmentType) {
+      case "CONSULTATION":
+        return params.consultationId;
+      case "SUBSCRIPTION":
+        return params.subscriptionId;
+      case "TRIAL":
+        return params.trialId;
+    }
+  })();
+  if (!mintTargetId) {
     throw new Error(
-      "Payment link generation is already in progress for this request. Please wait.",
+      `${params.appointmentType} approval payment requires its request id`,
     );
   }
+  const lock: ApprovalLock = await lockApprovalPaymentMint(
+    params.appointmentType,
+    mintTargetId,
+    APPROVAL_PAYMENT_LOCK_TTL,
+  );
 
   try {
     // FIX Issue #7 / #1181 — duplicate-payment guard, now live for every
@@ -123,24 +163,43 @@ export async function createApprovalPaymentIntent(
       trialId: params.trialId,
     });
 
+    // #1319 review — set when the row found above is dead and must be re-minted
+    // INTO rather than duplicated (see the branch below).
+    let remintIntoPaymentId: string | null = null;
+
     if (existingPayment) {
       if (existingPayment.paymentStatus === PaymentStatus.SUCCEEDED) {
         throw new Error("This request has already been paid");
       }
 
-      // #1181 — a PENDING payment from a previous mint attempt is reused,
-      // not duplicated. Before the appointment back-link existed this state
-      // was invisible (the retry minted a parallel gateway order); now it
-      // resolves the #1172 deadlock shape where the link was minted but its
-      // persist never landed and re-approval must recover it. The pay-link
-      // reconstructs from the stored intent because Razorpay's client_secret
-      // IS the order id (#1165 pins approval mints to RAZORPAY).
-      return {
-        paymentIntentId: existingPayment.paymentIntent,
-        checkoutUrl: existingPayment.paymentIntent,
-        amount: existingPayment.amount,
-        currency: existingPayment.currency,
-      };
+      if (isDeadApprovalIntent(existingPayment, new Date())) {
+        // #1319 review — the same rule the hold predicate uses: an EXPIRED row,
+        // or a PENDING one past its window, is dead, and this branch used to
+        // hand its stored intent back as the checkout url. That link points at
+        // a slot buildDeadHoldFilter has already released, so the payer either
+        // pays for a slot somebody else now holds or pays into an order the
+        // sweep is about to void. Minting a SECOND row is not the way out
+        // either: Payment is unique on [userId, appointmentId], so the create
+        // below would die on P2002. Re-mint into the row instead.
+        if (!existingPayment.requestIsPayable) {
+          throw new ApprovalWindowLapsedError();
+        }
+        remintIntoPaymentId = existingPayment.id;
+      } else {
+        // #1181 — a live PENDING payment from a previous mint attempt is
+        // reused, not duplicated. Before the appointment back-link existed
+        // this state was invisible (the retry minted a parallel gateway
+        // order); now it resolves the #1172 deadlock shape where the link was
+        // minted but its persist never landed and re-approval must recover it.
+        // The pay-link reconstructs from the stored intent because Razorpay's
+        // client_secret IS the order id (#1165 pins approval mints to RAZORPAY).
+        return {
+          paymentIntentId: existingPayment.paymentIntent,
+          checkoutUrl: existingPayment.paymentIntent,
+          amount: existingPayment.amount,
+          currency: existingPayment.currency,
+        };
+      }
     }
 
     // BUG-D: Validate user has consultee profile (required for webhook to succeed)
@@ -165,7 +224,9 @@ export async function createApprovalPaymentIntent(
     // Build metadata for webhook processing
     const metadata = buildApprovalMetadata(params);
 
-    // Create payment intent with gateway
+    // Create payment intent with gateway. Imported here, not at module load:
+    // the barrel evaluates the Razorpay core and its #1219 test-key guard.
+    const { createPaymentIntent } = await import("../index");
     const paymentResponse = await createPaymentIntent({
       amount,
       currency,
@@ -173,6 +234,44 @@ export async function createApprovalPaymentIntent(
       paymentGateway: params.paymentGateway,
       isMockPayment: false,
     });
+
+    if (remintIntoPaymentId) {
+      // #1319 review — re-mint IN PLACE. The row keeps its id, userId and
+      // appointmentId (so the unique pair, the appointment back-link and every
+      // downstream reference survive) and takes the new order's identity,
+      // status and window. The figures are re-frozen to the ones the gateway
+      // was just asked for: leaving the old amount would make the trial
+      // checkout page quote a number the charge does not honour, which is
+      // exactly the drift that froze the amount onto this row to begin with.
+      // The CARD leg follows for the same reason — the funding legs (every
+      // source but REFERRAL_CREDIT) must still sum to amount (#1347).
+      await prisma.payment.update({
+        where: { id: remintIntoPaymentId },
+        data: {
+          paymentIntent: paymentResponse.id,
+          paymentStatus: PaymentStatus.PENDING,
+          expiresAt: new Date(Date.now() + APPROVAL_PAYMENT_WINDOW_MS),
+          amount,
+          originalAmount: amount,
+          currency,
+          description: `Payment for ${params.appointmentType.toLowerCase()} - ${plan.title}`,
+          paymentGateway: params.paymentGateway,
+          legs: {
+            updateMany: {
+              where: { source: "CARD" },
+              data: { amountPaise: amount, sourceRef: paymentResponse.id },
+            },
+          },
+        },
+      });
+
+      return {
+        paymentIntentId: paymentResponse.id,
+        checkoutUrl: paymentResponse.client_secret,
+        amount,
+        currency,
+      };
+    }
 
     // Store payment record in database
     await prisma.payment.create({
@@ -187,7 +286,7 @@ export async function createApprovalPaymentIntent(
         paymentStatus: PaymentStatus.PENDING,
         organizationId: params.organizationId ?? null,
         userId: params.userId,
-        expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000), // 48 hours expiration
+        expiresAt: new Date(Date.now() + APPROVAL_PAYMENT_WINDOW_MS),
         isMockPayment: false,
         // #1181 — the request-time appointment anchors capture to the NEW
         // flow (confirm the existing row, never create a twin). Null only
@@ -217,7 +316,7 @@ export async function createApprovalPaymentIntent(
       currency,
     };
   } finally {
-    await releaseLock(lockKey, lockToken);
+    await unlockApproval(lock);
   }
 }
 
@@ -331,23 +430,26 @@ async function calculateAmount(params: CreateApprovalPaymentParams): Promise<{
  * Build metadata for webhook processing
  * This metadata will be passed to handlePaymentSuccess() when payment completes
  */
-function buildApprovalMetadata(params: CreateApprovalPaymentParams): {
-  appointmentId: string;
-  appointmentType: string;
-  [key: string]: string;
-} {
+function buildApprovalMetadata(
+  params: CreateApprovalPaymentParams,
+): Record<string, string> {
   const metadata: Record<string, string> = {
-    // Same shape as direct checkout (buildPaymentMetadata): the real anchor
-    // lives on the Payment row, which is what the capture handler branches
-    // on; the sentinel here only feeds the legacy-create path when there is
-    // genuinely no appointment yet.
-    appointmentId: params.appointmentId ?? "pending",
     appointmentType: params.appointmentType,
     userId: params.userId,
     planId: params.planId,
     notes: params.notes || "",
     isApprovalFlow: "true", // Flag to indicate this is from approval flow
   };
+
+  // #1181 — absent, never the string "pending". The real anchor lives on the
+  // Payment row, which is what the capture handler branches on, so the
+  // sentinel bought nothing and cost the one thing a metadata key is for: a
+  // reader can no longer tell "no appointment yet" from an appointment that
+  // happens to be called pending. The sibling Payment column already writes
+  // null here; gateway notes are string-valued, so absence is that null.
+  if (params.appointmentId) {
+    metadata.appointmentId = params.appointmentId;
+  }
 
   // Add consultation-specific fields
   if (params.consultationId) {
@@ -382,30 +484,68 @@ function buildApprovalMetadata(params: CreateApprovalPaymentParams): {
     metadata.schedulingPeriodEndsAt = params.schedulingPeriodEndsAt;
   }
 
-  return metadata as {
-    appointmentId: string;
-    appointmentType: string;
-    [key: string]: string;
-  };
+  return metadata;
 }
 
 /**
- * Find the live payment already attached to this request's appointment(s).
- * Returns null when nothing has been minted (or only EXPIRED/FAILED rows
- * remain, which a fresh mint may supersede). This is the duplicate-payment
- * guard's lookup — it can only ever match once callers thread appointmentId,
- * because it walks payments hanging off the appointment (#1181).
+ * The row this lookup found, plus the two facts the mint needs to decide
+ * between reusing it, re-minting into it, and refusing.
+ */
+export interface ExistingApprovalPayment {
+  id: string;
+  paymentStatus: PaymentStatus;
+  paymentIntent: string;
+  amount: number;
+  currency: Currency;
+  expiresAt: Date | null;
+  /**
+   * Whether the request this payment belongs to can still be paid for — an
+   * APPROVED_PENDING_PAYMENT consultation/subscription, or an AWAITING_PAYMENT
+   * trial. False once the expiry sweep has moved it on, which is the signal to
+   * refuse rather than re-mint (see ApprovalWindowLapsedError).
+   */
+  requestIsPayable: boolean;
+}
+
+/**
+ * #1319 review — the mint's twin of isOccupiedByLiveAppointment's payment
+ * clause. A row is dead when the sweep already marked it EXPIRED, or it is
+ * still PENDING past its own window. Never by the clock alone: a SUCCEEDED row
+ * keeps its expiresAt, and a PENDING row with no window never lapses.
+ */
+function isDeadApprovalIntent(
+  payment: ExistingApprovalPayment,
+  now: Date,
+): boolean {
+  if (payment.paymentStatus === PaymentStatus.EXPIRED) return true;
+  return (
+    payment.paymentStatus === PaymentStatus.PENDING &&
+    !!payment.expiresAt &&
+    new Date(payment.expiresAt) < now
+  );
+}
+
+/**
+ * Find the payment already attached to this request's appointment(s).
+ * Returns null when nothing has been minted, or when only a FAILED row remains
+ * (a gateway rejection, which a fresh mint may supersede). SUCCEEDED, PENDING
+ * and EXPIRED all come back: the mint refuses on the first, reuses or re-mints
+ * into the second depending on its window, and always re-mints into the third,
+ * because Payment is unique on [userId, appointmentId] and a second row for the
+ * same pair cannot be inserted. This is the duplicate-payment guard's lookup —
+ * it can only ever match once callers thread appointmentId, because it walks
+ * payments hanging off the appointment (#1181).
  */
 export async function findExistingLivePayment(params: {
   consultationId?: string;
   subscriptionId?: string;
   trialId?: string;
-}): Promise<{
-  paymentStatus: PaymentStatus;
-  paymentIntent: string;
-  amount: number;
-  currency: Currency;
-} | null> {
+}): Promise<ExistingApprovalPayment | null> {
+  const REUSABLE_STATUSES: PaymentStatus[] = [
+    PaymentStatus.SUCCEEDED,
+    PaymentStatus.PENDING,
+    PaymentStatus.EXPIRED,
+  ];
   if (params.trialId) {
     // A trial owns its Payment directly (TrialSession.paymentId), so unlike the
     // consultation/subscription arms there is no appointment to walk through —
@@ -413,12 +553,15 @@ export async function findExistingLivePayment(params: {
     const trial = await prisma.trialSession.findUnique({
       where: { id: params.trialId },
       select: {
+        status: true,
         payment: {
           select: {
+            id: true,
             paymentStatus: true,
             paymentIntent: true,
             amount: true,
             currency: true,
+            expiresAt: true,
           },
         },
       },
@@ -426,18 +569,16 @@ export async function findExistingLivePayment(params: {
 
     const payment = trial?.payment;
 
-    // Same live-status filter as the consultation/subscription arms below:
-    // an EXPIRED or FAILED gateway order cannot be paid — returning it would
-    // have the reuse path hand the payer a dead checkout link (the stored
-    // intent) instead of minting a fresh one.
-    if (
-      !payment ||
-      (payment.paymentStatus !== PaymentStatus.SUCCEEDED &&
-        payment.paymentStatus !== PaymentStatus.PENDING)
-    ) {
+    // Same status filter as the consultation/subscription arms below: a FAILED
+    // gateway order is a rejection the buyer must retry from scratch, so it is
+    // not offered back to the mint at all.
+    if (!payment || !REUSABLE_STATUSES.includes(payment.paymentStatus)) {
       return null;
     }
-    return payment;
+    return {
+      ...payment,
+      requestIsPayable: trial?.status === TrialSessionStatus.AWAITING_PAYMENT,
+    };
   }
 
   if (params.consultationId) {
@@ -452,19 +593,20 @@ export async function findExistingLivePayment(params: {
       },
     });
 
-    // Check if payment exists and is not expired
-    const payment = consultation?.appointment?.payment?.find(
-      (p) =>
-        p.paymentStatus === PaymentStatus.SUCCEEDED ||
-        p.paymentStatus === PaymentStatus.PENDING,
+    const payment = consultation?.appointment?.payment?.find((p) =>
+      REUSABLE_STATUSES.includes(p.paymentStatus),
     );
 
     if (!payment) return null;
     return {
+      id: payment.id,
       paymentStatus: payment.paymentStatus,
       paymentIntent: payment.paymentIntent,
       amount: payment.amount,
       currency: payment.currency,
+      expiresAt: payment.expiresAt,
+      requestIsPayable:
+        consultation?.status === AppointmentStatus.APPROVED_PENDING_PAYMENT,
     };
   }
 
@@ -482,17 +624,19 @@ export async function findExistingLivePayment(params: {
 
     // Check any appointment for payment
     for (const apt of subscription?.appointments ?? []) {
-      const payment = apt.payment?.find(
-        (p) =>
-          p.paymentStatus === PaymentStatus.SUCCEEDED ||
-          p.paymentStatus === PaymentStatus.PENDING,
+      const payment = apt.payment?.find((p) =>
+        REUSABLE_STATUSES.includes(p.paymentStatus),
       );
       if (payment) {
         return {
+          id: payment.id,
           paymentStatus: payment.paymentStatus,
           paymentIntent: payment.paymentIntent,
           amount: payment.amount,
           currency: payment.currency,
+          expiresAt: payment.expiresAt,
+          requestIsPayable:
+            subscription?.status === AppointmentStatus.APPROVED_PENDING_PAYMENT,
         };
       }
     }

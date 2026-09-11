@@ -29,6 +29,7 @@ import prisma from "@/lib/prisma";
 import { Resend } from "resend";
 import { getAppUrl } from "@/lib/url";
 import { withCronLock } from "@/lib/cron/with-cron-lock";
+import { abortIfMaintenance } from "@/lib/maintenance-cron";
 
 const ALERT_WINDOW_DAYS = 5;
 const MAX_ROWS_IN_EMAIL = 20;
@@ -169,7 +170,9 @@ async function runMsmePaymentAlertsUnlocked(): Promise<{
       console.log(`[MSME] alert email sent to ${to}`);
     } catch (err) {
       console.error("[MSME] alert email failed:", err);
-      Sentry.captureException(err, { tags: { subsystem: "jobs", job: "msme-payment-alerts" } });
+      Sentry.captureException(err, {
+        tags: { subsystem: "jobs", job: "msme-payment-alerts" },
+      });
     }
   } else {
     console.log(
@@ -178,7 +181,11 @@ async function runMsmePaymentAlertsUnlocked(): Promise<{
   }
 
   const result = { alerted: emailSent ? atRisk : 0, atRisk, emailSent };
-  Sentry.logger.info("job:msme-payment-alerts finished", { alerted: result.alerted, atRisk: result.atRisk, emailSent: result.emailSent });
+  Sentry.logger.info("job:msme-payment-alerts finished", {
+    alerted: result.alerted,
+    atRisk: result.atRisk,
+    emailSent: result.emailSent,
+  });
   return result;
 }
 
@@ -186,6 +193,7 @@ async function runMsmePaymentAlertsUnlocked(): Promise<{
 // unit tests without triggering the cron body.
 if (require.main === module) {
   runJob("msme-payment-alerts", async () => {
+    await abortIfMaintenance("msme-payment-alerts");
     try {
       const r = await runMsmePaymentAlerts();
       console.log(

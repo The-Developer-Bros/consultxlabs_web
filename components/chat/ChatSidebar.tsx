@@ -3,7 +3,14 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { formatDistanceToNow } from "date-fns";
 import { RefreshCwIcon } from "lucide-react";
-import { useEffect, useState, useCallback, useRef, memo, startTransition } from "react";
+import {
+  useEffect,
+  useState,
+  useCallback,
+  useRef,
+  memo,
+  startTransition,
+} from "react";
 import type { Channel, Event } from "stream-chat";
 import { useChatContext } from "stream-chat-react";
 import { ChannelSearch } from "./ChannelSearch";
@@ -19,11 +26,13 @@ import {
   TooltipTrigger,
 } from "../ui/tooltip";
 import {
+  buildOrgChannelFilter,
   getChannelDisplayInfo,
   isUsableDmChannel,
 } from "./utils/channelUtils";
 import { useChatPane } from "./ChatPaneContext";
 import { useOrgScope } from "@/hooks/useOrgScope";
+import { scopeOrgId } from "@/lib/api/scope/parse";
 import { useSession } from "@/lib/auth-client";
 import { useServerSessionFacts } from "@/components/dashboard/ServerUserId";
 
@@ -102,7 +111,9 @@ const ChannelItem = memo(
               </Avatar>
               {isGroupDM && (
                 <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-primary rounded-full border border-card flex items-center justify-center">
-                  <span className="text-[8px] text-primary-foreground font-bold">G</span>
+                  <span className="text-[8px] text-primary-foreground font-bold">
+                    G
+                  </span>
                 </div>
               )}
             </div>
@@ -242,7 +253,10 @@ export const ChatSidebar = () => {
   // genuinely different key (and thus never skipped against an unrelated fetch).
   const computeFetchKey = useCallback((): string | null => {
     if (!client?.userID) return null;
-    const scopeKey = scope.kind === "org" ? `org:${scope.orgId}` : scope.kind;
+    // scopeOrgId, not `kind === "org"`: `orgMember` pins an org too, so keying
+    // on the kind alone gave two different orgs the SAME cache key (#674).
+    const pinnedOrgId = scopeOrgId(scope);
+    const scopeKey = pinnedOrgId ? `org:${pinnedOrgId}` : scope.kind;
     return `${client.userID}::${scopeKey}`;
   }, [client, scope]);
 
@@ -267,20 +281,9 @@ export const ChatSidebar = () => {
     setError(null);
 
     try {
-      // #674 org-scope filter — Stream channels created by the
-      // enterprise wiring carry a `custom.organization_id` field.
-      // Without scoping, a consultant in Acme + Zeta sees every chat
-      // cross-tenanted in one inbox. Apply the same three-mode shape
-      // as the server-side resolveOrgScope:
-      //   - personal → channels with no organization_id (legacy/B2C)
-      //   - org:<id> → channels tagged with that org id
-      //   - all     → no scope filter (admin-only)
-      const orgFilter: Record<string, unknown> =
-        scope.kind === "personal"
-          ? { organization_id: { $exists: false } }
-          : scope.kind === "org"
-            ? { organization_id: { $eq: scope.orgId } }
-            : {};
+      // #674 org-scope filter — see buildOrgChannelFilter for what each scope
+      // kind means and why `orgMember` has to pin too.
+      const orgFilter: Record<string, unknown> = buildOrgChannelFilter(scope);
       const filter = {
         members: { $in: [client.userID] },
         ...orgFilter,
@@ -353,8 +356,7 @@ export const ChatSidebar = () => {
           const dmTime = new Date(
             (mostRecentDM.data?.last_message_at as string) || 0,
           ).getTime();
-          channelToSelect =
-            dmTime >= teamTime ? mostRecentDM : mostRecentTeam;
+          channelToSelect = dmTime >= teamTime ? mostRecentDM : mostRecentTeam;
         } else {
           channelToSelect = mostRecentTeam || mostRecentDM || null;
         }
@@ -391,17 +393,15 @@ export const ChatSidebar = () => {
 
       if (!hasMore) return;
 
+      // The scope this page belongs to, captured before the request goes out.
+      const pageKey = computeFetchKey();
+
       setIsLoadingMore(true);
 
       try {
         // Mirror the org-scope filter from `fetchChannels` so the
         // load-more page stays in the same tenant context.
-        const orgFilter: Record<string, unknown> =
-          scope.kind === "personal"
-            ? { organization_id: { $exists: false } }
-            : scope.kind === "org"
-              ? { organization_id: { $eq: scope.orgId } }
-              : {};
+        const orgFilter: Record<string, unknown> = buildOrgChannelFilter(scope);
         const filter = {
           members: { $in: [client.userID] },
           type,
@@ -423,6 +423,17 @@ export const ChatSidebar = () => {
         };
 
         const response = await client.queryChannels(filter, sort, options);
+
+        // Staleness guard, the same one `fetchChannels` applies to its own late
+        // response: switching org mid-pagination let Acme's page two land on
+        // Zeta's list, cross-tenanting the inbox the scope filter exists to
+        // keep apart — and corrupting the offset the next page reads. Stale
+        // when a newer scope has already loaded, or when one is in flight.
+        const supersededByLoaded = fetchedKeyRef.current !== pageKey;
+        const supersededByInFlight =
+          inFlightFetchKeyRef.current !== null &&
+          inFlightFetchKeyRef.current !== pageKey;
+        if (supersededByLoaded || supersededByInFlight) return;
 
         fetchedCountRef.current[type] += response.length;
 
@@ -452,6 +463,7 @@ export const ChatSidebar = () => {
       hasMoreDMChannels,
       isLoadingMore,
       scope,
+      computeFetchKey,
     ],
   );
 
@@ -644,10 +656,19 @@ export const ChatSidebar = () => {
         }
       };
 
-      client.on("*.**", handleEvent); // Listen to all events
+      // #1280 2.6 — the SINGLE-argument form is the "every event" listener.
+      //
+      // `client.on("*.**", handler)` registers under the LITERAL key `"*.**"`;
+      // there is no wildcard matching in the SDK's dispatcher, which only ever
+      // looks up `listeners.all` and `listeners[event.type]`. No Stream event
+      // has the type `"*.**"`, so this entire live channel-list updater never
+      // fired once — the list only ever changed on an explicit refetch, while
+      // the unread badge pointing at it updated correctly because
+      // `useChatUnreadCount` already uses the right form.
+      client.on(handleEvent);
 
       return () => {
-        client.off("*.**", handleEvent);
+        client.off(handleEvent);
       };
     }
     // #248: deps intentionally exclude `fetchChannels` and `activeChannelId` so

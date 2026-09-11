@@ -23,27 +23,16 @@ import { OrgIdParams } from "@/schemas/support";
 import { parseRouteParams, supportError } from "@/lib/api/support-http";
 import prisma from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
+import {
+  SupportThreadCategoryEnum,
+  SupportThreadStatusEnum,
+} from "@/schemas/enums";
 
 const ORG_THREADS_ROUTE = "organizations.support-threads";
 
 const QuerySchema = z.object({
-  status: z
-    .enum(["OPEN", "IN_PROGRESS", "ESCALATED", "RESOLVED", "CLOSED"])
-    .optional(),
-  category: z
-    .enum([
-      "CANCEL_REFUND",
-      "RESCHEDULE",
-      "NO_SHOW",
-      "TECHNICAL",
-      "PAYMENT_STATUS",
-      "RECORDING_ACCESS",
-      "QUALITY_COMPLAINT",
-      "SPONSORSHIP_BILLING",
-      "ORG_ADMIN_DISPUTE",
-      "OTHER",
-    ])
-    .optional(),
+  status: SupportThreadStatusEnum.optional(),
+  category: SupportThreadCategoryEnum.optional(),
 });
 
 // ADR-20 metadata allowlist. NOTHING here may be a message body or free text.

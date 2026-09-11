@@ -1,8 +1,81 @@
 import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
+import { coalesceAndResolveCustom } from "@/utils/slotAllocation/mergeAdjacentWeeklyRows";
 import prisma from "@/lib/prisma";
+import { withSerializableRetry } from "@/lib/db/serializable-retry";
 import { Prisma } from "@prisma/client";
 import { getSession } from "@/lib/auth-server";
+
+/**
+ * The tail both custom-slot edits share: reject an overlap with any other row,
+ * write, then fold the rows the edit made adjacent and answer with the row
+ * that now covers it (#1320). PUT and PATCH differ only in how they arrive at
+ * the two instants.
+ *
+ * One Serializable transaction, for the reason the weekly twin gives:
+ * coalescing deletes the folded rows and extends the survivor, so a failure
+ * between those two writes destroys availability rather than merging it.
+ */
+async function applyCustomSlotEdit(
+  id: string,
+  consultantProfileId: string,
+  next: { startsAt: Date; endsAt: Date },
+) {
+  return withSerializableRetry(() =>
+    prisma.$transaction(
+      async (tx) => {
+        const overlappingSlot = await tx.slotOfAvailabilityCustom.findFirst({
+          where: {
+            id: { not: id },
+            consultantProfileId,
+            OR: [
+              {
+                startsAt: { lte: next.startsAt },
+                endsAt: { gt: next.startsAt },
+              },
+              {
+                startsAt: { lt: next.endsAt },
+                endsAt: { gte: next.endsAt },
+              },
+              {
+                startsAt: { gte: next.startsAt },
+                endsAt: { lte: next.endsAt },
+              },
+            ],
+          },
+        });
+
+        if (overlappingSlot) {
+          return NextResponse.json(
+            { error: "This slot overlaps with an existing slot" },
+            { status: 409 },
+          );
+        }
+
+        // No `include`: the coalesce below can fold this row away, so the
+        // covering row — not this one — is what the client is answered with.
+        const updatedSlot = await tx.slotOfAvailabilityCustom.update({
+          where: { id },
+          data: { startsAt: next.startsAt, endsAt: next.endsAt },
+        });
+
+        const covering = await coalesceAndResolveCustom(
+          tx,
+          updatedSlot.consultantProfileId,
+          { startsAt: updatedSlot.startsAt, endsAt: updatedSlot.endsAt },
+        );
+        return NextResponse.json({ data: covering }, { status: 200 });
+      },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        // See the weekly twin: the defaults are sized for one statement, not
+        // for a read, a write and a whole-set rewrite behind PG_POOL_MAX=1.
+        maxWait: 10_000,
+        timeout: 15_000,
+      },
+    ),
+  );
+}
 
 export async function GET(
   req: NextRequest,
@@ -27,7 +100,10 @@ export async function GET(
     return NextResponse.json({ data: customSlot }, { status: 200 });
   } catch (error) {
     console.error("Error fetching custom slot:", error);
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "slots" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "slots" } },
+    );
     return NextResponse.json(
       { error: "An error occurred while fetching the custom slot" },
       { status: 500 },
@@ -109,47 +185,11 @@ export async function PUT(
       );
     }
 
-    // Check for overlapping slots using authoritative consultantProfileId
-    const overlappingSlot = await prisma.slotOfAvailabilityCustom.findFirst({
-      where: {
-        id: { not: id },
-        consultantProfileId: currentSlot.consultantProfileId,
-        OR: [
-          {
-            startsAt: { lte: startTime },
-            endsAt: { gt: startTime },
-          },
-          {
-            startsAt: { lt: endTime },
-            endsAt: { gte: endTime },
-          },
-          {
-            startsAt: { gte: startTime },
-            endsAt: { lte: endTime },
-          },
-        ],
-      },
+    // Uses the authoritative consultantProfileId from the existing row.
+    return await applyCustomSlotEdit(id, currentSlot.consultantProfileId, {
+      startsAt: startTime,
+      endsAt: endTime,
     });
-
-    if (overlappingSlot) {
-      return NextResponse.json(
-        { error: "This slot overlaps with an existing slot" },
-        { status: 409 },
-      );
-    }
-
-    const updatedSlot = await prisma.slotOfAvailabilityCustom.update({
-      where: { id: id },
-      data: {
-        startsAt: startTime,
-        endsAt: endTime,
-      },
-      include: {
-        consultantProfile: true,
-      },
-    });
-
-    return NextResponse.json({ data: updatedSlot }, { status: 200 });
   } catch (error) {
     console.error("Error updating custom slot:", error);
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
@@ -160,7 +200,10 @@ export async function PUT(
         );
       }
     }
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "slots" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "slots" } },
+    );
     return NextResponse.json(
       { error: "An error occurred while updating the custom slot" },
       { status: 500 },
@@ -239,47 +282,11 @@ export async function PATCH(
       );
     }
 
-    // Check for overlapping slots using authoritative consultantProfileId
-    const overlappingSlot = await prisma.slotOfAvailabilityCustom.findFirst({
-      where: {
-        id: { not: id },
-        consultantProfileId: currentSlot.consultantProfileId,
-        OR: [
-          {
-            startsAt: { lte: startTime },
-            endsAt: { gt: startTime },
-          },
-          {
-            startsAt: { lt: endTime },
-            endsAt: { gte: endTime },
-          },
-          {
-            startsAt: { gte: startTime },
-            endsAt: { lte: endTime },
-          },
-        ],
-      },
+    // Uses the authoritative consultantProfileId from the existing row.
+    return await applyCustomSlotEdit(id, currentSlot.consultantProfileId, {
+      startsAt: startTime,
+      endsAt: endTime,
     });
-
-    if (overlappingSlot) {
-      return NextResponse.json(
-        { error: "This slot overlaps with an existing slot" },
-        { status: 409 },
-      );
-    }
-
-    const updatedSlot = await prisma.slotOfAvailabilityCustom.update({
-      where: { id: id },
-      data: {
-        startsAt: startTime,
-        endsAt: endTime,
-      },
-      include: {
-        consultantProfile: true,
-      },
-    });
-
-    return NextResponse.json({ data: updatedSlot }, { status: 200 });
   } catch (error) {
     console.error("Error partially updating custom slot:", error);
     if (error instanceof Prisma.PrismaClientKnownRequestError) {

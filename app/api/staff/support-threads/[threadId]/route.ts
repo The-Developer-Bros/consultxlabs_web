@@ -15,11 +15,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import prisma from "@/lib/prisma";
 import { requirePrivilegedAuth } from "@/lib/auth-helpers";
-import { notifySupportTicketResponse } from "@/lib/novu";
+import {
+  notifySupportTicketResponse,
+  notifySupportTicketUpdate,
+} from "@/lib/novu";
 import { notificationScope } from "@/lib/novu/workflows";
 import { notificationHref } from "@/lib/novu/resolve-href";
 import { SupportThreadIdParams } from "@/schemas/support";
 import { parseRouteParams, supportError } from "@/lib/api/support-http";
+import { MESSAGE_ORDER, allocateMessageSeq } from "@/lib/support/message-seq";
+import { applyStaffReply } from "@/lib/support/sla";
 
 const THREAD_ROUTE = "staff.support-thread";
 
@@ -40,7 +45,7 @@ async function loadThread(threadId: string) {
     where: { id: threadId },
     include: {
       user: { select: { id: true, name: true, email: true, image: true } },
-      messages: { orderBy: { createdAt: "asc" } },
+      messages: { orderBy: MESSAGE_ORDER },
       supportTicket: { select: { id: true, title: true, status: true } },
       appointment: {
         select: {
@@ -119,7 +124,20 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
 
     const thread = await prisma.appointmentSupportThread.findUnique({
       where: { id: threadId },
-      include: { supportTicket: { select: { id: true, title: true, status: true, assignedToId: true } } },
+      include: {
+        supportTicket: {
+          select: {
+            id: true,
+            title: true,
+            status: true,
+            assignedToId: true,
+            // #705 — the SLA clock needs to know whether this is the FIRST
+            // human reply, and whether the ticket was already acknowledged.
+            acknowledgedAt: true,
+            firstAgentReplyAt: true,
+          },
+        },
+      },
     });
     if (!thread) {
       return supportError({
@@ -133,8 +151,17 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     const now = new Date();
     const result = await prisma.$transaction(async (tx) => {
       // The user-facing message on the thread…
+      const seq = await allocateMessageSeq(tx, thread.id, 1);
       const agentMessage = await tx.supportMessage.create({
-        data: { threadId: thread.id, sender: "AGENT", body: message },
+        data: {
+          threadId: thread.id,
+          sender: "AGENT",
+          body: message,
+          seq: seq + 1,
+          // #705 — an AGENT row used to record no author, so an escalated
+          // transcript could not say which staff member had replied.
+          authorUserId: session.user.id,
+        },
       });
       await tx.appointmentSupportThread.update({
         where: { id: thread.id },
@@ -160,6 +187,15 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
             assignedToId: thread.supportTicket?.assignedToId ?? session.user.id,
             lastMessageAt: now,
           },
+        });
+        // #705 — the ball is now in the user's court, so the resolution clock
+        // stops. Unconditional (not part of the OPEN CAS above): a reply on an
+        // already-IN_PROGRESS ticket still pauses the clock and still counts as
+        // an acknowledgement.
+        await applyStaffReply(tx, thread.supportTicketId, now);
+        await tx.supportTicket.update({
+          where: { id: thread.supportTicketId },
+          data: { lastMessageAt: now },
         });
       }
       return agentMessage;
@@ -214,7 +250,16 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
 
     const thread = await prisma.appointmentSupportThread.findUnique({
       where: { id: threadId },
-      select: { id: true, supportTicketId: true, status: true },
+      select: {
+        id: true,
+        supportTicketId: true,
+        status: true,
+        // #705 — needed to tell the USER their thread moved. This route
+        // resolved and closed threads and notified nobody.
+        userId: true,
+        organizationId: true,
+        supportTicket: { select: { title: true, referenceNumber: true } },
+      },
     });
     if (!thread) {
       return supportError({
@@ -244,10 +289,28 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
       if (updated.count === 0) return 0;
 
       // Mirror to the linked ticket so the queue never disagrees with the thread.
+      // A CLOSED ticket cannot follow, and letting the thread move anyway is
+      // exactly the disagreement this mirror exists to prevent — so the whole
+      // transaction fails instead, and the caller gets a 409 rather than a
+      // silent split. Moving to CLOSED is exempt: a closed ticket is already
+      // where the thread is going.
       if (thread.supportTicketId) {
+        const linked = await tx.supportTicket.findUnique({
+          where: { id: thread.supportTicketId },
+          select: { status: true },
+        });
+        if (linked?.status === "CLOSED" && status !== "CLOSED") return 0;
         await tx.supportTicket.updateMany({
           where: { id: thread.supportTicketId, status: { notIn: ["CLOSED"] } },
-          data: { status, lastMessageAt: now },
+          data: {
+            status,
+            lastMessageAt: now,
+            // #705 — stop the SLA clock with the status. Without these the
+            // breach sweep keeps counting a ticket that ops has finished.
+            ...(status === "RESOLVED" ? { resolvedAt: now } : {}),
+            ...(status === "CLOSED" ? { closedAt: now } : {}),
+            ...(status === "IN_PROGRESS" ? { resolvedAt: null } : {}),
+          },
         });
       }
       return updated.count;
@@ -256,8 +319,28 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
       return supportError({
         status: 409,
         code: "CONFLICT",
-        message: "Thread is closed and can no longer change status",
-        context: { route: THREAD_ROUTE, action: "status", threadId, attemptedStatus: status },
+        message:
+          "This conversation can no longer change status — it, or the ticket behind it, is already closed",
+        context: {
+          route: THREAD_ROUTE,
+          action: "status",
+          threadId,
+          attemptedStatus: status,
+        },
+      });
+    }
+
+    // #705 — the user is the only party who cannot see the ops queue, and this
+    // route was the one status change nobody told them about.
+    if (thread.supportTicketId) {
+      void notifySupportTicketUpdate(thread.userId, {
+        ticketId: thread.supportTicketId,
+        ticketTitle: thread.supportTicket?.referenceNumber
+          ? `${thread.supportTicket.referenceNumber} — ${thread.supportTicket.title}`
+          : (thread.supportTicket?.title ?? "Support"),
+        status,
+        dashboardUrl: notificationHref(thread.organizationId, "appointments"),
+        ...notificationScope(thread.organizationId),
       });
     }
 

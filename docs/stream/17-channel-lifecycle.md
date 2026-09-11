@@ -12,6 +12,7 @@
 - [The duplicate-create race](#the-duplicate-create-race)
 - [Aging: freeze, then delete](#aging-freeze-then-delete)
 - [The sync expected-set contract](#the-sync-expected-set-contract)
+- [Stream's per-request ceilings](#streams-per-request-ceilings)
 - [Security surface rules](#security-surface-rules)
 - [Testing map](#testing-map)
 
@@ -153,11 +154,14 @@ sessions are still running.
 `syncUserEventChannels` in `actions/stream/chat/event-channel.action.ts` is the
 reconciliation loop: Postgres says which channels the user *should* belong to,
 and the sync makes Stream agree. It builds the expected-set from the user's
-webinars, classes, and DM pairs; joins missing channels; then queries Stream
-for every channel the user is actually in and removes memberships whose ids
-carry a managed prefix but are not in the expected-set. Only this user's
-membership is removed — stale channels survive for the people still entitled
-to them.
+webinars, classes, and DM pairs, then queries Stream for every channel the
+user is actually in and removes memberships whose ids carry a managed prefix
+but are not in the expected-set. There is no add pass any more — channels are
+provisioned on demand by `POST /api/stream/channels/open` and eagerly at
+booking approval and payment success — so revocation is the whole job, and
+nothing else in the system notices that a membership *ought* to be withdrawn.
+Only this user's membership is removed; stale channels survive for the people
+still entitled to them.
 
 The expected-set is Postgres-authoritative, which cuts both ways: rows that no
 longer confer a right to a channel must be excluded, or the sync will *create*
@@ -177,6 +181,59 @@ frozen again, and sat writable forever while membership regrew unbounded. If
 you touch either side of this filter, preserve the invariant: **an event past
 retention must appear in neither the cron's work queue nor the sync's
 expected-set.**
+
+## Stream's per-request ceilings
+
+Stream imposes two hard limits on the calls this subsystem makes, and both were
+being ignored in ways that produced silent, partial correctness rather than
+visible errors. `lib/stream/batch.ts` is the one place either number is
+written down.
+
+**`queryChannels` returns at most 30 channels per call, whatever `limit` you
+pass.** Asking for 100 returns exactly 30. Both reconciliation call sites in
+`event-channel.action.ts` used to ask for pages of 100 and loop while
+`page.length === 100`, so the very first page looked short, the loop ended
+after one request, and reconciliation only ever examined a user's *first thirty*
+memberships. A DM whose booking had been cancelled but that happened to sit at
+position 41 of the user's channel list was never read, never classified stale,
+and never revoked — this is the DM revocation leak (#1270). The same loop also
+advanced `offset` by the requested 100 rather than by the 30 actually returned,
+so had it ever run a second time it would have skipped seventy channels.
+`scripts/stream/purge-memberless-dms.ts` had already learned this the hard way;
+the fix now lives in `queryChannelsPaged`, which pages at the real cap, advances
+by the rows returned, and is shared by both call sites.
+
+Two consequences of that helper are worth stating explicitly. It sorts the
+reconciliation walk by `created_at` ascending rather than leaving the sort
+unspecified, because offset paging is only coherent over a stable order and
+Stream's default sort is `last_message_at` — which moves underneath a
+multi-page walk, letting an active channel jump onto an earlier page and push
+an unexamined one off the end. And it stops at Stream's maximum `offset` of
+1000 and returns `truncated: true` rather than quietly handing back a prefix.
+A user with more memberships than that gets a partial reconcile, which errs in
+the safe direction — a channel nobody looked at keeps its member, it does not
+lose one — but the run logs a warning instead of reporting a sweep it did not
+perform.
+
+**`channel.create()` carries its roster in the request body and accepts at most
+100 members**, the same ceiling `upsertUsersToStream` already respected.
+`Webinar.maxParticipants` is unbounded, so a 150-seat webinar assembled a valid
+roster and then handed all of it to Stream in one oversized call that was
+rejected outright: the first attendee to open chat got a caught exception, a
+Sentry event, and no chat. Both create paths now send `createMemberChunk(...)`
+— the first hundred — and follow with `addRemainingMembers(...)`, which adds
+the rest in hundreds through the existing sequential `forEachChunk`. The
+remainder pass also runs after an adopted race, since the winner created the
+same channel from the same roster and `addMembers` is idempotent for anyone
+already in.
+
+Ordering inside that roster is load-bearing rather than incidental. Whoever
+must certainly end up in the channel belongs at the front of the array, because
+only the front hundred travel inside the atomic create; everyone after them
+arrives in a follow-up request that can fail on its own. `createChannel` puts
+the creator first by construction, and the lazy path in
+`addUserToEventChannel` puts the consultant host and the joining user first,
+so the person whose click triggered the create is never the one stranded.
 
 ## Security surface rules
 
@@ -214,8 +271,9 @@ created.
 
 | Suite | Pins |
 | -------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `__tests__/stream/channel-actions.test.ts` | Explicit-path adoption: losing `create()` still returns the id, `channelData` is null, `assignRoles` and `markChannelExists` still run; non-duplicate failures rethrow; `addMemberToChannel` authz gates. |
-| `__tests__/stream/event-channel-actions.test.ts` | Lazy-path adoption plus the one-shot post-adoption `addMembers` retry; the sync gate (another user as non-privileged → Forbidden, banned user even for self → account suspended). |
+| `__tests__/stream/channel-actions.test.ts` | Explicit-path adoption: losing `create()` still returns the id, `channelData` is null, `assignRoles` and `markChannelExists` still run; non-duplicate failures rethrow; `addMemberToChannel` authz gates. Also the 100-member create ceiling: a 250-seat roster creates with 100 and backfills 100 + 50, an ordinary two-person channel costs no extra request, and an adopted race still backfills. |
+| `__tests__/stream/event-channel-actions.test.ts` | Lazy-path adoption plus the one-shot post-adoption `addMembers` retry; the sync gate (another user as non-privileged → Forbidden, banned user even for self → account suspended). Also the 30-row page cap: a full page forces a second request, offsets advance 0/30/60, a stale DM at position 41 is revoked, the walk sorts by `created_at`, and an offset-capped walk warns instead of claiming a clean sweep. |
+| `__tests__/stream/batch.test.ts` | `queryChannelsPaged` in isolation — the 30 constant, second-page-on-full-page, offset advancing by rows returned, empty page as an empty answer rather than a truncated one, and the `truncated` flag at the 1000 ceiling; plus `createMemberChunk` / `addRemainingMembers` losing and duplicating nobody. |
 | `__tests__/stream/__mocks__/stream-mocks.ts` | Shared mocks; `assignRoles` added so both suites can observe the moderator grant. |
 
 ---

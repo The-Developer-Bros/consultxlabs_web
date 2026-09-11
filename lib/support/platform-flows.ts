@@ -321,11 +321,23 @@ const generalFlow: PlatformFlowDefinition = {
       body: "Tell us here and it goes straight to the product team — every entry is read and tracked.",
       resolved: true,
       reason: "routed_feedback",
+      // #705 — this terminal claimed the entry was "read and tracked" and then
+      // wrote nothing at all: the turn returned before any persistence. The
+      // action asks the sheet for a box, and what the user types is stored as
+      // product Feedback. This is also COLLECT_FEEDBACK's first emitter — it
+      // had been declared in lib/support/types.ts and never used.
+      //
+      // Bound to the TERMINAL NODE rather than to a ticket, deliberately: a
+      // suggestion is not a support request, and filing one would put every
+      // opinion in the ops queue.
+      action: { kind: "COLLECT_FEEDBACK" },
     },
   },
 };
 
-const ALL_PLATFORM_FLOWS: PlatformFlowDefinition[] = [
+/** Every platform flow, gates ignored. Exported for the offer/accept parity
+ *  test — see __tests__/support/intent-offer-accept-parity.test.ts. */
+export const ALL_PLATFORM_FLOWS: PlatformFlowDefinition[] = [
   paymentsBillingFlow,
   accountAccessFlow,
   platformTechnicalFlow,

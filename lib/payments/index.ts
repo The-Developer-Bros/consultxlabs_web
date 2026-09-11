@@ -34,6 +34,8 @@ import {
   listRazorpayRefunds,
 } from "./core/razorpay";
 
+import { assertGatewayUsable } from "./validation/gateway-guards";
+
 import {
   createMockPaymentIntent,
   cancelMockPayment,
@@ -45,7 +47,6 @@ import {
 
 // Re-export types
 export * from "./core/types";
-export * from "./core/transactions";
 
 // ============================================================================
 // Unified Payment Intent Operations
@@ -65,6 +66,14 @@ export async function createPaymentIntent(
     logMockPaymentWarning(paymentGateway);
     return createMockPaymentIntent(params);
   }
+
+  // #1351 — the second door into a live charge. routeGateway fences the
+  // checkout route, but the approval-payment path (a consultant approving a
+  // request mints an intent from a stored PaymentGateway value, never through
+  // the router) reaches this switch directly. Guard here so both doors share
+  // one fence. Mock payments are exempt on purpose: they move no money and the
+  // dev Mock Pay button still names a gateway.
+  assertGatewayUsable(paymentGateway, "create a payment intent");
 
   // Route to correct gateway
   switch (paymentGateway) {
@@ -316,42 +325,4 @@ export function getPaymentGateway(paymentIntentId: string): PaymentGateway {
     `Cannot determine gateway for payment: ${paymentIntentId}`,
     "UNKNOWN_GATEWAY",
   );
-}
-
-/**
- * Convert amount to smallest currency unit
- */
-export function convertAmountToSmallestUnit(
-  amount: number,
-  currency: string,
-): number {
-  const multipliers: Record<string, number> = {
-    USD: 100, // cents
-    EUR: 100, // cents
-    GBP: 100, // pence
-    JPY: 1, // yen has no smaller unit
-    INR: 100, // paise
-    NGN: 100, // kobo
-  };
-
-  return Math.round(amount * (multipliers[currency] || 100));
-}
-
-/**
- * Convert from smallest currency unit to base unit
- */
-export function convertAmountFromSmallestUnit(
-  amount: number,
-  currency: string,
-): number {
-  const multipliers: Record<string, number> = {
-    USD: 100,
-    EUR: 100,
-    GBP: 100,
-    JPY: 1,
-    INR: 100,
-    NGN: 100,
-  };
-
-  return amount / (multipliers[currency] || 100);
 }

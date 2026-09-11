@@ -1,0 +1,105 @@
+name: Stream Webhook Subscription Drift
+
+# #1270 — the detector for the failure #1134 found in production, where the
+# live Stream webhook carried six event types while `lib/stream/webhook-dispatch.ts`
+# handled ten. Four events were therefore never delivered and two whole features
+# — per-participant attendance and chat moderation — shipped as dead code that
+# looked healthy from every angle in this repository.
+#
+# What makes that class of drift invisible is where the state lives: the
+# subscription is configured in the Stream dashboard, so narrowing it leaves no
+# commit, no diff and no failing test. `scripts/stream/ensure-webhook-subscription.ts`
+# has been able to detect it since #1134, but it returned 0 whatever it found and
+# no workflow ran it, so nothing ever asked.
+#
+# This job asks daily, and again on any pull request that changes the handled
+# event list or the script itself. It runs in `--check` mode, which never writes.
+# Applying is deliberately left to a human: `--apply` calls `updateAppSettings`
+# on a shared production Stream app that has no rehearsal environment, and that
+# is more authority than a scheduled job should hold.
+#
+# cron-runtime-minutes: 1
+
+on:
+  schedule:
+    # 05:15 UTC daily (10:45 IST). Hour 5 carries no other scheduled job, so
+    # this never co-starts with anything — see scripts/ci/check-workflow-hygiene.ts.
+    - cron: "15 5 * * *"
+  pull_request:
+    branches: [dev, staging, prod]
+    paths:
+      # The three files that can make the code and the subscription disagree
+      # from THIS side. Dashboard-side drift is what the daily schedule catches.
+      - "lib/stream/webhook-events.ts"
+      - "lib/stream/webhook-dispatch.ts"
+      - "scripts/stream/ensure-webhook-subscription.ts"
+      - ".github/workflows/stream-webhook-drift.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+  # A second workflow_dispatch while one is already pending would replace it
+  # under the default single-pending-run policy; queue: max keeps every
+  # trigger instead of silently dropping one.
+  queue: max
+
+# Read-only: the check mode makes no Stream write and no repository write.
+permissions:
+  contents: read
+
+jobs:
+  check-subscription-drift:
+    name: Check subscription drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # A pull request from a fork gets no secrets, so `isStreamConfigured()`
+    # would be false and the script would exit 1 — a red check that says
+    # nothing about the code under review. Skip those rather than teach the
+    # script to treat a missing credential as success, which is the exact
+    # silent-degradation shape the secrets manifest exists to prevent.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+
+    env:
+      STREAM_API_KEY: ${{ secrets.STREAM_API_KEY }}
+      STREAM_API_SECRET: ${{ secrets.STREAM_API_SECRET }}
+      NEXT_PUBLIC_STREAM_API_KEY: ${{ secrets.NEXT_PUBLIC_STREAM_API_KEY }}
+      # `lib/stream-client` pulls in `lib/redis`, which throws at module scope
+      # without Upstash credentials — the same import-time crash class this PR
+      # exists to fix, reintroduced by its own new workflow. A read-only drift
+      # check takes no lock and stores nothing, so the in-memory stub is the
+      # right answer here rather than handing production Redis credentials to a
+      # job that has no use for them.
+      USE_MOCK_REDIS: "true"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        # The runner holds a Stream admin secret, so a compromised transitive
+        # dependency's postinstall would run with it. Nothing here needs
+        # lifecycle scripts. Same posture as reconcile-orphaned-sessions.yml.
+        run: npm ci --ignore-scripts
+
+      - name: Check webhook subscription against the handled event list
+        # Exit 2 means real drift, exit 1 means the check could not run at all
+        # (missing credential). Both fail the job; the log says which.
+        run: npx --yes --ignore-scripts tsx@4.23.1 scripts/stream/ensure-webhook-subscription.ts --check
+
+      - name: Notify on failure
+        # Only on the scheduled leg: a pull-request failure is already visible
+        # to the author in the checks list, and paging ops for it is noise.
+        if: failure() && github.event_name == 'schedule'
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "stream-webhook-drift"

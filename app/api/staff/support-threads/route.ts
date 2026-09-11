@@ -15,28 +15,19 @@ import prisma from "@/lib/prisma";
 import { requirePrivilegedAuth } from "@/lib/auth-helpers";
 import { supportError } from "@/lib/api/support-http";
 import type { Prisma } from "@prisma/client";
+import {
+  SupportThreadCategoryEnum,
+  SupportThreadStatusEnum,
+} from "@/schemas/enums";
 
 const STAFF_THREADS_ROUTE = "staff.support-threads";
 
 const QuerySchema = z.object({
-  status: z
-    .enum(["OPEN", "IN_PROGRESS", "ESCALATED", "RESOLVED", "CLOSED"])
-    .optional(),
+  status: SupportThreadStatusEnum.optional(),
+  // A deliberate NARROWING of SupportChannel, not drift: the staff inbox lists
+  // threads that have left the tree, so SELF_SERVE is not a filterable state.
   channel: z.enum(["AI", "HUMAN"]).optional(),
-  category: z
-    .enum([
-      "CANCEL_REFUND",
-      "RESCHEDULE",
-      "NO_SHOW",
-      "TECHNICAL",
-      "PAYMENT_STATUS",
-      "RECORDING_ACCESS",
-      "QUALITY_COMPLAINT",
-      "SPONSORSHIP_BILLING",
-      "ORG_ADMIN_DISPUTE",
-      "OTHER",
-    ])
-    .optional(),
+  category: SupportThreadCategoryEnum.optional(),
 });
 
 export async function GET(req: NextRequest) {

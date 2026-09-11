@@ -30,6 +30,22 @@ export class AllocationValidationError extends AllocationError {
   }
 }
 
+/**
+ * 400 — SLOT_SHORTAGE, carrying how many WHOLE sessions the search COULD place
+ * (#1206). Without that number the client can only say "not enough free
+ * slots"; with it, it can offer the consultant the choice between waiting and
+ * placing what fits now.
+ */
+export class SlotShortageError extends AllocationValidationError {
+  constructor(
+    message: string,
+    readonly placeableSessions: number,
+    readonly requiredSessions: number,
+  ) {
+    super(message, "SLOT_SHORTAGE");
+  }
+}
+
 /** 400 — event or consultant not found */
 export class AllocationNotFoundError extends AllocationError {
   readonly httpStatus = 400 as const;

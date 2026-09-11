@@ -8,6 +8,8 @@ import prisma from "@/lib/prisma";
 import { notifySupportTicketResponse } from "@/lib/novu";
 import { notificationScope } from "@/lib/novu/workflows";
 import { CreateSupportResponseSchema } from "@/schemas/support";
+import { allocateMessageSeq } from "@/lib/support/message-seq";
+import { applyStaffReply } from "@/lib/support/sla";
 import { requirePrivilegedAuth } from "@/lib/auth-helpers";
 import * as Sentry from "@sentry/nextjs";
 
@@ -90,6 +92,10 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
       // thread as AGENT messages (what the USER sees on "Get help"), and bump
       // the ticket's own clock — the hub and ops inbox sort by it.
       if (!validatedData.isInternal) {
+        // #705 — a public reply stops the resolution clock and counts as the
+        // acknowledgement. An INTERNAL note does neither: the user has not
+        // heard anything, so nothing is owed back to them yet.
+        await applyStaffReply(tx, ticketId, now);
         await tx.supportTicket.update({
           where: { id: ticketId },
           data: { lastMessageAt: now },
@@ -99,11 +105,14 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
           select: { id: true },
         });
         if (linkedThread) {
+          const seq = await allocateMessageSeq(tx, linkedThread.id, 1);
           await tx.supportMessage.create({
             data: {
               threadId: linkedThread.id,
               sender: "AGENT",
               body: validatedData.message,
+              seq: seq + 1,
+              authorUserId: session.user.id,
             },
           });
           await tx.appointmentSupportThread.update({
@@ -134,7 +143,10 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
 
     return NextResponse.json(response, { status: 201 });
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "staff" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "staff" } },
+    );
     console.error("Error creating support response:", error);
     return NextResponse.json(
       { error: "Failed to create response" },
@@ -171,7 +183,10 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
 
     return NextResponse.json(responses);
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "staff" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "staff" } },
+    );
     console.error("Error fetching support responses:", error);
     return NextResponse.json(
       { error: "Failed to fetch responses" },

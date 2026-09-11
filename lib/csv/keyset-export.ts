@@ -18,7 +18,12 @@ export function escapeCsvField(v: string | number | null | undefined): string {
   // CR #1243 r3 — neutralize spreadsheet formula triggers BEFORE quoting:
   // invoiceNumber carries an org-supplied prefix, so a crafted "=cmd" value
   // would execute in Excel/LibreOffice on open.
-  const guarded = /^[=+\-@\t\r]/.test(String(v)) ? `'${v}` : `${v}`;
+  // #1354 — a bare negative number is not a formula in any spreadsheet, and
+  // quoting it corrupts a numeric column (the TDS return's reversal rows carry
+  // negative paise and must import as `-500`, not `'-500`).
+  const raw = String(v);
+  const isPlainNumber = /^-?\d+(\.\d+)?$/.test(raw);
+  const guarded = !isPlainNumber && /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
   const s = String(guarded);
   if (!/[",\n\r]/.test(s)) return s;
   return `"${s.replace(/"/g, '""')}"`;
@@ -118,7 +123,9 @@ export function keysetCsvStream<TRow>(
       } catch (err) {
         opts.onError?.(err, { iterations });
         controller.enqueue(
-          noticeRow("EXPORT ERROR: export failed mid-stream — contact support."),
+          noticeRow(
+            "EXPORT ERROR: export failed mid-stream — contact support.",
+          ),
         );
         controller.close();
       }

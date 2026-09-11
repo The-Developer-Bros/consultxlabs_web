@@ -19,6 +19,7 @@ import {
   isDiscoverablePlanPlan,
   loadOwnedListingRecording,
 } from "@/lib/stream/recording-listing-access";
+import { isDurablyOurs } from "@/lib/stream/recording-storage";
 
 type RouteParams = { params: Promise<{ recordingId: string }> };
 
@@ -53,8 +54,10 @@ export async function POST(
       loaded.listingStatus !== "PUBLISHED" ||
       loaded.listPricePaise === null ||
       loaded.listPricePaise <= BigInt(0) ||
-      loaded.recordingStatus !== "AVAILABLE" ||
-      loaded.storageType !== "SUPABASE" ||
+      !isDurablyOurs({
+        status: loaded.recordingStatus,
+        storageType: loaded.storageType,
+      }) ||
       !isDiscoverablePlanPlan(loaded.plan.plan)
     ) {
       return NextResponse.json(

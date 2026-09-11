@@ -47,10 +47,20 @@ boundary. `toCurrencyEnum()` (in `lib/payments/validation/currency-guards.ts`)
 is the single normaliser: it trims, upper-cases, and accepts only codes in the
 enum, throwing on anything else so a webhook caller dead-letters the event
 rather than settling a currency the platform cannot represent. That enum is
-deliberately narrower than `CURRENCY_MULTIPLIERS` (in `lib/payments/index.ts`),
-which lists display-only FX codes the UI can render but the platform cannot
+deliberately narrower than `SUPPORTED_CURRENCY_CODES` (in
+`lib/currency-codes.ts`), which lists the display-only FX codes the navbar can
+render and the checkout pages can estimate in, but which the platform cannot
 settle; the two must not be conflated, and a comment in the guard cross-links
-them.
+them. `CURRENCY_MULTIPLIERS` used to play that role and is referenced by older
+revisions of this document; it was deleted in #1396 because nothing imported it.
+
+The same file now carries `assertInrSettlement`, which is the enforcement half
+of this decision. `toCurrencyEnum` says which currencies the platform can
+represent; `assertInrSettlement` says which one it can actually settle, and it
+runs as the first statement of both `createRazorpayOrder` and
+`createStripeCheckoutSession`. A caller that reads a currency out of the
+database and hands it to a gateway therefore fails loudly rather than minting an
+order denominated in a foreign subunit.
 
 This decision also closed three latent multi-currency defects found in the same
 review. Ledger accounts must never be keyed by a row's settlement currency:

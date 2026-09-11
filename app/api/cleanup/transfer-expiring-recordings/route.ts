@@ -2,7 +2,7 @@
  * Transfer Expiring Recordings Cron Job
  *
  * Auto-transfers recordings from Stream S3 to Supabase for plans with
- * SUPABASE_PERMANENT storage policy. Also identifies STREAM_ONLY
+ * PERMANENT storage policy. Also identifies STREAM_ONLY
  * recordings expiring soon for consultant notification.
  *
  * Schedule: Every 6 hours (via GitHub Actions)
@@ -15,6 +15,10 @@ import { withCronLock, CronLockHeldError } from "@/lib/cron/with-cron-lock";
 import { notifyRecordingExpiring } from "@/lib/novu/service";
 import { getAppUrl } from "@/lib/url";
 import * as Sentry from "@sentry/nextjs";
+import {
+  assertNotInMaintenance,
+  MaintenanceActiveError,
+} from "@/lib/maintenance-cron";
 
 // STR-3 — collapse the per-recording expiry list into one notification per
 // consultant: count + soonest expiry. Keeps a consultant with 12 expiring
@@ -66,6 +70,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    // The cron core is shared with the jobs/** entrypoint, which exits on
+    // maintenance; this HTTP twin cannot exit, so it answers 503 instead.
+    await assertNotInMaintenance("transfer-expiring-recordings");
 
     streamLogger.info("Starting transfer-expiring-recordings cron");
     Sentry.logger.info("cron:transfer-expiring-recordings started");
@@ -75,14 +82,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       "transfer-expiring-recordings",
       { failMode: "open" },
       async () => {
-        // Phase 1: Auto-transfer SUPABASE_PERMANENT recordings.
+        // Phase 1: Auto-transfer PERMANENT recordings.
         // #899 — 14-day window sweeps every READY permanent recording
         // (near-ready transfer), matching the GH Actions entry.
         const transferResult =
           await RecordingTransferService.processExpiringRecordings(
             14, // days before expiry (= full Stream URL lifetime)
             10, // batch size
-            "SUPABASE_PERMANENT",
+            "PERMANENT",
           );
 
         // Phase 2: Find STREAM_ONLY recordings expiring soon (for notifications)
@@ -118,12 +125,17 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     if (error instanceof CronLockHeldError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
-    Sentry.captureException(error, { tags: { subsystem: "cron", job: "transfer-expiring-recordings" } });
+    if (error instanceof MaintenanceActiveError) {
+      return NextResponse.json(
+        { error: error.message, phase: error.phase },
+        { status: error.httpStatus },
+      );
+    }
+    Sentry.captureException(error, {
+      tags: { subsystem: "cron", job: "transfer-expiring-recordings" },
+    });
     streamLogger.error("Transfer expiring recordings cron failed", error);
-    return NextResponse.json(
-      { error: "Cron job failed" },
-      { status: 500 },
-    );
+    return NextResponse.json({ error: "Cron job failed" }, { status: 500 });
   }
 }
 

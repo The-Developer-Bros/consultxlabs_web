@@ -126,7 +126,9 @@ export async function GET(request: NextRequest) {
       });
     }
     if (minRating !== undefined && !isNaN(minRating)) {
-      conditions.push({ rating: { gte: minRating } });
+      // #705 — filter on the published score, so a suppressed consultant is
+      // not surfaced by a rating the profile page refuses to display.
+      conditions.push({ publishedRating: { gte: minRating } });
     }
     if (companies.length > 0) {
       conditions.push({

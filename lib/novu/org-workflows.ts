@@ -20,24 +20,45 @@ import type { MemberRole } from "@prisma/client";
 import prisma from "@/lib/prisma";
 import {
   NOVU_WORKFLOWS,
-  type OrgInviteSentPayload,
-  type OrgInviteAcceptedPayload,
-  type OrgInvoiceIssuedPayload,
-  type OrgInvoicePaidPayload,
-  type OrgInvoiceOverduePayload,
-  type OrgMemberOverageTimedOutPayload,
-  type OrgLicenseRenewalUpcomingPayload,
+  type OrgDataExportReadyInput,
   type OrgDataExportReadyPayload,
-  type OrgWalletTopupConfirmedPayload,
-  type OrgWalletLowPayload,
+  type OrgInviteAcceptedPayload,
+  type OrgInviteSentInput,
+  type OrgInviteSentPayload,
+  type OrgInvoiceIssuedInput,
+  type OrgInvoiceIssuedPayload,
+  type OrgInvoiceOverdueInput,
+  type OrgInvoiceOverduePayload,
+  type OrgInvoicePaidInput,
+  type OrgInvoicePaidPayload,
+  type OrgLicenseRenewalUpcomingInput,
+  type OrgLicenseRenewalUpcomingPayload,
+  type OrgMemberOverageTimedOutInput,
+  type OrgMemberOverageTimedOutPayload,
+  type OrgPayoutCompletedInput,
   type OrgPayoutCompletedPayload,
-  type OrgProgramExhaustedPayload,
+  type OrgPayoutFailedInput,
+  type OrgPayoutFailedPayload,
   type OrgProgramCapNearPayload,
+  type OrgProgramExhaustedPayload,
+  type OrgProgramOverageDueInput,
   type OrgProgramOverageDuePayload,
-  type OrgSsoProviderDeletedPayload,
+  type OrgSsoCertExpiringInput,
   type OrgSsoCertExpiringPayload,
+  type OrgSsoProviderDeletedPayload,
+  type OrgWalletLowInput,
+  type OrgWalletLowPayload,
+  type OrgWalletTopupConfirmedInput,
+  type OrgWalletTopupConfirmedPayload,
 } from "./workflows";
 import { getNovuClient, isNovuConfigured } from "./client";
+import {
+  DEFAULT_NOTIFICATION_TIMEZONE,
+  formatNotificationDateTime,
+  formatNotificationMoney,
+  groupRecipientsByTimezone,
+  resolveRecipientTimezones,
+} from "./humanize";
 
 // ============================================================================
 // Internal trigger helpers (non-throwing, schema-typed)
@@ -55,7 +76,10 @@ async function triggerOne<T extends NovuRecord>(
     const novu = getNovuClient();
     await novu.trigger({ workflowId, to: subscriberId, payload });
   } catch (err) {
-    Sentry.captureException(err instanceof Error ? err : new Error(String(err)), { tags: { subsystem: "novu" } });
+    Sentry.captureException(
+      err instanceof Error ? err : new Error(String(err)),
+      { tags: { subsystem: "novu" } },
+    );
     console.error(`[Novu/org] Failed to trigger ${workflowId}:`, err);
   }
 }
@@ -71,10 +95,38 @@ async function triggerMany<T extends NovuRecord>(
     const novu = getNovuClient();
     await novu.trigger({ workflowId, to: subscriberIds, payload });
   } catch (err) {
-    Sentry.captureException(err instanceof Error ? err : new Error(String(err)), { tags: { subsystem: "novu" } });
+    Sentry.captureException(
+      err instanceof Error ? err : new Error(String(err)),
+      { tags: { subsystem: "novu" } },
+    );
     console.error(`[Novu/org] Failed to trigger ${workflowId} batch:`, err);
   }
 }
+
+/**
+ * #536 — a roster spans people, and people span timezones, so a payload with a
+ * rendered date can only be built once the recipient's zone is known. This
+ * sends one payload per distinct zone in the roster; see the sibling helper in
+ * `lib/novu/service.ts` for the reasoning in full.
+ */
+async function triggerManyZoned<T extends NovuRecord>(
+  workflowId: string,
+  subscriberIds: string[],
+  build: (timezone: string) => T,
+): Promise<void> {
+  if (subscriberIds.length === 0) return;
+  if (!isNovuConfigured()) return;
+  const zones = await resolveRecipientTimezones(subscriberIds);
+  for (const [timezone, recipients] of groupRecipientsByTimezone(
+    subscriberIds,
+    zones,
+  )) {
+    await triggerMany(workflowId, recipients, build(timezone));
+  }
+}
+
+/** Settlement is INR-only, so an org payload without a currency is INR. */
+const ORG_DEFAULT_CURRENCY = "INR";
 
 // ============================================================================
 // Roster resolvers — map an orgId + role-set to active-member user ids
@@ -121,9 +173,20 @@ const OWNER_ONLY: MemberRole[] = ["OWNER"];
  */
 export async function notifyOrgInviteSent(
   inviteeEmail: string,
-  payload: OrgInviteSentPayload,
+  payload: OrgInviteSentInput,
 ): Promise<void> {
-  return triggerOne(NOVU_WORKFLOWS.ORG_INVITE_SENT, inviteeEmail, payload);
+  // The invitee has no account yet, so there is no recorded zone to render in;
+  // the platform default is used and the rendered string names it (#536).
+  const wire: OrgInviteSentPayload = {
+    ...payload,
+    expiresAt:
+      formatNotificationDateTime(
+        payload.expiresAt,
+        DEFAULT_NOTIFICATION_TIMEZONE,
+      ) ?? payload.expiresAt,
+    expiresAtIso: payload.expiresAt,
+  };
+  return triggerOne(NOVU_WORKFLOWS.ORG_INVITE_SENT, inviteeEmail, wire);
 }
 
 /**
@@ -145,10 +208,21 @@ export async function notifyOrgInviteAccepted(
  */
 export async function notifyOrgInvoiceIssued(
   orgId: string,
-  payload: OrgInvoiceIssuedPayload,
+  payload: OrgInvoiceIssuedInput,
 ): Promise<void> {
   const owners = await rosterForOrg(orgId, OWNER_ONLY);
-  return triggerMany(NOVU_WORKFLOWS.ORG_INVOICE_ISSUED, owners, payload);
+  return triggerManyZoned(
+    NOVU_WORKFLOWS.ORG_INVOICE_ISSUED,
+    owners,
+    (timezone): OrgInvoiceIssuedPayload => ({
+      ...payload,
+      total: formatNotificationMoney(payload.totalPaise, payload.currency),
+      dueDate:
+        formatNotificationDateTime(payload.dueDate, timezone) ??
+        payload.dueDate,
+      dueDateIso: payload.dueDate,
+    }),
+  );
 }
 
 /**
@@ -157,10 +231,20 @@ export async function notifyOrgInvoiceIssued(
  */
 export async function notifyOrgInvoicePaid(
   orgId: string,
-  payload: OrgInvoicePaidPayload,
+  payload: OrgInvoicePaidInput,
 ): Promise<void> {
   const owners = await rosterForOrg(orgId, OWNER_ONLY);
-  return triggerMany(NOVU_WORKFLOWS.ORG_INVOICE_PAID, owners, payload);
+  return triggerManyZoned(
+    NOVU_WORKFLOWS.ORG_INVOICE_PAID,
+    owners,
+    (timezone): OrgInvoicePaidPayload => ({
+      ...payload,
+      total: formatNotificationMoney(payload.totalPaise, payload.currency),
+      paidAt:
+        formatNotificationDateTime(payload.paidAt, timezone) ?? payload.paidAt,
+      paidAtIso: payload.paidAt,
+    }),
+  );
 }
 
 /**
@@ -171,10 +255,14 @@ export async function notifyOrgInvoicePaid(
  */
 export async function notifyOrgInvoiceOverdue(
   orgId: string,
-  payload: OrgInvoiceOverduePayload,
+  payload: OrgInvoiceOverdueInput,
 ): Promise<void> {
   const recipients = await rosterForOrg(orgId, VISIBILITY_ROLES);
-  return triggerMany(NOVU_WORKFLOWS.ORG_INVOICE_OVERDUE, recipients, payload);
+  const wire: OrgInvoiceOverduePayload = {
+    ...payload,
+    total: formatNotificationMoney(payload.totalPaise, payload.currency),
+  };
+  return triggerMany(NOVU_WORKFLOWS.ORG_INVOICE_OVERDUE, recipients, wire);
 }
 
 /**
@@ -185,12 +273,16 @@ export async function notifyOrgInvoiceOverdue(
  */
 export async function notifyMemberOverageTimedOut(
   memberUserId: string,
-  payload: OrgMemberOverageTimedOutPayload,
+  payload: OrgMemberOverageTimedOutInput,
 ): Promise<void> {
+  const wire: OrgMemberOverageTimedOutPayload = {
+    ...payload,
+    amount: formatNotificationMoney(payload.amountPaise, payload.currency),
+  };
   return triggerMany(
     NOVU_WORKFLOWS.ORG_MEMBER_OVERAGE_TIMED_OUT,
     [memberUserId],
-    payload,
+    wire,
   );
 }
 
@@ -202,13 +294,25 @@ export async function notifyMemberOverageTimedOut(
  */
 export async function notifyOrgLicenseRenewalUpcoming(
   orgId: string,
-  payload: OrgLicenseRenewalUpcomingPayload,
+  payload: OrgLicenseRenewalUpcomingInput,
 ): Promise<void> {
   const owners = await rosterForOrg(orgId, OWNER_ONLY);
-  return triggerMany(
+  return triggerManyZoned(
     NOVU_WORKFLOWS.ORG_LICENSE_RENEWAL_UPCOMING,
     owners,
-    payload,
+    (timezone): OrgLicenseRenewalUpcomingPayload => ({
+      ...payload,
+      cycle: payload.cycle.toLowerCase(),
+      cycleCode: payload.cycle,
+      renewalDate:
+        formatNotificationDateTime(payload.renewalDate, timezone) ??
+        payload.renewalDate,
+      renewalDateIso: payload.renewalDate,
+      expectedTotal: formatNotificationMoney(
+        payload.expectedTotalPaise,
+        payload.currency,
+      ),
+    }),
   );
 }
 
@@ -221,10 +325,20 @@ export async function notifyOrgLicenseRenewalUpcoming(
  */
 export async function notifyOrgDataExportReady(
   orgId: string,
-  payload: OrgDataExportReadyPayload,
+  payload: OrgDataExportReadyInput,
 ): Promise<void> {
   const owners = await rosterForOrg(orgId, OWNER_ONLY);
-  return triggerMany(NOVU_WORKFLOWS.ORG_DATA_EXPORT_READY, owners, payload);
+  return triggerManyZoned(
+    NOVU_WORKFLOWS.ORG_DATA_EXPORT_READY,
+    owners,
+    (timezone): OrgDataExportReadyPayload => ({
+      ...payload,
+      expiresAt:
+        formatNotificationDateTime(payload.expiresAt, timezone) ??
+        payload.expiresAt,
+      expiresAtIso: payload.expiresAt,
+    }),
+  );
 }
 
 /**
@@ -235,14 +349,18 @@ export async function notifyOrgDataExportReady(
  */
 export async function notifyOrgWalletTopupConfirmed(
   orgId: string,
-  payload: OrgWalletTopupConfirmedPayload,
+  payload: OrgWalletTopupConfirmedInput,
 ): Promise<void> {
   const owners = await rosterForOrg(orgId, OWNER_ONLY);
-  return triggerMany(
-    NOVU_WORKFLOWS.ORG_WALLET_TOPUP_CONFIRMED,
-    owners,
-    payload,
-  );
+  const wire: OrgWalletTopupConfirmedPayload = {
+    ...payload,
+    amount: formatNotificationMoney(payload.amountPaise, payload.currency),
+    newBalance: formatNotificationMoney(
+      payload.newBalancePaise,
+      payload.currency,
+    ),
+  };
+  return triggerMany(NOVU_WORKFLOWS.ORG_WALLET_TOPUP_CONFIRMED, owners, wire);
 }
 
 /**
@@ -253,10 +371,15 @@ export async function notifyOrgWalletTopupConfirmed(
  */
 export async function notifyOrgWalletLow(
   orgId: string,
-  payload: OrgWalletLowPayload,
+  payload: OrgWalletLowInput,
 ): Promise<void> {
   const recipients = await rosterForOrg(orgId, VISIBILITY_ROLES);
-  return triggerMany(NOVU_WORKFLOWS.ORG_WALLET_LOW, recipients, payload);
+  const wire: OrgWalletLowPayload = {
+    ...payload,
+    balance: formatNotificationMoney(payload.balancePaise, payload.currency),
+    minimum: formatNotificationMoney(payload.minimumPaise, payload.currency),
+  };
+  return triggerMany(NOVU_WORKFLOWS.ORG_WALLET_LOW, recipients, wire);
 }
 
 /**
@@ -266,10 +389,14 @@ export async function notifyOrgWalletLow(
  */
 export async function notifyOrgPayoutCompleted(
   orgId: string,
-  payload: OrgPayoutCompletedPayload,
+  payload: OrgPayoutCompletedInput,
 ): Promise<void> {
   const recipients = await rosterForOrg(orgId, VISIBILITY_ROLES);
-  return triggerMany(NOVU_WORKFLOWS.ORG_PAYOUT_COMPLETED, recipients, payload);
+  const wire: OrgPayoutCompletedPayload = {
+    ...payload,
+    amount: formatNotificationMoney(payload.amountPaise, payload.currency),
+  };
+  return triggerMany(NOVU_WORKFLOWS.ORG_PAYOUT_COMPLETED, recipients, wire);
 }
 
 /**
@@ -281,14 +408,18 @@ export async function notifyOrgPayoutCompleted(
  */
 export async function notifyOrgPayoutFailed(
   orgId: string,
-  payload: import("./workflows").OrgPayoutFailedPayload,
+  payload: OrgPayoutFailedInput,
 ): Promise<void> {
   const recipients = await rosterForOrg(orgId, VISIBILITY_ROLES);
   const workflowId =
     payload.kind === "REVERSED"
       ? NOVU_WORKFLOWS.ORG_PAYOUT_REVERSED
       : NOVU_WORKFLOWS.ORG_PAYOUT_FAILED;
-  return triggerMany(workflowId, recipients, payload);
+  const wire: OrgPayoutFailedPayload = {
+    ...payload,
+    amount: formatNotificationMoney(payload.amountPaise, payload.currency),
+  };
+  return triggerMany(workflowId, recipients, wire);
 }
 
 /**
@@ -304,11 +435,7 @@ export async function notifyOrgProgramExhausted(
 ): Promise<void> {
   const operators = await rosterForOrg(orgId, OPERATOR_ROLES);
   const recipients = Array.from(new Set([assigneeUserId, ...operators]));
-  return triggerMany(
-    NOVU_WORKFLOWS.ORG_PROGRAM_EXHAUSTED,
-    recipients,
-    payload,
-  );
+  return triggerMany(NOVU_WORKFLOWS.ORG_PROGRAM_EXHAUSTED, recipients, payload);
 }
 
 /**
@@ -325,11 +452,7 @@ export async function notifyOrgProgramCapNear(
 ): Promise<void> {
   const operators = await rosterForOrg(orgId, OPERATOR_ROLES);
   const recipients = Array.from(new Set([assigneeUserId, ...operators]));
-  return triggerMany(
-    NOVU_WORKFLOWS.ORG_PROGRAM_CAP_NEAR,
-    recipients,
-    payload,
-  );
+  return triggerMany(NOVU_WORKFLOWS.ORG_PROGRAM_CAP_NEAR, recipients, payload);
 }
 
 /**
@@ -339,12 +462,16 @@ export async function notifyOrgProgramCapNear(
  */
 export async function notifyOrgProgramOverageDue(
   memberUserId: string,
-  payload: OrgProgramOverageDuePayload,
+  payload: OrgProgramOverageDueInput,
 ): Promise<void> {
+  const wire: OrgProgramOverageDuePayload = {
+    ...payload,
+    amount: formatNotificationMoney(payload.amountPaise, ORG_DEFAULT_CURRENCY),
+  };
   return triggerMany(
     NOVU_WORKFLOWS.ORG_PROGRAM_OVERAGE_DUE,
     [memberUserId],
-    payload,
+    wire,
   );
 }
 
@@ -358,11 +485,7 @@ export async function notifyOrgSsoProviderDeleted(
   payload: OrgSsoProviderDeletedPayload,
 ): Promise<void> {
   const owners = await rosterForOrg(orgId, OWNER_ONLY);
-  return triggerMany(
-    NOVU_WORKFLOWS.ORG_SSO_PROVIDER_DELETED,
-    owners,
-    payload,
-  );
+  return triggerMany(NOVU_WORKFLOWS.ORG_SSO_PROVIDER_DELETED, owners, payload);
 }
 
 /**
@@ -372,8 +495,18 @@ export async function notifyOrgSsoProviderDeleted(
  */
 export async function notifyOrgSsoCertExpiring(
   orgId: string,
-  payload: OrgSsoCertExpiringPayload,
+  payload: OrgSsoCertExpiringInput,
 ): Promise<void> {
   const owners = await rosterForOrg(orgId, OWNER_ONLY);
-  return triggerMany(NOVU_WORKFLOWS.ORG_SSO_CERT_EXPIRING, owners, payload);
+  return triggerManyZoned(
+    NOVU_WORKFLOWS.ORG_SSO_CERT_EXPIRING,
+    owners,
+    (timezone): OrgSsoCertExpiringPayload => ({
+      ...payload,
+      notAfter:
+        formatNotificationDateTime(payload.notAfter, timezone) ??
+        payload.notAfter,
+      notAfterIso: payload.notAfter,
+    }),
+  );
 }

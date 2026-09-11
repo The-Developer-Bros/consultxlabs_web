@@ -2,6 +2,12 @@ import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { requirePrivilegedAuth } from "@/lib/auth-helpers";
+import {
+  ADMIN_DISPUTE_SELECT,
+  ADMIN_REFUND_SELECT,
+  CONSUMER_INVOICE_SUMMARY_SELECT,
+  DISCOUNT_CODE_SUMMARY_SELECT,
+} from "@/lib/data/payments-select";
 
 interface RouteParams {
   params: Promise<{
@@ -33,13 +39,7 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
             appointmentType: true,
           },
         },
-        discountCode: {
-          select: {
-            code: true,
-            discountType: true,
-            discountValue: true,
-          },
-        },
+        discountCode: { select: DISCOUNT_CODE_SUMMARY_SELECT },
         // Explicit selects, for two reasons. A bare `include` returns whatever
         // the model happens to carry, which is how the detail page came to read
         // `refund.amount` — a name neither model has — and render "₹NaN" from
@@ -50,32 +50,17 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
         // `internalNotes` and `evidence`, and `Refund` holds `metadata` and
         // `failureReason`; none of it is rendered, and operator notes on a
         // chargeback are not something to hand out because the page happened
-        // to over-fetch.
+        // to over-fetch. The shapes live in lib/data/payments-select.ts so the
+        // buyer-facing history cannot drift away from this boundary.
         refunds: {
           orderBy: { createdAt: "desc" },
-          select: {
-            id: true,
-            refundId: true,
-            amountPaise: true,
-            currency: true,
-            status: true,
-            reason: true,
-            paymentGateway: true,
-            createdAt: true,
-          },
+          select: ADMIN_REFUND_SELECT,
         },
         disputes: {
           orderBy: { createdAt: "desc" },
-          select: {
-            id: true,
-            disputeId: true,
-            amountPaise: true,
-            currency: true,
-            status: true,
-            reason: true,
-            createdAt: true,
-          },
+          select: ADMIN_DISPUTE_SELECT,
         },
+        consumerInvoice: { select: CONSUMER_INVOICE_SUMMARY_SELECT },
       },
     });
 

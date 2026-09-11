@@ -41,7 +41,12 @@ export interface SlotLike {
   completionStatus?: string | null;
   /** A10 soft-delete tombstone (#676) — a set value means the slot is gone. */
   deletedAt?: Date | string | null;
-  meetingSession?: { id: string; endedAt: Date | string | null } | null;
+  meetingSession?: {
+    id: string;
+    endedAt: Date | string | null;
+    /** #1270 — required; see the note in lib/appointments/slots.ts. */
+    endedReason: string | null;
+  } | null;
 }
 
 /**
@@ -79,6 +84,13 @@ export interface SessionVM {
   completionStatus: string | null;
   /** Meeting ended early by the host — session is over regardless of endsAt. */
   meetingEndedAt: Date | null;
+  /**
+   * #1270 — carried alongside `meetingEndedAt` because the two are only
+   * meaningful together. A session ended by Stream's 30-second inactivity
+   * timeout is not a session the host closed, and treating them alike locked
+   * people out of their own booking mid-hour.
+   */
+  meetingEndedReason: string | null;
 }
 
 export interface PersonVM {
@@ -157,6 +169,7 @@ export function toSessionVM(slot: SlotLike): SessionVM {
     isTentative: slot.isTentative,
     completionStatus: slot.completionStatus ?? null,
     meetingEndedAt: toDateOrNull(slot.meetingSession?.endedAt),
+    meetingEndedReason: slot.meetingSession?.endedReason ?? null,
   };
 }
 

@@ -9,7 +9,10 @@
  * four bugs fails CI instead of resurfacing in production:
  *
  *  #788 — mergeConsecutiveSlots fused adjacent availability ROWS, mis-binding
- *         sliced sub-windows to the first row's id.
+ *         sliced sub-windows to the first row's id while checkout validated
+ *         against that one row. #1320 moved checkout to a union-of-rows rule,
+ *         so the cross-row merge is now REQUIRED and the pin below asserts the
+ *         new invariant: every covering row id rides the merged slot.
  *  #827 — confirmExistingAppointment flipped slots confirmed without checking
  *         for an already-confirmed overlapping slot (cross-user double-book).
  *  #828 — checkout had no request-level idempotency; the replay helper must
@@ -71,7 +74,7 @@ beforeEach(() => jest.clearAllMocks());
 // ---------------------------------------------------------------------------
 // #788 — same-source merge guard
 // ---------------------------------------------------------------------------
-describe("#788 — mergeConsecutiveSlots never merges across availability rows", () => {
+describe("#788 → #1320 — mergeConsecutiveSlots merges across rows and keeps every covering id", () => {
   const base = {
     isAllocated: false,
     localStartTime: "x",
@@ -91,13 +94,15 @@ describe("#788 — mergeConsecutiveSlots never merges across availability rows",
     endsAt: "2026-06-26T16:00:00.000Z",
   };
 
-  it("keeps adjacent slots from DIFFERENT rows separate (the #788 mis-bind)", () => {
+  it("merges adjacent slots from DIFFERENT rows and carries both ids (#1320)", () => {
     const merged = mergeConsecutiveSlots([rowA, rowB] as never);
-    expect(merged).toHaveLength(2);
-    expect(merged.map((m) => m.slotOfAvailabilityId)).toEqual([
-      "row-A",
-      "row-B",
-    ]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].endsAt).toBe("2026-06-26T16:00:00.000Z");
+    // The first row's id stays for compatibility; the mis-bind #788 feared is
+    // harmless now that checkout validates the window against the union of
+    // the consultant's rows, and the full set is available to any reader.
+    expect(merged[0].slotOfAvailabilityId).toBe("row-A");
+    expect(merged[0].slotOfAvailabilityIds).toEqual(["row-A", "row-B"]);
   });
 
   it("still merges adjacent sub-windows of the SAME row (the trial use case)", () => {
@@ -117,6 +122,10 @@ describe("#827 — confirmExistingAppointment first-confirmed-wins", () => {
     return {
       slotUpdateMany,
       tx: {
+        appointmentParticipant: {
+          createMany: jest.fn().mockResolvedValue({ count: 1 }),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        },
         appointment: {
           findUnique: jest.fn().mockResolvedValue({
             id: "appt-1",
@@ -147,12 +156,10 @@ describe("#827 — confirmExistingAppointment first-confirmed-wins", () => {
         consultation: {
           update: jest.fn().mockResolvedValue({}),
           updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-          findUnique: jest
-            .fn()
-            .mockResolvedValue({
-              id: "c1",
-              status: "APPROVED_PENDING_PAYMENT",
-            }),
+          findUnique: jest.fn().mockResolvedValue({
+            id: "c1",
+            status: "APPROVED_PENDING_PAYMENT",
+          }),
         },
       } as never,
     };
@@ -188,6 +195,10 @@ describe("#827 — confirmExistingAppointment first-confirmed-wins", () => {
 describe("#855 — capturedAfterTerminal signal on a cancelled booking", () => {
   function mockTx(consultationStatus: string, casCount: number) {
     return {
+      appointmentParticipant: {
+        createMany: jest.fn().mockResolvedValue({ count: 1 }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
       appointment: {
         findUnique: jest.fn().mockResolvedValue({
           id: "appt-1",

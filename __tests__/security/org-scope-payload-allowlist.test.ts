@@ -47,8 +47,8 @@ describe("org-scope payloads never carry session content", () => {
     // Each of these either IS the media or resolves to it.
     for (const field of [
       "recordingUrl",
-      "supabaseUrl",
-      "supabasePath",
+      "storageUrl",
+      "storagePath",
       "thumbnailUrl",
       "previewClipUrl",
       "streamRecordingId",

@@ -4,7 +4,7 @@
  * One source of truth for the marketplace listing filter — the API route and
  * the ISR page both call these, so a relaxed filter can never ship on one
  * surface only. Select allowlists expose ONLY listing metadata: playback URLs
- * (recordingUrl, supabasePath) must never reach an anonymous response.
+ * (recordingUrl, storagePath) must never reach an anonymous response.
  *
  * Consultant identity travels Recording → MeetingSession → SlotOfAppointment
  * → Appointment → (Webinar|Class)Plan → ConsultantProfile — there is no
@@ -15,6 +15,7 @@ import * as Sentry from "@sentry/nextjs";
 import prisma from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 import { eventPlanDiscoverableWhere } from "@/lib/api/plans/visibility";
+import { durablyOursWhere } from "@/lib/stream/recording-storage";
 
 /** Listing metadata only — no storage paths, no playback URLs. */
 const recordingListingSelect = {
@@ -148,16 +149,15 @@ function flattenListing(row: ListingRow): RecordingListing | null {
 }
 
 /**
- * The single marketplace gate. A row is listed iff:
- *   listingStatus=PUBLISHED AND storageType=SUPABASE AND status=AVAILABLE
- *   (a sold replay must outlive Stream's ≤14-day retention)
- *   AND its parent webinar/class plan is publicly discoverable and live.
+ * The single marketplace gate. A row is listed iff it is PUBLISHED, durably
+ * ours (a sold replay must outlive Stream's ≤14-day retention — see
+ * `durablyOursWhere`), and its parent webinar/class plan is publicly
+ * discoverable and live.
  */
 export function publicRecordingWhere(): Prisma.RecordingWhereInput {
   return {
     listingStatus: "PUBLISHED",
-    storageType: "SUPABASE",
-    status: "AVAILABLE",
+    ...durablyOursWhere(),
     meetingSession: {
       slotOfAppointment: {
         appointment: {

@@ -35,6 +35,9 @@ jest.mock("../../lib/prisma", () => ({
         slotOfAppointment: {
           updateMany: (...a: unknown[]) => mockSlotUpdateMany(...a),
         },
+        appointmentParticipant: {
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        },
         appointment: {
           updateMany: (...a: unknown[]) => mockAppointmentUpdateMany(...a),
           delete: (...a: unknown[]) => mockAppointmentDelete(...a),
@@ -60,7 +63,6 @@ jest.mock("../../lib/prisma", () => ({
 jest.mock("../../lib/payments/operations/booking-refund", () => ({
   refundBookingPayment: (...a: unknown[]) => mockRefundPayment(...a),
 }));
-
 
 jest.mock("@sentry/nextjs", () => ({
   captureException: (...a: unknown[]) => mockCaptureException(...a),
@@ -88,7 +90,7 @@ const paidTrial = {
 
 function appointmentStartingInHours(hours: number) {
   return {
-    cancellationPolicySnapshot: null,
+    cancellationPolicy: null,
     slotsOfAppointment: [
       { startsAt: new Date(Date.now() + hours * 3_600_000) },
     ],

@@ -168,6 +168,17 @@ export async function POST(req: NextRequest) {
               latestRefund.currency.toUpperCase(),
               latestRefund.status,
               "STRIPE",
+              // 7th arg — the provider payment id the org-level branches key
+              // on (WalletTopUp / OrganizationInvoice.providerPaymentId); only
+              // the B2C Payment lookup uses `payment_intent`. `ch_<…>` is the
+              // Stripe analogue of the `pay_<…>` razorpay-dispatch passes here.
+              // Org billing mints Razorpay orders today, so nothing matches on
+              // this rail yet; what it changes now is the not-found case, which
+              // stopped silently ACKing (#813/#812 calls that permanent death)
+              // and now 5xxs so Stripe re-delivers.
+              typeof latestRefund.charge === "string"
+                ? latestRefund.charge
+                : (latestRefund.charge?.id ?? refundEvent.id),
             );
           }
           break;

@@ -36,6 +36,12 @@ export interface RefundEarningCascadeResult {
   timestamp: string;
 }
 
+export interface CascadeRefundOptions {
+  /** #1356 — caps the batch for the Netlify ticker's 6s per-target timeout;
+   * undefined keeps the unbounded GitHub Actions behaviour. */
+  limit?: number;
+}
+
 /**
  * Find SUCCEEDED refunds that have not yet been cascaded and run the canonical
  * cascade against each.
@@ -49,13 +55,17 @@ export interface RefundEarningCascadeResult {
  */
 // #476 — locked at the core so every entry (GH Actions / HTTP) shares one
 // mutual exclusion; fail-closed: money state must not double-run unlocked.
-export async function cascadeRefundToEarnings(): Promise<RefundEarningCascadeResult> {
+export async function cascadeRefundToEarnings(
+  opts: CascadeRefundOptions = {},
+): Promise<RefundEarningCascadeResult> {
   return withCronLock("cascade-refund-earnings", { failMode: "closed" }, () =>
-    cascadeRefundToEarningsUnlocked(),
+    cascadeRefundToEarningsUnlocked(opts),
   );
 }
 
-async function cascadeRefundToEarningsUnlocked(): Promise<RefundEarningCascadeResult> {
+async function cascadeRefundToEarningsUnlocked(
+  opts: CascadeRefundOptions = {},
+): Promise<RefundEarningCascadeResult> {
   const errors: string[] = [];
   let updatedCount = 0;
   let errorCount = 0;
@@ -71,6 +81,7 @@ async function cascadeRefundToEarningsUnlocked(): Promise<RefundEarningCascadeRe
       reason: true,
       paymentId: true,
     },
+    take: opts.limit,
   });
 
   console.log(
@@ -89,7 +100,11 @@ async function cascadeRefundToEarningsUnlocked(): Promise<RefundEarningCascadeRe
             initiatedByUserId: null, // gateway-initiated
           });
         },
-        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, maxWait: 10_000, timeout: 15_000 },
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 10_000,
+          timeout: 15_000,
+        },
       );
       console.log(`Cascade applied for refund ${refund.id}`);
       updatedCount++;

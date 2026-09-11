@@ -69,6 +69,84 @@ export function buildContiguousSlotAtoms(
 }
 
 /**
+ * Same atoms, expressed as the [startsAt, endsAt) window the money paths carry.
+ *
+ * #1319 — checkout and the webhook capture fallback both hold a session as a
+ * start/end pair rather than a duration, and each grew its own chunking loop.
+ * They agreed on the arithmetic and disagreed on everything else (one connected
+ * both parties, the other only the buyer), which is precisely the drift the
+ * atom invariant exists to prevent. One entry point now, so a future edit
+ * cannot land on one writer and miss the other.
+ *
+ * A window that is not a whole number of half-hours rounds UP, matching
+ * `getSlotsPerCall`: a partial atom still occupies the consultant's calendar.
+ */
+export function buildContiguousSlotAtomsForWindow(
+  input: Omit<ContiguousSlotAtomInput, "startsAt" | "durationInHours"> & {
+    startsAt: Date;
+    endsAt: Date;
+  },
+): ContiguousSlotAtomCreate[] {
+  const { startsAt, endsAt, ...rest } = input;
+  if (!(endsAt instanceof Date) || Number.isNaN(endsAt.getTime())) {
+    throw new Error("buildContiguousSlotAtomsForWindow: invalid endsAt");
+  }
+  if (!(startsAt instanceof Date) || Number.isNaN(startsAt.getTime())) {
+    throw new Error("buildContiguousSlotAtomsForWindow: invalid startsAt");
+  }
+  const spanMs = endsAt.getTime() - startsAt.getTime();
+  if (spanMs <= 0) {
+    throw new Error("Invalid slot: start must be before end");
+  }
+  return buildContiguousSlotAtoms({
+    ...rest,
+    startsAt,
+    durationInHours: spanMs / (60 * 60 * 1000),
+  });
+}
+
+/**
+ * How many 30-minute atoms a stored row COVERS, which is not how many rows it is.
+ *
+ * #1319 — 76 of 87 production consultations predate the invariant and sit as a
+ * single 60-minute row. Any reader that counts rows and compares the total to a
+ * requested atom count reads those bookings as half their real size.
+ */
+export function countHalfHourAtoms(slot: {
+  startsAt: Date | string;
+  endsAt: Date | string;
+}): number {
+  const start = new Date(slot.startsAt).getTime();
+  const end = new Date(slot.endsAt).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+    // A zero/negative-width row is malformed, not weightless: it is still one
+    // row somebody has to reconcile, so it counts as the atom it occupies.
+    return 1;
+  }
+  return Math.ceil((end - start) / SLOT_DURATION_MS);
+}
+
+/**
+ * The half-hour atom STARTS a stored row covers.
+ *
+ * #1319 — the mirror of {@link countHalfHourAtoms}. A reader that hands one
+ * `startsAt` per stored row to the validator describes a legacy 60-minute row
+ * as a single atom, so it disagrees with every count derived from coverage
+ * (`getSlotsPerCall`, the approval gate) about the same booking.
+ */
+export function halfHourAtomStarts(slot: {
+  startsAt: Date | string;
+  endsAt: Date | string;
+}): Date[] {
+  const start = new Date(slot.startsAt);
+  const atomCount = countHalfHourAtoms(slot);
+  return Array.from(
+    { length: atomCount },
+    (_, i) => new Date(start.getTime() + i * SLOT_DURATION_MS),
+  );
+}
+
+/**
  * Live slots on one appointment must form exactly one contiguous run.
  * Throws when the invariant is violated (write-time assert for #1071).
  */

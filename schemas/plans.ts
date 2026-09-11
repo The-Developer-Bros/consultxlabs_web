@@ -141,7 +141,7 @@ const priceSchema = z
 const recordingShape = {
   recordingEnabled: z.boolean().default(false),
   recordingStoragePolicy: z
-    .enum(["STREAM_ONLY", "SUPABASE_PERMANENT"])
+    .enum(["STREAM_ONLY", "PERMANENT"])
     .default("STREAM_ONLY"),
 };
 

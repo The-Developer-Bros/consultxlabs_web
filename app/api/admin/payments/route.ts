@@ -70,6 +70,11 @@ export async function GET(req: NextRequest) {
               appointmentType: true,
             },
           },
+          // #1365 — drives the "Invoice" column; an operator answering "where
+          // is my invoice" should not have to open each payment to find out.
+          consumerInvoice: {
+            select: { id: true, invoiceNumber: true, issuedAt: true },
+          },
         },
       }),
       prisma.payment.count({ where }),

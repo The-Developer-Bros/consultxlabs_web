@@ -14,7 +14,9 @@
  * - searchLimiter:          60/min per IP    — GET /api/user/consultants, /api/consultants/search
  * - eligibilityLimiter:     20/min per IP    — GET /api/trials/check-eligibility
  * - availabilityLimiter:    30/min per IP    — GET /api/slots/availability/[consultantId]
+ * - currencyLimiter:        30/min per IP    — GET /api/currency (protects the FX provider quota)
  * - documentUploadLimiter:  10/min per user  — POST /api/appointments/[id]/documents (+ /consultant)
+ * - streamRecordingSyncLimiter: 3/5min per user — POST /api/stream/recordings/sync (Stream fan-out)
  */
 
 import { Ratelimit } from "@upstash/ratelimit";
@@ -112,6 +114,27 @@ export const cspReportLimiter = makeLimiter(120, "1 m", "rl:csp-report");
 export const streamJoinLimiter = makeLimiter(20, "1 m", "rl:stream-join");
 export const streamApiLimiter = makeLimiter(60, "1 m", "rl:stream-api");
 
+/**
+ * 3 per 5 minutes per user — POST /api/stream/recordings/sync (#1270).
+ *
+ * The edge `stream: api` rule already covers this path, but at 60/min keyed by
+ * IP, which is sized for ordinary reads. This one call walks every session the
+ * caller owns or is enrolled in and issues a `listRecordings` request to Stream
+ * for each, so a single authenticated user can force an unbounded, billable
+ * fan-out — and the middleware bucket is shared with everyone behind the same
+ * NAT, so it is the wrong shape to defend it.
+ *
+ * Sized on what the feature is for: a user clicks "Sync" because a replay is
+ * missing, and the answer does not change on the second press. Three attempts
+ * in five minutes covers an impatient human and a retry after a transient
+ * error; it does not cover a loop.
+ */
+export const streamRecordingSyncLimiter = makeLimiter(
+  3,
+  "5 m",
+  "rl:stream-recording-sync",
+);
+
 /** 3 per 24 hours — POST /api/trials (prevents flooding consultant inboxes) */
 export const trialRequestLimiter = makeLimiter(3, "24 h", "rl:trial-request");
 
@@ -130,6 +153,19 @@ export const eligibilityLimiter = makeLimiter(20, "1 m", "rl:eligibility");
 
 /** 30 per minute — GET /api/slots/availability/[consultantId] (IP-based, public booking flow) */
 export const availabilityLimiter = makeLimiter(30, "1 m", "rl:availability");
+
+/**
+ * 30 per minute per IP — GET /api/currency (#1396).
+ *
+ * The route was public and completely unbounded, and every miss on the
+ * per-instance rate cache becomes an outbound call to ExchangeRate-API's free
+ * tier, whose 429 carries roughly a twenty-minute lockout. One scripted caller
+ * could therefore take FX display down for every buyer on the site. IP-keyed
+ * because the endpoint is anonymous: a visitor reading prices has no session.
+ * Thirty a minute is far above what a browsing session needs — the client
+ * caches the answer for an hour — while a loop trips it immediately.
+ */
+export const currencyLimiter = makeLimiter(30, "1 m", "rl:currency");
 
 /** 30 per minute — GET /api/participants/{class,webinar}/[id] (per user) */
 export const participantReadLimiter = makeLimiter(30, "1 m", "rl:participants");

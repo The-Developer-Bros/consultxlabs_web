@@ -18,6 +18,10 @@ import type { UserRole } from "@prisma/client";
  *     appointments, and user verification. This is the job.
  *   - STAFF READ every money surface, because a support agent who can't see
  *     a payment can't resolve a billing ticket. They mutate none of it.
+ *   - STAFF READ recording metadata and ADMIN alone can play a recording
+ *     (#1270). The asymmetry is deliberate: the session content is the
+ *     customer's, not the operator's, and nothing a support agent does with a
+ *     replay ticket requires watching the session.
  *   - ADMIN alone executes money (refunds, payouts, subscription changes),
  *     owns org lifecycle and platform config, and takes the destructive user
  *     actions (ban, role change). Staff are interns and employees with
@@ -43,6 +47,10 @@ export type BackofficeSurface =
   | "users.read"
   | "users.verify"
   | "users.moderate"
+  // Session recordings — #1270. Split because "look at the metadata" and
+  // "watch the session" are different acts with different blast radii.
+  | "recordings.read"
+  | "recordings.play"
   // Money — staff read, admin executes. The `.read` grants are what make
   // billing tickets resolvable without an escalation.
   | "payments.read"
@@ -95,6 +103,16 @@ export const BACKOFFICE_PERMISSIONS: Record<
   "users.read": OPERATORS,
   "users.verify": OPERATORS,
   "users.moderate": ADMIN_ONLY,
+
+  // #1270 — a recording is the single most sensitive artefact the platform
+  // holds: the full audio and video of a private 1:1 between a consultee and
+  // a consultant, neither of whom consented to an operator watching it.
+  // Staff resolve "my replay is missing" tickets, and every fact they need for
+  // that (status, storage location, duration, expiry) is metadata — none of it
+  // requires playback. So staff read the record and admin alone can watch it.
+  // Both grants are audited at the route; see lib/stream/recording-operator-access.ts.
+  "recordings.read": OPERATORS,
+  "recordings.play": ADMIN_ONLY,
 
   // Money — read for context, mutate only as admin. Payouts, approval
   // payments and TDS have no staff-facing read either: they are settlement

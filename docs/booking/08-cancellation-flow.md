@@ -99,15 +99,15 @@ flowchart TD
 
 Cancellation is authorized at the API layer, not merely hidden in the UI. Here is what the route checks:
 
-| Check                                      | Performed? | Details                                                                                  |
-| ------------------------------------------ | ---------- | ---------------------------------------------------------------------------------------- |
-| Is the user authenticated?                 | Yes        | `getSession()` must return a valid session, or the route answers 401                     |
-| Is the user a participant?                 | Yes        | The consultant on the plan or the consultee who requested it, or the route answers 403   |
-| Is the user privileged?                    | Yes        | `isPrivileged(session.user.role)` bypasses the participant check for admin and staff     |
-| Is the user an admin of the funding org?   | Yes        | `isOrgAdminOfAppointment()` admits an admin of the organization funding the booking (#1166) |
-| Who may cancel a group event?              | Organiser  | Only the consultant who owns the webinar or class plan; attendees cannot cancel the event |
-| Is the booking in a cancellable state?     | Yes        | The allowed-from set rides the `UPDATE`'s `WHERE`, so a lost race answers 409             |
-| Is a payment dispute open?                 | Yes        | An open dispute answers 409, because a refund now could pay the customer twice            |
+| Check                                    | Performed? | Details                                                                                     |
+| ---------------------------------------- | ---------- | ------------------------------------------------------------------------------------------- |
+| Is the user authenticated?               | Yes        | `getSession()` must return a valid session, or the route answers 401                        |
+| Is the user a participant?               | Yes        | The consultant on the plan or the consultee who requested it, or the route answers 403      |
+| Is the user privileged?                  | Yes        | `isPrivileged(session.user.role)` bypasses the participant check for admin and staff        |
+| Is the user an admin of the funding org? | Yes        | `isOrgAdminOfAppointment()` admits an admin of the organization funding the booking (#1166) |
+| Who may cancel a group event?            | Organiser  | Only the consultant who owns the webinar or class plan; attendees cannot cancel the event   |
+| Is the booking in a cancellable state?   | Yes        | The allowed-from set rides the `UPDATE`'s `WHERE`, so a lost race answers 409               |
+| Is a payment dispute open?               | Yes        | An open dispute answers 409, because a refund now could pay the customer twice              |
 
 **What this means in practice**: the two parties to a booking, a platform admin, or an admin of the organization that funds the booking can cancel it. A group event can only be cancelled by its organiser, since cancelling it ends the session for everyone enrolled.
 
@@ -196,39 +196,40 @@ The key insight: **only a valid JSON body that fails Zod validation returns an e
 }
 ```
 
-| Field                | Type                  | Description                                        |
-| -------------------- | --------------------- | -------------------------------------------------- |
-| `success`            | `boolean`             | Always `true` on 200                               |
-| `cancellationReason` | `string \| undefined` | The reason if one was provided                     |
-| `cancelledAt`        | `string` (ISO 8601)   | Timestamp of when the cancellation was processed   |
-| `webinarId`          | `string \| null`      | The webinar ID if this was a webinar cancellation  |
-| `classId`            | `string \| null`      | The class ID if this was a class cancellation      |
-| `refund`             | `object \| null`      | The 1:1 policy refund outcome; `null` when the booking carried no payment |
+| Field                | Type                  | Description                                                                     |
+| -------------------- | --------------------- | ------------------------------------------------------------------------------- |
+| `success`            | `boolean`             | Always `true` on 200                                                            |
+| `cancellationReason` | `string \| undefined` | The reason if one was provided                                                  |
+| `cancelledAt`        | `string` (ISO 8601)   | Timestamp of when the cancellation was processed                                |
+| `webinarId`          | `string \| null`      | The webinar ID if this was a webinar cancellation                               |
+| `classId`            | `string \| null`      | The class ID if this was a class cancellation                                   |
+| `refund`             | `object \| null`      | The 1:1 policy refund outcome; `null` when the booking carried no payment       |
 | `eventRefund`        | `object \| null`      | The whole-event fan-out summary; `null` outside class and webinar cancellations |
 
 The `webinarId` and `classId` fields are populated only for webinar and class cancellations. They are included in the client response so the frontend can trigger any UI updates related to the specific event.
 
 The `refund` object never reports the money as a bare number, because `amountRefundedPaise: 0` on its own is ambiguous — it reads identically whether the policy owed nothing, the balance was already exhausted, or the gateway refused. The `status` field disambiguates all of those.
 
-| `refund.status`       | Meaning                                                                              |
-| --------------------- | ------------------------------------------------------------------------------------ |
-| `REFUNDED`            | Money (or credit) was returned; `amountRefundedPaise` is what actually moved          |
-| `POLICY_ZERO`         | The tier for this much notice is genuinely zero, so nothing was owed                  |
-| `NOTHING_REFUNDABLE`  | The tier was positive but the payment's refundable balance was already exhausted      |
-| `FAILED`              | A refund was owed and the attempt threw; the cancellation still stands                |
-| `MANUAL_REVIEW`       | The one case a formula cannot settle — a credit-funded booking cancelled inside a partial-refund window (#1161) |
+| `refund.status`      | Meaning                                                                          |
+| -------------------- | -------------------------------------------------------------------------------- |
+| `REFUNDED`           | Money (or credit) was returned; `amountRefundedPaise` is what actually moved     |
+| `POLICY_ZERO`        | The tier for this much notice is genuinely zero, so nothing was owed             |
+| `NOTHING_REFUNDABLE` | The tier was positive but the payment's refundable balance was already exhausted |
+| `FAILED`             | A refund was owed and the attempt threw; the cancellation still stands           |
+
+A credit-funded booking reports `REFUNDED` with an `amountRefundedPaise` of zero, because the restoration returns referral credit rather than gateway money. The client reads that pair as "your referral credit has been restored in full" rather than as a refund of nothing. There is no longer a `MANUAL_REVIEW` status: #1500 settled the product question that used to produce it, and the section on the credit rule below explains what replaced it.
 
 ### Error Responses
 
-| Status | Cause                                     | Response Body                                                 | When It Happens                                       |
-| ------ | ----------------------------------------- | ------------------------------------------------------------- | ----------------------------------------------------- |
-| 401    | No session / expired session              | `{ "error": "Unauthorized" }`                                 | `getSession()` returns null or no user                |
-| 400    | Zod validation fails on a valid JSON body | `{ "error": "Validation failed", "details": [<ZodIssue[]>] }` | Body is valid JSON but fails schema validation        |
-| 403    | Caller is not entitled to cancel          | `{ "error": "You are not authorized to cancel this appointment" }` | Not a participant, not privileged, not an org admin of the funder |
-| 404    | Appointment not found in database         | `{ "error": "Appointment not found" }`                        | ID does not match any appointment row                 |
-| 409    | Open payment dispute                      | `{ "error": "...", "code": "DISPUTE_ACTIVE" }`                | A dispute is live on this appointment (#1008)         |
-| 409    | Booking is no longer cancellable          | `{ "error": "...", "code": "NOT_CANCELLABLE" }`               | The CAS update matched zero rows — already cancelled, completed or expired |
-| 500    | Transaction failure or unexpected error   | `{ "error": "Failed to cancel appointment" }`                 | Database error, connection timeout, or other          |
+| Status | Cause                                     | Response Body                                                      | When It Happens                                                            |
+| ------ | ----------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------- |
+| 401    | No session / expired session              | `{ "error": "Unauthorized" }`                                      | `getSession()` returns null or no user                                     |
+| 400    | Zod validation fails on a valid JSON body | `{ "error": "Validation failed", "details": [<ZodIssue[]>] }`      | Body is valid JSON but fails schema validation                             |
+| 403    | Caller is not entitled to cancel          | `{ "error": "You are not authorized to cancel this appointment" }` | Not a participant, not privileged, not an org admin of the funder          |
+| 404    | Appointment not found in database         | `{ "error": "Appointment not found" }`                             | ID does not match any appointment row                                      |
+| 409    | Open payment dispute                      | `{ "error": "...", "code": "DISPUTE_ACTIVE" }`                     | A dispute is live on this appointment (#1008)                              |
+| 409    | Booking is no longer cancellable          | `{ "error": "...", "code": "NOT_CANCELLABLE" }`                    | The CAS update matched zero rows — already cancelled, completed or expired |
+| 500    | Transaction failure or unexpected error   | `{ "error": "Failed to cancel appointment" }`                      | Database error, connection timeout, or other                               |
 
 The two 409s are told apart by their `code`, not their message, and both are terminal for that request rather than retryable. `DISPUTE_ACTIVE` is checked before the transaction opens, because refunding while a chargeback is contested would pay the customer twice. Nothing is written on either path, so a refused cancellation leaves the booking exactly as it was.
 
@@ -732,17 +733,17 @@ flowchart TD
 
 ### Comparison Table: All Four Event Types
 
-| Aspect                           | Consultation    | Subscription    | Webinar   | Class    |
-| -------------------------------- | --------------- | --------------- | --------- | -------- |
-| **Model updated**                | `Consultation`  | `Subscription`  | `Webinar` | `Class`  |
-| **Status field**                 | `status` | `status` | `status`  | `status` |
-| **Audit fields stored**          | Yes (5 fields)  | Yes (5 fields)  | No        | No       |
-| **Cancellation reason on model** | Yes             | Yes             | No        | No       |
-| **Cancelled-by tracking**        | Yes             | Yes             | No        | No       |
-| **Notification sent**            | Yes             | Yes             | Yes       | Yes      |
-| **Slots deleted**                | No — marked `CANCELLED` | No — marked `CANCELLED` | No — marked `CANCELLED` | No — marked `CANCELLED` |
-| **Appointment deleted**          | No — preserved  | No — preserved  | No — preserved | No — preserved |
-| **Slot scope of the update**     | This appointment | Whole `subscriptionId` | This appointment | Whole `classId` |
+| Aspect                           | Consultation             | Subscription                     | Webinar                      | Class                        |
+| -------------------------------- | ------------------------ | -------------------------------- | ---------------------------- | ---------------------------- |
+| **Model updated**                | `Consultation`           | `Subscription`                   | `Webinar`                    | `Class`                      |
+| **Status field**                 | `status`                 | `status`                         | `status`                     | `status`                     |
+| **Audit fields stored**          | Yes (5 fields)           | Yes (5 fields)                   | No                           | No                           |
+| **Cancellation reason on model** | Yes                      | Yes                              | No                           | No                           |
+| **Cancelled-by tracking**        | Yes                      | Yes                              | No                           | No                           |
+| **Notification sent**            | Yes                      | Yes                              | Yes                          | Yes                          |
+| **Slots deleted**                | No — marked `CANCELLED`  | No — marked `CANCELLED`          | No — marked `CANCELLED`      | No — marked `CANCELLED`      |
+| **Appointment deleted**          | No — preserved           | No — preserved                   | No — preserved               | No — preserved               |
+| **Slot scope of the update**     | This appointment         | Whole `subscriptionId`           | This appointment             | Whole `classId`              |
 | **Refund rail**                  | Policy tier on the gross | Policy tier on the prorated base | Whole-event fan-out, in full | Whole-event fan-out, in full |
 
 ### Consultation Cancellation (Detailed)
@@ -803,13 +804,11 @@ The group-event allowed-from sets are written as explicit `in` lists rather than
 
 **Why no audit fields**: Webinars are typically cancelled by the consultant (the host). Since webinars are group events, the system does not track individual cancellation reasons on the event model. The `status` change is sufficient for the event lifecycle. If audit data is needed, it can be reconstructed from the API logs and the `cancelledBy` information in the notification payload.
 
-
 ### Class Cancellation (Detailed)
 
 Classes are multi-session group events (e.g., "6-week Python bootcamp"). They behave identically to webinars for cancellation purposes.
 
 **What gets written to the database**: Only `status: "CANCELLED"`, same as webinar.
-
 
 ### State Transition Diagram
 
@@ -890,18 +889,18 @@ Green marks a row that comes through untouched, amber a row whose status column 
 
 ### Record-by-Record Breakdown
 
-| Record                         | Before                            | After                                        | Why                                                                  |
-| ------------------------------ | --------------------------------- | -------------------------------------------- | -------------------------------------------------------------------- |
-| `Appointment`                  | Exists with type and foreign keys | **Preserved**, untouched                     | `Payment.appointment` cascades on delete, so removing it would destroy the money trail (#1074) |
-| `SlotOfAppointment` (live)     | `completionStatus` is `SCHEDULED` or `RESCHEDULED` | `completionStatus = "CANCELLED"` | The time is released by status; the record of it having been held survives |
-| `SlotOfAppointment` (terminal) | Already `COMPLETED`/`CANCELLED`/`UNVERIFIED` | Untouched                         | A delivered session is history, and the proration denominator counts it     |
-| `RescheduleRequest` (open)     | `PENDING_REVIEW` or similar       | `status = "DECLINED"`, `openForAppointmentId` cleared | An open proposal would reserve the appointment forever and feed the expiry cron |
-| `Consultation` (if applicable) | `status = "APPROVED"`      | `status = "CANCELLED"` + audit fields | Preserved for refund decisions and analytics                         |
-| `Subscription` (if applicable) | `status = "APPROVED"`      | `status = "CANCELLED"` + audit fields | Same reasoning as consultation                                       |
-| `Webinar` (if applicable)      | `status = "PUBLISHED"`            | `status = "CANCELLED"`                       | Preserved but with minimal state change                              |
-| `Class` (if applicable)        | `status = "PUBLISHED"`            | `status = "CANCELLED"`                       | Same reasoning as webinar                                            |
-| `Payment` / `PaymentOrder`     | Various statuses                  | Preserved; a `Refund` row is added when due  | The policy frozen at checkout decides the amount, not an admin       |
-| `Earning` / `PayoutItem`       | May exist if payment was captured | Refunded share incremented by the cascade    | Earnings reversal rides the same transaction as the refund           |
+| Record                         | Before                                             | After                                                 | Why                                                                                            |
+| ------------------------------ | -------------------------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `Appointment`                  | Exists with type and foreign keys                  | **Preserved**, untouched                              | `Payment.appointment` cascades on delete, so removing it would destroy the money trail (#1074) |
+| `SlotOfAppointment` (live)     | `completionStatus` is `SCHEDULED` or `RESCHEDULED` | `completionStatus = "CANCELLED"`                      | The time is released by status; the record of it having been held survives                     |
+| `SlotOfAppointment` (terminal) | Already `COMPLETED`/`CANCELLED`/`UNVERIFIED`       | Untouched                                             | A delivered session is history, and the proration denominator counts it                        |
+| `RescheduleRequest` (open)     | `PENDING_REVIEW` or similar                        | `status = "DECLINED"`, `openForAppointmentId` cleared | An open proposal would reserve the appointment forever and feed the expiry cron                |
+| `Consultation` (if applicable) | `status = "APPROVED"`                              | `status = "CANCELLED"` + audit fields                 | Preserved for refund decisions and analytics                                                   |
+| `Subscription` (if applicable) | `status = "APPROVED"`                              | `status = "CANCELLED"` + audit fields                 | Same reasoning as consultation                                                                 |
+| `Webinar` (if applicable)      | `status = "PUBLISHED"`                             | `status = "CANCELLED"`                                | Preserved but with minimal state change                                                        |
+| `Class` (if applicable)        | `status = "PUBLISHED"`                             | `status = "CANCELLED"`                                | Same reasoning as webinar                                                                      |
+| `Payment` / `PaymentOrder`     | Various statuses                                   | Preserved; a `Refund` row is added when due           | The policy frozen at checkout decides the amount, not an admin                                 |
+| `Earning` / `PayoutItem`       | May exist if payment was captured                  | Refunded share incremented by the cascade             | Earnings reversal rides the same transaction as the refund                                     |
 
 ### Why Nothing is Deleted
 
@@ -1020,28 +1019,45 @@ For webinars and classes the organiser is read off the plan and every paid atten
 
 **Notification payload**:
 
-| Field             | Value                                                         | Source                                                       |
-| ----------------- | ------------------------------------------------------------- | ------------------------------------------------------------ |
-| `appointmentType` | `"CONSULTATION"`, `"SUBSCRIPTION"`, `"WEBINAR"`, or `"CLASS"` | `appointment.appointmentType`                                |
-| `consultantName`  | e.g., `"Bob Smith"` or `"Consultant"` (fallback)              | Extracted in Phase 1, with fallback                          |
-| `consulteeName`   | e.g., `"Alice Johnson"` or `"Consultee"` (fallback)           | Extracted in Phase 1, with fallback                          |
-| `planTitle`       | e.g., `"Career Strategy Session"` or `"N/A"` (fallback)       | From consultation/subscription plan                          |
-| `dateTime`        | ISO 8601 string or `undefined`                                | `slotsOfAppointment[0].startsAt`                             |
-| `dashboardUrl`    | An org or personal appointments href                          | `notificationHref(appointment.organizationId, "appointments")` — both parties share one payload, so the href must suit either |
-| `reason`          | e.g., `"SCHEDULE_CONFLICT"` or `undefined`                    | From validated body                                          |
+| Field             | Value                                                         | Source                                                                                                                                             |
+| ----------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `appointmentType` | `"CONSULTATION"`, `"SUBSCRIPTION"`, `"WEBINAR"`, or `"CLASS"` | `appointment.appointmentType`                                                                                                                      |
+| `consultantName`  | e.g., `"Bob Smith"` or `"Consultant"` (fallback)              | Extracted in Phase 1, with fallback                                                                                                                |
+| `consulteeName`   | e.g., `"Alice Johnson"` or `"Consultee"` (fallback)           | Extracted in Phase 1, with fallback                                                                                                                |
+| `planTitle`       | e.g., `"Career Strategy Session"` or `"N/A"` (fallback)       | From consultation/subscription plan                                                                                                                |
+| `dateTime`        | ISO 8601 string or `undefined`                                | `slotsOfAppointment[0].startsAt`                                                                                                                   |
+| `dashboardUrl`    | An org or personal appointments href                          | `notificationHref(appointment.organizationId, "appointments")` — both parties share one payload, so the href must suit either                      |
+| `reason`          | e.g., `"SCHEDULE_CONFLICT"` or `undefined`                    | From validated body                                                                                                                                |
 | `cancelledBy`     | `"consultant"`, `"consultee"`, or `"system"`                  | Three-way: the consultant's user ID, then the consultee's, then `system` for a platform or org actor and for group events, which have no consultee |
 
 **Why fire-and-forget**: The notification is a courtesy, not a critical operation. If Novu is down for 5 minutes, the cancellation should still succeed. The user can always check their dashboard. Making the notification blocking would mean a Novu outage causes cancellation failures, which would be unacceptable.
 
 ### Refund and Earnings
 
-**Refunds are automatic.** The judgement that used to be left to an admin is now encoded in the cancellation policy that was frozen onto the booking when the buyer paid, so an org or the platform editing its terms later never changes a buyer's deal retroactively.
+**Refunds are automatic.** The judgement that used to be left to an admin is now encoded in the cancellation policy the booking was sold under, so an organisation or the platform editing its terms later never changes a buyer's deal retroactively. Since #1499 those terms are a typed, versioned row rather than a Json snapshot: the booking points at the exact `CancellationPolicy` version that governed the sale, and publishing an edit creates a new version instead of rewriting the one that bookings already cite.
 
-When a paid consultation or subscription is cancelled, `resolveBookingRefundContext()` (`lib/booking/cancellation-scope.ts`) resolves the refund facts for the **whole booking** rather than for the single appointment the route was handed, because a subscription is one slot-less placeholder that carries the money plus one appointment per allocated session. It answers six questions: which payment funds the booking, which policy snapshot was frozen on the row the buyer paid for, how many hours remain until the earliest undelivered session, how many sessions have already been delivered, how many are still owed, and how many slots the booking holds in total regardless of status.
+When a paid consultation or subscription is cancelled, `resolveBookingRefundContext()` (`lib/booking/cancellation-scope.ts`) resolves the refund facts for the **whole booking** rather than for the single appointment the route was handed, because a subscription is one slot-less placeholder that carries the money plus one appointment per allocated session. It answers six questions: which payment funds the booking, which policy version governs the row the buyer paid for, how many hours remain until the earliest undelivered session, how many sessions have already been delivered, how many are still owed, and how many slots the booking holds in total regardless of status. The policy question is answered as terms rather than as a nullable row: a booking that points at no version is governed by the platform ladder, so `resolveBookingRefundContext` resolves that fallback once and no caller downstream has to remember it.
 
 The last three exist because of the proration described below; of them the cancel route reads `sessionsRemaining` and `slotsTotal`, while `sessionsCompleted` is exposed for other callers and for diagnostics. `slotsTotal` is deliberately a count of slots of **any** status rather than of the completed and live ones summed. Summing those two would drop every terminal-but-not-completed session out of the plan and measure the undelivered share against a plan that had shrunk: a subscription with three `UNVERIFIED` past sessions and seven live ones would score seven-sevenths and refund the whole price for a plan that was already thirty per cent consumed.
 
 A cancellation the consultant initiates always settles at the policy's consultant-initiated percentage — one hundred per cent under the platform defaults — because the buyer did nothing wrong. "Not the buyer's choice" is the real question that tier asks, so a platform admin cancelling on the buyer's behalf counts as consultant-initiated too; requiring the actor to literally _be_ the consultant once meant an admin cancelling in the final hours settled an unwilling buyer at zero per cent.
+
+#### Where the tiers come from
+
+The ladder is two tables. `CancellationPolicy` is one published version of a policy, and `CancellationPolicyTier` holds its rungs. A version carries the scope it belongs to, its version number, its status, and the percentage that a consultant-initiated cancellation always settles at; a rung carries the notice threshold and the refund percentage for it. Both percentages are stored as basis points, following the repo convention that money and splits are integers, and the API and the UI speak whole percent.
+
+| Scope        | Which row                                                                                                                                                                                                        | Who may publish it                                                      |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| Platform     | The single row whose `organizationId` is null, at a fixed id. The seed creates it, and `ensurePlatformCancellationPolicy` creates it idempotently on first use so a database nobody seeded still quotes refunds. | Nobody through the product; it is changed in the seed and in code.      |
+| Organisation | The organisation's newest `ACTIVE` version. An organisation that has never published has no row, and its bookings use the platform ladder.                                                                       | An OWNER, through `PUT /api/organizations/{orgId}/cancellation-policy`. |
+
+The platform default remains one hundred per cent a day out, fifty per cent inside the day, and nothing inside two hours, with consultant-initiated cancellations always settling in full.
+
+A published version is immutable. Editing an organisation's ladder does not update the row; it archives the current `ACTIVE` version and inserts a new one at the next version number, inside a Serializable transaction so two concurrent publishes cannot both claim the same number. That is what makes the guarantee in the paragraph above structural rather than conventional: `Appointment.cancellationPolicyId` points at the exact row that governed the sale, and nothing in the product can rewrite that row afterwards. There is deliberately no endpoint to edit or delete a version, and "stop using our own policy" means publishing the platform ladder as your own.
+
+Checkout resolves the version once, inside the booking transaction, and stamps it on the appointment. An organisation's ladder governs the bookings that **organisation funds**, because on a refund it is the organisation's money that moves; a personal booking that merely carries an organisation tag keeps the platform ladder. Sessions that a consultant allocates later against a subscription inherit the version from the row checkout created, rather than resolving a fresh one, since resolving again would hand the buyer whatever ladder was published since they paid.
+
+Webinar and class seats are the documented exception. One shared `Appointment` row serves every registrant of an event, so it cannot carry one buyer's terms; its policy pointer stays null and the platform ladder applies, which is what whole-event refunds already assumed. Organisation tiers therefore do not reach event seats. If they ever need to, the seat rather than the event has to become the row that carries the terms.
 
 #### How the amount is computed
 
@@ -1070,7 +1086,11 @@ The refund runs after the cancellation transaction commits, and a failure to ref
 
 **A partially-consumed subscription no longer escalates.** Earlier revisions of this route had no agreed proration rule, so a subscription that had already delivered sessions was not refunded automatically at all: the response carried `requiresManualReview`, the buyer was told their refund was under review, and a durable `SystemEvent` was recorded for an operator to settle by hand. That escalation is gone. #1006 is **closed**, and the linear per-session proration above replaced it — a partly-consumed plan now settles by formula like any other.
 
-One case does still escalate, and it is a narrow one. A fully credit-funded booking — `Payment.amount` of zero against a `free_` intent — has no amount to tier, because its refund _is_ the restoration of the credits, which is all-or-nothing. When the policy returns one hundred per cent the credits are restored in full. When it returns anything else, the booking has landed in a partial-refund window where partial credit restoration is an unmade product call: the route records a `SystemEvent` in the `PAYMENT` category, answers `status: "MANUAL_REVIEW"` with `requiresManualReview: true`, and leaves the money for an operator. This is the only surviving path to `MANUAL_REVIEW`, and it is tracked in #1161.
+**A credit-funded booking no longer escalates either.** A booking paid entirely with referral or free credit — `Payment.amount` of zero against a `free_` intent — has no amount to tier, because its refund _is_ the restoration of the credits, and the credits rail restores the whole credit or none of it. `refundBookingPayment` refuses an `amountPaise` on that rail for exactly this reason, so a partial tier had nothing it could pay. Earlier revisions escalated that case to an operator; #1500 replaced the escalation with a rule.
+
+The rule has two halves, and the second half is the one that keeps it fair. **Any tier above zero per cent restores the credit in full**, because rounding a partial tier up to a whole credit is the only settlement the rail can express and the buyer gave notice the ladder rewards. **A zero-per-cent tier restores nothing**, which is the same answer a card buyer gets for the same notice — a late cancel bites a credit buyer exactly as it bites everyone else, and treating "the rail cannot pay a fraction" as "therefore pay everything" would have made free credit strictly better than money.
+
+Both halves live in `quoteBookingRefund`, in one predicate: `isFreeCreditFunded && refundPct > 0`. The quote reports the tier the ladder actually answered on `tierRefundPct` and the settlement on `refundPct`, so the refund reason can name the real tier while the buyer is told they were made whole. The zero case falls through to the ordinary `POLICY_ZERO` arm, so nothing about it is special-cased. The predicate requires both a `free_` intent and a zero amount, because a `free_` intent carrying a non-zero amount is a mixed payment that settles on the money arm; that combination is out of scope here and is refused with `INVALID_AMOUNT` as it always was.
 
 A booking with no session scheduled at all is a different matter and does refund in full. There is no start time, so there are no hours of notice, and treating that as negative notice made cancelling before allocation score worse than cancelling after it — which no tier table can mean. The condition is keyed on the booking having no slot rows whatsoever, deliberately: a booking whose slots are merely all cancelled is not the same claim.
 
@@ -1189,18 +1209,18 @@ Developers frequently ask: "What is the difference between cancelling and resche
 
 ### Side-by-Side Comparison
 
-| Aspect                           | Cancellation                     | Reschedule                               |
-| -------------------------------- | -------------------------------- | ---------------------------------------- |
-| **Intent**                       | End the booking entirely         | Move the booking to a different time     |
-| **Appointment record**           | Preserved (money rows hang off it) | Preserved (slots are swapped)          |
-| **Event record**                 | Status set to `CANCELLED`        | Status unchanged (remains `APPROVED`)    |
-| **Slot records**                 | Marked `CANCELLED`               | Replaced slots flipped to `RESCHEDULED`, new times re-confirmed in place |
-| **Payment**                      | Preserved; refunded per policy   | Untouched (no additional charge)         |
-| **Refund triggered**             | Yes, automatically per policy    | No                                       |
-| **Notifications**                | "Your appointment was cancelled" | "Your appointment was rescheduled"       |
-| **Audit fields written**         | Yes (consultation/subscription)  | Different fields (rescheduled timestamp) |
-| **Can happen after event start** | Allowed; the tier simply pays zero | Refused — the deadline is `min(now + 72h, earliest session − 24h)` |
-| **Reversible**                   | No (must rebook from scratch)    | Yes (can reschedule again)               |
+| Aspect                           | Cancellation                       | Reschedule                                                               |
+| -------------------------------- | ---------------------------------- | ------------------------------------------------------------------------ |
+| **Intent**                       | End the booking entirely           | Move the booking to a different time                                     |
+| **Appointment record**           | Preserved (money rows hang off it) | Preserved (slots are swapped)                                            |
+| **Event record**                 | Status set to `CANCELLED`          | Status unchanged (remains `APPROVED`)                                    |
+| **Slot records**                 | Marked `CANCELLED`                 | Replaced slots flipped to `RESCHEDULED`, new times re-confirmed in place |
+| **Payment**                      | Preserved; refunded per policy     | Untouched (no additional charge)                                         |
+| **Refund triggered**             | Yes, automatically per policy      | No                                                                       |
+| **Notifications**                | "Your appointment was cancelled"   | "Your appointment was rescheduled"                                       |
+| **Audit fields written**         | Yes (consultation/subscription)    | Different fields (rescheduled timestamp)                                 |
+| **Can happen after event start** | Allowed; the tier simply pays zero | Refused — the deadline is `min(now + 72h, earliest session − 24h)`       |
+| **Reversible**                   | No (must rebook from scratch)      | Yes (can reschedule again)                                               |
 
 ### Decision Guide: When to Cancel vs Reschedule
 

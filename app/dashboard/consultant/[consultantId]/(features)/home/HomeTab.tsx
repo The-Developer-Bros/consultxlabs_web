@@ -53,7 +53,10 @@ import {
 import { ActionRequiredPanel } from "@/components/dashboard/ActionRequiredPanel";
 import { deriveConsultantActionItems } from "@/lib/dashboard/action-items";
 import { StatusBadge } from "@/components/dashboard/StatusBadge";
-import { eventUnionStatusBadge } from "@/lib/appointments/status";
+import {
+  eventUnionStatusBadge,
+  isConfirmedStatus,
+} from "@/lib/appointments/status";
 import { getProximityLabel } from "@/lib/appointments/slots";
 import { getAppointmentLifecycleStatus } from "@/lib/appointments/map-consultant";
 import { TAppointment } from "@/types/appointment";
@@ -225,9 +228,20 @@ export function HomeTab({
                       const joinableSlot = getJoinableSlot(
                         appointment.slotsOfAppointment ?? [],
                       );
-                      const isJoinable = joinableSlot !== null;
+                      // #1270 — this row had NO status check at all: any
+                      // appointment with a slot inside the window lit up Join,
+                      // including one still awaiting payment or already
+                      // completed. The same guard the appointments adapter and
+                      // the consultee side use.
+                      const isJoinable =
+                        joinableSlot !== null &&
+                        isConfirmedStatus(
+                          getAppointmentLifecycleStatus(appointment),
+                        );
+                      // Explicit opt-in, not "any non-production build" — see
+                      // the note on the appointments adapter's own flag.
                       const isDev =
-                        process.env.NODE_ENV !== "production";
+                        process.env.NEXT_PUBLIC_ENABLE_DEV_TOOLS === "true";
 
                       return (
                         <div
@@ -314,7 +328,7 @@ export function HomeTab({
                             })()}
                           </div>
 
-                          {(isDev || isJoinable) && (
+                          {isJoinable && (
                             <TooltipProvider>
                               <Tooltip>
                                 <TooltipTrigger asChild>
@@ -327,12 +341,9 @@ export function HomeTab({
                                     }
                                     className="flex-shrink-0 bg-zinc-900 hover:bg-zinc-800 text-white gap-1.5"
                                     size="sm"
-                                    disabled={isDev ? false : !isJoinable}
                                   >
                                     <Video className="h-3.5 w-3.5" />
-                                    {isDev
-                                      ? "Join (Dev)"
-                                      : "Join"}
+                                    Join
                                   </Button>
                                 </TooltipTrigger>
                                 <TooltipContent>
@@ -340,6 +351,29 @@ export function HomeTab({
                                 </TooltipContent>
                               </Tooltip>
                             </TooltipProvider>
+                          )}
+                          {/* #1270 — additive, never a gate replacement. The
+                              dev arm used to BE the gate here (`isDev ||
+                              isJoinable`, `disabled={isDev ? false :
+                              !isJoinable}`), which also mislabelled every
+                              genuine Join as "Join (Dev)" on a dev build. It
+                              is now a distinct button that shows only where
+                              the real one does not. */}
+                          {isDev && !isJoinable && (
+                            <Button
+                              onClick={() =>
+                                handleJoinMeeting(
+                                  appointment,
+                                  joinableSlot ?? undefined,
+                                )
+                              }
+                              variant="outline"
+                              className="flex-shrink-0 gap-1.5"
+                              size="sm"
+                            >
+                              <Video className="h-3.5 w-3.5" />
+                              Join (Dev)
+                            </Button>
                           )}
                         </div>
                       );

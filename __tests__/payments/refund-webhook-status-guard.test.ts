@@ -85,6 +85,18 @@ interface RefundRow {
   paymentId: string;
 }
 
+/** The one Payment the stubbed database holds, keyed by both of its ids. */
+const PAYMENT_ROW = {
+  id: "pay_1",
+  paymentIntent: "order_1",
+  gatewayPaymentId: "pay_gateway_1",
+  userId: "user_1",
+  organizationId: null,
+  amount: 50_000,
+  currency: "INR",
+  billingAccountId: null,
+};
+
 const store: { refunds: RefundRow[] } = { refunds: [] };
 
 function resetStore() {
@@ -94,15 +106,19 @@ function resetStore() {
 function txStub() {
   return {
     payment: {
-      findUnique: jest.fn(async () => ({
-        id: "pay_1",
-        paymentIntent: "order_1",
-        userId: "user_1",
-        organizationId: null,
-        amount: 50_000,
-        currency: "INR",
-        billingAccountId: null,
-      })),
+      // #1353 — the handler resolves by EITHER id now, so the stub has to be a
+      // real matcher rather than a constant: a test that returns the same row
+      // whatever the `where` says cannot tell the two keys apart.
+      findFirst: jest.fn(
+        async ({ where }: { where: { OR: Array<Record<string, string>> } }) => {
+          const matches = where.OR.some(
+            (clause) =>
+              clause.paymentIntent === PAYMENT_ROW.paymentIntent ||
+              clause.gatewayPaymentId === PAYMENT_ROW.gatewayPaymentId,
+          );
+          return matches ? PAYMENT_ROW : null;
+        },
+      ),
     },
     creditNote: {
       findUnique: jest.fn(async () => null),
@@ -110,11 +126,15 @@ function txStub() {
     },
     walletTopUp: { findFirst: jest.fn(async () => null) },
     organizationInvoice: { findFirst: jest.fn(async () => null) },
-    billingAccount: { findFirst: jest.fn(async () => null), findUniqueOrThrow: jest.fn() },
+    billingAccount: {
+      findFirst: jest.fn(async () => null),
+      findUniqueOrThrow: jest.fn(),
+    },
     orgAuditLog: { create: jest.fn(async () => ({})) },
     refund: {
-      findUnique: jest.fn(async ({ where }: { where: { refundId: string } }) =>
-        store.refunds.find((r) => r.refundId === where.refundId) ?? null,
+      findUnique: jest.fn(
+        async ({ where }: { where: { refundId: string } }) =>
+          store.refunds.find((r) => r.refundId === where.refundId) ?? null,
       ),
       create: jest.fn(async ({ data }: { data: Omit<RefundRow, "id"> }) => {
         const created: RefundRow = {
@@ -221,6 +241,37 @@ describe("handleRefundCreated status transition guard", () => {
       expect.anything(),
       expect.objectContaining({ paymentId: "pay_1", refundId: "row_1" }),
     );
+  });
+
+  // #1353 — the pin for the lookup change. Razorpay's refund webhook carries
+  // only the `pay_…` payment id, and when the dispatcher's `payments.fetch`
+  // translation failed it handed that id through as `paymentIntentId`. A lookup
+  // keyed solely on `Payment.paymentIntent` (which holds the ORDER id) could
+  // never match it, so the handler deferred and the sweeper re-drove the event
+  // for up to a week against a payment that had been captured all along.
+  test("a refund whose paymentIntentId is a pay_ id resolves via gatewayPaymentId", async () => {
+    store.refunds.push({
+      id: "row_1",
+      refundId: "rfnd_1",
+      status: "PENDING",
+      paymentId: "pay_1",
+    });
+
+    await handleRefundCreated(
+      "rfnd_1",
+      // Not an order id — exactly what the dispatcher passes through when the
+      // gateway translation is unavailable.
+      "pay_gateway_1",
+      10_000,
+      "INR",
+      "processed",
+      "RAZORPAY",
+      "pay_gateway_1",
+    );
+
+    // Resolved, settled and cascaded — not deferred.
+    expect(store.refunds[0].status).toBe("SUCCEEDED");
+    expect(applyRefundCascade).toHaveBeenCalledTimes(1);
   });
 
   test("same-status redelivery of a PENDING refund is a no-op", async () => {

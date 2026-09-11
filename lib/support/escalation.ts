@@ -21,6 +21,18 @@ const HUMAN_KEYWORDS = [
   "fraud",
 ];
 
+/**
+ * Does this message ask for a person? Exported so BOTH scopes can honour it —
+ * the appointment thread reads it through `decideEscalation`, and the platform
+ * intake calls it directly. Without that the unrecognized-input nudge, which
+ * tells the user to type "agent", was a promise the platform drawer could not
+ * keep: there is no thread there, so nothing was checking.
+ */
+export function mentionsHumanKeyword(text: string | undefined): boolean {
+  const t = (text ?? "").toLowerCase();
+  return !!t && HUMAN_KEYWORDS.some((k) => t.includes(k));
+}
+
 export interface EscalationDecision {
   escalate: boolean;
   reason?: string;
@@ -42,8 +54,7 @@ export function decideEscalation(
     return { escalate: true, reason: "flow_terminal" };
   }
 
-  const text = (userMessage ?? "").toLowerCase();
-  if (text && HUMAN_KEYWORDS.some((k) => text.includes(k))) {
+  if (mentionsHumanKeyword(userMessage)) {
     return { escalate: true, reason: "keyword" };
   }
 

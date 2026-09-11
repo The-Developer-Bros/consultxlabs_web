@@ -187,6 +187,40 @@ export async function logWebhookEvent(
  * nothing would ever look at it again. An empty message becomes a readable
  * placeholder rather than a silent success.
  */
+/**
+ * Error prefixes that mean "never re-drive this row".
+ *
+ * The sweeper re-drives any row carrying an error, bounded by a 168-hour
+ * give-up window. That is right for a transient failure and wrong for a
+ * permanent one: a payload that does not match its schema will not match it in
+ * six days either, so the row churns through ~1,000 pointless re-drives and
+ * then ages out anyway.
+ *
+ * `gave up:` was already the terminal marker, written by the sweeper itself
+ * when a deferred event ages past the cap, and matched by a string literal in
+ * its `where` clause with a comment asking whoever edits it to keep the two in
+ * sync by hand. This makes the set a shared constant instead.
+ *
+ * The prefix is load-bearing; everything after it is for whoever reads the row.
+ */
+export const TERMINAL_ERROR_PREFIXES = [
+  // Aged past the give-up window. Written by sweep-stuck-webhook-events.
+  "gave up:",
+  // Structurally impossible to process — schema mismatch. Written at dispatch.
+  "permanent:",
+] as const;
+
+/** Build the prefix marker a permanently-unprocessable row should carry. */
+export function permanentFailure(reason: string): string {
+  return `permanent: ${reason}`;
+}
+
+/** True when this row must never be re-driven, whatever its age. */
+export function isTerminalWebhookError(error: string | null): boolean {
+  if (!error) return false;
+  return TERMINAL_ERROR_PREFIXES.some((prefix) => error.startsWith(prefix));
+}
+
 export async function markWebhookEventProcessed(
   eventId: string,
   error?: string,

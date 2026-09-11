@@ -89,6 +89,74 @@ graph TB
     style Client fill:#f3e5f5
 ```
 
+### Call Creation and Ownership (#1270)
+
+The Stream call for a booking is created on the server and only on the server.
+`provisionAppointmentMeeting` in `actions/stream/meetings/meeting.action.ts` is
+the single writer, and `lib/meeting.ts` is a thin client-side wrapper that calls
+it, turns a refusal back into a user-facing error for the toast, and hands the
+call id to `router.push("/meetings/<id>")`. Nothing in the browser constructs a
+`Call` in order to create one.
+
+The order the action works in is load-bearing, and every step of it exists
+because of a defect that reached production.
+
+1. Resolve the anchor slot. A session longer than thirty minutes is stored as
+   several consecutive `SlotOfAppointment` rows and each dashboard hands over a
+   different one, so the room is keyed to the run's first row and both sides
+   land in the same place (#1061).
+2. Return early if a `MeetingSession` row already exists. This is the common
+   case, and nothing below is allowed to rewrite an existing room.
+3. Run every refusal that can block a join — maintenance, a tentative or
+   cancelled slot, a booking whose parent row is in a terminal state — before
+   anything is minted (#1077).
+4. Check entitlement, still before the Stream write. The check used to live in
+   `createDbMeetingSession`, which runs afterwards, so a refused caller left a
+   real Stream room behind that no database row pointed at.
+5. Create the call with the server client, naming the appointment's host as
+   `created_by_id` and every member as `call_member`.
+6. Write the `MeetingSession` row, which re-checks both gates itself.
+
+Two properties are worth stating explicitly because the previous implementation
+had neither. The call's author is the consultant who delivers the session, not
+whoever pressed Join first — that used to be the consultee for roughly half of
+all bookings. And every field of the call's `custom` data is read from the same
+rows the entitlement gate reads, rather than supplied by the caller. That
+matters most for `consultantUserId`, since `useSessionInfo()` derives `isHost`
+from it and `isHost` decides who sees "End for everyone".
+
+The full rationale, including what it reverses, is in
+`docs/decisions/2026-08-30-server-side-call-creation.md`.
+
+#### Call roles, and the order the scripts have to run in
+
+Every member of a call is named `call_member`, at creation and again on each
+join. That is the role `scripts/stream/ensure-call-type-grants.ts` keeps
+`join-call` on, so after that script is applied it is the only thing that admits
+anyone to a call.
+
+The mint used to name the consultant `host` and everyone else `user`. Neither
+survives the grants change: the live `default` call type has exactly six role
+keys — `admin`, `call_member`, `global_admin`, `global_read_only`, `guest`,
+`user` — with no `host` among them, so a consultant stamped `host` held no
+grants at all, and `user` is one of the two roles that lose `join-call`.
+
+Every call minted before this change therefore has members on a role that will
+stop working. `scripts/stream/backfill-call-member-role.ts` repairs them, and it
+has to run first:
+
+```bash
+npx tsx scripts/stream/backfill-call-member-role.ts          # dry run, reads production
+npx tsx scripts/stream/backfill-call-member-role.ts --apply
+npx tsx scripts/stream/ensure-call-type-grants.ts --apply --join-route-is-deployed
+```
+
+The grants script now refuses to `--apply` until it has seen at least one member
+of an open call holding `call_member`. Its post-apply guard only ever checked
+that the _grant_ was stored on the role, which is true by construction and says
+nothing about whether a single person holds it — a green run away from locking
+every participant out of every call.
+
 ### Server Actions
 
 **File**: `actions/stream/meetings/meeting.action.ts`
@@ -221,6 +289,14 @@ sequenceDiagram
     Note over Page: Cleanup on unmount
     Page->>API: call.leave() if still joined
 ```
+
+> **The diagram above predates #1134 P0-2 and #1270 and is kept for the shape of
+> the flow, not for its creation branch.** The meeting page no longer creates
+> anything: `useGetCallById` posts to `POST /api/meetings/[meetingId]/join`,
+> which is the only grantor of call membership, and `client.call()` on the way
+> back merely constructs a local handle. The room itself was created earlier, on
+> the server, by `provisionAppointmentMeeting` when someone first pressed Join on
+> a dashboard — see "Call Creation and Ownership" above.
 
 **Flow Steps**:
 
@@ -595,18 +671,46 @@ const handleLeave = async () => {
 
 ### End Call (Host Only)
 
+Ending a call for everyone is a server decision, not a client one. `EndCallButton`
+posts to `POST /api/meetings/[meetingId]/end`, which re-resolves access from the
+database and requires the caller to be on the hosting side — the plan owner, or
+an accepted collaborator on a webinar or a class.
+
 ```typescript
 const handleEndCall = async () => {
   try {
-    // End call for all participants
-    await call?.endCall();
-    console.log("Ended call for all participants");
-    router.push("/dashboard");
+    const response = await fetch(
+      `/api/meetings/${encodeURIComponent(call.id)}/end`,
+      { method: "POST" },
+    );
+    if (!response.ok) {
+      throw new Error(`End call failed with status ${response.status}`);
+    }
   } catch (error) {
+    // The host leaves and their media is released either way; a failed end
+    // means the room outlives them, which is what it has always meant.
     console.error("Error ending call:", error);
+  } finally {
+    await leaveCallAndReleaseMedia(call);
+    router.push(getDashboardUrl());
   }
 };
 ```
+
+The button used to call `call.endCall()` directly. That worked because
+`end-call` is granted to `call_member` on the live `default` call type and the
+join route hands `call_member` to every participant — so any consultee could end
+a consultation from devtools, and the only barrier was this component not
+rendering for them, which is a React conditional over call data. Routing through
+the server makes the grant revocable: once the button is deployed and serving
+traffic, `scripts/stream/ensure-call-type-grants.ts` can strip `end-call` from
+`call_member` without taking the host's own control down with it. That revocation
+has deliberately not been applied yet.
+
+The route does not write `MeetingSession.endedAt`. The `call.ended` webhook owns
+that column, and it also sets the slot's completion status and the session's
+actual duration — writing `endedAt` first would make the handler treat the event
+as a duplicate and skip all of it.
 
 ---
 

@@ -144,6 +144,10 @@ const MAINTAINER_FIELDS = new Set([
   "secondaryColor",
 ]);
 const BILLING_ADMIN_FIELDS = new Set(["billingEmail", "paymentTermsDays"]);
+// Concurrency control, not a writable column: the optimistic-lock CAS below is
+// what enforces it, and every dashboard save echoes it back. Counting it as a
+// touched field 403'd every non-OWNER save regardless of what was edited.
+const CONTROL_FIELDS = new Set(["expectedVersion"]);
 
 export async function PATCH(
   req: NextRequest,
@@ -175,13 +179,14 @@ export async function PATCH(
     if (role === "BILLING_ADMIN") {
       BILLING_ADMIN_FIELDS.forEach((f) => allowed.add(f));
     }
-    const forbidden = Object.keys(body).filter((k) => !allowed.has(k));
+    const touched = Object.keys(body).filter((k) => !CONTROL_FIELDS.has(k));
+    const forbidden = touched.filter((k) => !allowed.has(k));
     if (allowed.size === 0 || forbidden.length > 0) {
       return NextResponse.json(
         {
           error: "Insufficient role for these fields",
           code: "FIELD_RBAC_FORBIDDEN",
-          fields: forbidden.length > 0 ? forbidden : Object.keys(body),
+          fields: forbidden.length > 0 ? forbidden : touched,
         },
         { status: 403 },
       );

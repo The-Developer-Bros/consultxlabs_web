@@ -45,7 +45,7 @@ __tests__/sso/
 
 ### 2.2 SSO Static Invariants
 
-[`scripts/verify-sso-invariants.sh`](file:///Users/kaustavghosh/Desktop/familiarise_web/scripts/verify-sso-invariants.sh) runs 8 grep-level checks:
+[`scripts/verify-sso-invariants.sh`](../../../scripts/verify-sso-invariants.sh) runs 8 grep-level checks:
 
 | # | What it checks | Why |
 |---|---|---|

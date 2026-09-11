@@ -2,6 +2,7 @@
 
 import { useCallback } from "react";
 import { useRouter } from "next/navigation";
+import { useInFlightGuard } from "@/hooks/scheduling/useInFlightGuard";
 import { useToast } from "@/hooks/use-toast";
 import { reportSentryMessage } from "@/lib/observability/report";
 import { reportClientFailure } from "@/lib/errors/classification/client-failure";
@@ -29,12 +30,20 @@ import {
  *
  * Returns true when navigation to the meeting was initiated — callers
  * tracking per-row "joining" state can reset it on false.
+ *
+ * #1280 2.7 — guarded against re-entry per appointment. The first `await` is
+ * `waitForGlobalVideoClient()`, which can take a second on a cold provider, so
+ * a double-click used to run the whole chain twice. That matters here beyond
+ * the wasted round trip: the `?? slotsOfAppointment?.[0]` fallback below reads
+ * an UNSORTED array, so two concurrent runs can resolve two different anchor
+ * rows and drop the two sides of one booking into two different rooms.
  */
 export function useLazyJoinMeeting() {
   const router = useRouter();
   const { toast } = useToast();
+  const guard = useInFlightGuard();
 
-  return useCallback(
+  const join = useCallback(
     async (
       appointment: MeetingAppointment,
       joinableSlot?: MeetingSlot,
@@ -78,11 +87,7 @@ export function useLazyJoinMeeting() {
 
       try {
         const { getOrCreateAppointmentMeeting } = await import("@/lib/meeting");
-        const meetingId = await getOrCreateAppointmentMeeting(
-          client,
-          appointment,
-          relevantSlot,
-        );
+        const meetingId = await getOrCreateAppointmentMeeting(relevantSlot);
         router.push(`/meetings/${meetingId}`);
         toast({
           title: "Joining meeting",
@@ -108,5 +113,22 @@ export function useLazyJoinMeeting() {
       }
     },
     [router, toast],
+  );
+
+  return useCallback(
+    async (
+      appointment: MeetingAppointment,
+      joinableSlot?: MeetingSlot,
+    ): Promise<boolean> => {
+      // Keyed on the appointment, not globally: two different bookings joined
+      // in quick succession are legitimate, one booking joined twice is not.
+      const result = await guard(`join:${appointment.id}`, () =>
+        join(appointment, joinableSlot),
+      );
+      // A dropped duplicate reports false so a caller's per-row "joining" state
+      // resets. It did not navigate, which is what the boolean means.
+      return result ?? false;
+    },
+    [guard, join],
   );
 }

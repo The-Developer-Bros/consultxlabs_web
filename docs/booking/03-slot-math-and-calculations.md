@@ -57,6 +57,37 @@ Three things derive from runs and never from individual rows.
 - **Join state.** The join window, and the check for a call the host has already ended, are both measured over `[run.startsAt, run.endsAt]`. Measured per row, a two-hour class stops being joinable thirty minutes in.
 - **The session count and label.** A four-hour booking is one session running 12:30 to 16:30, not eight half-hour sessions of which the list shows the first. The same applies to "sessions this week", progress text, and anything else that counts.
 
+## The Join Gate
+
+Whether a person may open the video room for a booking is decided by three independent questions, and every surface that renders a Join affordance must ask all three. They live in `lib/appointments/slots.ts` and `lib/appointments/status.ts` so that no page has to answer them for itself.
+
+### Is the session inside its window?
+
+`getSessionJoinState(run)` answers this over the whole run, never over a single row. It returns one of four values. A `countdown` session has not opened yet, a `joinable` one is open now, an `ended` one is over, and a `disabled` one is a tentative placeholder or a dead row that can never be joined at all. The window itself is a role-dependent lead time before the session starts, and there are exactly two of them.
+
+| Constant                    | Value      | Who it applies to                                                         |
+| --------------------------- | ---------- | ------------------------------------------------------------------------- |
+| `CONSULTEE_JOIN_WINDOW_MS`  | 10 minutes | Learners, on every consultee and organization-member surface.             |
+| `CONSULTANT_JOIN_WINDOW_MS` | 15 minutes | Hosts, so that they can be in the room before the first attendee arrives. |
+
+Both constants are exported from `lib/appointments/slots.ts` and every caller imports one of them. Declaring the value locally is what #1270 removed: six surfaces had each written their own, landing on four different answers, so the same booking opened at four different times depending on which page the user happened to be looking at. The planner in particular gave a host a ten-minute window while the appointments list beside it gave the same host fifteen.
+
+An `ended` session is not merely one whose clock has run out. When the host closes the call, the `MeetingSession` row records `endedAt`, and from that moment the session is over even though its slot rows still run for another forty minutes. Any surface that compares only `startsAt` and `endsAt` will keep offering Join for the rest of the booked hour and will drop whoever clicks it into a fresh, empty room. That is the defect `getSessionVMJoinState` exists to prevent for the mapper-emitted `SessionVM` rows that the session timeline renders.
+
+### Is the booking confirmed?
+
+An open window is a statement about the clock, not about the booking. `isConfirmedStatus(status)` is the second half of the gate, and it admits only `APPROVED`, `SCHEDULED` and `IN_PROGRESS`. It therefore refuses a booking still at `APPROVED_PENDING_PAYMENT` or `AWAITING_PAYMENT`, where the slot is held but nobody has paid, and it refuses the terminal states, where the session has already been closed out or called off. Both sides of a booking use the same predicate, which is what #1270 restored: the consultee adapter had always required it while the consultant adapter tested only that the row was not in the cancelled bucket, and the consultant home tab tested nothing at all.
+
+### Is the surface allowed to hand over a join handler?
+
+The third question is asked by the adapter, not by the shared helpers. A read-only surface renders the timeline without an `onJoinSession` callback, and a session that is live but whose booking the adapter has refused must then read as a state rather than as an action. `SessionTimeline` renders the Join button only when a handler is present and shows a muted, non-actionable label otherwise, because a row that says "JOIN" in unmuted text and does nothing when clicked is worse than one that says nothing at all.
+
+### The development escape hatch
+
+`NEXT_PUBLIC_ENABLE_DEV_TOOLS` is the single flag that opens the force-join backdoor, and it is opt-in: `.env.sample` ships it as `"false"`. Keying the backdoor off `NODE_ENV` instead means it is open on every local run whether or not the developer asked for it, which is why #1270 standardised the surfaces that did so.
+
+The backdoor is always **additive**. It adds a separately labelled "Join (Dev)" affordance in the places where the real Join is absent; it never relaxes, re-labels or un-disables the real one. The consultant home tab used to do exactly that — the dev arm _was_ the gate — with the side effect that every genuine Join on a development build was mislabelled as a dev join.
+
 ## Week Boundaries (Sunday-Saturday)
 
 All week-based calculations use **Sunday as the first day** of the week.
@@ -128,7 +159,7 @@ Always use `SlotCalculationService.countWeeks()`.
 | ------------ | ----------------------------------------------------------------------------- | --------------------------------------------------- |
 | Consultation | `Math.ceil(durationInHours / 0.5)`                                            | 1.5h = 3 slots                                      |
 | Webinar      | `Math.ceil(durationInHours / 0.5)`                                            | 2h = 4 slots                                        |
-| Subscription | `countWeeks(start, end) * sessionsPerWeek * Math.ceil(sessionDuration / 0.5)`    | 5 weeks, 2/week, 1h sessions = 5 _ 2 _ 2 = 20 slots |
+| Subscription | `countWeeks(start, end) * sessionsPerWeek * Math.ceil(sessionDuration / 0.5)` | 5 weeks, 2/week, 1h sessions = 5 × 2 × 2 = 20 slots |
 | Class        | `countWeeks(start, end) * sessionsPerWeek * Math.ceil(sessionDuration / 0.5)` | Same formula                                        |
 
 ## Consecutive Slot Validation
@@ -226,3 +257,25 @@ This feature applies to all event types where `slotsPerSession > 1`. Implementat
 - Warns if > 24 hours (unusual but not blocked)
 
 This prevents division-by-zero, infinite loops, and negative slot counts in `calculateRequiredSlots` and `getSlotsPerCall`.
+
+## Availability windows are contiguous, and validation is a union (#1320)
+
+A consultant's published availability is stored as one `SlotOfAvailabilityWeekly` row per contiguous window, up to the twelve-hour bound that `isValidTimeRange` enforces on a single row, beyond which the fold starts a new row and the booking still spans both through the union check described below. Every save path merges exactly-adjacent same-day rows before writing, so an entry of "3:30–4:30" followed by "4:30–5:30" lands as one "3:30–5:30" row, and a one-off script folds rows that already exist. The booking generator merges consecutive available atoms regardless of which row produced them, and checkout validates a booking window by requiring that every thirty-minute atom of the window falls inside some published row, weekly or custom, rather than inside the single row the client named. The named row id still proves ownership and catches a soft-deleted profile, but it is no longer the boundary of what can be booked. This is what makes a two-hour plan bookable inside a two-hour block that the expert page draws as one, which was not the case while the generator and checkout were row-bound.
+
+## Projecting a weekly row onto real dates (#1342, #1343)
+
+A weekly availability row is a rule, not an event: it says that the consultant is free on a named local day between two wall-clock times, and the concrete instants it produces have to be computed for whatever date range a surface is drawing. Because `startDay` is the consultant's local day (ADR B4) while `startTimeUtc` and `endTimeUtc` are minutes since midnight UTC, the UTC weekday the row starts on is not the stored day whenever the consultant's midnight is not UTC midnight. The derivation is one line and it belongs in one place:
+
+```
+utcDay = (localDay − floor((startTimeUtc + utcOffsetMinutes) / 1440)) mod 7
+```
+
+An Asia/Kolkata row published for Monday 01:00–05:00 stores `startDay = MONDAY`, `startTimeUtc = 1170`, `endTimeUtc = 1410` and `utcOffsetMinutes = 330`, and the formula puts its start on a UTC **Sunday** at 19:30. Every occurrence it generates is the same instant for every viewer on the planet; only the label the viewer reads changes.
+
+`utils/schedule/weekly-projection.ts` is that one place. It exports `utcStartDayIndex` for the weekday, `weeklyRowDurationMinutes` for the overnight-aware length (`1440 − start + end` when the row crosses midnight in UTC, `end − start` otherwise), and `weeklyRowOccurrencesInRange(row, rangeStartUtc, rangeEndUtc)`, which walks the range one UTC day at a time and emits every occurrence as a half-open `[start, end)` pair. The walk begins one UTC day before the range so that an overnight occurrence which started before the window keeps the part of its tail that falls inside it, and each candidate is kept only when it genuinely overlaps. The module holds a type-only Prisma import and no Sentry, Prisma or date-fns dependency, so the grid, the allocator, the jsdom tests and the client bundle can all share the same generator.
+
+Two surfaces consume it and they must never diverge. `processWeeklySlots` (`utils/timeSlotsProcessing.ts`) generates the calendar grid, and `SlotAllocationService.findAvailableSlots` generates the allocator's candidates; checkout then re-checks each atom through `isMinuteWithinWeeklySlot`, which derives the weekday through the very same helper. The rule to hold onto when changing any of them is that the grid must offer only atoms the validator accepts, and `__tests__/booking-algorithm/weekly-day-semantics.test.ts` asserts exactly that for the IST pre-dawn row that broke it, for an `Asia/Kolkata` and an `America/New_York` viewer alike.
+
+Segmenting those occurrences for display is a separate step with its own boundary rule. `splitSlotsByDay` cuts a generated window at each local calendar-day boundary, and the segments are **half-open**: a segment ends at the next day's local midnight, not at 23:59:59.999. The earlier closed bound cost a millisecond at the end of every block that ran to midnight, and a 23:30–23:59:59.999 remainder is not a thirty-minute atom, so a consultant who published up to local midnight silently lost their final bookable slot on every surface (#1415).
+
+Merging is the last step, and its rule is exact adjacency in both of the places that merge. `mergeConsecutiveSlots` joins the booking-side atoms and `mergeConsecutiveSlotsForDisplay` (`app/explore/experts/[consultantId]/utils/mergeSlots.ts`) joins the expert page's; the only difference between them is which atoms are eligible, since the first merges available atoms only and the second merges any run that shares a status. Neither tolerates a gap. A tolerance on the display side advertised a window whose seam no availability row publishes, and checkout's per-atom union coverage then refused the booking the card had just promised (#1416).

@@ -60,7 +60,7 @@ subsystem. The unnumbered ones are references.
 
 ## Rules that have been learned the hard way
 
-Each of these cost an incident. They are repeated in the `stream-sdk` skill,
+Each of these cost an incident. They are repeated in the `stream` skill (`.claude/skills/stream/SKILL.md`),
 which is the version kept closest to the code.
 
 **Never derive an identifier with `localeCompare`.** It orders by ICU collation,
@@ -99,5 +99,5 @@ A test deletion is a real deletion.
 - Issue #1146 — the review findings that outlived the pull requests that raised
   them.
 - [ADR: `resolveMeetingAccess` returns what it loaded](../decisions/2026-08-13-meeting-access-returns-what-it-loaded.md)
-- `.claude/skills/stream-sdk/SKILL.md` — the working reference, kept in step
+- `.claude/skills/stream/SKILL.md` — the working reference, kept in step
   with the code more actively than these pages.

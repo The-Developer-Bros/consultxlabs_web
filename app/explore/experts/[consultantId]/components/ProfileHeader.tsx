@@ -83,24 +83,31 @@ export function ProfileHeader({
             )}
           </div>
 
-          {/* Rating */}
+          {/* Rating. #705 — the PUBLISHED score, which is null until enough
+              distinct sessions have been rated. Rendering the raw mean here
+              while the reviews section showed the published one would have made
+              the threshold decorative. */}
           <div className="flex items-center gap-3 mb-4">
-            <div className="flex items-center gap-1">
-              {[...Array(5)].map((_, i) => (
-                <Star
-                  key={i}
-                  className={`w-5 h-5 ${
-                    i < Math.floor(consultantDetails.rating)
-                      ? "fill-amber-400 text-amber-400"
-                      : "fill-muted text-muted"
-                  }`}
-                />
-              ))}
-            </div>
-            <span className="font-semibold text-foreground">
-              {consultantDetails.rating.toFixed(1)}
-            </span>
-            <span className="text-muted-foreground/70">•</span>
+            {consultantDetails.publishedRating !== null && (
+              <>
+                <div className="flex items-center gap-1">
+                  {[...Array(5)].map((_, i) => (
+                    <Star
+                      key={i}
+                      className={`w-5 h-5 ${
+                        i < Math.floor(consultantDetails.publishedRating!)
+                          ? "fill-amber-400 text-amber-400"
+                          : "fill-muted text-muted"
+                      }`}
+                    />
+                  ))}
+                </div>
+                <span className="font-semibold text-foreground">
+                  {consultantDetails.publishedRating.toFixed(1)}
+                </span>
+                <span className="text-muted-foreground/70">•</span>
+              </>
+            )}
             <span className="text-muted-foreground">{reviewCount} reviews</span>
           </div>
 

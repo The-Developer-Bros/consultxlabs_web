@@ -37,19 +37,6 @@ function Shell({
   );
 }
 
-export function SupportRequestsPage({
-  profileId,
-}: Readonly<{ profileId: string }>) {
-  return (
-    <Shell
-      title="Support requests"
-      subtitle="Requests you've raised, and where each one has got to."
-    >
-      <FeedbackPanel profileId={profileId} view="requests" />
-    </Shell>
-  );
-}
-
 export function SupportFeedbackPage({
   profileId,
 }: Readonly<{ profileId: string }>) {
@@ -58,7 +45,7 @@ export function SupportFeedbackPage({
       title="Feedback"
       subtitle="Tell us what's working and what isn't."
     >
-      <FeedbackPanel profileId={profileId} view="feedback" />
+      <FeedbackPanel profileId={profileId} />
     </Shell>
   );
 }

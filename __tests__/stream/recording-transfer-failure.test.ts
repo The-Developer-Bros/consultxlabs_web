@@ -30,9 +30,13 @@ jest.mock("../../lib/stream-logger", () => ({
 jest.mock("../../lib/enterprise/system-events", () => ({
   recordSystemError: jest.fn().mockResolvedValue(undefined),
 }));
-jest.mock("../../lib/supabase", () => ({
+// #1270 — the service reads the clients from the leaf module now, not from
+// `lib/supabase`. That one carries an `import "server-only"` marker, which
+// throws outside Next's `react-server` resolution and so cannot be reached from
+// a cron process at all.
+jest.mock("../../lib/supabase-storage-core", () => ({
   __esModule: true,
-  default: { storage: {} },
+  supabase: { storage: {} },
   supabaseAdmin: { storage: {} },
   ensureBucketExists: jest.fn().mockResolvedValue(true),
   generateStorageFileName: jest.fn().mockReturnValue("file.mp4"),

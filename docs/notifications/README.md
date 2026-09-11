@@ -45,7 +45,7 @@ graph TD
 | ------------------------------- | ----------------------------------------------------------------------------------------------- |
 | `lib/novu/client.ts`            | Singleton Novu client, `isNovuConfigured()` guard                                               |
 | `lib/novu/service.ts`           | 20+ trigger functions: `notifyAppointmentBooked`, `notifyPaymentSuccess`, etc.                  |
-| `lib/novu/workflows.ts`         | 27 workflow ID constants + 16 typed payload interfaces                                          |
+| `lib/novu/workflows.ts`         | 28 workflow ID constants + 17 typed payload interfaces                                          |
 | `lib/novu/subscriber.ts`        | `syncSubscriber`, `updateSubscriberPreferences`, `deleteSubscriber`                             |
 | `lib/email.ts`                  | 6 Resend email functions (welcome, password reset, account linked, payment link/success/failed) |
 

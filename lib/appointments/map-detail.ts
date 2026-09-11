@@ -193,7 +193,7 @@ export function mapAppointmentDetail(
       (slot.meetingSession?.recordings ?? []).map((rec) => ({
         id: rec.id,
         title: rec.title,
-        url: rec.supabaseUrl ?? rec.recordingUrl ?? null,
+        url: rec.storageUrl ?? rec.recordingUrl ?? null,
         thumbnailUrl: rec.thumbnailUrl ?? null,
         status: rec.status?.toString() ?? "READY",
         durationInMinutes: rec.durationInMinutes,

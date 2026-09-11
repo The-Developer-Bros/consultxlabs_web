@@ -1,14 +1,12 @@
-import { auth } from "@/lib/auth";
-import { headers } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 
-import { resolveMeetingAccess } from "@/lib/meetings/access";
+import { guardMeetingRoute } from "@/lib/meetings/route-guard";
 import {
   getStreamVideoClient,
-  isStreamConfigured,
   StreamUnavailableError,
   withStreamCircuitBreaker,
 } from "@/lib/stream-client";
+import { upsertUsersToStream } from "@/actions/stream/chat/user.action";
 import { streamLogger } from "@/lib/stream-logger";
 import { STREAM_CALL_TYPE } from "@/lib/stream/call-cid";
 import { reportSentryError } from "@/lib/observability/report";
@@ -50,53 +48,10 @@ export async function POST(
   // itself was what failed.
   let meetingIdForLog: string | undefined;
   try {
-    const session = await auth.api.getSession({ headers: await headers() });
-
-    if (!session?.user?.id) {
-      return NextResponse.json(
-        { error: "Authentication required" },
-        { status: 401 },
-      );
-    }
-
-    // A suspended user must not be re-admitted to a call (#693).
-    if (session.user.banned) {
-      return NextResponse.json({ error: "Account suspended" }, { status: 403 });
-    }
-
-    const { meetingId } = await params;
+    const guard = await guardMeetingRoute(params, "admit to");
+    if (!guard.ok) return guard.response;
+    const { userId, meetingId, access } = guard;
     meetingIdForLog = meetingId;
-    if (!meetingId) {
-      return NextResponse.json(
-        { error: "Meeting ID is required" },
-        { status: 400 },
-      );
-    }
-
-    if (!isStreamConfigured()) {
-      streamLogger.error("Stream not configured — cannot admit to meeting");
-      return NextResponse.json(
-        { error: "Video is not available" },
-        { status: 503 },
-      );
-    }
-
-    const access = await resolveMeetingAccess(meetingId, session.user.id);
-
-    if (!access.hasAccess) {
-      // A real status code, not a 200 with a flag. This is the security
-      // boundary: a denial has to be unmistakable to the client and greppable
-      // in logs.
-      streamLogger.warn("Meeting join refused", {
-        userId: session.user.id,
-        meetingId,
-        reason: access.reason,
-      });
-      return NextResponse.json(
-        { error: access.message, reason: access.reason },
-        { status: access.reason === "not_found" ? 404 : 403 },
-      );
-    }
 
     // ALWAYS `call_member`, for both sides. Verified against the live call type
     // rather than assumed: the `default` grants map has exactly six role keys —
@@ -135,17 +90,28 @@ export async function POST(
       // This runs only after resolveMeetingAccess has confirmed the caller is on
       // this appointment — authorization first, creation second, which is the
       // ordering P0-2 was about.
-      await call.getOrCreate();
+      // #1270 — server-side auth carries no user context, so Stream requires
+      // an explicit author on GetOrCreateCall. Omitting it threw code 4 on
+      // EVERY request, which this route reported as a 500 after access had
+      // already been granted. Honoured only on actual creation, so an existing
+      // call keeps its original author and the repair path above still works.
+      await call.getOrCreate({ data: { created_by_id: userId } });
+
+      // #1270 — Stream refuses a call operation naming a user it does not
+      // hold, and a token alone never creates one: only connectUser does. A
+      // participant who has never signed in would be refused here, so sync
+      // them first. Already-synced ids are filtered inside.
+      await upsertUsersToStream([userId]);
 
       // Idempotent: re-adding an existing member updates their role rather than
       // erroring, so a rejoin is a no-op.
       await call.updateCallMembers({
-        update_members: [{ user_id: session.user.id, role }],
+        update_members: [{ user_id: userId, role }],
       });
     });
 
     streamLogger.info("Admitted to meeting", {
-      userId: session.user.id,
+      userId: userId,
       meetingId,
       role: access.role,
     });

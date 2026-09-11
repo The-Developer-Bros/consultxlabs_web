@@ -7,6 +7,10 @@
 
 ---
 
+> **Superseded (2026-09-03):** every issue below was fixed on the `fix/payment-algorithm-2b` branch that shipped in November 2025, and the locking/validation code it fixed has since been replaced outright — by the interval-atom `slot-booking:` locks in `utils/appointmentlock.ts`, the CAS transitions in `lib/booking/transitions.ts`, and the bounded request-path retry budgets (`REQUEST_PATH_RETRY_CONFIG`, `CHECKOUT_WAIT_RETRY_CONFIG`). None of the fixes described here describe current code. For the current mechanisms, read [`docs/booking/00-architecture-decisions.md`](../../booking/00-architecture-decisions.md) and [`docs/booking/15-checklist.md`](../../booking/15-checklist.md). Kept for historical context only.
+
+---
+
 ## Table of Contents
 
 1. [Overview](#overview)
@@ -46,7 +50,7 @@ This document details all identified issues in the payment and checkout system's
 ### Issue #1: Validation Before Lock (Race Window)
 
 **Severity:** Critical
-**Location:** `lib/payments/operations/checkout.ts:1101-1109`
+**Location:** `lib/payments/operations/checkout.ts`
 
 #### Problem Description
 
@@ -98,7 +102,7 @@ console.log(
 ### Issue #2: Lock TTL Too Short
 
 **Severity:** Critical
-**Location:** `lib/payments/operations/checkout.ts:576` and `utils/appointmentlock.ts`
+**Location:** `lib/payments/operations/checkout.ts` and `utils/appointmentlock.ts`
 
 #### Problem Description
 
@@ -144,8 +148,8 @@ T=35s    User A's transaction commits → DOUBLE BOOKING
 
 export async function lockSlotBooking(
   consultantProfileId: string,
-  startsAt: string,           // renamed from `slotStartTimeInUTC`
-  ttl: number = 60000,        // ← Increased from 15000 to 60000
+  startsAt: string, // renamed from `slotStartTimeInUTC`
+  ttl: number = 60000, // ← Increased from 15000 to 60000
 ): Promise<ApprovalLock> {
   const key = `slot-booking:${consultantProfileId}:${startsAt}`;
   try {
@@ -225,7 +229,7 @@ export async function extendLock(
 ### Issue #3: Non-Atomic Lock Release
 
 **Severity:** Critical
-**Location:** `utils/appointmentlock.ts:151-156`
+**Location:** `utils/appointmentlock.ts`
 
 #### Problem Description
 
@@ -338,7 +342,7 @@ async function releaseLock(lock: ApprovalLock): Promise<void> {
 ### Issue #4: Subscription Tentative Appointment Bypass
 
 **Severity:** Critical
-**Location:** `lib/payments/operations/checkout.ts:1166-1175`
+**Location:** `lib/payments/operations/checkout.ts`
 
 #### Problem Description
 
@@ -408,7 +412,7 @@ export async function handleSubscriptionCheckout(
     where: {
       subscriptionPlanId: plan.id,
       requestedById: consulteeProfileId,
-      status: { in: [AppointmentStatus.PENDING, AppointmentStatus.APPROVED] },  // field+enum renamed from `requestStatus`/AppointmentStatus
+      status: { in: [AppointmentStatus.PENDING, AppointmentStatus.APPROVED] }, // field+enum renamed from `requestStatus`/AppointmentStatus
       OR: [
         {
           AND: [
@@ -430,7 +434,7 @@ export async function handleSubscriptionCheckout(
   const subscription = await tx.subscription.create({
     data: {
       subscriptionPlanId: plan.id,
-      status: skipPayment                              // renamed from `requestStatus`; AppointmentStatus was AppointmentStatus
+      status: skipPayment // renamed from `requestStatus`; AppointmentStatus was AppointmentStatus
         ? AppointmentStatus.APPROVED
         : AppointmentStatus.PENDING,
       requestedById: consulteeProfileId,
@@ -488,7 +492,7 @@ case "SUBSCRIPTION": {
 ### Issue #5: Event Lock Granularity Too Coarse
 
 **Severity:** Critical
-**Location:** `utils/appointmentlock.ts:285-298`
+**Location:** `utils/appointmentlock.ts`
 
 #### Problem Description
 
@@ -658,7 +662,7 @@ export async function confirmEventSlot(
 ### Issue #6: Payment Intent Expiration Mismatch
 
 **Severity:** High
-**Location:** `lib/payments/operations/checkout.ts:1219` vs `jobs/cleanup-abandoned-payments.ts`
+**Location:** `lib/payments/operations/checkout.ts` vs `jobs/cleanup-abandoned-payments.ts`
 
 #### Problem Description
 
@@ -692,7 +696,7 @@ Add 5-minute buffer to cleanup job:
 ### Issue #8: Webhook Metadata Validation Silent Failures
 
 **Severity:** High
-**Location:** `lib/payments/webhooks/handlers.ts:127-143`
+**Location:** `lib/payments/webhooks/handlers.ts`
 
 #### Problem Description
 
@@ -762,7 +766,7 @@ console.error(
 ### Issue #10: Cleanup Job Race with Payment Completion
 
 **Severity:** High
-**Location:** `jobs/cleanup-abandoned-payments.ts:169-259`
+**Location:** `jobs/cleanup-abandoned-payments.ts`
 
 #### Problem Description
 
@@ -930,7 +934,7 @@ export async function checkRedisHealth(): Promise<boolean> {
 ### Issue #11: Hardcoded Slot Duration
 
 **Severity:** Medium
-**Location:** `utils/slotAllocation/SlotValidationService.ts:169`
+**Location:** `utils/slotAllocation/SlotValidationService.ts`
 
 #### Problem Description
 

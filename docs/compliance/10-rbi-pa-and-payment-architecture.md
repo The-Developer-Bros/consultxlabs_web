@@ -7,7 +7,7 @@
 
 ## What it is
 
-The **Reserve Bank of India (Regulation of Payment Aggregators) Directions, 2025** — reference **RBI/DPSS/2025-26/141**, dated **15 September 2025**. It consolidates and **repeals** the earlier PA guidelines (DPSS PA/PG guidelines of 17 Mar 2020 + 31 Mar 2021) and the PA-CB circular (31 Oct 2023), and for the first time formally categorises three PA types: **PA-Online (PA-O)**, **PA-Physical (PA-P)**, and **PA-Cross-Border (PA-CB)**. *(Title + reference number verified 2026-06-05 against rbi.org.in.)*
+The **Reserve Bank of India (Regulation of Payment Aggregators) Directions, 2025** — reference **RBI/DPSS/2025-26/141**, dated **15 September 2025**. It consolidates and **repeals** the earlier PA guidelines (DPSS PA/PG guidelines of 17 Mar 2020 + 31 Mar 2021) and the PA-CB circular (31 Oct 2023), and for the first time formally categorises three PA types: **PA-Online (PA-O)**, **PA-Physical (PA-P)**, and **PA-Cross-Border (PA-CB)**. _(Title + reference number verified 2026-06-05 against rbi.org.in.)_
 
 The most-cited operative constraint for marketplaces:
 
@@ -17,15 +17,15 @@ This affects every marketplace that today receives consumer payments and pays ou
 
 **Two paths the direction permits:**
 
-| Path | Mechanism | Onboarding burden | Settlement timing |
-|---|---|---|---|
-| **A — PA Sub-Merchant** (Razorpay Route) | Each consultant is a fully-KYC'd sub-merchant under Razorpay's PA license. Razorpay handles split settlement at payment time. | High — per-consultant V-CIP, PAN, Aadhaar, bank proof. | Tn+1 to consultant. |
-| **B — Escrow Account** | Marketplace (as an authorised PA) maintains the RBI-mandated escrow with a Scheduled Commercial Bank. Funds enter escrow; debits restricted to merchant payouts, refunds, commission per the Directions. | Low at consultant level; high at platform level (requires PA authorisation: ₹15 cr net worth + escrow governance). | Contractual, within the Directions' settlement norms. |
+| Path                                     | Mechanism                                                                                                                                                                                                | Onboarding burden                                                                                                  | Settlement timing                                     |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
+| **A — PA Sub-Merchant** (Razorpay Route) | Each consultant is a fully-KYC'd sub-merchant under Razorpay's PA license. Razorpay handles split settlement at payment time.                                                                            | High — per-consultant V-CIP, PAN, Aadhaar, bank proof.                                                             | Tn+1 to consultant.                                   |
+| **B — Escrow Account**                   | Marketplace (as an authorised PA) maintains the RBI-mandated escrow with a Scheduled Commercial Bank. Funds enter escrow; debits restricted to merchant payouts, refunds, commission per the Directions. | Low at consultant level; high at platform level (requires PA authorisation: ₹15 cr net worth + escrow governance). | Contractual, within the Directions' settlement norms. |
 
 **A third de facto path the direction does NOT explicitly forbid:**
 
-| Path | Mechanism | Notes |
-|---|---|---|
+| Path                                                 | Mechanism                                                                                                                                                                               | Notes                                                                                                                       |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | **C — Operating account + separate licensed payout** | Consumer → PA → platform's operating account (platform IS the merchant). Platform separately uses a licensed FAA (e.g. RazorpayX Bulk Payouts) to pay consultants from operating funds. | Two separate RBI-licensed flows. Consultant is NOT settled by the PA — they're paid by us via a different licensed product. |
 
 ## What architecture does Practitionist actually use?
@@ -39,9 +39,10 @@ Consumer → Razorpay PG (PA license) → Practitionist operating account (we ar
 ```
 
 **This is Path C.** Specifically:
+
 - We are NOT using Razorpay Route — `razorpayContactId` + `razorpayFundAccountId` are RazorpayX Bulk Payouts identifiers, NOT Route sub-merchant IDs.
 - We are NOT using a nodal account — funds land in the platform's operating account.
-- We make a separate, licensed payout via RazorpayX (which has its own RBI authorisation as a Full-fledged Money Changers / Authorised Payment System Operator).
+- We make a separate, licensed payout via RazorpayX. Razorpay holds RBI payment-aggregator authorisation — final online PA authorisation was reported in December 2023, cross-border PA authorisation followed in December 2025, and the offline PA-P licence followed in January 2026 — and RazorpayX payouts are executed from the platform's own current account through Razorpay's partner banks, not from PA escrow.
 
 ## Why Path C is likely permitted
 
@@ -57,28 +58,28 @@ This is the same architecture used by every B2B SaaS marketplace, every freelanc
 
 Even on Path C, the direction imposes:
 
-| # | Requirement | Status |
-|---|---|---|
-| 1 | **Marketplace declaration** to Razorpay | Done at PA onboarding; sign annual self-declaration |
-| 2 | **Refund SLA** to consumers (RBI-prescribed timelines) | Implementation pending — see [doc 09](./09-consumer-protection-and-grievance.md) |
-| 3 | **Prohibited categories monitoring** | Active — Razorpay flags + we add platform-level ToS |
-| 4 | **Data localisation** of payment data | Already enforced — RBI "Storage of Payment System Data" directive, 6 Apr 2018; Razorpay infra is India-based |
-| 5 | **PCI-DSS** — never store card numbers / CVV / etc. | Already compliant — we use Razorpay tokens |
-| 6 | **Chargeback handling** within 7-day evidence window | Implementation pending — see [doc 09](./09-consumer-protection-and-grievance.md) |
-| 7 | **PA-CB approval** for cross-border collections | Razorpay holds it; we enable cross-border settings — see [doc 07](./07-cross-border-flows.md) |
+| #   | Requirement                                            | Status                                                                                                       |
+| --- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| 1   | **Marketplace declaration** to Razorpay                | Done at PA onboarding; sign annual self-declaration                                                          |
+| 2   | **Refund SLA** to consumers (RBI-prescribed timelines) | Implementation pending — see [doc 09](./09-consumer-protection-and-grievance.md)                             |
+| 3   | **Prohibited categories monitoring**                   | Active — Razorpay flags + we add platform-level ToS                                                          |
+| 4   | **Data localisation** of payment data                  | Already enforced — RBI "Storage of Payment System Data" directive, 6 Apr 2018; Razorpay infra is India-based |
+| 5   | **PCI-DSS** — never store card numbers / CVV / etc.    | Already compliant — we use Razorpay tokens                                                                   |
+| 6   | **Chargeback handling** within 7-day evidence window   | Implementation pending — see [doc 09](./09-consumer-protection-and-grievance.md)                             |
+| 7   | **PA-CB approval** for cross-border collections        | Razorpay holds it; we enable cross-border settings — see [doc 07](./07-cross-border-flows.md)                |
 
 ## Wallet auto-top-up and the e-mandate framework
 
-`OrgBillingAccount.autoTopUpMandateId` (a "gateway recurring-payment token") lets the wallet auto-recharge by `autoTopUpAmountPaise` when the balance drops below `minBalancePaise`. Recurring debits against a stored mandate are governed by the **RBI Digital Payments — E-mandate Framework, 2026** (issued **21 April 2026**, effective immediately), which consolidates all prior e-mandate / UPI-AutoPay circulars across cards, PPIs, and UPI. *(Verified 2026-06-05.)*
+`OrgBillingAccount.autoTopUpMandateId` (a "gateway recurring-payment token") lets the wallet auto-recharge by `autoTopUpAmountPaise` when the balance drops below `minBalancePaise`. Recurring debits against a stored mandate are governed by the **RBI Digital Payments — E-mandate Framework, 2026** (issued **21 April 2026**, effective immediately), which consolidates all prior e-mandate / UPI-AutoPay circulars across cards, PPIs, and UPI. _(Verified 2026-06-05.)_
 
 Operative limits for the auto-top-up mandate:
 
-| # | Rule | Effect on auto-top-up |
-|---|---|---|
-| 1 | Mandate **registration** requires Additional Factor of Authentication (AFA) — a one-time auth when the org sets up the mandate. | The first mandate setup must go through full AFA at the gateway. |
-| 2 | Subsequent recurring debits run **without AFA up to ₹15,000 per transaction**; debits above that need AFA per transaction. | Keep `autoTopUpAmountPaise` ≤ ₹15,000 (1,500,000 paise) to stay in the no-AFA lane; larger top-ups will prompt per-debit AFA and can fail silently if unattended. |
-| 3 | **Pre-debit notification** to the payer **≥ 24h** before each debit, with opt-out. | The gateway issues this; ensure the mandate is registered with a reachable contact so notifications land. |
-| 4 | ₹1 lakh per-transaction no-AFA ceiling applies only to insurance / mutual-fund / credit-card-bill categories — **not** wallet top-ups. | Do not assume the ₹1 lakh ceiling for wallet recharges; the ₹15,000 cap governs. |
+| #   | Rule                                                                                                                                   | Effect on auto-top-up                                                                                                                                             |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Mandate **registration** requires Additional Factor of Authentication (AFA) — a one-time auth when the org sets up the mandate.        | The first mandate setup must go through full AFA at the gateway.                                                                                                  |
+| 2   | Subsequent recurring debits run **without AFA up to ₹15,000 per transaction**; debits above that need AFA per transaction.             | Keep `autoTopUpAmountPaise` ≤ ₹15,000 (1,500,000 paise) to stay in the no-AFA lane; larger top-ups will prompt per-debit AFA and can fail silently if unattended. |
+| 3   | **Pre-debit notification** to the payer **≥ 24h** before each debit, with opt-out.                                                     | The gateway issues this; ensure the mandate is registered with a reachable contact so notifications land.                                                         |
+| 4   | ₹1 lakh per-transaction no-AFA ceiling applies only to insurance / mutual-fund / credit-card-bill categories — **not** wallet top-ups. | Do not assume the ₹1 lakh ceiling for wallet recharges; the ₹15,000 cap governs.                                                                                  |
 
 This is a forward-looking note: the auto-top-up cron exists in schema, but live mandate registration must respect these limits at the gateway integration layer.
 
@@ -98,23 +99,32 @@ This is a forward-looking note: the auto-top-up cron exists in schema, but live 
 
 ## Current code
 
-| Item | What it does | State |
-|---|---|---|
-| `lib/payments/payouts/razorpay-payouts.ts` | RazorpayX Bulk Payouts API client | ✅ live |
-| `lib/payments/payouts/stripe-connect.ts` | Stripe Connect for cross-border consultant payouts | ✅ live |
-| `lib/payments/payouts/payout-service.ts` (B2C) | Consultant payout pipeline | ✅ live |
-| `lib/payments/payouts/org-payout-service.ts` (B2B) | Org payout pipeline | ✅ live |
-| Razorpay PG checkout | ✅ live | |
-| Architecture memo | **Missing** — there's no doc explicitly stating "we are on Path C and here's why" | 🟡 |
+| Item                                               | What it does                                                                                   | State   |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------- |
+| `lib/payments/payouts/razorpay-payouts.ts`         | RazorpayX Bulk Payouts API client                                                              | ✅ live |
+| `lib/payments/payouts/stripe-connect.ts`           | Stripe Connect for cross-border consultant payouts                                             | ✅ live |
+| `lib/payments/payouts/payout-service.ts` (B2C)     | Consultant payout pipeline                                                                     | ✅ live |
+| `lib/payments/payouts/org-payout-service.ts` (B2B) | Org payout pipeline                                                                            | ✅ live |
+| Razorpay PG checkout                               | ✅ live                                                                                        |         |
+| Architecture memo                                  | **Written (2026-09-03)** — this document is the memo stating "we are on Path C and here's why" | ✅      |
 
 ## Gap
 
-| Gap | Severity |
-|---|---|
-| No memo at `docs/payments/` documenting the architecture vs the Sep 2025 direction | 🟡 |
-| No CA / RBI-compliance opinion validating Path C for our specific facts | 🟡 |
-| No annual Razorpay marketplace self-declaration captured + filed | 🟢 (assumed Razorpay does this; verify) |
-| No prohibited-categories monitoring at platform-ToS level (Razorpay flags only) | 🟢 |
+| Gap                                                                                | Severity                                                                                                                                                                                                                                                                                                                                                            |
+| ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| No memo at `docs/payments/` documenting the architecture vs the Sep 2025 direction | ✅ **Written (2026-09-03)** — this document (`docs/compliance/10-rbi-pa-and-payment-architecture.md`), together with `docs/enterprise/70-design-decisions/26-gst-principal-model.md` and `docs/payments/audits/2026-09-03-finance-verdicts.md`, is the architecture memo this row asked for; the fact-specific risk paragraph in §A above stays the operative text. |
+| No CA / RBI-compliance opinion validating Path C for our specific facts            | 🟡 still open — see the CA action list below                                                                                                                                                                                                                                                                                                                        |
+| No annual Razorpay marketplace self-declaration captured + filed                   | 🟢 (assumed Razorpay does this; verify)                                                                                                                                                                                                                                                                                                                             |
+| No prohibited-categories monitoring at platform-ToS level (Razorpay flags only)    | 🟢                                                                                                                                                                                                                                                                                                                                                                  |
+
+### CA action list (2026-09-03)
+
+The chartered accountant engagement this section calls for now has a concrete question list, gathered from the 2026-09-03 finance audit rather than left as an open-ended "review the memo" ask.
+
+1. Confirm Path C (Razorpay PG as the merchant of record, RazorpayX payouts as a separately licensed rail) is permitted for a consulting marketplace under the RBI PA Directions 2025, as this document's §B already asks.
+2. Answer the five questions in [ADR 26](./../enterprise/70-design-decisions/26-gst-principal-model.md#questions-for-the-chartered-accountant): whether Principal-for-GST paired with 194-O-operator-for-income-tax holds together, how a platform-funded referral credit should be treated for taxable value, the correct SAC code, whether the Section 12(2)(b) supplier-state default is acceptable, and whether Section 52 TCS registration is required at all under this model.
+3. Weigh in on #1388, the specific code-path question about referral credits being applied after tax at checkout (`deriveCheckoutAmount`), which nothing in the code changes until it is answered.
+4. Confirm which authorisation RazorpayX payouts operate under and whether any additional registration is needed for platform-initiated payouts to consultants.
 
 ## Required
 
@@ -131,6 +141,7 @@ Add `docs/payments/06-pa-master-direction-architecture.md` (or similar):
 ### B. CA / legal opinion (PR 2 — out-of-band)
 
 Engage a CA + an RBI-specialised counsel:
+
 - Review the architecture memo.
 - Confirm Path C is permitted for our facts.
 - Document the opinion with their UDIN / signature.
@@ -165,18 +176,18 @@ The migration cost (per-consultant V-CIP for Path A, or nodal-account governance
 
 ## Don't build
 
-| Don't build | Reason |
-|---|---|
-| Razorpay Route migration | Path A burden is high and not required given Path C is permitted. Wait for legal opinion. |
-| Self-custodied escrow | Requires ₹15 cr net worth + RBI approval. Not viable. |
-| Direct nodal-account integration with an SPD bank | Path B governance is heavy; only if a specific feature demands it. |
+| Don't build                                       | Reason                                                                                    |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Razorpay Route migration                          | Path A burden is high and not required given Path C is permitted. Wait for legal opinion. |
+| Self-custodied escrow                             | Requires ₹15 cr net worth + RBI approval. Not viable.                                     |
+| Direct nodal-account integration with an SPD bank | Path B governance is heavy; only if a specific feature demands it.                        |
 
 ## References
 
-- [RBI (Regulation of Payment Aggregators) Directions, 2025 — RBI/DPSS/2025-26/141, 15 Sep 2025 (RBI master-directions page)](https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=12896) *(title + ref no. verified 2026-06-05)*
+- [RBI (Regulation of Payment Aggregators) Directions, 2025 — RBI/DPSS/2025-26/141, 15 Sep 2025 (RBI master-directions page)](https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=12896) _(title + ref no. verified 2026-06-05)_
 - [RBI PA Directions 2025 — full text (FIDC mirror)](https://www.fidcindia.org.in/wp-content/uploads/2025/09/RBI-PAYMENT-AGGREGATORS-DIRECTIONS-15-09-25.pdf)
 - [PA Directions 2025 analysis (Khaitan & Co)](https://www.khaitanco.com/sites/default/files/2025-10/ERGO%20-%20PA%20Master%20Directions%20-%203%20Oct%202025_0.pdf)
-- [RBI Digital Payments — E-mandate Framework, 2026 (issued 21 Apr 2026) — coverage](https://www.businesstoday.in/personal-finance/news/story/rbi-caps-recurring-payments-at-rs15000-without-otp-under-new-e-mandate-framework-526759-2026-04-21) *(₹15,000 no-AFA cap verified 2026-06-05; replace with the RBI primary circular URL when indexed)*
+- [RBI Digital Payments — E-mandate Framework, 2026 (issued 21 Apr 2026) — coverage](https://www.businesstoday.in/personal-finance/news/story/rbi-caps-recurring-payments-at-rs15000-without-otp-under-new-e-mandate-framework-526759-2026-04-21) _(₹15,000 no-AFA cap verified 2026-06-05; replace with the RBI primary circular URL when indexed)_
 - [Razorpay Payment Gateway Compliance 2026](https://razorpay.com/blog/payment-gateway-compliance/)
 - [Razorpay KYC Onboarding Guide 2026](https://razorpay.com/blog/payment-gateway-kyc-onboarding-india)
 - See also: [07](./07-cross-border-flows.md) (PA-CB), [09](./09-consumer-protection-and-grievance.md) (refund SLA, chargeback handling).

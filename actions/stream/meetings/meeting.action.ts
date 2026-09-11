@@ -5,6 +5,8 @@ import { z } from "zod";
 import { Prisma } from "@prisma/client";
 import prisma from "@/lib/prisma";
 import { findSessionRun } from "@/lib/appointments/slots";
+import { ConsentRequiredError } from "@/lib/compliance/dpdp";
+import { resolveMaxCallDurationSeconds } from "@/lib/meetings/duration-cap";
 import { resolvePlanOwnerIds } from "@/lib/booking/plan-owners";
 import { getMaintenanceState } from "@/lib/maintenance";
 import { getSession } from "@/lib/auth-server";
@@ -21,7 +23,15 @@ interface MeetingSlot {
   appointmentId?: string | null;
 }
 import { MeetingSession } from "@prisma/client";
+import type { AppointmentsType } from "@prisma/client";
+import { upsertUsersToStream } from "@/actions/stream/chat/user.action";
 import { streamLogger } from "@/lib/stream-logger";
+import {
+  getStreamVideoClient,
+  isStreamConfigured,
+  withStreamCircuitBreaker,
+} from "@/lib/stream-client";
+import { STREAM_CALL_TYPE } from "@/lib/stream/call-cid";
 
 // Input validation schemas
 const slotIdSchema = z.string().min(1, "Slot ID is required");
@@ -73,6 +83,11 @@ const collaboratorsSelect = {
 const appointmentAccessSelect = (userId: string) =>
   ({
     appointmentType: true,
+    // #1270 — read here rather than in a second query. The org tag used to be
+    // supplied by the browser (an argument the caller chose), and the audit
+    // column on MeetingSession was then read back separately; one column on a
+    // query that already runs answers both.
+    organizationId: true,
     slotsOfAppointment: {
       where: { user: { some: { id: userId } } },
       select: { id: true },
@@ -174,7 +189,10 @@ async function readSlotForCaller(slotId: string) {
 
   // Split so a caller can hand `slot` straight back to the client without the
   // ownership graph riding along in the server action's serialized result.
-  return { slot, appointment };
+  // `userId` rides along because the session read is not deduped inside a
+  // server action (see the note on getSessionCached in lib/auth-server), and
+  // the mint needs a fallback author when no host resolves.
+  return { slot, appointment, userId };
 }
 
 /**
@@ -274,7 +292,7 @@ export async function resolveSessionAnchorSlot(
     // and split the audience (#1061 class). The consultant's rows are the
     // canonical spine every attendee is grouped around.
     const consultantAnchor = run.slots.find((s) => s.consultantProfileId);
-    return (consultantAnchor ?? run.anchor) ?? slot;
+    return consultantAnchor ?? run.anchor ?? slot;
   } catch (error) {
     Sentry.captureException(
       error instanceof Error ? error : new Error(String(error)),
@@ -288,11 +306,25 @@ export async function resolveSessionAnchorSlot(
 }
 
 /**
- * Stream's default call roles. `host` carries the elevated capabilities
- * (ending the call, muting, recording); everyone else is a plain member.
+ * The one role every member of an appointment call is named with (#1270).
+ *
+ * It used to be `host` for the consultant and `user` for everyone else, which
+ * was worse than useless: the live `default` call type has exactly six role
+ * keys — guest, user, call_member, admin, global_read_only, global_admin — and
+ * no `host` among them, so a consultant stamped `host` held no grants at all.
+ * The moment scripts/stream/ensure-call-type-grants.ts strips `join-call` from
+ * `user`, that pair locks BOTH sides out: one role does not exist and the other
+ * no longer admits anyone.
+ *
+ * `call_member` is what POST /api/meetings/[meetingId]/join assigns, and it is
+ * the role the grants script keeps `join-call` on. Naming it here is what makes
+ * the common path cheap rather than what makes it possible.
+ *
+ * Nothing is lost by dropping the distinction. Host-ness in the UI is derived
+ * from `custom.consultantUserId` via useSessionInfo(), never from the Stream
+ * role, and `hostUserIds`/`guestUserIds` below still carry the two sides.
  */
-const HOST_ROLE = "host";
-const GUEST_ROLE = "user";
+const CALL_MEMBER_ROLE = "call_member";
 
 export type SessionCallMember = { user_id: string; role: string };
 
@@ -424,6 +456,42 @@ export async function resolveSessionCallProfile(
       appointment.trialSession?.subscriptionPlan?.title ??
       null;
 
+    // #1270 — Stream rejects the whole GetOrCreateCall when `members` names a
+    // user it does not hold ("Please create users before referencing them in a
+    // call"), and it never auto-creates one from a reference. 29% of
+    // consultants were missing because only the chat paths upsert. Every chat
+    // channel create already does this; the video mint never did.
+    //
+    // #1269 — a withdrawn consent must not take the appointments page down.
+    //
+    // `upsertUserToStream` throws `ConsentRequiredError` when
+    // STREAM_DATA_PROCESSING is absent, which is correct: failing closed is the
+    // whole point of the gate. But this function is called from the RENDER path,
+    // so the throw propagated out of a React Server Component and the consultee
+    // lost access to their own bookings. Withdrawal is a right DPDP explicitly
+    // grants; the first person to exercise it should not be locked out of the
+    // list of things they have paid for.
+    //
+    // Returning `null` degrades to the outcome this function already has three
+    // other ways of reaching, and every caller handles it — the page renders
+    // without call metadata. The refusal still bites where it should: the JOIN
+    // path (`provisionAppointmentMeeting`, and `POST /api/meetings/[id]/join`)
+    // upserts separately and is left to throw, because "you cannot join a video
+    // call without consenting to the video processor" is the correct answer to
+    // a join and the wrong answer to a page load.
+    try {
+      await upsertUsersToStream([...hostUserIds, ...guestUserIds]);
+    } catch (err) {
+      if (err instanceof ConsentRequiredError) {
+        streamLogger.info(
+          "No call profile — Stream consent absent for a participant",
+          { anchorSlotId: validatedSlotId, purposeCode: err.purposeCode },
+        );
+        return null;
+      }
+      throw err;
+    }
+
     return {
       startsAt: run.startsAt,
       endsAt: run.endsAt,
@@ -431,10 +499,10 @@ export async function resolveSessionCallProfile(
         (run.endsAt.getTime() - run.startsAt.getTime()) / 60_000,
       ),
       offeringTitle,
-      members: [
-        ...hostUserIds.map((user_id) => ({ user_id, role: HOST_ROLE })),
-        ...guestUserIds.map((user_id) => ({ user_id, role: GUEST_ROLE })),
-      ],
+      members: [...hostUserIds, ...guestUserIds].map((user_id) => ({
+        user_id,
+        role: CALL_MEMBER_ROLE,
+      })),
       hostUserIds,
       guestUserIds,
       // Only the first of each side is named. A 1:1 session has exactly one
@@ -660,7 +728,14 @@ export async function getMeetingCreationRefusal(
     streamLogger.error("Failed to pre-check meeting creation", error, {
       slotId: slot.id,
     });
-    return null;
+    // #1270 — a refusal we could not evaluate is a refusal, not a pass.
+    // Answering `null` here meant "nothing refuses this", so a slot read that
+    // threw let the mint proceed; `createDbMeetingSession` then re-ran the same
+    // check, and a second read that succeeded threw — leaving the orphaned,
+    // billable Stream room the caller's ordering exists to prevent. The
+    // caller's own message is deliberately vague: a transient read failure is
+    // not the user's business, and it must not leak booking state either.
+    return "We could not verify this session just now. Please try again.";
   }
 }
 
@@ -801,3 +876,343 @@ export async function createDbMeetingSession(
  * more direct hijack than the one that prompted this audit. Dead code that
  * only exposes an attack surface is deleted rather than gated.
  */
+
+/**
+ * What a session's Stream call is described with, once, by the server (#1270).
+ *
+ * Every field used to be assembled in the browser and handed to Stream by the
+ * browser, so the person who clicked Join first decided what the room said
+ * about itself — including `consultantUserId`, which is the value the meeting
+ * UI derives host-ness from. These are now read from the same rows the
+ * entitlement gate reads.
+ */
+interface CallDescription {
+  title: string;
+  description: string;
+}
+
+function describeCall(
+  appointmentType: AppointmentsType,
+  appointmentId: string | null | undefined,
+  profile: SessionCallProfile | null,
+): CallDescription {
+  const offeringTitle = profile?.offeringTitle ?? null;
+  // The consultee, by name. Group events name no guests at all, so this is
+  // null for a webinar or a class and the offering branches below take over —
+  // which is the same precedence the browser-side version had.
+  const guestName = profile?.guestName ?? null;
+
+  if (guestName) {
+    return {
+      title: `${appointmentType} with ${guestName}`,
+      description: `${appointmentType} Meeting`,
+    };
+  }
+  if (appointmentType === "WEBINAR" && offeringTitle) {
+    return {
+      title: `Webinar: ${offeringTitle}`,
+      description: `Webinar Session for ${offeringTitle}`,
+    };
+  }
+  if (appointmentType === "CLASS" && offeringTitle) {
+    return {
+      title: `Class: ${offeringTitle}`,
+      description: `Class Session for ${offeringTitle}`,
+    };
+  }
+  return {
+    title: `Meeting for Appointment ${appointmentId ?? "unknown"}`,
+    description: `${appointmentType} Meeting`,
+  };
+}
+
+/**
+ * The `custom` blob a newly minted call carries.
+ *
+ * Extracted only to keep `provisionAppointmentMeeting` under the
+ * cognitive-complexity limit the pipeline enforces.
+ */
+function buildCallCustom(args: {
+  anchorSlotId: string;
+  appointmentId: string | null | undefined;
+  appointmentType: AppointmentsType;
+  organizationId: string | null;
+  profile: SessionCallProfile | null;
+}): Record<string, unknown> {
+  const { profile } = args;
+  const { title, description } = describeCall(
+    args.appointmentType,
+    args.appointmentId,
+    profile,
+  );
+
+  // #org-appts — which SIDE of the appointment each viewer is on. Resolved from
+  // resolvePlanOwnerIds and slot membership rather than accepted from the
+  // caller: this is what useSessionInfo() reads to decide who may end the call
+  // for everyone, so a browser must not be able to name itself here.
+  const consultantUserId = profile?.hostUserIds[0] ?? null;
+  const consulteeUserId = profile?.guestUserIds[0] ?? null;
+
+  return {
+    title,
+    description,
+    appointmentId: args.appointmentId ?? null,
+    slotId: args.anchorSlotId,
+    // Named explicitly so a Stream dashboard or recording entry says which row
+    // keys the room without anyone having to know `slotId` means the anchor
+    // (#1061).
+    anchorSlotId: args.anchorSlotId,
+    appointmentType: args.appointmentType,
+    ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+    ...(consultantUserId ? { consultantUserId } : {}),
+    ...(consulteeUserId ? { consulteeUserId } : {}),
+    // #1070 — the session's real shape. `CallRequest` has no `ends_at`, so the
+    // end travels as call metadata; see provisionAppointmentMeeting for why the
+    // one field that could enforce it is still not used.
+    ...(profile
+      ? {
+          sessionStartsAt: profile.startsAt.toISOString(),
+          sessionEndsAt: profile.endsAt.toISOString(),
+          sessionDurationMinutes: profile.durationMinutes,
+          ...(profile.offeringTitle
+            ? { offeringTitle: profile.offeringTitle }
+            : {}),
+          // Both sides by name, so each screen can lead with the OTHER one.
+          ...(profile.hostName ? { hostName: profile.hostName } : {}),
+          ...(profile.guestName ? { guestName: profile.guestName } : {}),
+        }
+      : {}),
+  };
+}
+
+/**
+ * The outcome of asking for a session's room.
+ *
+ * A refusal is RETURNED rather than thrown on purpose. Next replaces an
+ * uncaught server-action error with an opaque digest in production, so a thrown
+ * "This session is not confirmed yet." reaches the browser as "An error
+ * occurred in the Server Components render" — which is how the maintenance
+ * refusal already had to travel back as a string before this moved server-side.
+ * Genuine faults still throw: those are meant to be opaque.
+ */
+export type ProvisionedMeeting =
+  | { ok: true; streamCallId: string }
+  | { ok: false; refusal: string };
+
+/**
+ * Creates (or finds) the Stream call for a session, server-side (#1270).
+ *
+ * ## Why this is not in the browser any more
+ *
+ * `getOrCreateAppointmentMeeting` used to run `client.call(...).getOrCreate()`
+ * from the dashboard with the signed-in user's own video client. Three things
+ * followed from that, none of them intended:
+ *
+ *   1. Whoever pressed Join first became the call's `created_by`. For half of
+ *      all sessions that is the consultee, so Stream's own record of who owns
+ *      the room disagreed with the product's.
+ *   2. Every field of `custom` was authored by a browser — including
+ *      `consultantUserId`, the value the meeting UI derives host-ness (and
+ *      therefore "End for everyone") from.
+ *   3. `getOrCreate` applies the call type's device settings, so merely minting
+ *      a room opened the camera and microphone on the DASHBOARD. #1271 had to
+ *      release them afterwards; a room minted server-side cannot open them at
+ *      all.
+ *
+ * The room id is unchanged — `slot-<anchorSlotId>`, derived from the run's
+ * first row (#1061) — because both sides and every existing MeetingSession row
+ * depend on it.
+ *
+ * Deliberately NOT sent (still deferred to #1070): `backstage`,
+ * `join_ahead_time_seconds`, and `settings_override.limits.max_duration_seconds`.
+ * The first two let Stream refuse a join, so a consultant who never calls
+ * goLive() would strand a paying consultee on a backstage screen. The third
+ * hard-terminates a call that overruns. The join gate stays in our code.
+ *
+ * @param slot Any row of the session. The anchor is resolved here.
+ */
+
+export async function provisionAppointmentMeeting(
+  slot: MeetingSlot,
+): Promise<ProvisionedMeeting> {
+  // #1061 — a session longer than 30 minutes is N consecutive slot rows, and
+  // each dashboard surface hands us a different one. Key the room to the run's
+  // first row so both sides, at any point in the hour, resolve the same call.
+  //
+  // The `?? slot` fallback is NOT safe, and is chosen anyway: if the anchor
+  // lookup fails for one of two people clicking Join at the same moment, that
+  // person mints `slot-<their row>` and leaves a stray MeetingSession on a
+  // non-anchor row. It is still better than refusing, which would take the
+  // whole meeting down for both sides rather than degrading for one.
+  // Pinned by __tests__/stream/session-room-identity.test.ts.
+  const anchorSlot: MeetingSlot =
+    (await resolveSessionAnchorSlot(slot.id)) ?? slot;
+
+  // An existing session is the common case and short-circuits everything else:
+  // the room already exists, and nothing below may rewrite it.
+  const existingMeetingSession = await findDbMeetingSessionBySlot(
+    anchorSlot.id,
+  );
+  if (existingMeetingSession) {
+    return { ok: true, streamCallId: existingMeetingSession.streamCallId };
+  }
+
+  // Entitlement FIRST — ahead of the booking-state refusal, not just ahead of
+  // the mint. #1270 review: `refuseMeetingCreation` reads the persisted slot and
+  // its parent booking status for any slotId it is handed, and the resulting
+  // string is returned to the caller as data. Running it first meant an
+  // unentitled caller who guessed a slot id learned another user's booking
+  // state — "This session is not confirmed yet.", "This session was cancelled
+  // or moved." A stranger gets one answer now, and it tells them nothing.
+  //
+  // It is also ahead of the Stream write for the original #1077 reason: the
+  // browser used to mint the call and only then call `createDbMeetingSession`,
+  // where the check lived, so an unentitled caller left a real billable Stream
+  // room behind that the database refused to record.
+  const authorized = await readSlotForCaller(anchorSlot.id);
+  if (!authorized) {
+    return { ok: false, refusal: "You are not a participant in this session." };
+  }
+
+  // #1077 — anything that can refuse this join runs BEFORE the mint. Blocked
+  // after it, Stream keeps a call no MeetingSession row points at, stamped with
+  // whatever bounds and members were computed at the blocked moment.
+  //
+  // #1270 review: `getMeetingCreationRefusal` swallows every error and answers
+  // `null`, so a slot read that THREW used to read as "nothing refuses this"
+  // and the mint proceeded — then `createDbMeetingSession` re-ran the same
+  // check, and if that second read succeeded it threw, leaving exactly the
+  // orphaned billable room the ordering above exists to prevent. A refusal we
+  // could not evaluate is now a refusal.
+  const refusal = await getMeetingCreationRefusal(anchorSlot);
+  if (refusal) return { ok: false, refusal };
+
+  if (!isStreamConfigured()) {
+    streamLogger.error("Stream not configured — cannot provision meeting", {
+      slotId: anchorSlot.id,
+    });
+    return { ok: false, refusal: "Video is not available right now." };
+  }
+
+  const streamCallId = `slot-${anchorSlot.id}`;
+  const callProfile = await resolveSessionCallProfile(anchorSlot.id);
+
+  // The RUN's start, not the clicked row's: joining a 10:00–11:00 session from
+  // its 10:30 row must not tell Stream the meeting starts at 10:30.
+  const startsAt =
+    callProfile?.startsAt ??
+    (anchorSlot.startsAt ? new Date(anchorSlot.startsAt) : new Date());
+
+  // The consultant owns the room, whoever opened the door. Falling back to the
+  // caller keeps a session that cannot resolve its host joinable — server-side
+  // auth carries no user context, so Stream requires SOME author and refuses
+  // the whole GetOrCreateCall without one (#1270).
+  const authorUserId = callProfile?.hostUserIds[0] ?? authorized.userId;
+
+  // #1280 — a server-side duration cap, as a BILLING and data-integrity
+  // backstop. Free: `limits.max_duration_seconds` is a call-type/per-call
+  // setting, not a metered service, and it reads `null` on the live type today.
+  //
+  // #1144 recorded this as the highest-value unbuilt item on the grounds that
+  // the SFU would end calls "at the slot boundary". #1160 corrected that, and
+  // the correction is the whole design: **the timer counts from the moment the
+  // FIRST PARTICIPANT JOINS, not from `starts_at`.** Set to the booked length,
+  // a consultant joining fifteen minutes early to check their camera would have
+  // Stream hard-terminate the session before the booked end, ejecting both
+  // parties mid-sentence. `lib/meeting.ts` declined to send this field for
+  // exactly that reason, and on that point it was right rather than cautious.
+  //
+  // So it is set GENEROUSLY: the booked run, plus the earliest anyone can join,
+  // plus a grace window. It is not slot enforcement and must never be mistaken
+  // for it — #472 owns overrun handling, and the application still decides when
+  // a session is over.
+  //
+  // What it buys, which nothing else in the stack provides:
+  //   1. Stream stamps `ended_at` whether or not our webhook pipeline works.
+  //      #1134 found 1,417 sessions with no `endedAt` and a pipeline that had
+  //      never processed one event; this is the only control that degrades
+  //      gracefully through that, because it does not run on our infrastructure.
+  //   2. It bounds the worst-case bill. A forgotten tab or a client that fails
+  //      to tear down media bills participant minutes indefinitely, and the only
+  //      thing standing between us and an unbounded meter is
+  //      `inactivity_timeout_seconds` — which requires everyone to actually
+  //      disconnect.
+  const maxDurationSeconds = resolveMaxCallDurationSeconds(
+    callProfile,
+    startsAt,
+  );
+  if (!callProfile?.hostUserIds.length) {
+    streamLogger.warn("Minting a call without a resolvable host", {
+      slotId: anchorSlot.id,
+      authorUserId,
+    });
+  }
+
+  try {
+    await withStreamCircuitBreaker(async () => {
+      // Stream refuses a call operation naming a user it does not hold, and a
+      // token alone never creates one. resolveSessionCallProfile syncs the
+      // members it names; the author may not be among them on the fallback
+      // path above. Already-synced ids are filtered inside.
+      await upsertUsersToStream([authorUserId]);
+
+      const call = getStreamVideoClient().video.call(
+        STREAM_CALL_TYPE,
+        streamCallId,
+      );
+      await call.getOrCreate({
+        data: {
+          created_by_id: authorUserId,
+          starts_at: startsAt,
+          // Omitted entirely when the run could not be resolved — see
+          // `resolveMaxCallDurationSeconds`. A guessed cap is worse than none:
+          // the call type carries no limit of its own, so leaving it out is
+          // exactly the behaviour before this backstop existed.
+          ...(maxDurationSeconds !== null
+            ? {
+                settings_override: {
+                  limits: { max_duration_seconds: maxDurationSeconds },
+                },
+              }
+            : {}),
+          custom: buildCallCustom({
+            anchorSlotId: anchorSlot.id,
+            appointmentId: anchorSlot.appointmentId,
+            appointmentType: authorized.appointment.appointmentType,
+            organizationId: authorized.appointment.organizationId ?? null,
+            profile: callProfile,
+          }),
+          // #1134 P0-1 — once ensure-call-type-grants strips `join-call` from
+          // `user` and `guest`, membership is the ONLY thing that admits
+          // anyone. A call minted without members is still joinable via
+          // POST /api/meetings/[id]/join, which grants membership itself.
+          ...(callProfile && callProfile.members.length > 0
+            ? { members: callProfile.members }
+            : {}),
+        },
+      });
+    });
+  } catch (error) {
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "stream" } },
+    );
+    streamLogger.error("Failed to create the Stream call", error, {
+      slotId: anchorSlot.id,
+      streamCallId,
+    });
+    throw error instanceof Error
+      ? new Error(`Failed to create meeting session: ${error.message}`, {
+          cause: error,
+        })
+      : new Error("Failed to create meeting session.", { cause: error });
+  }
+
+  // Attached to the anchor, so MeetingSession.slotOfAppointmentId stays
+  // @unique-correct: one session per run, not one per half hour. Re-checks the
+  // refusal and the entitlement itself; it is the authoritative write gate and
+  // is deliberately not weakened by the hoisted copies above.
+  await createDbMeetingSession(anchorSlot, streamCallId);
+
+  return { ok: true, streamCallId };
+}

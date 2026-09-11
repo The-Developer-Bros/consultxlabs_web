@@ -29,16 +29,26 @@ export interface DispatchOutboundWebhooksResult {
   errors: string[];
 }
 
+export interface DispatchOutboundWebhooksOptions {
+  /** #1356 — forwarded as `runDispatchTick`'s `maxBatch`; undefined keeps its
+   * own MAX_BATCH default (the unbounded-per-tick GitHub Actions behaviour). */
+  limit?: number;
+}
+
 // #476 — locked at the core so every entry (GH Actions / HTTP) shares one
 // mutual exclusion; fail-open: repeat-safe side effects, lock is belt-and-braces.
-export async function dispatchOutboundWebhooks(): Promise<DispatchOutboundWebhooksResult> {
+export async function dispatchOutboundWebhooks(
+  opts: DispatchOutboundWebhooksOptions = {},
+): Promise<DispatchOutboundWebhooksResult> {
   return withCronLock("dispatch-outbound-webhooks", { failMode: "open" }, () =>
-    dispatchOutboundWebhooksUnlocked(),
+    dispatchOutboundWebhooksUnlocked(opts),
   );
 }
 
-async function dispatchOutboundWebhooksUnlocked(): Promise<DispatchOutboundWebhooksResult> {
-  const tick = await runDispatchTick({ prisma });
+async function dispatchOutboundWebhooksUnlocked(
+  opts: DispatchOutboundWebhooksOptions = {},
+): Promise<DispatchOutboundWebhooksResult> {
+  const tick = await runDispatchTick({ prisma, maxBatch: opts.limit });
   return {
     scanned: tick.scanned,
     succeeded: tick.succeeded,

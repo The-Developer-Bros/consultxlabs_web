@@ -25,7 +25,10 @@
 import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse, after } from "next/server";
 import crypto from "crypto";
+import { gunzip as gunzipCb } from "node:zlib";
+import { promisify } from "node:util";
 import { z } from "zod";
+import { verifySignature } from "stream-chat";
 import { streamLogger } from "@/lib/stream-logger";
 import {
   HANDLED_EVENT_TYPES,
@@ -34,14 +37,81 @@ import {
   streamBaseEventSchema,
 } from "@/lib/stream/webhook-dispatch";
 
+const gunzip = promisify(gunzipCb);
+
 /**
- * Verify Stream webhook signature using HMAC SHA256
+ * Read the delivery body as the bytes Stream SIGNED.
+ *
+ * Stream computes its HMAC over the UNCOMPRESSED payload, then optionally gzips
+ * it on the wire. `enable_hook_payload_compression` defaults to **true** for
+ * apps created after 2026-05-07, with a 256-byte threshold that every recording
+ * and session event clears. This app currently has it unset — verified against
+ * the live settings — so today the body arrives as plain text and `req.text()`
+ * was right by accident.
+ *
+ * The accident is not worth relying on. If a gzipped body ever arrives, the
+ * signature computed over the compressed bytes cannot match, this route answers
+ * 401, and Stream treats a 401 as FINAL — it is not in the retryable set, so
+ * the event is dropped and never redelivered. Every attendance row, recording
+ * and session-end would vanish silently, which is exactly the shape of the
+ * #1134 outage: 0 WebhookEvent rows, 0 MeetingAttendance, 1,663 sessions that
+ * never ended.
+ *
+ * Detecting the gzip magic bytes rather than trusting `Content-Encoding` is
+ * deliberate: a platform layer may decompress the body and leave the header on,
+ * or pass it through and strip it. The bytes cannot lie about what they are.
  */
-async function verifyStreamSignature(
+async function readSignedBody(req: NextRequest): Promise<string> {
+  const raw = Buffer.from(await req.arrayBuffer());
+
+  // 0x1f 0x8b — the gzip magic number. Two bytes is enough; nothing else Stream
+  // sends starts with them, since a JSON payload begins with `{`.
+  const isGzipped = raw.length > 2 && raw[0] === 0x1f && raw[1] === 0x8b;
+  if (!isGzipped) return raw.toString("utf8");
+
+  const decompressed = await gunzip(raw);
+  streamLogger.debug("Decompressed a gzipped Stream webhook payload", {
+    compressedBytes: raw.length,
+    decompressedBytes: decompressed.length,
+  });
+  return decompressed.toString("utf8");
+}
+
+/**
+ * Verify the Stream webhook signature.
+ *
+ * #1280 — the HMAC is the SDK's `verifySignature` rather than a hand-rolled
+ * `createHmac` + `timingSafeEqual`. It is the same algorithm, constant-time the
+ * same way, and maintained against the cross-SDK contract instead of by us. The
+ * hand-rolled version also compared `Buffer.from(signature)` against the
+ * expected hex without validating that the input was hex at all, so a
+ * same-length non-hex header reached `timingSafeEqual` on a byte comparison
+ * that could never match but did not say why.
+ *
+ * ## Why NOT `verifyAndParseWebhook`
+ *
+ * `stream-chat@9.52.0` ships `verifyAndParseWebhook(rawBody, signature, secret)`
+ * which decompresses, verifies and parses in one call — strictly more than this
+ * does. It is deliberately not used, and the reason is worth writing down so it
+ * is not "fixed" later.
+ *
+ * It returns only the parsed `Event`. It does not hand back the uncompressed
+ * bytes. Our dedup key is `sha256` OF THOSE BYTES (see below), chosen because it
+ * is the only material Stream actually signs — so adopting the helper would
+ * force the key to be re-derived by re-serialising the parsed object, and
+ * `JSON.stringify` is not byte-stable across key order or number formatting.
+ * Two retries of one delivery could then hash differently and dispatch twice.
+ *
+ * So: the SDK verifies, `readSignedBody` keeps the bytes, and the two
+ * responsibilities stay separate. `parseSqs`/`parseSns` are likewise not used —
+ * Stream attaches no application-level HMAC to those transports and we are on
+ * HTTP.
+ */
+function verifyStreamSignature(
   req: NextRequest,
   body: string,
   secret: string,
-): Promise<boolean> {
+): boolean {
   const signature = req.headers.get("x-signature");
 
   if (!signature) {
@@ -50,19 +120,7 @@ async function verifyStreamSignature(
   }
 
   try {
-    // Stream uses HMAC SHA256 for signature verification
-    const expectedSignature = crypto
-      .createHmac("sha256", secret)
-      .update(body)
-      .digest("hex");
-
-    // Constant-time comparison to prevent timing attacks
-    const sigBuffer = Buffer.from(signature);
-    const expectedBuffer = Buffer.from(expectedSignature);
-    if (sigBuffer.byteLength !== expectedBuffer.byteLength) {
-      return false;
-    }
-    return crypto.timingSafeEqual(sigBuffer, expectedBuffer);
+    return verifySignature(body, signature, secret);
   } catch (error) {
     streamLogger.error("Error verifying Stream webhook signature", error);
     return false;
@@ -101,11 +159,12 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Read request body
-  const body = await req.text();
+  // The bytes Stream signed — decompressed first when the delivery is gzipped.
+  // See readSignedBody.
+  const body = await readSignedBody(req);
 
   // Verify signature
-  const isValid = await verifyStreamSignature(req, body, secret);
+  const isValid = verifyStreamSignature(req, body, secret);
 
   if (!isValid) {
     streamLogger.warn("Invalid Stream webhook signature");

@@ -15,6 +15,23 @@
  * we always have a window to transfer to permanent storage.
  *
  * Every successful GET writes a `STREAM_CALLS_EXPORTED` audit row.
+ *
+ * #1270 — this route used to return `Recording.recordingUrl` verbatim to any
+ * MANAGER+. That column holds Stream's pre-signed S3 link: it is valid for
+ * fourteen days and carries its own credentials, so anyone who ends up holding
+ * the string — a forwarded email, a pasted Slack message, an exported CSV, a
+ * third-party BI tool consuming this endpoint — can fetch the video with no
+ * session and no membership. It renders nowhere in the product, so the leak
+ * was invisible in the UI and plain in the network tab.
+ *
+ * The export is now metadata-only, and deliberately offers no playback arm at
+ * all. ADR 20 is the governing rule — an organization may see THAT a session
+ * happened, not what happened in it — and it explicitly considered and
+ * rejected "let an org role open session content behind an audit row", on the
+ * grounds that the log does not change what a member has to assume about who
+ * can watch their coaching session. `lib/api/scope/list-recordings.ts` already
+ * enforces the same allowlist on the org recordings page; this route was the
+ * arm the July 2026 audit missed.
  */
 
 import { NextResponse, type NextRequest } from "next/server";
@@ -62,11 +79,18 @@ export async function GET(
         updatedAt: true,
         recordings: withRecordings
           ? {
+              // #1270 — an explicit allowlist, not an `include`, and it names
+              // no field that reaches the media: not `recordingUrl`, not
+              // `storageUrl`, not `storagePath`, not the thumbnail, the
+              // preview clip or the Stream identifiers. What stays is the
+              // retention picture the compliance pull actually exists for —
+              // whether a recording exists, whether it survived the transfer,
+              // how long it runs, and when its Stream link lapses. Same rule
+              // and same shape as `recordingMetadataSelect` in
+              // lib/api/scope/list-recordings.ts.
               select: {
                 id: true,
                 title: true,
-                recordingUrl: true,
-                supabaseUrl: true,
                 status: true,
                 storageType: true,
                 durationInMinutes: true,

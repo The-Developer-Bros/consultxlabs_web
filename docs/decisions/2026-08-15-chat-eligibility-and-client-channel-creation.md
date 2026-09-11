@@ -198,6 +198,8 @@ host-check, never blanket co-membership.
 
 Named follow-ups, none of which this change makes worse: there is still no path
 that pushes a name or avatar change to Stream (only the 5-minute TTL cache
-expiring, incidentally); `restoreStreamAccess` is written but has zero callers,
-so there is no unban path; and dev, preview and production still share one
+expiring, incidentally); `restoreStreamAccess` was written with zero callers, so
+there was no unban path — #1270 gave it one, see
+`docs/decisions/2026-08-30-moderation-truthfulness.md`; and dev, preview and
+production still share one
 Stream app (#1134 P0-6), which is why the grants script defaults to a dry run.

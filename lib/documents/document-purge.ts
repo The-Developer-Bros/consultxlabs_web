@@ -13,7 +13,11 @@
  * and retried on a later run instead of aborting the sweep.
  */
 import prisma from "@/lib/prisma";
-import { deleteAppointmentDocument } from "@/lib/supabase";
+// #1270 — the leaf module, not `@/lib/supabase`. That one carries an
+// `import "server-only"` marker whose main entry throws outside Next's
+// `react-server` resolution condition, so the purge-deleted-documents cron
+// died during module evaluation and had never completed a run.
+import { deleteAppointmentDocument } from "@/lib/supabase-storage-core";
 
 const BATCH_SIZE = 50;
 /** Hard ceiling so a pathological run cannot sweep unbounded. */

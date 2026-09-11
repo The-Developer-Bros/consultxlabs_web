@@ -72,7 +72,12 @@ export function useConsultantAppointmentsAdapter(
   const [activeVm, setActiveVm] = useState<AppointmentVM | null>(null);
   const [dialog, setDialog] = useState<DialogKind | null>(null);
 
-  const isDev = process.env.NODE_ENV !== "production";
+  // #1270 — one flag, not three. This surface keyed off NODE_ENV while its
+  // consultee sibling keyed off NEXT_PUBLIC_ENABLE_DEV_TOOLS, so the same
+  // backdoor was open in different places on the same build. The explicit
+  // opt-in wins: NODE_ENV is true for every local run whether or not the
+  // developer asked for the escape hatch.
+  const isDev = process.env.NEXT_PUBLIC_ENABLE_DEV_TOOLS === "true";
 
   const typeLabel = activeVm
     ? TYPE_LABEL[activeVm.kind]
@@ -169,6 +174,34 @@ export function useConsultantAppointmentsAdapter(
     );
   };
 
+  /**
+   * The whole join gate: a confirmed booking whose session is inside its
+   * window.
+   *
+   * #1270 — the status half was missing. The non-trial branch gated on
+   * `bucket !== "cancelled"` alone, which is only the terminal-NEGATIVE
+   * statuses, so a consultant could open the room for a booking still at
+   * APPROVED_PENDING_PAYMENT (nobody has paid) or already COMPLETED (the
+   * session is over and its recording is sealed). The trial branch checked no
+   * status at all. `isConfirmedStatus` is what the consultee adapter has
+   * always required, and it subsumes the cancelled-bucket check.
+   */
+  const canJoinNow = (vm: AppointmentVM): boolean => {
+    if (!isConfirmedStatus(vm.status)) return false;
+    return vm.kind === "TRIAL"
+      ? trialJoinable(vm)
+      : joinableSlotOf(vm) !== null;
+  };
+
+  /** Slot rows exist to key a room to, joinable or not — the dev arm's target. */
+  const hasSlotRows = (vm: AppointmentVM): boolean => {
+    if (vm.kind === "TRIAL") {
+      const trial = vm.raw.source as ConsultantTrialLike | undefined;
+      return (trial?.appointment?.slotsOfAppointment?.length ?? 0) > 0;
+    }
+    return (vm.raw.appointment?.slotsOfAppointment?.length ?? 0) > 0;
+  };
+
   const primaryAction = (vm: AppointmentVM): PrimaryAction => {
     if (vm.needsActionReason === "UNSCHEDULED") {
       return {
@@ -177,19 +210,7 @@ export function useConsultantAppointmentsAdapter(
         onClick: () => openTimings(vm),
       };
     }
-    if (vm.kind === "TRIAL") {
-      if (trialJoinable(vm) || (isDev && vm.appointmentId)) {
-        return {
-          kind: "join",
-          label: isDev && !trialJoinable(vm) ? "Join (Dev)" : "Join",
-          onClick: () => void joinVm(vm),
-          busy: joiningId === vm.id,
-        };
-      }
-      return { kind: "view", label: "View" };
-    }
-    const joinable = joinableSlotOf(vm);
-    if (joinable && vm.bucket !== "cancelled") {
+    if (canJoinNow(vm)) {
       return {
         kind: "join",
         label: "Join",
@@ -301,13 +322,13 @@ export function useConsultantAppointmentsAdapter(
       });
     }
 
-    if (
-      isDev &&
-      vm.kind !== "TRIAL" &&
-      appointment &&
-      (appointment.slotsOfAppointment?.length ?? 0) > 0 &&
-      !joinableSlotOf(vm)
-    ) {
+    // #1270 — the dev backdoor is ADDITIVE: a separately-labelled overflow
+    // entry that appears exactly where the real Join does not. It must never
+    // relax the primary action's gate, which is what the trial branch used to
+    // do (`trialJoinable(vm) || isDev` re-labelled the real Join instead of
+    // adding a second affordance, so on any dev build every trial offered a
+    // "Join (Dev)" button whether or not it was genuinely joinable).
+    if (isDev && hasSlotRows(vm) && !canJoinNow(vm)) {
       items.push({
         key: "dev-join",
         label: "Join (Dev)",

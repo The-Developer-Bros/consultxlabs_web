@@ -67,6 +67,12 @@ jest.mock("../../lib/payments/operations/refund", () => {
   };
 });
 
+// #1319 — the single-payment arm now goes through the booking front door so
+// org-funded intents reverse in-ledger; the same spy answers it.
+jest.mock("../../lib/payments/operations/booking-refund", () => ({
+  refundBookingPayment: (...args: unknown[]) => refundPayment(...args),
+}));
+
 const refundWholeEventPayments = jest.fn();
 jest.mock("../../lib/payments/operations/event-refunds", () => ({
   refundWholeEventPayments: (...args: unknown[]) =>

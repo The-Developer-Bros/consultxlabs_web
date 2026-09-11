@@ -84,3 +84,15 @@ export const ISSUE_TYPE_LABELS: Record<SupportIssueType, string> = {
   [SupportIssueType.OTHER]: "Other",
 };
 
+/**
+ * #705 — how a ticket is named on screen. Prefer the minted reference; fall back
+ * to the LAST eight characters of the uuid for tickets that predate it. One
+ * definition because there were two: the staff table truncated from the front
+ * and the staff home from the back, so the same ticket had two names.
+ */
+export function ticketLabel(ticket: {
+  referenceNumber?: string | null;
+  id: string;
+}): string {
+  return ticket.referenceNumber ?? ticket.id.slice(-8).toUpperCase();
+}

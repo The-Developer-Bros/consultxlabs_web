@@ -109,6 +109,12 @@ export interface SupportTurnResult {
    * `reason`) is not the same as knowing the path.
    */
   chosenLabel?: string;
+  /**
+   * True when the input matched no option at the current prompt — free text the
+   * tree can't parse, a stale option id, or a double-submit. The cursor has not
+   * moved, so the caller must NOT treat this as progress.
+   */
+  unrecognized?: boolean;
 }
 
 /** The uniform contract every channel implements. */

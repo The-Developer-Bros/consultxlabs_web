@@ -23,9 +23,14 @@ export const HANDLED_EVENT_TYPES = [
   // STR-4 — per-attendee presence (unblocks #471 no-show / #472 overrun)
   "call.session_participant_joined",
   "call.session_participant_left",
-  // Chat moderation events
-  "user.flagged",
-  "message.flagged",
+  // #1270 — `user.flagged` / `message.flagged` were removed deliberately, and
+  // NOT replaced with a chat hook. Three reasons: the in-app report button
+  // already writes the ModerationReport itself via POST /api/report, so the
+  // webhook was a second path to the same row that double-counted it; automod
+  // is disabled on both channel types, so there are no automated flags to
+  // receive; and Stream considers `message.flagged` obsolete under v2
+  // moderation, which uses `review_queue_item.*` instead. Subscribing to a
+  // deprecated event to feed a path that already works was the wrong trade.
 ] as const;
 
 export type HandledEventType = (typeof HANDLED_EVENT_TYPES)[number];

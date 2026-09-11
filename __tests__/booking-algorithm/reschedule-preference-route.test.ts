@@ -29,6 +29,19 @@ jest.mock("../../lib/prisma", () => ({
   },
 }));
 
+jest.mock("../../lib/rate-limit", () => ({
+  __esModule: true,
+  applyRateLimit: jest.fn(async () => null),
+  eventMutationLimiter: {},
+}));
+jest.mock("../../utils/appointmentlock", () => ({
+  __esModule: true,
+  withAppointmentLock: jest.fn(
+    async (_id: string, fn: () => Promise<unknown>) => fn(),
+  ),
+  BookingLockUnavailableError: class extends Error {},
+  AppointmentBusyError: class extends Error {},
+}));
 jest.mock("../../lib/auth-server", () => ({ getSession: jest.fn() }));
 jest.mock("../../lib/activity/log-activity", () => ({
   logActivity: jest.fn().mockResolvedValue(undefined),
@@ -121,14 +134,32 @@ function makeMockTx() {
         { id: "apt-2", slotsOfAppointment: [SIBLING_SLOTS[1]] },
       ]),
     },
+    // Each transition helper reads the from-status before its CAS and appends
+    // one BookingStatusHistory row after it.
     subscription: {
+      findUnique: jest.fn().mockResolvedValue({ status: "APPROVED" }),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       count: jest.fn().mockResolvedValue(1),
     },
-    consultation: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
-    webinar: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
-    class: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
-    slotOfAppointment: { updateMany: jest.fn().mockResolvedValue({ count: 2 }) },
+    consultation: {
+      findUnique: jest.fn().mockResolvedValue({ status: "APPROVED" }),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    webinar: {
+      findUnique: jest.fn().mockResolvedValue({ status: "SCHEDULED" }),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    class: {
+      findUnique: jest.fn().mockResolvedValue({ status: "SCHEDULED" }),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    bookingStatusHistory: { create: jest.fn().mockResolvedValue({}) },
+    slotOfAppointment: {
+      findMany: jest.fn().mockResolvedValue([]),
+      updateManyAndReturn: jest
+        .fn()
+        .mockResolvedValue([{ id: "slot-1" }, { id: "slot-2" }]),
+    },
     rescheduleRequest: {
       create: jest.fn().mockImplementation(({ data }) => {
         createdData = data;

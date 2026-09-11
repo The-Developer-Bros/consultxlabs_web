@@ -1,6 +1,6 @@
 import "server-only";
 import * as Sentry from "@sentry/nextjs";
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type { FileObject, SearchOptions } from "@supabase/storage-js"; // Import FileObject type
 
 // Define types for image transformation and the enhanced file object
@@ -36,187 +36,18 @@ interface AssetUploadResult {
   error?: string;
 }
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-if (!supabaseUrl) {
-  throw new Error(
-    "NEXT_PUBLIC_SUPABASE_URL is not defined in environment variables.",
-  );
-}
-if (!supabaseKey) {
-  throw new Error(
-    "NEXT_PUBLIC_SUPABASE_ANON_KEY is not defined in environment variables.",
-  );
-}
-
-// Regular client for public operations
-let supabaseInstance: SupabaseClient;
-try {
-  supabaseInstance = createClient(supabaseUrl, supabaseKey);
-} catch (error) {
-  console.error("Error creating Supabase client:", error);
-  throw new Error(
-    `Failed to initialize Supabase client: ${error instanceof Error ? error.message : String(error)}`,
-  );
-}
-
-// Admin client for administrative operations (bucket creation, etc.)
-let supabaseAdminInstance: SupabaseClient | null = null;
-if (supabaseServiceKey) {
-  try {
-    supabaseAdminInstance = createClient(supabaseUrl, supabaseServiceKey);
-  } catch (error) {
-    console.error("Error creating Supabase admin client:", error);
-    // Don't throw error here - some operations might work without admin privileges
-  }
-} else {
-  console.warn(
-    "⚠️  SUPABASE_SERVICE_ROLE_KEY not found in environment variables",
-  );
-  console.warn(
-    "   Automatic bucket creation will fail - you may need to create buckets manually",
-  );
-  console.warn(
-    "   To fix: Add SUPABASE_SERVICE_ROLE_KEY to your .env.local file",
-  );
-  console.warn(
-    "   Get it from: Supabase Dashboard → Settings → API → service_role key (⚠️  Keep this secret!)",
-  );
-}
-
-const supabase: SupabaseClient = supabaseInstance;
-const supabaseAdmin: SupabaseClient | null = supabaseAdminInstance;
-
-/**
- * Centralized MIME type to file extension map.
- * Used by generateStorageFileName() to derive extensions from MIME types
- * instead of user-controlled file.name values.
- */
-const MIME_TO_EXT: Record<string, string> = {
-  // Images
-  "image/jpeg": "jpg",
-  "image/jpg": "jpg",
-  "image/png": "png",
-  "image/gif": "gif",
-  "image/webp": "webp",
-  // Documents
-  "application/pdf": "pdf",
-  "application/msword": "doc",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-    "docx",
-  "application/vnd.ms-excel": "xls",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
-  "application/vnd.ms-powerpoint": "ppt",
-  "application/vnd.openxmlformats-officedocument.presentationml.presentation":
-    "pptx",
-  "text/plain": "txt",
-  "text/csv": "csv",
-  "text/markdown": "md",
-  "application/zip": "zip",
-  "application/x-rar-compressed": "rar",
-  // Video
-  "video/mp4": "mp4",
-  "video/webm": "webm",
-  "video/quicktime": "mov",
-  "video/x-msvideo": "avi",
-  // Fallback
-  "application/octet-stream": "bin",
-};
-
-/**
- * Generate a UUID-based storage filename with MIME-derived extension.
- * Guarantees uniqueness (UUID v4) and security (extension from MIME, not user input).
- */
-export function generateStorageFileName(mimeType: string): string {
-  const ext = MIME_TO_EXT[mimeType];
-  if (!ext) throw new Error(`Unsupported MIME type: ${mimeType}`);
-  return `${globalThis.crypto.randomUUID()}.${ext}`;
-}
-
-interface BucketOptions {
-  public?: boolean;
-  allowedMimeTypes?: string[];
-  fileSizeLimit?: number;
-}
-
-// Buckets proven to exist this process — skip the existence round-trip once seen.
-const knownBuckets = new Set<string>();
-
-/**
- * Ensure a storage bucket exists, create it if it doesn't.
- * Pass options to customize bucket settings per use case.
- * Memoized per process: a bucket confirmed once is never re-probed.
- */
-const ensureBucketExists = async (
-  bucketName: string,
-  options?: BucketOptions,
-): Promise<boolean> => {
-  if (knownBuckets.has(bucketName)) {
-    return true;
-  }
-  try {
-    // First check if bucket exists by trying to list files
-    const { data: _files, error: listError } = await supabase.storage
-      .from(bucketName)
-      .list("", { limit: 1 });
-
-    // If no error, bucket exists
-    if (!listError) {
-      knownBuckets.add(bucketName);
-      return true;
-    }
-
-    // If error is "Bucket not found", create the bucket
-    if (
-      listError.message.includes("Bucket not found") ||
-      listError.message.includes("not found")
-    ) {
-      console.log(`Creating bucket: ${bucketName}`);
-
-      // Use admin client for bucket creation if available
-      const clientToUse = supabaseAdmin || supabase;
-
-      if (!supabaseAdmin) {
-        console.warn(
-          "Service role key not available - trying with anon key (may fail)",
-        );
-      }
-
-      const { data: _createData, error: createError } =
-        await clientToUse.storage.createBucket(bucketName, {
-          public: options?.public ?? true,
-          allowedMimeTypes: options?.allowedMimeTypes ?? [
-            "application/pdf",
-            "application/msword",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "image/jpeg",
-            "image/png",
-            "image/gif",
-            "text/plain",
-          ],
-          fileSizeLimit: options?.fileSizeLimit ?? 10485760, // 10MB
-        });
-
-      if (createError) {
-        console.error(`Failed to create bucket ${bucketName}:`, createError);
-        return false;
-      }
-
-      console.log(`Successfully created bucket: ${bucketName}`);
-      knownBuckets.add(bucketName);
-      return true;
-    }
-
-    // Other errors
-    console.error(`Error checking bucket ${bucketName}:`, listError);
-    return false;
-  } catch (error) {
-    console.error(`Unexpected error ensuring bucket ${bucketName}:`, error);
-    return false;
-  }
-};
+// #1270 — the clients and the two storage primitives now live in a leaf module
+// with NO `server-only` marker, so a cron process can reach them. Re-exported
+// below so `@/lib/supabase` keeps exactly the surface it had.
+import {
+  supabase,
+  supabaseAdmin,
+  ensureBucketExists,
+  generateStorageFileName,
+  deleteAsset,
+  deleteAppointmentDocument,
+  type BucketOptions,
+} from "./supabase-storage-core";
 
 // ---------------------------------------------------------------------------
 // Generic storage core
@@ -250,24 +81,6 @@ const getSignedAssetUrl = (
   ttl = 3600,
   client: SupabaseClient = supabaseAdmin ?? supabase,
 ) => client.storage.from(bucket).createSignedUrl(path, ttl);
-
-// Remove a single object. Returns false on any error (never throws).
-const deleteAsset = async (
-  bucket: string,
-  storagePath: string,
-): Promise<boolean> => {
-  try {
-    const { error } = await supabase.storage.from(bucket).remove([storagePath]);
-    if (error) {
-      console.error("Error deleting from storage:", error);
-      return false;
-    }
-    return true;
-  } catch (error) {
-    console.error("Error deleting from storage:", error);
-    return false;
-  }
-};
 
 // Remove every object under a folder. Returns false on list/remove error,
 // true when the folder is already empty or fully cleared.
@@ -588,12 +401,6 @@ const uploadAppointmentDocument = (
     },
   });
 };
-
-/**
- * Delete document from Supabase storage
- */
-const deleteAppointmentDocument = (storagePath: string): Promise<boolean> =>
-  deleteAsset("documents", storagePath);
 
 // Plan material upload types
 export type PlanType = "consultation" | "subscription" | "webinar" | "class";
@@ -1180,6 +987,7 @@ const deleteRecordingPreviewAssets = async (
 
 export default supabase;
 export {
+  generateStorageFileName,
   fetchImagesFromSupabaseStorage,
   uploadAppointmentDocument,
   deleteAppointmentDocument,

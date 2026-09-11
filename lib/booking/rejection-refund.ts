@@ -38,10 +38,7 @@ import { getAppUrl } from "@/lib/url";
 import { recordSystemError } from "@/lib/enterprise/system-events";
 import { notifyRefundProcessed } from "@/lib/novu";
 import { notificationScope } from "@/lib/novu/workflows";
-import {
-  computeRefundPct,
-  parsePolicySnapshot,
-} from "@/lib/payments/operations/cancellation-policy";
+import { computeRefundPct } from "@/lib/payments/operations/cancellation-policy";
 import {
   isFreeCreditIntent,
   refundBookingPayment,
@@ -95,7 +92,7 @@ export async function refundRejectedRequest(args: {
     if (!ctx.paidPayment) return null;
 
     const refundPct = computeRefundPct(
-      parsePolicySnapshot(ctx.policySnapshot),
+      ctx.policy,
       // Irrelevant on the consultant-initiated branch, but pass the real value
       // so a future policy that tiers consultant cancellations still works.
       ctx.hoursUntilNextSession ?? -1,

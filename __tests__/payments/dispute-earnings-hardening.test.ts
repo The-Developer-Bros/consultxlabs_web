@@ -107,6 +107,13 @@ jest.mock("../../lib/payments/operations/refund", () => ({
   mintInvoiceRefundCreditNote: jest.fn(),
   mintRefundCreditNote: jest.fn().mockResolvedValue({ creditNoteId: null }),
 }));
+// #1365 — the chargeback path now mints the B2C credit note beside the org one.
+jest.mock("../../lib/payments/billing/consumer-invoice", () => ({
+  mintConsumerCreditNote: jest
+    .fn()
+    .mockResolvedValue({ consumerCreditNoteId: null }),
+  mintConsumerInvoice: jest.fn().mockResolvedValue({ consumerInvoiceId: null }),
+}));
 
 // ---------------------------------------------------------------------------
 // Row types — exactly the fields the handler reads/writes. Fixtures are these
@@ -116,6 +123,8 @@ jest.mock("../../lib/payments/operations/refund", () => ({
 interface PaymentRow {
   id: string;
   paymentIntent: string;
+  /** #1353 — the gateway `pay_…` id; the second key the handlers match on. */
+  gatewayPaymentId?: string | null;
   userId: string;
   amount: number;
   organizationId: string | null;
@@ -221,6 +230,10 @@ function inList(status: EarningsLostWhere["status"], actual: EarningStatus): boo
 interface TxStub {
   payment: {
     findUnique: (args: { where: { paymentIntent?: string; id?: string } }) => Promise<PaymentRow | null>;
+    // #1353 — handleDisputeCreated resolves by either id through an `OR`.
+    findFirst: (args: {
+      where: { OR?: Array<Record<string, string | undefined>> };
+    }) => Promise<PaymentRow | null>;
   };
   dispute: {
     findUnique: (args: { where: { disputeId: string } }) => Promise<(DisputeRow & { payment: PaymentRow | null }) | null>;
@@ -271,6 +284,20 @@ const mockedTransaction = prisma.$transaction as unknown as jest.Mock;
 function makeTxStub(): TxStub {
   return {
     payment: {
+      findFirst: async ({ where }) => {
+        const clauses = where.OR ?? [];
+        return (
+          Array.from(store.payments.values()).find((p) =>
+            clauses.some(
+              (clause) =>
+                (clause.paymentIntent !== undefined &&
+                  clause.paymentIntent === p.paymentIntent) ||
+                (clause.gatewayPaymentId !== undefined &&
+                  clause.gatewayPaymentId === p.gatewayPaymentId),
+            ),
+          ) ?? null
+        );
+      },
       findUnique: async ({ where }) => {
         if (where.paymentIntent) {
           return (

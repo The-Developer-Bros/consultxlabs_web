@@ -11,9 +11,13 @@ import { CATEGORIES } from "./data";
 
 function CategoryCard({
   category,
+  consultantCount,
   index,
 }: {
-  category: { icon: LucideIcon; name: string; count: string; color: string };
+  category: { icon: LucideIcon; name: string; color: string };
+  /** Verified consultants in the domain of this name, or 0 when there is no
+   *  such domain yet. Zero renders no line rather than "0 experts" (#1490). */
+  consultantCount: number;
   index: number;
 }) {
   const Icon = category.icon;
@@ -37,9 +41,13 @@ function CategoryCard({
               <h4 className="font-semibold text-foreground truncate">
                 {category.name}
               </h4>
-              <p className="text-sm text-muted-foreground truncate">
-                {category.count}
-              </p>
+              {consultantCount > 0 && (
+                <p className="text-sm text-muted-foreground truncate">
+                  {consultantCount === 1
+                    ? "1 expert"
+                    : `${consultantCount} experts`}
+                </p>
+              )}
             </div>
             <ChevronRight className="w-5 h-5 text-muted-foreground ml-auto group-hover:translate-x-1 transition-transform shrink-0" />
           </CardContent>
@@ -49,7 +57,12 @@ function CategoryCard({
   );
 }
 
-export function CategoriesSection() {
+export function CategoriesSection({
+  consultantsByDomain,
+}: {
+  /** Verified consultant counts keyed by lowercased domain name (#1490). */
+  consultantsByDomain: Record<string, number>;
+}) {
   return (
     <section className="py-20 md:py-32 bg-gradient-to-b from-white to-zinc-50 relative overflow-hidden">
       <div className="absolute inset-0 grid-pattern-dark opacity-30" />
@@ -81,6 +94,9 @@ export function CategoriesSection() {
             <CategoryCard
               key={category.name}
               category={category}
+              consultantCount={
+                consultantsByDomain[category.name.toLowerCase()] ?? 0
+              }
               index={index}
             />
           ))}

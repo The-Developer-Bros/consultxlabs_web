@@ -535,7 +535,9 @@ const documentsFlow: FlowDefinition = {
   },
 };
 
-const ALL_FLOWS: FlowDefinition[] = [
+/** Every per-appointment flow, gates ignored. Exported so a test can assert
+ *  the intents the GET may offer are all accepted by the POST. */
+export const ALL_FLOWS: FlowDefinition[] = [
   noShowFlowAttendee,
   noShowFlowProvider,
   cancelRefundFlow,

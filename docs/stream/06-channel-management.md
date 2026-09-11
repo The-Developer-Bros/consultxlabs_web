@@ -159,10 +159,25 @@ retry for the rest of the tab's life. Branch on `result.success`.
 passed. Treat `skipped` as success, because it means the state is already
 correct.
 
-**It fans out in bounded chunks.** Channel membership is applied through chunked
+**It revokes rather than adds, and it fans out in bounded chunks.** The add pass
+is retired: channels are provisioned on demand by
+`POST /api/stream/channels/open` and eagerly at booking approval and payment
+success, so what remains is the reconciliation half — query Stream for every
+channel the user is actually in, and remove the memberships that the
+expected-set no longer justifies. Removals go out through chunked
 `Promise.allSettled` rather than a sequential loop, so one channel that fails
-does not abandon the rest — hence `failed` alongside `channelsSynced`. A partial
-result is the normal shape, not an error.
+does not abandon the rest — hence `failed` alongside `channelsSynced`, which
+now reports the size of the expected-set rather than a count of work performed.
+A partial result is the normal shape, not an error.
+
+That reconciliation query pages through `queryChannelsPaged`
+(`lib/stream/batch.ts`), because Stream returns at most 30 channels per
+`queryChannels` call no matter what `limit` is requested. Reading a single page
+as the whole list is what left stale direct messages beyond the thirtieth
+channel unrevoked (#1270); see
+[17. Channel Lifecycle](./17-channel-lifecycle.md#streams-per-request-ceilings)
+for the full account and for the matching 100-member ceiling on channel
+creation.
 
 **It is session-gated.** The module is `"use server"`, so the action is
 remotely invocable and gates itself before any work: it reads the session with

@@ -16,19 +16,26 @@
  * it either completes the side-effects (recovered) or stamps the error
  * (surfaced for review) — either way the row is no longer stuck.
  */
+import * as Sentry from "@sentry/nextjs";
 import prisma from "@/lib/prisma";
 import { processRazorpayWebhookEvent } from "@/app/api/webhooks/razorpay-dispatch";
 import { processStreamEvent } from "@/lib/stream/webhook-dispatch";
 import type { RazorpayWebhookEnvelope } from "@/schemas/webhooks/razorpay";
 import { withCronLock } from "@/lib/cron/with-cron-lock";
-
+import { TERMINAL_ERROR_PREFIXES } from "@/lib/webhooks/event-log";
 
 /**
  * The terminal marker written when a deferred event ages past the give-up cap.
  *
- * Kept in sync with the `NOT: { error: { startsWith: "gave up:" } }` selector
- * above — the prefix is load-bearing, the suffix is for whoever reads the row.
+ * The prefix comes from TERMINAL_ERROR_PREFIXES so the writer and the selector
+ * below cannot drift. They used to be two string literals kept in sync by a
+ * comment asking the next editor to remember.
  */
+/** #1356 6.2 — deferrals past this count are no longer plausible arrival races. */
+const DEFER_ALERT_THRESHOLD = 5;
+/** #1356 6.2 — an event unprocessed this long has missed every ordinary retry. */
+const ALERT_AGE_HOURS = 1;
+
 function giveUpReason(provider: string): string {
   return provider === "stream"
     ? "gave up: Stream event never became processable"
@@ -92,6 +99,7 @@ async function sweepStuckWebhookEventsUnlocked(
   const now = Date.now();
   const staleBefore = new Date(now - staleMinutes * 60_000);
   const warnOlderThan = new Date(now - warnAgeHours * 3_600_000);
+  const alertOlderThan = new Date(now - ALERT_AGE_HOURS * 3_600_000);
   const giveUpOlderThan = new Date(now - giveUpAfterHours * 3_600_000);
 
   // Stuck = after() crashed before markWebhookEventProcessed ran. Only razorpay
@@ -144,8 +152,12 @@ async function sweepStuckWebhookEventsUnlocked(
         {
           error: { not: null },
           receivedAt: { gte: giveUpOlderThan },
-          // Never re-drive our own terminal marker.
-          NOT: { error: { startsWith: "gave up:" } },
+          // Never re-drive a terminal marker: our own give-up cap, or a
+          // permanent failure stamped at dispatch (a payload that does not
+          // match its schema will not match it in six days either).
+          AND: TERMINAL_ERROR_PREFIXES.map((prefix) => ({
+            NOT: { error: { startsWith: prefix } },
+          })),
         },
       ],
     },
@@ -161,6 +173,42 @@ async function sweepStuckWebhookEventsUnlocked(
       `⚠️  Sweeping ${aged.length} stuck webhook event(s) older than ${warnAgeHours}h ` +
         `(oldest: ${aged[0].eventId} @ ${aged[0].receivedAt.toISOString()}) — ` +
         `these were orphaned by the removed lower-age floor.`,
+    );
+  }
+
+  // #1356 6.2 — page ONCE per run on the events that are quietly going nowhere.
+  // The 72h console warning above only reaches whoever is reading logs, and the
+  // 168h give-up cap is the point at which we abandon the event rather than a
+  // point at which anyone is told. An event that has deferred five times, or
+  // that has sat unprocessed for over an hour, has stopped being a transient
+  // ordering artefact and is worth a human's attention while there is still
+  // time to act on it.
+  const stalling = stuck.filter(
+    (ev) =>
+      !ev.processed &&
+      (ev.deferCount >= DEFER_ALERT_THRESHOLD ||
+        ev.receivedAt < alertOlderThan),
+  );
+  if (stalling.length > 0) {
+    Sentry.captureMessage(
+      `sweep-stuck-webhook-events: ${stalling.length} webhook event(s) still unprocessed ` +
+        `(deferCount >= ${DEFER_ALERT_THRESHOLD} or older than ${ALERT_AGE_HOURS}h)`,
+      {
+        level: "warning",
+        tags: { subsystem: "payments", job: "sweep-stuck-webhook-events" },
+        contexts: {
+          stuckWebhooks: {
+            count: stalling.length,
+            events: stalling.slice(0, 20).map((ev) => ({
+              eventId: ev.eventId,
+              provider: ev.provider,
+              eventType: ev.eventType,
+              deferCount: ev.deferCount,
+              receivedAt: ev.receivedAt.toISOString(),
+            })),
+          },
+        },
+      },
     );
   }
 

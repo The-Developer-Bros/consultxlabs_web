@@ -11,9 +11,11 @@ import prisma from "@/lib/prisma";
 import { toPlain } from "@/lib/data/serialize";
 import type { PayoutRecipient } from "@prisma/client";
 
-// #748-parity — 10-min join window matches JoinButton.getJoinState. The real
-// Stream-backed Join lives on the consultant dashboard; the page links there.
-const JOIN_WINDOW_MS = 10 * 60 * 1000;
+// #1270 — the shared HOST window (15 min), not the learner's 10. This surface
+// is the expert's own per-org view and used to hold a local 10-minute copy, so
+// the consultant saw Join appear five minutes later here than on the dashboard
+// the page links them to.
+import { CONSULTANT_JOIN_WINDOW_MS } from "@/lib/appointments/slots";
 
 export async function getMyArrangementData(params: {
   orgId: string;
@@ -170,7 +172,7 @@ export async function getMyArrangementData(params: {
       const startMs = new Date(slot.startsAt).getTime();
       const endMs = new Date(slot.endsAt).getTime();
       const joinable =
-        !slot.isTentative && nowMs >= startMs - JOIN_WINDOW_MS && nowMs <= endMs;
+        !slot.isTentative && nowMs >= startMs - CONSULTANT_JOIN_WINDOW_MS && nowMs <= endMs;
       return {
         id: a.id,
         type: a.appointmentType,

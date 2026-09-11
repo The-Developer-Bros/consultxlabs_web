@@ -62,6 +62,8 @@ interface ThreadRow {
 
 interface TicketRow {
   id: string;
+  /** #705 — the speakable handle. Null on tickets that predate it. */
+  referenceNumber?: string | null;
   title: string;
   status: string;
   updatedAt: string;
@@ -556,6 +558,11 @@ function PlatformTab({
                               <p className="truncate text-sm font-medium text-foreground">
                                 {t.title || "Support request"}
                               </p>
+                              {t.referenceNumber && (
+                                <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
+                                  {t.referenceNumber}
+                                </p>
+                              )}
                               {lastReply && (
                                 <p className="mt-0.5 flex items-center gap-1 truncate text-xs text-muted-foreground">
                                   <Headset className="h-3 w-3 shrink-0" />

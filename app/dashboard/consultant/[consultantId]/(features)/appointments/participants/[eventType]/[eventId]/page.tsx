@@ -81,7 +81,12 @@ type RegisteredParticipant = { id: string; name?: string; email?: string };
  */
 type RemoveParticipantResult = {
   removed: boolean;
-  refund: { amountRefundedPaise: number; refundPct: number } | null;
+  refund: {
+    amountRefundedPaise: number;
+    refundPct: number;
+    /** Null when nothing moved. See the toast: only GATEWAY reaches them. */
+    rail?: "GATEWAY" | "INTERNAL" | "CREDITS" | null;
+  } | null;
 };
 
 const fetchParticipants = async (
@@ -150,7 +155,22 @@ export default function EventParticipantsPage() {
       } else if (result.refund.amountRefundedPaise > 0) {
         // INR: settlement is INR-only by design, and the refund summary
         // carries no currency of its own.
-        description = `${formatCurrencyAmount(result.refund.amountRefundedPaise, "INR")} refunded (${result.refund.refundPct}% of the seat). It reaches them in 5–7 working days.`;
+        const amount = formatCurrencyAmount(
+          result.refund.amountRefundedPaise,
+          "INR",
+        );
+        const pct = `${result.refund.refundPct}% of the seat`;
+        // Only the gateway rail reaches the attendee. An org-funded seat
+        // returns to the sponsor's wallet/accrual/licence and a credit-funded
+        // one to the buyer's referral balance — telling the organiser it lands
+        // on a card in 5–7 working days was false on both.
+        if (result.refund.rail === "INTERNAL") {
+          description = `${amount} (${pct}) went back to the sponsoring organisation's balance; nothing was charged to them.`;
+        } else if (result.refund.rail === "CREDITS") {
+          description = `${amount} (${pct}) was restored to their referral credit balance.`;
+        } else {
+          description = `${amount} refunded (${pct}). It reaches them in 5–7 working days.`;
+        }
       } else {
         description = `No refund was due under the cancellation policy (${result.refund.refundPct}%).`;
       }

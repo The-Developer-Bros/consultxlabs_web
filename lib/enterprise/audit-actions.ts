@@ -149,6 +149,10 @@ export const AUDIT_ACTIONS = {
     // carry the context so an OWNER scanning the audit log can tell which
     // provider's cert is about to lapse.
     SSO_CERT_EXPIRING: "SSO_CERT_EXPIRING",
+    // #1499 — emitted by PUT /api/organizations/[orgId]/cancellation-policy. A
+    // published version is immutable, so the audit row plus the version number is
+    // the whole change history: `details` carries the ladder that was published.
+    CANCELLATION_POLICY_PUBLISHED: "CANCELLATION_POLICY_PUBLISHED",
   },
   CONSENT: {
     CONSENT_GRANTED: "CONSENT_GRANTED",
@@ -191,6 +195,12 @@ export const AUDIT_ACTIONS = {
     // Emitted by the Stream recording retention cron when it tombstones
     // a recording older than the org's `streamRecordingRetentionDays`.
     STREAM_RECORDING_DELETED: "STREAM_RECORDING_DELETED",
+    // #1270 — emitted whenever a platform operator (ADMIN or STAFF) reads a
+    // recording they have no participation in. The operator path used to be
+    // less accountable than the tenant path: deleting and exporting recordings
+    // wrote a row, reaching in and watching one wrote nothing. `details.played`
+    // distinguishes metadata-only (STAFF) from playback (ADMIN).
+    STREAM_RECORDING_ACCESSED: "STREAM_RECORDING_ACCESSED",
     // Emitted from GET /api/organizations/[orgId]/stream/calls when a
     // MANAGER+ exports the call/recording metadata (compliance pull).
     STREAM_CALLS_EXPORTED: "STREAM_CALLS_EXPORTED",

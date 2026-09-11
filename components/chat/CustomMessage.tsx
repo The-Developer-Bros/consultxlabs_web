@@ -217,6 +217,11 @@ export const CustomMessage = () => {
           reason: "Reported message",
           targetUserId: message.user.id,
           contentText: message.text?.substring(0, 500),
+          // #1270 — without the message identity, CONTENT_REMOVED had nothing
+          // to delete and every report against this author folded into one row
+          // whose excerpt was whichever message was reported first.
+          streamMessageId: message.id,
+          streamChannelCid: channel?.cid,
         }),
       });
 

@@ -144,6 +144,10 @@ function txStub() {
     organizationPayout: { update: jest.fn().mockResolvedValue({}) },
     organizationInvoice: { findUnique: jest.fn().mockResolvedValue(null) },
     creditNote: { findUnique: jest.fn().mockResolvedValue(null) },
+    // #1365 — the B2C sibling mint probes both of these and no-ops when the
+    // payment has no consumer invoice, which is the case in every fixture here.
+    consumerCreditNote: { findUnique: jest.fn().mockResolvedValue(null) },
+    consumerInvoice: { findUnique: jest.fn().mockResolvedValue(null) },
     overageEvent: { findFirst: jest.fn().mockResolvedValue(null) },
     orgAuditLog: { create: jest.fn().mockResolvedValue({}) },
     paymentLeg: { upsert: jest.fn().mockResolvedValue({}) },

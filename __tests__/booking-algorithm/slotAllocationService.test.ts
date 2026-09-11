@@ -78,6 +78,9 @@ import {
   makeWeeklyAvailabilitySlot,
   makeCustomAvailabilitySlot,
 } from "./__mocks__/booking.mockData";
+// Mocked above; imported (not require()d) so the lock-scope pin below stays
+// free of a require-style import.
+import { lockAutoAllocate as mockLockAutoAllocate } from "../../utils/appointmentlock";
 
 // ─── Mock Transaction Factory ───────────────────────────────────────────────
 
@@ -112,6 +115,10 @@ function makeMockTx() {
     },
     appointment: {
       findMany: jest.fn().mockResolvedValue([]),
+      // #1499 — createAppointments reads the originating appointment to
+      // inherit the policy version the booking was sold under. Null here:
+      // these fixtures predate the FK, so the created rows carry no policy.
+      findFirst: jest.fn().mockResolvedValue(null),
       create: jest.fn().mockResolvedValue({
         id: "apt-1",
         slotsOfAppointment: [],
@@ -129,6 +136,11 @@ function makeMockTx() {
       // the payment-appeared race.
       deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
+    appointmentParticipant: {
+      createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    bookingStatusHistory: { create: jest.fn().mockResolvedValue({}) },
     slotOfAppointment: {
       update: jest.fn(),
       updateMany: jest.fn(),
@@ -139,7 +151,7 @@ function makeMockTx() {
       count: jest.fn().mockResolvedValue(0),
     },
     // pg_advisory_xact_lock inside guardInitialAllocationInTx.
-    $queryRaw: jest.fn().mockResolvedValue([]),
+    $executeRaw: jest.fn().mockResolvedValue(1),
   };
 }
 
@@ -701,9 +713,18 @@ describe("Requested slot allocation", () => {
         },
       }),
     );
-    // Only 1 slot in DB appointment, but 2 requested
+    // One 30-minute row in the DB appointment, but 2 atoms requested.
     mockTx.appointment.findMany.mockResolvedValue([
-      { id: "apt-1", slotsOfAppointment: [{ id: "s1" }] },
+      {
+        id: "apt-1",
+        slotsOfAppointment: [
+          {
+            id: "s1",
+            startsAt: new Date("2025-01-06T10:00:00Z"),
+            endsAt: new Date("2025-01-06T10:30:00Z"),
+          },
+        ],
+      },
     ]);
 
     const result = await SlotAllocationService.allocate({
@@ -714,8 +735,48 @@ describe("Requested slot allocation", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("Appointment mismatch");
-    expect(result.error).toContain("1 slots in appointments");
-    expect(result.error).toContain("2 requested slots");
+    expect(result.error).toContain("cover 1 half-hour atoms");
+    expect(result.error).toContain("2 were requested");
+  });
+
+  // #1319 — the gate counts COVERED atoms, not rows. A legacy 60-minute row
+  // (76 of 87 production consultations) covers the two atoms the consultee
+  // requested, so approval must not be refused as a "mismatch".
+  it("accepts a legacy 60-minute row as the two atoms it covers", async () => {
+    mockTx.consultation.findUnique.mockResolvedValue(
+      makeConsultationEvent({
+        appointment: {
+          slotsOfAppointment: [
+            { startsAt: new Date("2025-01-06T10:00:00Z") },
+            { startsAt: new Date("2025-01-06T10:30:00Z") },
+          ],
+        },
+      }),
+    );
+    mockTx.appointment.findMany.mockResolvedValue([
+      {
+        id: "apt-1",
+        slotsOfAppointment: [
+          {
+            id: "s1",
+            startsAt: new Date("2025-01-06T10:00:00Z"),
+            endsAt: new Date("2025-01-06T11:00:00Z"),
+          },
+        ],
+      },
+    ]);
+
+    const result = await SlotAllocationService.allocate({
+      eventType: "consultation",
+      eventId: "consult-1",
+      mode: "requested",
+    });
+
+    // Asserting success, not merely the absence of one error string: the
+    // negative form passes for any other failure and proves nothing about the
+    // legacy row being accepted.
+    expect(result.success).toBe(true);
+    expect(result.error).toBeUndefined();
   });
 
   it("should return error when validation fails for requested slots", async () => {
@@ -1046,7 +1107,12 @@ describe("Auto allocation", () => {
           slotsOfAppointment: blockedSlots,
           consultation: { status: AppointmentStatus.APPROVED_PENDING_PAYMENT },
           subscription: null,
-          payment: [{ expiresAt: new Date("2024-01-01T00:00:00Z") }], // expired
+          payment: [
+            {
+              paymentStatus: "PENDING",
+              expiresAt: new Date("2024-01-01T00:00:00Z"),
+            },
+          ], // expired
         },
       ])
       .mockResolvedValue([]); // delete
@@ -1093,7 +1159,12 @@ describe("Auto allocation", () => {
           slotsOfAppointment: blockedSlots,
           consultation: { status: AppointmentStatus.APPROVED_PENDING_PAYMENT },
           subscription: null,
-          payment: [{ expiresAt: new Date("2026-12-31T00:00:00Z") }], // not expired
+          payment: [
+            {
+              paymentStatus: "PENDING",
+              expiresAt: new Date("2026-12-31T00:00:00Z"),
+            },
+          ], // not expired
         },
       ])
       .mockResolvedValue([]); // delete
@@ -1151,12 +1222,13 @@ describe("Auto allocation", () => {
     expect(mockTx.appointment.create).toHaveBeenCalledTimes(8);
 
     const sessionStarts = mockTx.appointment.create.mock.calls.map(
-      (call: any[]) => new Date(call[0].data.slotsOfAppointment.create[0].startsAt),
+      (call: any[]) =>
+        new Date(call[0].data.slotsOfAppointment.create[0].startsAt),
     );
     // Two sessions stacked on the first Monday (09:00 and 10:00) — the
     // per-day-cap behavior the validator already allowed.
-    const jan6 = sessionStarts.filter(
-      (d: Date) => d.toISOString().startsWith("2025-01-06"),
+    const jan6 = sessionStarts.filter((d: Date) =>
+      d.toISOString().startsWith("2025-01-06"),
     );
     expect(jan6.map((d: Date) => d.toISOString()).sort()).toEqual([
       "2025-01-06T09:00:00.000Z",
@@ -1228,8 +1300,7 @@ describe("Auto allocation", () => {
     for (const index of [1, 2]) {
       const { where, include } = findManyCalls[index][0];
       const boundedArm = where.AND.find(
-        (clause: any) =>
-          clause.slotsOfAppointment?.some?.endsAt !== undefined,
+        (clause: any) => clause.slotsOfAppointment?.some?.endsAt !== undefined,
       )?.slotsOfAppointment.some;
       expect(boundedArm).toBeDefined();
       // Live intervals only — past slots can never collide with a candidate.
@@ -1803,6 +1874,30 @@ describe("createAppointments - grouping and validation", () => {
     }
   });
 
+  // #1499 — a session allocated after checkout must cite the policy VERSION the
+  // booking was sold under, read off the originating appointment. Resolving one
+  // afresh here would hand the buyer whatever ladder the org has published
+  // since, which is exactly what immutable versions exist to prevent.
+  it("should inherit the originating appointment's cancellation policy", async () => {
+    mockTx.consultation.findUnique.mockResolvedValue(makeConsultationEvent());
+    mockTx.appointment.findFirst.mockResolvedValue({
+      cancellationPolicyId: "policy-abc",
+    });
+
+    await SlotAllocationService.allocate({
+      eventType: "consultation",
+      eventId: "consult-1",
+      mode: "manual",
+      slots: ["2025-01-06T10:00:00Z", "2025-01-06T10:30:00Z"],
+    });
+
+    expect(mockTx.appointment.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ cancellationPolicyId: "policy-abc" }),
+      }),
+    );
+  });
+
   it("should only connect consultant when no consultee (webinar)", async () => {
     mockTx.webinar.findUnique.mockResolvedValue(makeWebinarEvent());
 
@@ -1887,9 +1982,8 @@ describe("deleteExistingAppointments", () => {
       },
       { id: "old-2", slotsOfAppointment: [], _count: { payment: 0 } },
     ]);
-    mockTx.appointment.deleteMany.mockImplementation(
-      async ({ where }: any) =>
-        where.id === "old-2" ? { count: 0 } : { count: 1 },
+    mockTx.appointment.deleteMany.mockImplementation(async ({ where }: any) =>
+      where.id === "old-2" ? { count: 0 } : { count: 1 },
     );
 
     const result = await SlotAllocationService.allocate({
@@ -2163,7 +2257,11 @@ describe("deleteExistingAppointments", () => {
 
     // Paid consultation appointment (slots already stripped) reaches full-delete.
     mockTx.appointment.findMany.mockResolvedValue([
-      { id: "paid-consult-apt", slotsOfAppointment: [], _count: { payment: 1 } },
+      {
+        id: "paid-consult-apt",
+        slotsOfAppointment: [],
+        _count: { payment: 1 },
+      },
     ]);
     mockTx.appointment.update.mockResolvedValue({
       id: "paid-consult-apt",
@@ -2266,9 +2364,9 @@ describe("deleteExistingAppointments", () => {
         (c: any[]) => c[0]?.where?.id === slotId,
       );
       expect(call).toBeDefined();
-      const connectedIds = (
-        call![0].data.user.connect as { id: string }[]
-      ).map((u) => u.id);
+      const connectedIds = (call![0].data.user.connect as { id: string }[]).map(
+        (u) => u.id,
+      );
       expect(connectedIds).toEqual(
         expect.arrayContaining(["attendee-1", "attendee-2"]),
       );
@@ -2361,14 +2459,24 @@ describe("partial reschedule slot count", () => {
     {
       id: "resched-1",
       slotsOfAppointment: [
-        { id: "ts1", isTentative: true, startsAt: new Date(), endsAt: new Date() },
+        {
+          id: "ts1",
+          isTentative: true,
+          startsAt: new Date(),
+          endsAt: new Date(),
+        },
       ],
       _count: { payment: 0 },
     },
     {
       id: "resched-2",
       slotsOfAppointment: [
-        { id: "ts2", isTentative: true, startsAt: new Date(), endsAt: new Date() },
+        {
+          id: "ts2",
+          isTentative: true,
+          startsAt: new Date(),
+          endsAt: new Date(),
+        },
       ],
       _count: { payment: 0 },
     },
@@ -2589,6 +2697,28 @@ describe("Manual allocation - distributed lock", () => {
     expect(unlockAutoAllocate).toHaveBeenCalled();
   });
 
+  /**
+   * #1319 — the day shard is narrower than the weekly cap it has to hold. Two
+   * manual allocations on different days of one week took different keys and
+   * each cleared sessionsPerWeek on a stale count; #440's GiST constraint sees
+   * overlap, never a count. Every weekly-capped type takes the wide key.
+   */
+  it("takes the consultant-wide lock when a weekly cap applies", async () => {
+    mockTx.subscription.findUnique.mockResolvedValue(makeSubscriptionEvent());
+
+    await SlotAllocationService.allocate({
+      eventType: "subscription",
+      eventId: "sub-1",
+      mode: "manual",
+      slots: ["2025-01-06T10:00:00Z", "2025-01-06T10:30:00Z"],
+    });
+
+    expect(mockLockAutoAllocate).toHaveBeenCalledWith(
+      "consultant-profile-1",
+      undefined,
+    );
+  });
+
   it("should release lock even when transaction fails", async () => {
     const {
       lockAutoAllocate,
@@ -2797,5 +2927,92 @@ describe("allocation resilience — error codes", () => {
     expect(result.success).toBe(false);
     expect(result.errorCode).toBe("SLOT_SHORTAGE");
     expect(result.error).toContain("Could only find");
+  });
+});
+
+// ─── #1206 — partial allocation ─────────────────────────────────────────────
+
+describe("#1206 partial allocation", () => {
+  // A plan sold 6 sessions; the consultant published one hour a week inside a
+  // three-week period. The whole plan cannot fit, some of it can.
+  const shortOnAvailability = () =>
+    makeSubscriptionEvent({
+      subscriptionPlan: {
+        consultantProfileId: "consultant-profile-1",
+        durationInMonths: 1,
+        sessionsPerWeek: 3,
+        sessionDurationInHours: 1,
+        totalSessions: 6,
+        consultantProfile: makeConsultantProfile({
+          slotsOfAvailabilityWeekly: [
+            makeWeeklyAvailabilitySlot(DayOfWeek.MONDAY, 9, 10),
+          ],
+        }),
+      },
+      schedulingPeriodStartsAt: new Date("2025-01-06T00:00:00Z"),
+      schedulingPeriodEndsAt: new Date("2025-01-27T00:00:00Z"),
+      appointments: [],
+    });
+
+  beforeEach(() => {
+    mockTx.subscription.findUnique.mockResolvedValue(shortOnAvailability());
+    mockTx.appointment.findMany.mockResolvedValue([]);
+  });
+
+  it("refuses by default and reports how many sessions WOULD fit", async () => {
+    const result = await SlotAllocationService.allocate({
+      eventType: "subscription",
+      eventId: "sub-1",
+      mode: "auto",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.errorCode).toBe("SLOT_SHORTAGE");
+    expect(result.requiredSessions).toBe(6);
+    // The offer the consultant is shown; > 0 or there is nothing to offer.
+    expect(result.placeableSessions).toBeGreaterThan(0);
+    expect(result.placeableSessions).toBeLessThan(6);
+    expect(mockTx.appointment.create).not.toHaveBeenCalled();
+  });
+
+  it("places exactly the advertised count when the consultant allows it", async () => {
+    const refusal = await SlotAllocationService.allocate({
+      eventType: "subscription",
+      eventId: "sub-1",
+      mode: "auto",
+    });
+    mockTx.appointment.create.mockClear();
+
+    const result = await SlotAllocationService.allocate({
+      eventType: "subscription",
+      eventId: "sub-1",
+      mode: "auto",
+      allowPartial: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.partial).toBe(true);
+    // LOAD-BEARING: the confirm dialog promises the number the refusal named.
+    expect(result.placedSessions).toBe(refusal.placeableSessions);
+    expect(result.requiredSessions).toBe(6);
+    expect(result.unplacedSessions).toBe(6 - (result.placedSessions ?? 0));
+    // One Appointment per placed session — the rest stay unallocated.
+    expect(mockTx.appointment.create).toHaveBeenCalledTimes(
+      result.placedSessions ?? 0,
+    );
+  });
+
+  it("is ignored for a single-session consultation", async () => {
+    mockTx.consultation.findUnique.mockResolvedValue(makeConsultationEvent());
+
+    const result = await SlotAllocationService.allocate({
+      eventType: "consultation",
+      eventId: "consult-1",
+      mode: "auto",
+      allowPartial: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.partial).toBeUndefined();
   });
 });

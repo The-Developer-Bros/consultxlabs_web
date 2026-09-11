@@ -3,12 +3,13 @@
 import { useState } from "react";
 import * as Sentry from "@sentry/nextjs";
 import { useParams, useRouter } from "next/navigation";
-import { getGlobalVideoClient } from "@/lib/stream/disconnect";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { useToast } from "@/hooks/use-toast";
 import { useSession } from "@/lib/auth-client";
-import { getOrCreateAppointmentMeeting } from "@/lib/meeting";
+// #248: the shared hook reads the connected client singleton at click time and
+// lazy-imports lib/meeting, so the Stream SDK stays off this bundle.
+import { useLazyJoinMeeting } from "@/hooks/scheduling/useLazyJoinMeeting";
 import type { SlotOfAppointment } from "@prisma/client";
 import type {
   AppointmentActionAdapter,
@@ -135,6 +136,7 @@ export function useConsulteeAppointmentsAdapter(options?: {
 }): AppointmentActionAdapter {
   const router = useRouter();
   const { toast } = useToast();
+  const joinMeeting = useLazyJoinMeeting();
   const { data: session } = useSession();
   const queryClient = useQueryClient();
   const params = useParams<{ consulteeId: string }>();
@@ -153,7 +155,6 @@ export function useConsulteeAppointmentsAdapter(options?: {
   const typeLabel = activeVm ? KIND_TO_TYPE[activeVm.kind] : "Consultation";
   const actions = useEventActions({
     appointmentId: activeVm?.appointmentId ?? undefined,
-    appointment: activeVm?.raw.appointment,
     rawSlots: (activeVm?.raw.rawSlots ?? []) as SlotOfAppointment[],
     title: activeVm?.title ?? "",
     consultant: activeVm?.counterpart.name ?? "",
@@ -169,22 +170,19 @@ export function useConsulteeAppointmentsAdapter(options?: {
     setDialog(kind);
   };
 
-  // Join can't go through useEventActions — its args follow activeVm state,
-  // which wouldn't be committed yet on a same-click join from a row.
+  /**
+   * Join can't go through useEventActions — its args follow activeVm state,
+   * which wouldn't be committed yet on a same-click join from a row.
+   *
+   * #1270 — this was a private, degraded copy of `useLazyJoinMeeting`. It read
+   * the video client SYNCHRONOUSLY, so a click that landed before the deferred
+   * connect finished was told "Not signed in" (destructive, and untrue) while
+   * every sibling surface awaits the client for up to four seconds and shows a
+   * retryable warning. It also cleared `joiningId` only in `catch`, so a
+   * successful join left the row spinning until the route changed. The shared
+   * hook already has the right contract and returns whether navigation began.
+   */
   const joinNow = async (vm: AppointmentVM, slot: SlotLike) => {
-    // Read the singleton at click time rather than via useStreamVideoClient:
-    // the SDK context is now scoped to /meetings, and this is the same instance
-    // <StreamVideo> would hand back. Matches the #248 lazy-join idiom.
-    const client = getGlobalVideoClient();
-    if (!client) {
-      toast({
-        title: "Not signed in",
-        description:
-          "Video client not initialized. Please sign in to join the meeting.",
-        variant: "destructive",
-      });
-      return;
-    }
     const appointment = vm.raw.appointment;
     if (!appointment) {
       toast({
@@ -195,36 +193,16 @@ export function useConsulteeAppointmentsAdapter(options?: {
       return;
     }
     setJoiningId(vm.id);
-    try {
-      // MeetingSlot is Date|string tolerant by design — pass the slot
-      // honestly instead of asserting a Prisma type it isn't.
-      const meetingId = await getOrCreateAppointmentMeeting(
-        client,
-        appointment,
-        {
-          id: slot.id,
-          startsAt: slot.startsAt,
-          endsAt: slot.endsAt ?? null,
-          isTentative: slot.isTentative,
-          appointmentId: slot.appointmentId ?? null,
-        },
-      );
-      toast({
-        title: "Joining meeting",
-        description: "You will now be redirected to the meeting room.",
-      });
-      router.push(`/meetings/${meetingId}`);
-    } catch (error) {
-      Sentry.captureException(error);
-      console.error("Error joining meeting:", error);
-      toast({
-        title: "Error joining meeting",
-        description:
-          error instanceof Error ? error.message : "Unknown error occurred",
-        variant: "destructive",
-      });
-      setJoiningId(null);
-    }
+    // MeetingSlot is Date|string tolerant by design — pass the slot honestly
+    // instead of asserting a Prisma type it isn't.
+    const navigating = await joinMeeting(appointment, {
+      id: slot.id,
+      startsAt: slot.startsAt,
+      endsAt: slot.endsAt ?? null,
+      isTentative: slot.isTentative,
+      appointmentId: slot.appointmentId ?? null,
+    });
+    if (!navigating) setJoiningId(null);
   };
 
   const isDev = process.env.NEXT_PUBLIC_ENABLE_DEV_TOOLS === "true";
@@ -340,6 +318,9 @@ export function useConsulteeAppointmentsAdapter(options?: {
         onClick: () => openDialog(vm, "report"),
       });
     }
+    // #1270 — additive by construction: a separately-labelled overflow entry
+    // that appears only where the real Join does not, never a relaxation of
+    // the primary action's gate.
     if (
       isDev &&
       vm.raw.appointment &&
@@ -483,6 +464,10 @@ export function useConsulteeAppointmentsAdapter(options?: {
           isLoading={actions.isLoading || actionLoading}
           isPendingPayment={isPendingPayment}
           mode={dialogMode}
+          // R13 — without this the quote is disabled for every consultee, which
+          // is the one side of the booking whose money the quote is about. The
+          // consultant adapter has always passed it.
+          appointmentId={activeVm.appointmentId}
         />
 
         {activeVm.appointmentId && dialog === "report" && (

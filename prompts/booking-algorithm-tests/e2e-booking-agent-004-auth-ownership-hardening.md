@@ -163,7 +163,7 @@ After signup, run:
 
 ```sql
 UPDATE "ConsulteeProfile"
-SET occupation = 'Security Tester',
+SET goals = 'Probe auth and ownership boundaries.',
     "aboutMe"  = 'Testing auth and ownership hardening.'
 FROM users u
 WHERE "ConsulteeProfile"."userId" = u.id
@@ -578,6 +578,17 @@ async () => {
 
 ## Phase 4 — Bulk Consultant Settings Auth Bypass
 
+> **Body shape, verified against `app/api/user/consultants/[id]/route.ts`.** The
+> weekly rows take `dayOfWeekforStartTimeInUTC` / `dayOfWeekforEndTimeInUTC` plus
+> `startsAt` / `endsAt` (both ISO datetimes with an offset); custom rows take
+> `startsAt` / `endsAt` alone. `domainId`, `subDomainIds` and `tagIds` are all
+> validated with `z.string().uuid()`, so the readable `test-domain-0NN` ids this
+> case seeds will 400 the happy-path arms. Read the real UUIDs out of the
+> database first — `SELECT id FROM "Domain" WHERE name = '<seeded name>'` and the
+> matching `SubDomain` row — and substitute them into every bulk-PUT body below.
+> The authorization arms (403 / 401) short-circuit before validation, so they
+> pass either way.
+
 ### Test 4.1 — Consultant B PUTs on Consultant A's Settings
 
 Login as CONSULTANT B. Then:
@@ -600,8 +611,8 @@ async () => {
           {
             dayOfWeekforStartTimeInUTC: "MONDAY",
             dayOfWeekforEndTimeInUTC: "MONDAY",
-            slotStartTimeInUTC: "2026-01-05T04:00:00.000Z",
-            slotEndTimeInUTC: "2026-01-05T07:00:00.000Z",
+            startsAt: "2026-01-05T04:00:00.000Z",
+            endsAt: "2026-01-05T07:00:00.000Z",
           },
         ],
       }),
@@ -651,8 +662,8 @@ async () => {
           {
             dayOfWeekforStartTimeInUTC: "MONDAY",
             dayOfWeekforEndTimeInUTC: "MONDAY",
-            slotStartTimeInUTC: "2026-01-05T04:00:00.000Z",
-            slotEndTimeInUTC: "2026-01-05T07:00:00.000Z",
+            startsAt: "2026-01-05T04:00:00.000Z",
+            endsAt: "2026-01-05T07:00:00.000Z",
           },
         ],
       }),
@@ -686,14 +697,14 @@ async () => {
           {
             dayOfWeekforStartTimeInUTC: "MONDAY",
             dayOfWeekforEndTimeInUTC: "MONDAY",
-            slotStartTimeInUTC: "2026-01-05T04:00:00.000Z",
-            slotEndTimeInUTC: "2026-01-05T07:00:00.000Z",
+            startsAt: "2026-01-05T04:00:00.000Z",
+            endsAt: "2026-01-05T07:00:00.000Z",
           },
           {
             dayOfWeekforStartTimeInUTC: "WEDNESDAY",
             dayOfWeekforEndTimeInUTC: "WEDNESDAY",
-            slotStartTimeInUTC: "2026-01-07T04:00:00.000Z",
-            slotEndTimeInUTC: "2026-01-07T07:00:00.000Z",
+            startsAt: "2026-01-07T04:00:00.000Z",
+            endsAt: "2026-01-07T07:00:00.000Z",
           },
         ],
       }),
@@ -763,8 +774,10 @@ async () => {
       appointmentType: "CONSULTATION",
       planId: "test-consultation-plan-004a",
       paymentGateway: "STRIPE",
-      slotStartTimeInUTC: nextTue.toISOString(),
-      slotEndTimeInUTC: slotEnd.toISOString(),
+      startsAt: nextTue.toISOString(),
+      endsAt: slotEnd.toISOString(),
+      // Consultant B's row, deliberately: the plan is A's.
+      slotOfAvailabilityWeeklyId: "test-w004b-tue",
       isMockPayment: true,
     }),
   });
@@ -795,8 +808,9 @@ async () => {
       appointmentType: "CONSULTATION",
       planId: "test-consultation-plan-004a",
       paymentGateway: "STRIPE",
-      slotStartTimeInUTC: nextTue.toISOString(),
-      slotEndTimeInUTC: slotEnd.toISOString(),
+      startsAt: nextTue.toISOString(),
+      endsAt: slotEnd.toISOString(),
+      slotOfAvailabilityWeeklyId: "test-w004a-tue",
       isMockPayment: true,
     }),
   });
@@ -844,14 +858,14 @@ async () => {
           {
             dayOfWeekforStartTimeInUTC: "MONDAY",
             dayOfWeekforEndTimeInUTC: "MONDAY",
-            slotStartTimeInUTC: "2026-01-05T04:00:00.000Z",
-            slotEndTimeInUTC: "2026-01-05T07:00:00.000Z",
+            startsAt: "2026-01-05T04:00:00.000Z",
+            endsAt: "2026-01-05T07:00:00.000Z",
           },
           {
             dayOfWeekforStartTimeInUTC: "MONDAY",
             dayOfWeekforEndTimeInUTC: "MONDAY",
-            slotStartTimeInUTC: "2026-01-05T05:00:00.000Z",
-            slotEndTimeInUTC: "2026-01-05T08:00:00.000Z",
+            startsAt: "2026-01-05T05:00:00.000Z",
+            endsAt: "2026-01-05T08:00:00.000Z",
           },
         ],
       }),
@@ -883,8 +897,8 @@ async () => {
           {
             dayOfWeekforStartTimeInUTC: "MONDAY",
             dayOfWeekforEndTimeInUTC: "MONDAY",
-            slotStartTimeInUTC: "2026-01-05T10:00:00.000Z",
-            slotEndTimeInUTC: "2026-01-05T08:00:00.000Z",
+            startsAt: "2026-01-05T10:00:00.000Z",
+            endsAt: "2026-01-05T08:00:00.000Z",
           },
         ],
       }),
@@ -918,16 +932,16 @@ async () => {
         tagIds: [],
         slotsOfAvailabilityCustom: [
           {
-            slotStartTimeInUTC: baseDate.toISOString(),
-            slotEndTimeInUTC: new Date(
+            startsAt: baseDate.toISOString(),
+            endsAt: new Date(
               baseDate.getTime() + 3 * 3600000,
             ).toISOString(),
           },
           {
-            slotStartTimeInUTC: new Date(
+            startsAt: new Date(
               baseDate.getTime() + 2 * 3600000,
             ).toISOString(),
-            slotEndTimeInUTC: new Date(
+            endsAt: new Date(
               baseDate.getTime() + 5 * 3600000,
             ).toISOString(),
           },
@@ -967,14 +981,14 @@ async () => {
           {
             dayOfWeekforStartTimeInUTC: "TUESDAY",
             dayOfWeekforEndTimeInUTC: "TUESDAY",
-            slotStartTimeInUTC: "2026-01-06T04:00:00.000Z",
-            slotEndTimeInUTC: "2026-01-06T07:00:00.000Z",
+            startsAt: "2026-01-06T04:00:00.000Z",
+            endsAt: "2026-01-06T07:00:00.000Z",
           },
           {
             dayOfWeekforStartTimeInUTC: "TUESDAY",
             dayOfWeekforEndTimeInUTC: "TUESDAY",
-            slotStartTimeInUTC: "2026-01-06T06:00:00.000Z",
-            slotEndTimeInUTC: "2026-01-06T09:00:00.000Z",
+            startsAt: "2026-01-06T06:00:00.000Z",
+            endsAt: "2026-01-06T09:00:00.000Z",
           },
         ],
       }),
@@ -1006,8 +1020,8 @@ async () => {
           {
             dayOfWeekforStartTimeInUTC: "WEDNESDAY",
             dayOfWeekforEndTimeInUTC: "WEDNESDAY",
-            slotStartTimeInUTC: "2026-01-07T10:00:00.000Z",
-            slotEndTimeInUTC: "2026-01-07T08:00:00.000Z",
+            startsAt: "2026-01-07T10:00:00.000Z",
+            endsAt: "2026-01-07T08:00:00.000Z",
           },
         ],
       }),
@@ -1039,20 +1053,20 @@ async () => {
           {
             dayOfWeekforStartTimeInUTC: "MONDAY",
             dayOfWeekforEndTimeInUTC: "MONDAY",
-            slotStartTimeInUTC: "2026-01-05T04:00:00.000Z",
-            slotEndTimeInUTC: "2026-01-05T07:00:00.000Z",
+            startsAt: "2026-01-05T04:00:00.000Z",
+            endsAt: "2026-01-05T07:00:00.000Z",
           },
           {
             dayOfWeekforStartTimeInUTC: "WEDNESDAY",
             dayOfWeekforEndTimeInUTC: "WEDNESDAY",
-            slotStartTimeInUTC: "2026-01-07T04:00:00.000Z",
-            slotEndTimeInUTC: "2026-01-07T07:00:00.000Z",
+            startsAt: "2026-01-07T04:00:00.000Z",
+            endsAt: "2026-01-07T07:00:00.000Z",
           },
           {
             dayOfWeekforStartTimeInUTC: "FRIDAY",
             dayOfWeekforEndTimeInUTC: "FRIDAY",
-            slotStartTimeInUTC: "2026-01-09T08:00:00.000Z",
-            slotEndTimeInUTC: "2026-01-09T11:00:00.000Z",
+            startsAt: "2026-01-09T08:00:00.000Z",
+            endsAt: "2026-01-09T11:00:00.000Z",
           },
         ],
       }),

@@ -2,6 +2,8 @@ import { unstable_cache } from "next/cache";
 import prisma from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import type { IConsultantCardData } from "@/types/consultant";
+import { stripAnonymousReviewers } from "@/lib/data/review-privacy";
+import { deriveDirectoryRating } from "@/lib/data/public-stats";
 
 /**
  * Server-side data access for the explore experts page.
@@ -124,7 +126,11 @@ export function toConsultantCard(row: ConsultantCardRow): IConsultantCardData {
   const firstOrg = memberships[0]?.organization ?? null;
   return {
     id: c.id,
-    rating: c.rating,
+    // #705 — the suppressed-below-threshold score, never the raw mean. Null
+    // renders as "not enough reviews yet" rather than a number one client can
+    // define.
+    rating: c.publishedRating,
+    reviewCount: c.reviewCount,
     headline: c.headline,
     experience: c.experience,
     description: c.description,
@@ -170,9 +176,15 @@ export function orderByForSort(
       return { user: { name: "desc" } };
     case "reviewCount":
     case "trending":
-      return { reviews: { _count: "desc" } };
+      // #705 — the denormalized count, which excludes soft-deleted reviews.
+      // `{ reviews: { _count: "desc" } }` counted them: Prisma cannot filter a
+      // relation _count inside orderBy, so a moderated-away review kept
+      // pushing its consultant up the trending list.
+      return { reviewCount: "desc" };
     case "rating":
-      return { rating: "desc" };
+      // The PUBLISHED score, nulls last. Sorting on the raw mean let a 5.0 from
+      // a single session outrank a 4.8 from two hundred.
+      return { publishedRating: { sort: "desc", nulls: "last" } };
     case "newest":
       return { createdAt: "desc" };
     case "nameAsc":
@@ -206,32 +218,57 @@ export async function fetchExpertsMetadata() {
     prisma.tag.findMany({
       select: { id: true, name: true, domainId: true },
     }),
-    // Consultant metadata (counts, domain breakdown, avg rating)
+    // Consultant metadata (counts, domain breakdown, avg rating, sessions)
     // #781 §B — soft-deleted profiles leave public surfaces
     (async () => {
-      const [totalConsultants, consultantsByDomain, averageRating] =
-        await Promise.all([
-          prisma.consultantProfile.count({
-            where: { verificationStatus: "VERIFIED", deletedAt: null },
-          }),
-          prisma.domain.findMany({
-            select: {
-              id: true,
-              name: true,
-              _count: {
-                select: {
-                  consultantProfiles: {
-                    where: { verificationStatus: "VERIFIED", deletedAt: null },
-                  },
+      const [
+        totalConsultants,
+        consultantsByDomain,
+        ratedProfiles,
+        completedSessions,
+      ] = await Promise.all([
+        prisma.consultantProfile.count({
+          where: { verificationStatus: "VERIFIED", deletedAt: null },
+        }),
+        prisma.domain.findMany({
+          select: {
+            id: true,
+            name: true,
+            _count: {
+              select: {
+                consultantProfiles: {
+                  where: { verificationStatus: "VERIFIED", deletedAt: null },
                 },
               },
             },
-          }),
-          prisma.consultantProfile.aggregate({
-            where: { verificationStatus: "VERIFIED", deletedAt: null },
-            _avg: { rating: true },
-          }),
-        ]);
+          },
+        }),
+        // #1485 — the PUBLISHED score, not the raw `rating` mean. `rating`
+        // defaults to 0 and every unreviewed profile carries that default, so
+        // averaging it across the directory was not a number anyone could
+        // defend. `publishedRating` is NULL below the #705 suppression
+        // threshold, so filtering it out leaves only publishable scores. The
+        // rows are weighted by review in `deriveDirectoryRating` rather than
+        // by `_avg`, which cannot express a weighted mean.
+        prisma.consultantProfile.findMany({
+          where: {
+            verificationStatus: "VERIFIED",
+            deletedAt: null,
+            publishedRating: { not: null },
+          },
+          select: { publishedRating: true, reviewCount: true },
+        }),
+        // #1485 — the real "sessions completed" figure, replacing a hardcoded
+        // "50K+". The unit is the SLOT, not the appointment: a slot is one
+        // meeting, and COMPLETED means it was actually held (a MeetingSession
+        // ended, or a consultant marked it). `Appointment` carries no status
+        // of its own, and a subscription appointment spans many meetings.
+        // UNVERIFIED (past, no meeting record) is deliberately excluded — it
+        // may well have happened offline, but "may have" is not a claim.
+        prisma.slotOfAppointment.count({
+          where: { completionStatus: "COMPLETED", deletedAt: null },
+        }),
+      ]);
 
       return {
         totalConsultants,
@@ -240,7 +277,8 @@ export async function fetchExpertsMetadata() {
           name: d.name,
           consultantCount: d._count.consultantProfiles,
         })),
-        averageRating: averageRating._avg.rating || 0,
+        ...deriveDirectoryRating(ratedProfiles),
+        completedSessions,
       };
     })(),
     // Available languages — distinct across verified consultants. ORM read + JS
@@ -316,7 +354,7 @@ export type ExpertsMetadata = Awaited<ReturnType<typeof fetchExpertsMetadata>>;
 // otherwise create two entries for the same data. The default lives on the wrapper.
 const getCachedRecentReviews = unstable_cache(
   async (limit: number) => {
-    return prisma.consultantReview.findMany({
+    const rows = await prisma.consultantReview.findMany({
       // #781 §B — soft-deleted profiles leave public surfaces
       // #693 — moderation-removed reviews leave public surfaces too
       where: {
@@ -339,6 +377,7 @@ const getCachedRecentReviews = unstable_cache(
         },
       },
     });
+    return stripAnonymousReviewers(rows);
   },
   ["recent-reviews"],
   { revalidate: 120, tags: ["reviews"] },

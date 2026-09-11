@@ -7,31 +7,58 @@
  * payloads, so a signed-in stranger could open a private consultation from
  * devtools. The app-side check was a React conditional and stopped nothing.
  *
- * This moves `join-call` to `call_member`. Combined with the members we already
- * name at creation (lib/meeting.ts) and the membership that
- * app/api/meetings/[meetingId]/join grants server-side after
+ * This moves `join-call` to `call_member`. Combined with the members named at
+ * creation (`provisionAppointmentMeeting` in actions/stream/meetings) and the
+ * membership that app/api/meetings/[meetingId]/join grants server-side after
  * resolveMeetingAccess passes, Stream refuses a non-member itself. There are no
  * call-scoped tokens: the video client is an app-wide singleton holding one user
  * token, so `call_cids` would have meant a second client per meeting.
  *
+ * #1270 — run scripts/stream/backfill-call-member-role.ts BEFORE this. Calls
+ * minted before that change named their members `host`/`user`, neither of which
+ * survives this write; the pre-flight below refuses to apply until at least one
+ * member of an open call actually holds `call_member`.
+ *
  * We harden `default` in place rather than minting a bespoke type because a
  * call's type is immutable: a new type would protect only future calls and leave
  * every existing one open.
+ *
+ * It also revokes `end-call` and recording control from `call_member`, which the
+ * join route hands to every participant. Both are server-side now
+ * (`/api/meetings/[meetingId]/end`, `/api/stream/recordings/{start,stop}`), so
+ * the grants buy nothing legitimate and let any attendee end a paid session or
+ * defeat the pre-join recording-consent gate.
  *
  * Idempotent and reversible. Dry-run is the default — pass `--apply` to write.
  * Reverting is the same script with `--restore-user-join`.
  *
  *   npx tsx scripts/stream/ensure-call-type-grants.ts
  *   npx tsx scripts/stream/ensure-call-type-grants.ts --apply
- *   npx tsx scripts/stream/ensure-call-type-grants.ts --apply --join-route-is-deployed
+ *   npx tsx scripts/stream/ensure-call-type-grants.ts --apply --routes-are-deployed
  *   npx tsx scripts/stream/ensure-call-type-grants.ts --apply --restore-user-join
  */
 import "dotenv/config";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getStreamVideoClient, isStreamConfigured } from "../../lib/stream-client";
+import {
+  getStreamVideoClient,
+  isStreamConfigured,
+} from "../../lib/stream-client";
 import { STREAM_CALL_TYPE } from "../../lib/stream/call-cid";
+// One implementation of the drift comparison, not three. This file,
+// ensure-call-type-settings.ts and ensure-app-settings.ts each had their own;
+// they must agree, because this is the check that decides whether an operator
+// is told a production config was just wiped.
+import { canonical } from "../../lib/stream/config-fingerprint";
+// The role every participant is given by /api/meetings/[meetingId]/join, by the
+// server-side mint, and by the backfill. Imported rather than restated: a typo
+// in this one string is a total video outage, and the two scripts have to agree
+// about it or the pre-flight below checks for a role nothing assigns.
+import {
+  anyOpenCallMemberHolds,
+  MEMBER_ROLE,
+} from "./backfill-call-member-role";
 
 const JOIN_CALL = "join-call";
 
@@ -49,9 +76,6 @@ const JOIN_CALL = "join-call";
  */
 const JOIN_REVOKED_ROLES = ["user", "guest"];
 
-/** The role every participant is given by /api/meetings/[meetingId]/join. */
-const MEMBER_ROLE = "call_member";
-
 /**
  * Recording control is server-only here: RecordingControls.tsx posts to
  * /api/stream/recordings/start and /stop, and there is not one client-side
@@ -67,15 +91,31 @@ const MEMBER_ROLE = "call_member";
 const RECORDING_PERMISSIONS = ["start-recording", "stop-recording"];
 
 /**
- * `end-call` is deliberately NOT revoked from `call_member`. EndCallButton.tsx
- * calls `call.endCall()` client-side, and the Stream role no longer separates
- * host from participant — host-ness is derived from `custom.consultantUserId` —
- * so revoking it here would take the host's End Call button down with it.
+ * `end-call` is now revoked from `call_member` too. This is the deploy the
+ * previous revision of this comment was waiting for.
  *
- * That leaves any participant able to end a call for everyone. Closing it needs
- * a server-side End Call route or a host-only role first, so it is tracked
- * separately rather than half-done here. Still revoked from `user`/`guest` as
- * defence in depth, in case role assignment ever changes.
+ * The hole: the join route assigns `call_member` to EVERY participant, and the
+ * live `default` type grants that role `end-call`. Stream's roles do not
+ * separate host from participant here — host-ness is `custom.consultantUserId`,
+ * an application concept Stream knows nothing about — so any attendee could end
+ * a paid consultation for both sides from devtools. `EndCallButton`'s `isHost`
+ * is a React conditional; it decides what renders, not what Stream permits.
+ *
+ * It could not be closed until the client stopped needing the grant.
+ * `EndCallButton.tsx` used to call `call.endCall()` directly, so revoking would
+ * have taken the host's own control down with it and left the hole open anyway.
+ *
+ * #1270 built the replacement and it is on `dev`:
+ * `POST /api/meetings/[meetingId]/end` resolves access server-side, requires the
+ * hosting side, and ends the call with the server client.
+ * `app/meetings/[id]/components/EndCallButton.tsx` posts to it behind an
+ * `endingRef` guard and a 10s bound, and no longer touches the SDK.
+ *
+ * So the revocation is safe the moment that bundle is serving traffic — and
+ * unsafe before it, in exactly the same way and for exactly the same reason as
+ * the `join-call` move above: hosts still on the old bundle would lose End Call
+ * with nothing to replace it. `--routes-are-deployed` gates both, because both
+ * ship in the same deploy — and the flag is plural for a reason, see parseArgs.
  */
 const END_CALL = "end-call";
 
@@ -83,28 +123,11 @@ const END_CALL = "end-call";
 const RECORDING_REVOKED_ROLES = [...JOIN_REVOKED_ROLES, MEMBER_ROLE];
 
 /**
- * Stable stringify for comparing two separate `getCallType` reads.
- *
- * Plain `JSON.stringify` preserves key insertion order, and the two snapshots
- * come from two independent responses — so an identical configuration whose keys
- * arrived in a different order would report as drift, write a pre-image, and
- * tell the operator Stream discarded settings it had not touched. A false alarm
- * on this particular check is expensive: it is the thing that says whether a
- * production config wipe just happened.
- *
- * Code-unit ordering, never `localeCompare` — same rule as the channel ids.
+ * Who loses `end-call`. Same set as recording: nobody joining as an ordinary
+ * participant has a legitimate reason to hold it now that the button goes
+ * through the server.
  */
-function canonical(value: unknown): string {
-  return JSON.stringify(value, (_key, val) =>
-    val && typeof val === "object" && !Array.isArray(val)
-      ? Object.fromEntries(
-          Object.entries(val as Record<string, unknown>).sort(([a], [b]) =>
-            a < b ? -1 : a > b ? 1 : 0,
-          ),
-        )
-      : val,
-  );
-}
+const END_CALL_REVOKED_ROLES = RECORDING_REVOKED_ROLES;
 
 interface Options {
   apply: boolean;
@@ -116,7 +139,20 @@ function parseArgs(argv: string[]): Options {
   return {
     apply: argv.includes("--apply"),
     restore: argv.includes("--restore-user-join"),
-    deployConfirmed: argv.includes("--join-route-is-deployed"),
+    // #1301 follow-up — the flag is what an operator types from memory; the
+    // refusal message is what they read only AFTER being refused. Naming it
+    // after the join route alone was a trap: verified on 2026-09-01, the join
+    // route IS on prod and the END route is NOT, so an operator asserting
+    // truthfully about the join route would have stripped `end-call` and taken
+    // End Call away from every host — prod's `EndCallButton` still calls
+    // `call.endCall()` client-side.
+    //
+    // The old spelling stays a working alias so any runbook, shell history or
+    // pasted command keeps functioning. Being refused because you typed the
+    // documented flag would be its own small outage.
+    deployConfirmed:
+      argv.includes("--routes-are-deployed") ||
+      argv.includes("--join-route-is-deployed"),
   };
 }
 
@@ -125,8 +161,10 @@ function parseArgs(argv: string[]): Options {
  * getting it wrong locks every user out of every call.
  *
  * Applying strips `join-call` from the `user` role. Nobody can then join except
- * as a `call_member`, and the ONLY thing that makes anyone a `call_member` is
- * `POST /api/meetings/[meetingId]/join`. Run this before that route is live and
+ * as a `call_member`, and the only things that make anyone a `call_member` are
+ * the server-side mint and `POST /api/meetings/[meetingId]/join` — and the mint
+ * only ever runs once per session, when the room is first created, so the route
+ * is what every EXISTING call depends on. Run this before that route is live and
  * there is a window in which no one can join anything.
  *
  * The post-apply guard below does not catch it. That guard checks whether
@@ -144,15 +182,95 @@ function requireDeployConfirmation(opts: Options): boolean {
 
   console.error(
     "\n🛑 Refusing to apply.\n" +
-      "\nThis strips `join-call` from the `user` role. After it, the only way to\n" +
-      "join a call is to hold `call_member`, and the only thing that grants that\n" +
-      "is POST /api/meetings/[meetingId]/join. If that route is not deployed and\n" +
-      "serving traffic RIGHT NOW, every user is locked out of every call from the\n" +
-      "moment this write lands.\n" +
+      "\nThis write depends on TWO routes already serving production traffic.\n" +
+      "\n1. It strips `join-call` from the `user` role. After it, the only way to\n" +
+      "   join a call is to hold `call_member`, and the only thing that grants\n" +
+      "   that is POST /api/meetings/[meetingId]/join. If that route is not live\n" +
+      "   RIGHT NOW, every user is locked out of every call the moment this\n" +
+      "   lands.\n" +
+      "\n2. It strips `end-call` from `call_member`. Hosts still running an old\n" +
+      "   bundle call `call.endCall()` directly and will silently lose End Call;\n" +
+      "   the replacement is POST /api/meetings/[meetingId]/end.\n" +
+      "\nBoth ship in the same deploy, so one flag asserts both.\n" +
       "\nDeploy first. Confirm the route is live. Then re-run with:\n" +
-      "  npx tsx scripts/stream/ensure-call-type-grants.ts --apply --join-route-is-deployed\n" +
+      "  npx tsx scripts/stream/ensure-call-type-grants.ts --apply --routes-are-deployed\n" +
       "\nIf you get it wrong, the rollback is:\n" +
       "  npx tsx scripts/stream/ensure-call-type-grants.ts --apply --restore-user-join\n",
+  );
+  return false;
+}
+
+/**
+ * The check the post-apply guard cannot make: does anybody actually HOLD
+ * `call_member`?
+ *
+ * The guard at the bottom of this file re-reads the call type and confirms
+ * Stream stored `join-call` on `call_member`. That is necessary and it is not
+ * the failure that matters. The grant will be there — it is written a few lines
+ * above — and it admits nobody if no member has been given the role. Until
+ * #1270 nothing ever assigned it at creation: the mint stamped `host` on the
+ * consultant (a role key the live `default` type does not even have) and `user`
+ * on everyone else, and only the join route ever wrote `call_member`, one
+ * participant at a time.
+ *
+ * So the blind spot was total: a green run, a correct-looking grants map, and
+ * every person in every live call locked out at the same instant. This asks the
+ * question directly, against real member records, and refuses to write if the
+ * answer is no.
+ *
+ * A Stream outage must not be read as "nobody holds the role" — that would turn
+ * a transient failure into a refusal to ever apply. It is reported as its own
+ * failure instead.
+ */
+async function requireSomeoneHoldsMemberRole(
+  client: ReturnType<typeof getStreamVideoClient>,
+  opts: Options,
+): Promise<boolean> {
+  if (!opts.apply || opts.restore) return true;
+
+  let scan: Awaited<ReturnType<typeof anyOpenCallMemberHolds>>;
+  try {
+    scan = await anyOpenCallMemberHolds(client, MEMBER_ROLE);
+  } catch (err) {
+    console.error(
+      `\n🛑 Refusing to apply — could not read call members from Stream.` +
+        `\n   This check is what stands between a security fix and a total` +
+        `\n   video outage, so an unanswered question is a refusal.\n`,
+      err,
+    );
+    return false;
+  }
+
+  // No open calls at all is not evidence of anything, and refusing there would
+  // make this script unrunnable on a quiet app or a fresh environment. Say so
+  // rather than passing silently.
+  if (scan.callsScanned === 0) {
+    console.log(
+      `ℹ️  No open calls to check — nobody can be locked out of a call that does not exist.`,
+    );
+    return true;
+  }
+
+  if (scan.found) return true;
+
+  // #1270 review — a PARTIAL result is a refusal too. The check used to pass on
+  // one member anywhere holding the role, so a mixed roster satisfied it and the
+  // members who lacked the role were locked out by this very write.
+  console.error(
+    `\n🛑 Refusing to apply.\n` +
+      `\nScanned ${scan.callsScanned} open call(s). ${scan.membersMissingRole} member(s)` +
+      `\nacross ${scan.callsWithUncoveredMembers.length} call(s) do NOT hold \`${MEMBER_ROLE}\`.` +
+      `\nAfter this write that role is the only thing that admits anyone, so each` +
+      `\nof those members is locked out of a call they are entitled to join.` +
+      (scan.callsWithUncoveredMembers.length > 0
+        ? `\n\nAffected calls: ${scan.callsWithUncoveredMembers.slice(0, 10).join(", ")}` +
+          (scan.callsWithUncoveredMembers.length > 10
+            ? ` … and ${scan.callsWithUncoveredMembers.length - 10} more`
+            : ``)
+        : ``) +
+      `\n\nBackfill the role first, then re-run:` +
+      `\n  npx tsx scripts/stream/backfill-call-member-role.ts` +
+      `\n  npx tsx scripts/stream/backfill-call-member-role.ts --apply\n`,
   );
   return false;
 }
@@ -163,11 +281,15 @@ export async function ensureCallTypeGrants(opts: Options): Promise<number> {
   if (!requireDeployConfirmation(opts)) return 1;
 
   if (!isStreamConfigured()) {
-    console.error("Stream is not configured — set STREAM_API_KEY and STREAM_API_SECRET");
+    console.error(
+      "Stream is not configured — set STREAM_API_KEY and STREAM_API_SECRET",
+    );
     return 1;
   }
 
   const client = getStreamVideoClient();
+
+  if (!(await requireSomeoneHoldsMemberRole(client, opts))) return 1;
   const existing = await client.video.getCallType({ name: STREAM_CALL_TYPE });
 
   const grants: Record<string, string[]> = { ...existing.grants };
@@ -181,9 +303,20 @@ export async function ensureCallTypeGrants(opts: Options): Promise<number> {
         grants[role] = [...roleGrants, JOIN_CALL];
       }
     }
-    // Deliberately does NOT restore end-call or recording control. Reverting the
-    // join change is an availability rollback; handing every participant the
-    // ability to end a call or start a recording again is not part of that.
+    // `call_member` gets `end-call` back as well, because this rollback exists
+    // for one situation — the end route is not actually serving traffic — and in
+    // that situation the host has no way to end a call at all. Restoring join
+    // without it would fix the lockout and leave every host stranded in a room
+    // they cannot close.
+    const restoreMember = grants[MEMBER_ROLE];
+    if (restoreMember && !restoreMember.includes(END_CALL)) {
+      grants[MEMBER_ROLE] = [...restoreMember, END_CALL];
+    }
+
+    // Recording control is NOT restored, and `user`/`guest` get nothing back
+    // beyond `join-call`. Those revocations carry no availability risk — there
+    // is no client-side `call.startRecording()` in the tree to break — so
+    // undoing them would only re-open holes this script closed.
   } else {
     // `user` and `guest` lose the lot — they should not be joining at all.
     for (const role of JOIN_REVOKED_ROLES) {
@@ -198,14 +331,23 @@ export async function ensureCallTypeGrants(opts: Options): Promise<number> {
       }
     }
 
-    // `call_member` keeps join-call (it is what the join route assigns) and
-    // keeps end-call (EndCallButton needs it), but loses recording control.
+    // `call_member` keeps join-call — it is what the join route assigns and the
+    // only thing that admits anyone — but loses recording control and `end-call`.
+    // Both are server-side now: /api/stream/recordings/{start,stop} and
+    // /api/meetings/[meetingId]/end.
     for (const role of RECORDING_REVOKED_ROLES) {
       const roleGrants = grants[role];
       if (roleGrants) {
         grants[role] = roleGrants.filter(
           (g) => !RECORDING_PERMISSIONS.includes(g),
         );
+      }
+    }
+
+    for (const role of END_CALL_REVOKED_ROLES) {
+      const roleGrants = grants[role];
+      if (roleGrants) {
+        grants[role] = roleGrants.filter((g) => g !== END_CALL);
       }
     }
 
@@ -222,7 +364,9 @@ export async function ensureCallTypeGrants(opts: Options): Promise<number> {
   const after = JSON.stringify(grants, null, 2);
 
   if (before === after) {
-    console.log(`✅ call type "${STREAM_CALL_TYPE}" already has the desired grants — no change`);
+    console.log(
+      `✅ call type "${STREAM_CALL_TYPE}" already has the desired grants — no change`,
+    );
     return 0;
   }
 
@@ -243,7 +387,7 @@ export async function ensureCallTypeGrants(opts: Options): Promise<number> {
       console.log(
         `  ${role.padEnd(12)} ${perm.padEnd(16)}: ${had} → ${now}` +
           (perm === END_CALL && role === MEMBER_ROLE
-            ? "   (kept — EndCallButton calls call.endCall())"
+            ? "   (server-side now — POST /api/meetings/[meetingId]/end)"
             : ""),
       );
     }
@@ -289,7 +433,10 @@ export async function ensureCallTypeGrants(opts: Options): Promise<number> {
   // against our own intent: the join route assigns `call_member`, so if Stream
   // did not store join-call on that role, every participant is locked out of
   // every call. Checked here, after the write, where it can genuinely fail.
-  if (!opts.restore && !(verify.grants[MEMBER_ROLE] ?? []).includes(JOIN_CALL)) {
+  if (
+    !opts.restore &&
+    !(verify.grants[MEMBER_ROLE] ?? []).includes(JOIN_CALL)
+  ) {
     console.error(
       `\n🚨 ${MEMBER_ROLE} does NOT hold ${JOIN_CALL} on Stream after this write.` +
         `\n   Every participant is locked out of every call. Roll back NOW:` +
@@ -298,7 +445,47 @@ export async function ensureCallTypeGrants(opts: Options): Promise<number> {
     return 1;
   }
 
-  if (settingsAfter !== settingsBefore || notificationsAfter !== notificationsBefore) {
+  // The mirror of the check above, for the change this revision adds. Asserting
+  // an ABSENCE against returned data matters as much as asserting the presence:
+  // a silently-ignored revocation would leave every attendee able to end a paid
+  // consultation while this script printed a green tick.
+  if (!opts.restore && (verify.grants[MEMBER_ROLE] ?? []).includes(END_CALL)) {
+    console.error(
+      `\n🚨 ${MEMBER_ROLE} still holds ${END_CALL} on Stream after this write.` +
+        `\n   Every attendee can still end a consultation for both sides.` +
+        `\n   The grants write did not take effect as sent — re-read the call type` +
+        `\n   and do not report this run as successful.`,
+    );
+    return 1;
+  }
+
+  // The rollback needs verifying too, and used to get none: BOTH post-write
+  // grant checks are gated on `!opts.restore`, so `--restore-user-join` reached
+  // the settings comparison, found nothing moved, and returned 0 — reporting
+  // success without ever asking whether the restoration landed.
+  //
+  // That is backwards. The rollback is the emergency path: it is reached when
+  // the revocation has already locked people out, and "it worked" is the one
+  // thing the operator cannot afford to be told wrongly. Only asserted when
+  // this run actually intended to restore the grant, so a rollback of a call
+  // type that never had it does not fail on a no-op.
+  if (
+    opts.restore &&
+    (grants[MEMBER_ROLE] ?? []).includes(END_CALL) &&
+    !(verify.grants[MEMBER_ROLE] ?? []).includes(END_CALL)
+  ) {
+    console.error(
+      `\n🚨 ${MEMBER_ROLE} still lacks ${END_CALL} on Stream after the rollback.` +
+        `\n   Hosts cannot end a call, which is the state this rollback exists to` +
+        `\n   undo. Do NOT report this run as successful.`,
+    );
+    return 1;
+  }
+
+  if (
+    settingsAfter !== settingsBefore ||
+    notificationsAfter !== notificationsBefore
+  ) {
     // Written to a file, not just stderr. This is the only copy of the config
     // Stream just discarded, the `settings` block is a couple of kilobytes of
     // recording layout, and an operator who scrolls away or closes the terminal
@@ -322,7 +509,11 @@ export async function ensureCallTypeGrants(opts: Options): Promise<number> {
       writeFileSync(preImagePath, preImage);
     } catch (err) {
       // Falling back to stderr is worse but not nothing.
-      console.error(`(could not write the pre-image to ${preImagePath}:`, err, ")");
+      console.error(
+        `(could not write the pre-image to ${preImagePath}:`,
+        err,
+        ")",
+      );
       console.error(preImage);
     }
 
@@ -336,7 +527,9 @@ export async function ensureCallTypeGrants(opts: Options): Promise<number> {
     return 1;
   }
 
-  console.log(`\n✅ applied — settings and notification_settings verified unchanged.`);
+  console.log(
+    `\n✅ applied — settings and notification_settings verified unchanged.`,
+  );
   console.log(`   Revert the grants with: --apply --restore-user-join`);
   return 0;
 }

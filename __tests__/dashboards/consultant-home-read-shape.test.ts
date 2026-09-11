@@ -15,6 +15,11 @@
 
 import prisma from "@/lib/prisma";
 import { getConsultantDashboard } from "@/lib/data/consultant-dashboard";
+import {
+  getNeedsYouSummary,
+  pendingConsultationWhere,
+  pendingSubscriptionWhere,
+} from "@/lib/data/needs-you";
 
 jest.mock("../../lib/prisma", () => ({
   __esModule: true,
@@ -27,6 +32,7 @@ jest.mock("../../lib/prisma", () => ({
     consultantEarnings: { aggregate: jest.fn() },
     consultantReview: { aggregate: jest.fn() },
     trialSession: { groupBy: jest.fn() },
+    membership: { findMany: jest.fn() },
   },
 }));
 
@@ -47,6 +53,7 @@ describe("consultant Home read shape (#1101)", () => {
     (prisma.subscription.findMany as jest.Mock).mockResolvedValue([]);
     (prisma.activityLog.findMany as jest.Mock).mockResolvedValue([]);
     (prisma.trialSession.groupBy as jest.Mock).mockResolvedValue([]);
+    (prisma.membership.findMany as jest.Mock).mockResolvedValue([]);
     (prisma.consultantEarnings.aggregate as jest.Mock).mockResolvedValue({
       _sum: { consultantSharePaise: null, refundedShareAmount: null },
     });
@@ -103,6 +110,45 @@ describe("consultant Home read shape (#1101)", () => {
       expect(call.where.status).toBe("PENDING");
       expect(call.where.requestedAt).toBeUndefined();
     }
+  });
+
+  it("counts the badge in PERSONAL scope, so it still equals NeedsYou once org-funded requests exist (#1345)", async () => {
+    // Home is a B2C surface (ADR 19): an org-funded pending request belongs to
+    // that org's dashboard. The badge used to count every PENDING row with no
+    // org filter while NeedsYou and the mini list beside it counted personal
+    // ones, so one screen showed three different totals for the same cohort.
+    const personalConsultations = JSON.stringify(
+      pendingConsultationWhere("cp-1", { kind: "personal" }),
+    );
+    const personalSubscriptions = JSON.stringify(
+      pendingSubscriptionWhere("cp-1", { kind: "personal" }),
+    );
+    // Deliberately larger org cohorts: a badge that ignored scope would answer
+    // 8 + 6 rather than 3 + 2, so the assertion cannot pass vacuously.
+    consultationCount.mockImplementation(({ where }: { where: unknown }) =>
+      Promise.resolve(JSON.stringify(where) === personalConsultations ? 3 : 5),
+    );
+    subscriptionCount.mockImplementation(({ where }: { where: unknown }) =>
+      Promise.resolve(JSON.stringify(where) === personalSubscriptions ? 2 : 4),
+    );
+    (prisma.membership.findMany as jest.Mock).mockResolvedValue([
+      { organizationId: "org-1", organization: { name: "Acme" } },
+    ]);
+
+    const [dashboard, needsYou] = await Promise.all([
+      getConsultantDashboard("cp-1"),
+      getNeedsYouSummary("user-1", "cp-1"),
+    ]);
+
+    const personalContext = needsYou.contexts.find(
+      (context) => context.organizationId === null,
+    );
+    expect(personalContext?.pendingRequests).toBe(5);
+    expect(dashboard.pendingRequestsCount).toBe(
+      personalContext?.pendingRequests,
+    );
+    // The org work is still visible — on the org's own context, not the badge.
+    expect(needsYou.total).toBe(14);
   });
 
   it("issues no display read at all when there is nothing upcoming (#1121)", async () => {

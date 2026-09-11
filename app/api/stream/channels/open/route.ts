@@ -301,7 +301,21 @@ export async function POST(request: NextRequest) {
 
     // Creates the channel with the full roster if absent, adds the caller if
     // present. Also idempotent.
-    await addUserToEventChannel(eventType, eventId, userId);
+    //
+    // #1270 — the result is load-bearing now that a DPDP consent refusal is a
+    // skip rather than a throw. Returning 200 here would hand the client a
+    // channel id it is not a member of, and the failure would surface later as
+    // an empty, un-postable thread.
+    const admission = await addUserToEventChannel(eventType, eventId, userId);
+    if (!admission.success) {
+      return NextResponse.json(
+        {
+          error:
+            "Chat is unavailable because data-processing consent for messaging has not been granted.",
+        },
+        { status: 403 },
+      );
+    }
 
     const channelId =
       eventType === "webinar"

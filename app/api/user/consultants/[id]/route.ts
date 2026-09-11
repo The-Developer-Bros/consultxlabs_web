@@ -1,4 +1,9 @@
 import prisma from "@/lib/prisma";
+import { withSerializableRetry } from "@/lib/db/serializable-retry";
+import {
+  mergeAdjacentCustomRows,
+  mergeAdjacentWeeklyRows,
+} from "@/utils/slotAllocation/mergeAdjacentWeeklyRows";
 import {
   consultantPublicScalars,
   consultantPublicApiSchema,
@@ -22,8 +27,13 @@ import {
   dateToMinuteUtc,
   validateWeeklySlotTimeOrder,
   slotsOverlap,
-  getTimezoneOffsetMinutes,
 } from "@/utils/slotAllocation/slotTimeUtils";
+import {
+  resolveWeeklyTimezone,
+  resolveWeeklyUtcOffsetMinutes,
+  WeeklyOffsetConflictError,
+  weeklyRowLocalColumns,
+} from "@/lib/scheduling/weeklyUtcOffset";
 // Zod schema for UUID validation
 const uuidSchema = z.string().uuid();
 
@@ -71,6 +81,9 @@ const updateConsultantSchema = z
     tagIds: z.array(uuidSchema),
     slotsOfAvailabilityWeekly: z.array(weeklySlotSchema).optional(),
     slotsOfAvailabilityCustom: z.array(customSlotSchema).optional(),
+    // #1326 — accepted only so a caller who sends an offset is checked against
+    // the profile timezone instead of silently ignored; it never wins.
+    utcOffsetMinutes: z.number().int().min(-840).max(840).optional(),
     // New fields - accept null values from frontend for optional fields
     headline: z.string().max(120).nullable().optional(),
     websiteUrl: z.string().url().nullable().optional().or(z.literal("")),
@@ -158,10 +171,11 @@ export async function GET(
     // consultant detail page. Privileged viewers (the consultant
     // themselves + ADMIN) see everything; the public include narrows
     // to PUBLIC + ORG_AND_PUBLIC.
-    const planVisibilityFilter: { visibility: { in: OrgPlanVisibility[] } } | undefined =
-      isPrivilegedAccess
-        ? undefined
-        : { visibility: { in: ["PUBLIC", "ORG_AND_PUBLIC"] } };
+    const planVisibilityFilter:
+      | { visibility: { in: OrgPlanVisibility[] } }
+      | undefined = isPrivilegedAccess
+      ? undefined
+      : { visibility: { in: ["PUBLIC", "ORG_AND_PUBLIC"] } };
 
     // Fetch consultant with appropriate user data
     const consultant = await prisma.consultantProfile.findUnique({
@@ -249,7 +263,10 @@ export async function GET(
       },
     );
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "auth" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "auth" } },
+    );
     return apiError({ tag: "[Consultant.GET]", error });
   }
 }
@@ -385,23 +402,38 @@ export async function PUT(
     // Update weekly slots if schedule type is WEEKLY
     if (scheduleType === ScheduleType.WEEKLY) {
       if (slotsOfAvailabilityWeekly?.length) {
-        // Resolve timezone offset once for all slots (same user → same timezone)
+        // Resolve timezone offset once for all slots (same user → same
+        // timezone), through the one resolver every write path shares (#1326).
         const userTimezone = await prisma.user
           .findUnique({
             where: { id: session.user.id },
             select: { timezone: true },
           })
           .then((u) => u?.timezone ?? null);
-        const utcOffsetMinutes = userTimezone
-          ? getTimezoneOffsetMinutes(userTimezone)
-          : 330; // #872 — IST-only at launch: default a missing timezone to IST, never UTC 0.
+        let utcOffsetMinutes: number;
+        try {
+          utcOffsetMinutes = resolveWeeklyUtcOffsetMinutes({
+            profileTimezone: userTimezone,
+            callerSupplied: data.utcOffsetMinutes ?? null,
+            consultantProfileId: id,
+          });
+        } catch (error) {
+          if (error instanceof WeeklyOffsetConflictError) {
+            return NextResponse.json(
+              { error: error.message, code: error.code },
+              { status: 400 },
+            );
+          }
+          throw error;
+        }
+        const rowTimezone = resolveWeeklyTimezone(userTimezone);
 
         const weeklySlotData: Prisma.SlotOfAvailabilityWeeklyCreateManyInput[] =
           slotsOfAvailabilityWeekly.map((slot) => {
-            const startTimeUtc = dateToMinuteUtc(
-              new Date(slot.startsAt),
-            );
+            const startTimeUtc = dateToMinuteUtc(new Date(slot.startsAt));
             const endTimeUtc = dateToMinuteUtc(new Date(slot.endsAt));
+            // #1343 — dayOfWeekforStartTimeInUTC is the wire name the settings
+            // form still sends; what it carries is the consultant's LOCAL day.
             return {
               consultantProfileId: id,
               startDay: slot.dayOfWeekforStartTimeInUTC,
@@ -409,8 +441,6 @@ export async function PUT(
               startTimeUtc,
               endTimeUtc,
               utcOffsetMinutes,
-              // TODO(#872): restore local wall-clock + IANA-zone source of truth
-              // for non-IST consultants; DST parked post-MVP (IST-only at launch).
             };
           });
 
@@ -457,13 +487,41 @@ export async function PUT(
           }
         }
 
-        // Delete existing then create new
-        await prisma.slotOfAvailabilityWeekly.deleteMany({
-          where: { consultantProfileId: id },
-        });
-        await prisma.slotOfAvailabilityWeekly.createMany({
-          data: weeklySlotData,
-        });
+        // Delete existing then create new, atomically — a failure between the
+        // two halves would leave the consultant with no availability at all.
+        // #1320 — see utils/slotAllocation/mergeAdjacentWeeklyRows.ts.
+        //
+        // Serializable, like the per-row slot routes: at Read Committed a
+        // second replacement running concurrently takes its snapshot before
+        // the first commits, so its delete misses the rows the first inserted
+        // and both sets survive — overlapping availability, which every
+        // downstream reader assumes cannot exist.
+        // #872 — the five DST columns are dual-written from the same resolver,
+        // and computed AFTER the merge so they describe the row that is
+        // actually stored. No reader consults them until the reader flip.
+        const mergedWeekly = mergeAdjacentWeeklyRows(weeklySlotData).map(
+          (row) => ({
+            ...row,
+            ...weeklyRowLocalColumns(row, rowTimezone, utcOffsetMinutes),
+          }),
+        );
+        await withSerializableRetry(() =>
+          prisma.$transaction(
+            async (tx) => {
+              await tx.slotOfAvailabilityWeekly.deleteMany({
+                where: { consultantProfileId: id },
+              });
+              await tx.slotOfAvailabilityWeekly.createMany({
+                data: mergedWeekly,
+              });
+            },
+            {
+              isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+              maxWait: 10_000,
+              timeout: 15_000,
+            },
+          ),
+        );
       } else {
         // No weekly slots submitted — clear existing
         await prisma.slotOfAvailabilityWeekly.deleteMany({
@@ -475,12 +533,16 @@ export async function PUT(
     // Update custom slots if schedule type is CUSTOM
     if (scheduleType === ScheduleType.CUSTOM) {
       if (slotsOfAvailabilityCustom?.length) {
-        const customSlotData: Prisma.SlotOfAvailabilityCustomCreateManyInput[] =
-          slotsOfAvailabilityCustom.map((slot) => ({
-            consultantProfileId: id,
-            startsAt: new Date(slot.startsAt),
-            endsAt: new Date(slot.endsAt),
-          }));
+        // Dates, not the wider `string | Date` the Prisma input allows, so the
+        // merge below can compare instants (#1320).
+        const customSlotData: (Prisma.SlotOfAvailabilityCustomCreateManyInput & {
+          startsAt: Date;
+          endsAt: Date;
+        })[] = slotsOfAvailabilityCustom.map((slot) => ({
+          consultantProfileId: id,
+          startsAt: new Date(slot.startsAt),
+          endsAt: new Date(slot.endsAt),
+        }));
 
         // Validate custom slot ordering and check for pairwise overlaps
         for (const slot of customSlotData) {
@@ -512,13 +574,27 @@ export async function PUT(
           }
         }
 
-        // Delete existing then create new
-        await prisma.slotOfAvailabilityCustom.deleteMany({
-          where: { consultantProfileId: id },
-        });
-        await prisma.slotOfAvailabilityCustom.createMany({
-          data: customSlotData,
-        });
+        // Delete existing then create new, atomically and Serializably — see
+        // the weekly arm for both reasons.
+        // #1320 — see utils/slotAllocation/mergeAdjacentWeeklyRows.ts.
+        const mergedCustom = mergeAdjacentCustomRows(customSlotData);
+        await withSerializableRetry(() =>
+          prisma.$transaction(
+            async (tx) => {
+              await tx.slotOfAvailabilityCustom.deleteMany({
+                where: { consultantProfileId: id },
+              });
+              await tx.slotOfAvailabilityCustom.createMany({
+                data: mergedCustom,
+              });
+            },
+            {
+              isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+              maxWait: 10_000,
+              timeout: 15_000,
+            },
+          ),
+        );
       } else {
         // No custom slots submitted — clear existing
         await prisma.slotOfAvailabilityCustom.deleteMany({
@@ -570,7 +646,10 @@ export async function PUT(
 
     return NextResponse.json({ data: updatedConsultant });
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "auth" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "auth" } },
+    );
     return apiError({ tag: "[Consultant.PUT]", error });
   }
 }
@@ -677,7 +756,10 @@ export async function DELETE(
     purgeExpertSurfaces(id);
     return NextResponse.json({ message: "Consultant deleted successfully" });
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "auth" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "auth" } },
+    );
     return apiError({ tag: "[Consultant.DELETE]", error });
   }
 }

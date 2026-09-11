@@ -23,6 +23,14 @@ toc-depth: 2
 > This document remains useful as a historical record of the doc-dedup +
 > dead-code + helper-consolidation recipes.
 
+> **Note (2026-09-03):** The SCIM section below (A2, and every other
+> reference to stubbing `lib/scim/` to a 501) is superseded. SCIM 2.0 has
+> since shipped in full: `lib/scim/` implements Users CRUD, bearer-token
+> authentication, group mapping and deprovisioning, and `ScimToken.expiresAt`
+> is enforced on every request. The "zero customers using it, stub to 501"
+> recommendation no longer applies to live code. This note closes #1373,
+> which tracked the doc drift.
+
 # Executive Summary
 
 The enterprise subsystem (~614 changed files, ~13,500 LoC of code + 11,141 lines of docs) is **complex but not over-complex** — most of the apparent weight is load-bearing. However, two parallel surveys (one over the 47 enterprise docs, one over the code surface) identified **~2,800 lines of preventable bloat** that can be removed with zero schema changes and zero customer-visible behavior changes.
@@ -41,11 +49,11 @@ The enterprise subsystem (~614 changed files, ~13,500 LoC of code + 11,141 lines
 
 **Recommended phased rollout:**
 
-| Phase | Effort | LoC saved | Risk | Customer impact |
-|---|---|---|---|---|
-| **Phase 1 — Dead code & doc dedup** | 1 day | ~2,100 | None | None |
-| **Phase 2 — Helper consolidation** | 2 days | ~400 | Low | None |
-| **Phase 3 — Optional refactors** | 1-2 weeks | ~1,800 | Medium | None |
+| Phase                               | Effort    | LoC saved | Risk   | Customer impact |
+| ----------------------------------- | --------- | --------- | ------ | --------------- |
+| **Phase 1 — Dead code & doc dedup** | 1 day     | ~2,100    | None   | None            |
+| **Phase 2 — Helper consolidation**  | 2 days    | ~400      | Low    | None            |
+| **Phase 3 — Optional refactors**    | 1-2 weeks | ~1,800    | Medium | None            |
 
 Phase 1 is recommended for the PR #655 closeout. Phases 2 and 3 can land as follow-up technical debt PRs.
 
@@ -80,12 +88,12 @@ The `docs/enterprise/` directory holds **47 files / 11,141 lines** across 36 num
 
 The three-ledger concept is explained across **four documents** at conflicting detail levels:
 
-| Doc | Focus | Lines | Issue |
-|---|---|---|---|
-| `07-payout-pipeline.md` | Org earnings + payout flow | 189 | Repeats 18's invariants at 90% detail |
-| `09-wallet-and-ledger.md` | Wallet + funding ledger | 163 | Defers to 18 for invariants but re-explains them |
-| `18-three-ledger-discipline.md` | All three ledgers + reconciliation | 220 | Positioned at #18 — too late for the consumer who already read 07/09 |
-| `20-payment-legs.md` | Stackable legs | 118 | Adjacent concept, sometimes confused with ledger design |
+| Doc                             | Focus                              | Lines | Issue                                                                |
+| ------------------------------- | ---------------------------------- | ----- | -------------------------------------------------------------------- |
+| `07-payout-pipeline.md`         | Org earnings + payout flow         | 189   | Repeats 18's invariants at 90% detail                                |
+| `09-wallet-and-ledger.md`       | Wallet + funding ledger            | 163   | Defers to 18 for invariants but re-explains them                     |
+| `18-three-ledger-discipline.md` | All three ledgers + reconciliation | 220   | Positioned at #18 — too late for the consumer who already read 07/09 |
+| `20-payment-legs.md`            | Stackable legs                     | 118   | Adjacent concept, sometimes confused with ledger design              |
 
 **Root cause:** PR #655 retrofitted the three-ledger model after 07, 09, 20 were already written; doc 18 was meant to be a capstone but reads like an internal contradiction.
 
@@ -117,12 +125,12 @@ Four customer scenarios (Wipro, LearnPro, IIT Madras, Rahul) appear in **three**
 
 Four docs have outlived their usefulness:
 
-| Doc | Lines | Why deletable |
-|---|---|---|
-| `13-feature-flags-and-rollout.md` | 153 | Flags rotate within weeks; lives better as JSDoc in `lib/feature-flags.ts` |
-| `17-hierarchy.md` | 112 | 95% "deferred UI" — feature not shipped |
-| `19-harness-verdict.md` | 87 | Snapshot from 2026-05-15, stale within weeks |
-| `22-route-migration-table.md` | 129 | Pre-Arch-4 → Arch-4 map; irrelevant post-2026-07 |
+| Doc                               | Lines | Why deletable                                                              |
+| --------------------------------- | ----- | -------------------------------------------------------------------------- |
+| `13-feature-flags-and-rollout.md` | 153   | Flags rotate within weeks; lives better as JSDoc in `lib/feature-flags.ts` |
+| `17-hierarchy.md`                 | 112   | 95% "deferred UI" — feature not shipped                                    |
+| `19-harness-verdict.md`           | 87    | Snapshot from 2026-05-15, stale within weeks                               |
+| `22-route-migration-table.md`     | 129   | Pre-Arch-4 → Arch-4 map; irrelevant post-2026-07                           |
 
 **Action — DELETE 13, 17, 19. ARCHIVE 22 to `docs/migrations/`.**
 
@@ -156,19 +164,19 @@ Three docs carry too little to justify their own file:
 
 ## Phase 1 — Docs Simplification Summary
 
-| # | Action | Δ files | Δ lines |
-|---|---|---|---|
-| 1 | Merge 07 + 09 + 18 → new 09-ledgers.md | -2 | -89 |
-| 2 | Delete 14-scenarios-and-examples.md | -1 | -212 |
-| 3 | Delete 13-feature-flags-and-rollout.md | -1 | -153 |
-| 4 | Delete 17-hierarchy.md (placeholder) | -1 | -112 |
-| 5 | Delete 19-harness-verdict.md (stale) | -1 | -87 |
-| 6 | Archive 22 → `docs/migrations/` | 0 | 0 |
-| 7 | Delete 11, 27, 32 (fold into siblings) | -3 | -279 |
-| 8 | Trim 00-overview.md intro | 0 | -150 |
-| 9 | Extract roles matrix from 04 | +1 | -170 net |
-| 10 | Excise compliance from 08 | 0 | -80 |
-| **Total** | | **-8 files** | **~-1,333 lines** |
+| #         | Action                                 | Δ files      | Δ lines           |
+| --------- | -------------------------------------- | ------------ | ----------------- |
+| 1         | Merge 07 + 09 + 18 → new 09-ledgers.md | -2           | -89               |
+| 2         | Delete 14-scenarios-and-examples.md    | -1           | -212              |
+| 3         | Delete 13-feature-flags-and-rollout.md | -1           | -153              |
+| 4         | Delete 17-hierarchy.md (placeholder)   | -1           | -112              |
+| 5         | Delete 19-harness-verdict.md (stale)   | -1           | -87               |
+| 6         | Archive 22 → `docs/migrations/`        | 0            | 0                 |
+| 7         | Delete 11, 27, 32 (fold into siblings) | -3           | -279              |
+| 8         | Trim 00-overview.md intro              | 0            | -150              |
+| 9         | Extract roles matrix from 04           | +1           | -170 net          |
+| 10        | Excise compliance from 08              | 0            | -80               |
+| **Total** |                                        | **-8 files** | **~-1,333 lines** |
 
 **Post-simplification:** 39 docs, ~9,800 lines (12% reduction). Zero customer impact.
 
@@ -198,10 +206,10 @@ The enterprise code surface spans ~13,500 LoC. Three categories of preventable b
 
 ### A3. Dead feature flags
 
-| Flag | Status |
-|---|---|
-| `ENABLE_TDS_ADMIN_VIEW` | Feature shipped; flag now always-true in deployments |
-| `ENABLE_HRIS` | No implementation exists; pre-scaffolding never wired |
+| Flag                    | Status                                                |
+| ----------------------- | ----------------------------------------------------- |
+| `ENABLE_TDS_ADMIN_VIEW` | Feature shipped; flag now always-true in deployments  |
+| `ENABLE_HRIS`           | No implementation exists; pre-scaffolding never wired |
 
 **Action — DELETE both flags** from `lib/feature-flags.ts` and audit callers.
 
@@ -233,10 +241,9 @@ const ROLE_CAPABILITIES: Record<MemberRole, Set<Capability>> = {
   // ...
 };
 
-export async function requireCapability(
-  orgId: string,
-  capability: Capability,
-) { /* single predicate */ }
+export async function requireCapability(orgId: string, capability: Capability) {
+  /* single predicate */
+}
 ```
 
 Then `requireOrgOwner = requireCapability(..., "admin")` and `requireOrgBillingAdminOrOwner = requireCapability(..., "finance")`.
@@ -287,16 +294,16 @@ One huge file with subscription/one-off branching, slot locking, wallet vs inten
 
 ## Phase 2 — Code Simplification Summary
 
-| # | Action | Files | Δ LoC | Priority |
-|---|---|---|---|---|
-| 1 | Delete `payout-service.ts` | 1 file deleted | -910 | HIGH |
-| 2 | Stub SCIM to 501 | 4 files → 1 file | -484 | MEDIUM |
-| 3 | Delete `ENABLE_TDS_ADMIN_VIEW` flag | scattered | -20 | LOW |
-| 4 | Delete `ENABLE_HRIS` flag | scattered | -20 | LOW |
-| 5 | Unify role predicates → capability matrix | 2 files refactored | -200 | MEDIUM |
-| 6 | Split SlotAllocationService | 3 files → 5 files | 0 net | OPTIONAL |
-| 7 | Refactor checkout into handlers | 1 file → 5 files | 0 net | DEFER |
-| **Phase 1 total (high+medium)** | | | **~-1,614** | |
+| #                               | Action                                                                       | Files              | Δ LoC       | Priority |
+| ------------------------------- | ---------------------------------------------------------------------------- | ------------------ | ----------- | -------- |
+| 1                               | Delete `payout-service.ts`                                                   | 1 file deleted     | -910        | HIGH     |
+| 2                               | ~~Stub SCIM to 501~~ (superseded — SCIM 2.0 shipped in full, see note above) | 4 files → 1 file   | -484        | MEDIUM   |
+| 3                               | Delete `ENABLE_TDS_ADMIN_VIEW` flag                                          | scattered          | -20         | LOW      |
+| 4                               | Delete `ENABLE_HRIS` flag                                                    | scattered          | -20         | LOW      |
+| 5                               | Unify role predicates → capability matrix                                    | 2 files refactored | -200        | MEDIUM   |
+| 6                               | Split SlotAllocationService                                                  | 3 files → 5 files  | 0 net       | OPTIONAL |
+| 7                               | Refactor checkout into handlers                                              | 1 file → 5 files   | 0 net       | DEFER    |
+| **Phase 1 total (high+medium)** |                                                                              |                    | **~-1,614** |          |
 
 ---
 
@@ -349,6 +356,7 @@ Dormant but cheap. Gated on `paymentGateway` schema field, doesn't intrude on ho
 **Effort:** 1 day. **Risk:** None.
 
 Actions:
+
 1. Delete `lib/payments/payouts/payout-service.ts` (after grep verifies zero production callers)
 2. Stub `lib/scim/*` to a 501 handler
 3. Delete `ENABLE_TDS_ADMIN_VIEW` and `ENABLE_HRIS` from `lib/feature-flags.ts`
@@ -365,6 +373,7 @@ Actions:
 **Effort:** 2 days. **Risk:** Low.
 
 Actions:
+
 1. Introduce `lib/auth/capabilities.ts` with `requireCapability()` + role→capability matrix
 2. Refactor `requireOrgAccess`, `requireOrgOwner`, `requireOrgBillingAdminOrOwner` to thin wrappers
 3. Migrate ~70 route handlers (mechanical, no behavior change)
@@ -377,6 +386,7 @@ Actions:
 **Effort:** 1-2 weeks. **Risk:** Medium to High.
 
 Trigger conditions:
+
 - `SlotAllocationService` split → defer until the next slot-related feature touches the file
 - `checkout.ts` modularization → defer until per-type variance increases (currently stable)
 
@@ -386,17 +396,17 @@ Don't do these speculatively. Wait for a real feature to justify.
 
 # Decision Matrix
 
-| Proposal | Schema-locked? | Algorithm change? | Customer impact | LoC | Recommended for PR #655? |
-|---|---|---|---|---|---|
-| Delete `payout-service.ts` | ✅ no schema change | ✅ pure dead-code removal | None | -910 | **YES** |
-| Stub SCIM | ✅ no schema change | ✅ runtime swap | None (no users) | -484 | **YES** |
-| Delete dead flags | ✅ no schema change | ✅ env var removal | None | -40 | **YES** |
-| Merge ledger docs | ✅ no code change | N/A | None | -89 | **YES** |
-| Delete 7 stale/cosmetic docs | ✅ no code change | N/A | None | -1,113 | **YES** |
-| Trim/archive 4 docs | ✅ no code change | N/A | None | -250 | **YES** |
-| Unify role predicates | ✅ no schema change | ✅ refactor | None | -200 | Phase 2 |
-| Split SlotAllocationService | ✅ no schema change | ✅ refactor | None | 0 net | Phase 3 |
-| Modularize checkout.ts | ✅ no schema change | ✅ refactor | None | 0 net | Phase 3 (defer) |
+| Proposal                     | Schema-locked?      | Algorithm change?         | Customer impact | LoC    | Recommended for PR #655? |
+| ---------------------------- | ------------------- | ------------------------- | --------------- | ------ | ------------------------ |
+| Delete `payout-service.ts`   | ✅ no schema change | ✅ pure dead-code removal | None            | -910   | **YES**                  |
+| ~~Stub SCIM~~ (superseded)   | ✅ no schema change | ✅ runtime swap           | None (no users) | -484   | **NO — SCIM shipped**    |
+| Delete dead flags            | ✅ no schema change | ✅ env var removal        | None            | -40    | **YES**                  |
+| Merge ledger docs            | ✅ no code change   | N/A                       | None            | -89    | **YES**                  |
+| Delete 7 stale/cosmetic docs | ✅ no code change   | N/A                       | None            | -1,113 | **YES**                  |
+| Trim/archive 4 docs          | ✅ no code change   | N/A                       | None            | -250   | **YES**                  |
+| Unify role predicates        | ✅ no schema change | ✅ refactor               | None            | -200   | Phase 2                  |
+| Split SlotAllocationService  | ✅ no schema change | ✅ refactor               | None            | 0 net  | Phase 3                  |
+| Modularize checkout.ts       | ✅ no schema change | ✅ refactor               | None            | 0 net  | Phase 3 (defer)          |
 
 ---
 
@@ -451,7 +461,7 @@ After Phase 1:
 - [ ] `npx tsc --noEmit` clean
 - [ ] `npx jest` — all suites pass (currently 61 suites / 990 tests; expect same count post-deletion, minus SCIM tests if any were present)
 - [ ] Manual smoke: SPONSOR org create → invite LEARNER → book CLASS → engagementsUsed increments correctly
-- [ ] Manual smoke: hit `/api/organizations/[orgId]/scim/Users` → expect 501
+- [ ] ~~Manual smoke: hit `/api/organizations/[orgId]/scim/Users` → expect 501~~ (superseded — SCIM shipped; verify Users CRUD, bearer-token auth, group mapping, deprovisioning and `ScimToken.expiresAt` enforcement instead)
 
 ---
 

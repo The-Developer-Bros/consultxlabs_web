@@ -1,7 +1,10 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import * as Sentry from "@sentry/nextjs";
 import { useToast } from "@/components/ui/use-toast";
-import { TimeSlot, calculateRequiredSlots } from "@/lib/scheduling/calendarUtils";
+import {
+  TimeSlot,
+  calculateRequiredSlots,
+} from "@/lib/scheduling/calendarUtils";
 import {
   AllocationAlgorithms,
   AllocationOptions,
@@ -38,6 +41,7 @@ import {
   keepGoing,
   timingsSaved,
   autoScheduled,
+  partiallyScheduled,
   allocationFailed,
   allocationFailedWithCode,
   allocatedElsewhere,
@@ -240,7 +244,20 @@ export interface UseEventSlotAllocationReturn {
   manualAllocate: () => Promise<void>;
 
   /** Auto-allocate using available slots */
-  autoAllocate: (availableSlots: TimeSlot[]) => Promise<void>;
+  autoAllocate: (
+    availableSlots: TimeSlot[],
+    options?: { allowPartial?: boolean },
+  ) => Promise<void>;
+
+  /**
+   * #1206 — set when auto-allocation refused for want of availability but
+   * COULD place some of the sessions. The host renders the confirm step; a
+   * second `autoAllocate(slots, { allowPartial: true })` accepts it.
+   */
+  partialOffer: PartialAllocationOffer | null;
+
+  /** Decline the partial placement and go back to an unallocated request. */
+  dismissPartialOffer: () => void;
 
   /** Allocate using the consultee's requested slots (server "requested" mode) */
   allocateRequestedSlots: (requestedSlots: TimeSlot[]) => Promise<void>;
@@ -259,6 +276,16 @@ export interface UseEventSlotAllocationReturn {
 
   /** Check if adding a slot would be valid */
   canAddSlot: (slot: TimeSlot) => boolean;
+}
+
+/**
+ * #1206 — how much of the plan the server said it could place, in whole
+ * sessions. `placeableSessions` is always > 0 here: a shortage that can place
+ * nothing is a plain failure, not an offer.
+ */
+export interface PartialAllocationOffer {
+  placeableSessions: number;
+  requiredSessions: number;
 }
 
 // ============================================================================
@@ -370,7 +397,10 @@ export function useEventSlotAllocation(
   const [isAllocating, setIsAllocating] = useState(false);
   const [allocationError, setAllocationError] = useState<string | null>(null);
   const [pendingToasts, setPendingToasts] = useState<AllocationToast[]>([]);
+  const [partialOffer, setPartialOffer] =
+    useState<PartialAllocationOffer | null>(null);
   const attemptKeyRef = useRef<AllocationAttemptKey | null>(null);
+  const dismissPartialOffer = useCallback(() => setPartialOffer(null), []);
 
   /**
    * Toasts cannot fire inside a state updater, so they are queued and flushed
@@ -543,9 +573,7 @@ export function useEventSlotAllocation(
         // (NO_AVAILABILITY → "No availability published", PERIOD_ENDED →
         // "The scheduling period has ended", SLOT_SHORTAGE → "Not enough
         // free slots"). Falls back to the generic copy for unknown codes.
-        toast(
-          allocationFailedWithCode(errorMessage, result.errorCode),
-        );
+        toast(allocationFailedWithCode(errorMessage, result.errorCode));
       }
       onError?.(errorMessage);
     },
@@ -571,10 +599,15 @@ export function useEventSlotAllocation(
 
         if (isSelected) {
           // Remove the entire consecutive group containing this slot
-          const removalDayKey = dayKey(slot.startTime, options.schedulingTimezone);
+          const removalDayKey = dayKey(
+            slot.startTime,
+            options.schedulingTimezone,
+          );
           const daySlots = currentSlots
             .filter(
-              (s) => dayKey(s.startTime, options.schedulingTimezone) === removalDayKey,
+              (s) =>
+                dayKey(s.startTime, options.schedulingTimezone) ===
+                removalDayKey,
             )
             .sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
 
@@ -599,8 +632,14 @@ export function useEventSlotAllocation(
             const sessionsPerWeek = options.sessionsPerWeek || 1;
 
             // Determine week/day for the slot being added
-            const targetWeekKey = weekKey(slot.startTime, options.schedulingTimezone);
-            const targetDayKey = dayKey(slot.startTime, options.schedulingTimezone);
+            const targetWeekKey = weekKey(
+              slot.startTime,
+              options.schedulingTimezone,
+            );
+            const targetDayKey = dayKey(
+              slot.startTime,
+              options.schedulingTimezone,
+            );
 
             // Build state BEFORE adding this slot
             const currentWeekSlots = currentSlots.filter(
@@ -634,7 +673,10 @@ export function useEventSlotAllocation(
               queueToast(
                 weeklyLimitReached(
                   sessionsPerWeek,
-                  schedulingWeekBucket(slot.startTime, options.schedulingTimezone),
+                  schedulingWeekBucket(
+                    slot.startTime,
+                    options.schedulingTimezone,
+                  ),
                 ),
               );
               return currentSlots;
@@ -649,7 +691,10 @@ export function useEventSlotAllocation(
               queueToast(
                 weeklyLimitReached(
                   sessionsPerWeek,
-                  schedulingWeekBucket(slot.startTime, options.schedulingTimezone),
+                  schedulingWeekBucket(
+                    slot.startTime,
+                    options.schedulingTimezone,
+                  ),
                 ),
               );
               return currentSlots;
@@ -683,7 +728,10 @@ export function useEventSlotAllocation(
           } else if (eventType === "class") {
             // Class-specific interactive guards
             const slotsPerSession = slotLimits.slotsPerSession;
-            const targetDayKey = dayKey(slot.startTime, options.schedulingTimezone);
+            const targetDayKey = dayKey(
+              slot.startTime,
+              options.schedulingTimezone,
+            );
 
             // Group current selection by day (pre-add)
             const preByDay = groupSlotsByDay(
@@ -734,7 +782,10 @@ export function useEventSlotAllocation(
               queueToast(
                 dailyLimitReached(
                   maxSessionsPerDay,
-                  schedulingDayBucket(slot.startTime, options.schedulingTimezone),
+                  schedulingDayBucket(
+                    slot.startTime,
+                    options.schedulingTimezone,
+                  ),
                 ),
               );
               return currentSlots;
@@ -800,7 +851,10 @@ export function useEventSlotAllocation(
                 daySlots.length === slotsPerCall &&
                 isCompleteCall(daySlots, slotsPerCall)
               ) {
-                const wk = weekKey(daySlots[0].startTime, options.schedulingTimezone);
+                const wk = weekKey(
+                  daySlots[0].startTime,
+                  options.schedulingTimezone,
+                );
                 existingWeeklyConfirmedCallCounts.set(
                   wk,
                   (existingWeeklyConfirmedCallCounts.get(wk) || 0) + 1,
@@ -808,8 +862,14 @@ export function useEventSlotAllocation(
               }
             });
 
-            const targetWeekKey = weekKey(slot.startTime, options.schedulingTimezone);
-            const targetDayKey = dayKey(slot.startTime, options.schedulingTimezone);
+            const targetWeekKey = weekKey(
+              slot.startTime,
+              options.schedulingTimezone,
+            );
+            const targetDayKey = dayKey(
+              slot.startTime,
+              options.schedulingTimezone,
+            );
 
             // Get current day slots plus the new slot
             const dayWithNewSlot = [...(slotsByDay.get(targetDayKey) || [])];
@@ -825,7 +885,10 @@ export function useEventSlotAllocation(
               queueToast(
                 weeklyLimitReached(
                   sessionsPerWeek,
-                  schedulingWeekBucket(slot.startTime, options.schedulingTimezone),
+                  schedulingWeekBucket(
+                    slot.startTime,
+                    options.schedulingTimezone,
+                  ),
                 ),
               );
               return currentSlots;
@@ -842,7 +905,10 @@ export function useEventSlotAllocation(
             if (currentDaySlots.length >= slotsPerCall) {
               queueToast(
                 oneSessionPerDay(
-                  schedulingDayBucket(slot.startTime, options.schedulingTimezone),
+                  schedulingDayBucket(
+                    slot.startTime,
+                    options.schedulingTimezone,
+                  ),
                 ),
               );
               return currentSlots;
@@ -879,7 +945,10 @@ export function useEventSlotAllocation(
               queueToast(sessionAdded(completedCalls, maxTotalCalls));
             } else {
               queueToast(
-                keepGoing(slotsPerCall - currentCallProgress, completedCalls + 1),
+                keepGoing(
+                  slotsPerCall - currentCallProgress,
+                  completedCalls + 1,
+                ),
               );
             }
           }
@@ -947,7 +1016,14 @@ export function useEventSlotAllocation(
         );
       }
     },
-    [selectedSlots, eventType, eventConstraints, slotLimits, options, queueToast],
+    [
+      selectedSlots,
+      eventType,
+      eventConstraints,
+      slotLimits,
+      options,
+      queueToast,
+    ],
   );
 
   /**
@@ -1058,9 +1134,15 @@ export function useEventSlotAllocation(
     // The old path fetched the consultant's entire scheduling period of
     // availability into the browser and ran AllocationAlgorithms here.
     // The parameter is kept for interface stability with UnifiedCalendar.
-    async (_availableSlots: TimeSlot[]) => {
+    async (
+      _availableSlots: TimeSlot[],
+      // #1206 — the second attempt, sent only after the consultant answered
+      // the "only N of M fit" confirm.
+      allocateOptions?: { allowPartial?: boolean },
+    ) => {
       setIsAllocating(true);
       setAllocationError(null);
+      setPartialOffer(null);
 
       try {
         // Slots are picked server-side, so the fingerprint covers mode +
@@ -1081,6 +1163,7 @@ export function useEventSlotAllocation(
             idempotencyKey: attempt.key,
             initialAllocation: options.initialAllocation || undefined,
             expectedTentativeSlotCount: options.expectedTentativeSlotCount,
+            allowPartial: allocateOptions?.allowPartial,
           },
         );
 
@@ -1103,19 +1186,46 @@ export function useEventSlotAllocation(
           if (pickedSlots.length > 0) {
             setSelectedSlots(pickedSlots);
           }
-          toast(autoScheduled());
+          // #1206 — "all sessions scheduled" would be a lie on a partial run.
+          toast(
+            response.partial
+              ? partiallyScheduled(
+                  response.placedSessions ?? pickedSlots.length,
+                  response.requiredSessions ?? 0,
+                )
+              : autoScheduled(),
+          );
           onSuccess?.({
             success: true,
             selectedSlots: pickedSlots,
             strategy: "server-auto",
           });
         } else {
+          // #1206 — a shortage that could still place SOMETHING is a question
+          // for the consultant, not a dead end. The offer replaces the toast
+          // on the first attempt only; answering it re-runs with allowPartial
+          // and any failure then reports normally.
+          const placeable = response.placeableSessions ?? 0;
+          const required = response.requiredSessions ?? 0;
+          if (
+            !allocateOptions?.allowPartial &&
+            response.errorCode === "SLOT_SHORTAGE" &&
+            placeable > 0 &&
+            required > placeable
+          ) {
+            setPartialOffer({
+              placeableSessions: placeable,
+              requiredSessions: required,
+            });
+            return;
+          }
           handleAllocationFailure(
             {
               success: false,
               selectedSlots: [],
               error: response.error,
               httpStatus: response.httpStatus,
+              errorCode: response.errorCode,
             },
             "Auto allocation failed",
           );
@@ -1137,7 +1247,15 @@ export function useEventSlotAllocation(
         setIsAllocating(false);
       }
     },
-    [eventType, eventId, options, onSuccess, onError, toast, handleAllocationFailure],
+    [
+      eventType,
+      eventId,
+      options,
+      onSuccess,
+      onError,
+      toast,
+      handleAllocationFailure,
+    ],
   );
 
   /**
@@ -1208,7 +1326,15 @@ export function useEventSlotAllocation(
         setIsAllocating(false);
       }
     },
-    [eventType, eventId, options, onSuccess, onError, toast, handleAllocationFailure],
+    [
+      eventType,
+      eventId,
+      options,
+      onSuccess,
+      onError,
+      toast,
+      handleAllocationFailure,
+    ],
   );
 
   // ==========================================
@@ -1319,6 +1445,8 @@ export function useEventSlotAllocation(
     manualAllocate,
     autoAllocate,
     allocateRequestedSlots,
+    partialOffer,
+    dismissPartialOffer,
 
     // Validation functions
     validateSlots,

@@ -187,7 +187,7 @@ export async function listAppointmentsScoped(
             isTentative: true,
             completionStatus: true,
             deletedAt: true,
-            meetingSession: { select: { endedAt: true } },
+            meetingSession: { select: { endedAt: true, endedReason: true } },
           },
           orderBy: { startsAt: "asc" },
         },

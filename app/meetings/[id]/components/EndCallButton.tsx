@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useCall } from "@stream-io/video-react-sdk";
 import { Button } from "@/components/ui/button";
 import { useRouter } from "next/navigation";
@@ -9,6 +9,9 @@ import { Loader2, PhoneOff } from "lucide-react";
 import { leaveCallAndReleaseMedia } from "@/lib/stream/media-teardown";
 import { useSessionInfo } from "../session-info";
 
+/** A generous bound on the end request; a healthy round trip is far under it. */
+const END_CALL_TIMEOUT_MS = 10_000;
+
 const EndCallButton = () => {
   const call = useCall();
   const router = useRouter();
@@ -16,6 +19,7 @@ const EndCallButton = () => {
   const [isPressed, setIsPressed] = useState(false);
   const [progress, setProgress] = useState(0);
   const [isEnding, setIsEnding] = useState(false);
+  const endingRef = useRef(false);
 
   // Get proper dashboard URL based on user role and profile
   const getDashboardUrl = useCallback(() => {
@@ -38,15 +42,43 @@ const EndCallButton = () => {
   }, [session]);
 
   const endCall = useCallback(async () => {
-    if (isEnding) return; // Prevent multiple calls
-
+    // #1270 — a ref, not the `isEnding` state. This is invoked from inside a
+    // `setProgress` updater, and React may run an updater more than once; both
+    // runs close over the same `isEnding === false` and sail past a state
+    // guard. That used to mean a duplicate `call.endCall()`; now it means a
+    // second POST to the end route.
+    if (endingRef.current) return;
+    endingRef.current = true;
     setIsEnding(true);
 
     try {
-      await call?.endCall();
+      // #1270 — the server ends the call, not this button.
+      //
+      // `call.endCall()` worked because `end-call` is granted to `call_member`
+      // and the join route gives every participant that role, so any consultee
+      // could end a consultation from devtools; the only barrier was this
+      // component not rendering for them. Going through the route means the
+      // grant can be revoked without taking the host's own control down with
+      // it, and it re-checks host-ness against the database rather than against
+      // call data.
+      if (call?.id) {
+        const response = await fetch(
+          `/api/meetings/${encodeURIComponent(call.id)}/end`,
+          // `fetch` has no default timeout. Without a bound, a stalled network
+          // leaves the host on a disabled "Ending call…" spinner, still
+          // broadcasting, with the teardown and navigation in `finally` never
+          // reached. Ten seconds is well past a healthy round trip.
+          { method: "POST", signal: AbortSignal.timeout(END_CALL_TIMEOUT_MS) },
+        );
+        if (!response.ok) {
+          throw new Error(`End call failed with status ${response.status}`);
+        }
+      }
     } catch (error) {
       // Navigating away regardless, so the failure is logged rather than
-      // blocking the exit.
+      // blocking the exit. The host still leaves and their media is still
+      // released below; the room may simply outlive them, which is what a
+      // failed end has always meant.
       console.error("Error ending call:", error);
     } finally {
       // Unconditional, and in `finally`: releasing the hardware used to sit
@@ -61,9 +93,10 @@ const EndCallButton = () => {
         console.error("Error releasing media while ending call:", error);
       }
       setIsEnding(false);
+      endingRef.current = false;
       router.push(getDashboardUrl());
     }
-  }, [call, isEnding, getDashboardUrl, router]);
+  }, [call, getDashboardUrl, router]);
 
   useEffect(() => {
     let interval: number;

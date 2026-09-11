@@ -33,11 +33,43 @@ jest.mock("../../lib/validation/limits", () => ({
   assertBodySize: jest.fn(() => null),
 }));
 
-jest.mock("../../lib/prisma", () => ({
-  __esModule: true,
-  default: {
+jest.mock("../../lib/prisma", () => {
+  const db = {
     membership: { findMany: jest.fn(async () => []) },
-  },
+    // Escalation writes a ticket; the counter behind its reference and the
+    // staff fan-out both live on the same client.
+    supportTicket: {
+      findFirst: jest.fn(async () => null),
+      create: jest.fn(async () => ({
+        id: "t1",
+        title: "T",
+        organizationId: null,
+        referenceNumber: "FAM-2026-000001",
+      })),
+    },
+    supportTicketCounter: { upsert: jest.fn(async () => ({ nextSeq: 2 })) },
+    supportFlowOutcome: { create: jest.fn(async () => ({})) },
+    user: { findMany: jest.fn(async () => []) },
+    organization: { findUnique: jest.fn(async () => null) },
+    // Assigned after the literal: referencing `db` inside its own initializer
+    // makes TypeScript give up and infer `any`.
+    $transaction: jest.fn(),
+  };
+  db.$transaction.mockImplementation(async (arg: unknown) =>
+    typeof arg === "function" ? (arg as (tx: unknown) => unknown)(db) : arg,
+  );
+  return {
+    __esModule: true,
+    default: db,
+    ALLOCATION_TX_MAX_WAIT_MS: 5000,
+    ALLOCATION_TX_TIMEOUT_MS: 15000,
+  };
+});
+
+jest.mock("../../lib/novu", () => ({
+  __esModule: true,
+  notifySupportTicketCreated: jest.fn(async () => ({ success: true })),
+  notifySupportTicketUpdateForStaff: jest.fn(async () => []),
 }));
 
 import { NextRequest } from "next/server";
@@ -94,6 +126,42 @@ describe("POST /api/support/platform", () => {
     expect(json.code).toBe("VALIDATION_FAILED");
     // Developer detail: the zod flatten rides along.
     expect(json.detail).toBeDefined();
+  });
+});
+
+describe("asking for a person, in the scope that had no way to", () => {
+  /**
+   * The unrecognized-input nudge tells the user to type "agent". The
+   * appointment thread honours that through `decideEscalation`; nothing was
+   * checking here, so in the platform drawer the instruction dead-ended and the
+   * bot simply re-presented itself — a promise the product could not keep.
+   */
+  it("escalates a free-text message that asks for a human", async () => {
+    mockedGetSession.mockResolvedValue({ user: { id: "u1", name: "U" } });
+    const res = await POST(
+      postReq({
+        flowId: "PAYMENTS_BILLING",
+        nodeId: "start",
+        userMessage: "just get me an agent please",
+      }),
+    );
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.data.escalated).toBe(true);
+    expect(json.data.supportTicketId).toBeTruthy();
+  });
+
+  it("leaves an ordinary message to the flow", async () => {
+    mockedGetSession.mockResolvedValue({ user: { id: "u1", name: "U" } });
+    const res = await POST(
+      postReq({
+        flowId: "PAYMENTS_BILLING",
+        nodeId: "start",
+        userMessage: "where is my money",
+      }),
+    );
+    const json = await res.json();
+    expect(json.data.escalated).toBe(false);
   });
 });
 

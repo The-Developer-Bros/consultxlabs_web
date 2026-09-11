@@ -22,7 +22,17 @@
  * Idempotent. Dry-run is the default — pass `--apply` to write.
  *
  *   npx tsx scripts/stream/ensure-webhook-subscription.ts
+ *   npx tsx scripts/stream/ensure-webhook-subscription.ts --check
  *   npx tsx scripts/stream/ensure-webhook-subscription.ts --apply
+ *
+ * #1270 — the script used to return 0 no matter what it found, which is why it
+ * could not be wired to anything. A drift detector that always exits green
+ * detects nothing, and the drift it was written to find is precisely the kind
+ * nobody goes looking for: subscription state lives in the Stream dashboard,
+ * where a change leaves no trace in this repository. `--check` is the CI mode —
+ * it never writes, annotates each finding for the Actions log, and exits
+ * non-zero so the scheduled job goes red the day the live hook stops covering
+ * what the dispatcher handles.
  */
 import "dotenv/config";
 
@@ -106,7 +116,36 @@ function hookAccepts(hook: EventHook, eventType: string): boolean {
   return product === productFor(eventType);
 }
 
-export async function ensureWebhookSubscription(apply: boolean): Promise<number> {
+/**
+ * `dry-run` reports and exits 0 — the mode a human runs first to see what the
+ * script would do. `check` reports, annotates and exits {@link DRIFT_EXIT_CODE}
+ * when the live app does not cover every handled event; it is what CI runs.
+ * `apply` is the only mode that writes.
+ */
+export type EnsureMode = "dry-run" | "check" | "apply";
+
+/**
+ * Distinct from 1 on purpose. 1 means the script could not evaluate drift at
+ * all — Stream unconfigured, or no webhook hook to inspect — which is a
+ * configuration failure of the RUNNER. 2 means it evaluated the app
+ * successfully and there really is drift. Both fail the CI job, but the log
+ * reader should not have to guess which of the two happened, because a missing
+ * `STREAM_API_SECRET` on the runner and a narrowed hook in the dashboard need
+ * completely different responses.
+ */
+export const DRIFT_EXIT_CODE = 2;
+
+/** GitHub Actions annotation; a plain line anywhere else. */
+function annotate(message: string): void {
+  console.error(
+    process.env.GITHUB_ACTIONS ? `::error::${message}` : `ERROR: ${message}`,
+  );
+}
+
+export async function ensureWebhookSubscription(
+  mode: EnsureMode,
+): Promise<number> {
+  const apply = mode === "apply";
   if (!isStreamConfigured()) {
     console.error(
       "Stream is not configured — set STREAM_API_KEY and STREAM_API_SECRET",
@@ -165,6 +204,13 @@ export async function ensureWebhookSubscription(apply: boolean): Promise<number>
 
     console.log(`  MISSING (${missing.length}):`);
     for (const t of missing) console.log(`    + ${t}`);
+    if (mode === "check") {
+      annotate(
+        `Stream webhook drift: hook ${hook.id} (${product}) is missing ` +
+          `${missing.length} handled event type(s): ${missing.join(", ")}. ` +
+          `Run scripts/stream/ensure-webhook-subscription.ts --apply.`,
+      );
+    }
     changed++;
 
     if (!apply) continue;
@@ -192,7 +238,15 @@ export async function ensureWebhookSubscription(apply: boolean): Promise<number>
     );
     for (const [product, types] of byProduct) {
       console.error(`\n  product '${product}' — no hook on this app is scoped to it:`);
-      for (const t of [...types].sort(byCodeUnit)) console.error(`    · ${t}`);
+      for (const t of [...types].sort(byCodeUnit)) {
+        console.error(`    · ${t}`);
+        if (mode === "check") {
+          annotate(
+            `Stream webhook drift: no '${product}' hook can carry ${t}, so the ` +
+              `dispatcher handles an event that is never delivered`,
+          );
+        }
+      }
       console.error(
         `  Create a '${product}' webhook in the Stream dashboard pointing at\n` +
           `  <origin>/api/stream/webhooks, then re-run. Until then these events are\n` +
@@ -225,11 +279,25 @@ export async function ensureWebhookSubscription(apply: boolean): Promise<number>
   if (changed > 0 && !apply) {
     console.log("\n(dry run — re-run with --apply to write this to Stream)");
   }
+
+  // An unplaceable event is drift in EVERY mode, `--apply` included: writing
+  // cannot fix it, because the remedy is a new hook in the dashboard and that
+  // decides a public URL. A run that widened one hook and left two chat events
+  // undeliverable has not finished the job, and must not say it has.
+  if (unplaceable.size > 0) return DRIFT_EXIT_CODE;
+  // Missing-but-placeable events are drift only while nothing has written them.
+  if (changed > 0 && mode === "check") return DRIFT_EXIT_CODE;
   return 0;
 }
 
 if (require.main === module) {
-  ensureWebhookSubscription(process.argv.includes("--apply"))
+  const argv = process.argv;
+  const mode: EnsureMode = argv.includes("--apply")
+    ? "apply"
+    : argv.includes("--check")
+      ? "check"
+      : "dry-run";
+  ensureWebhookSubscription(mode)
     .then((code) => {
       process.exitCode = code;
     })

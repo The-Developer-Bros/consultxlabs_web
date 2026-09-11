@@ -8,8 +8,11 @@ import { CheckoutInput } from "@/schemas/checkout";
 import { useState } from "react";
 import {
   busyRetryToast,
+  checkoutNeedsGateway,
   fetchCheckoutWithBusyRetry,
- mintClientIdempotencyKey } from "@/app/checkout/plans/utils";
+  mintClientIdempotencyKey,
+  reportPaymentsError,
+} from "@/app/checkout/plans/utils";
 
 interface RazorpayPaymentResponse {
   razorpay_payment_id: string;
@@ -54,7 +57,10 @@ interface RazorpayOptions {
 }
 
 interface RazorpayInstance {
-  on: (event: string, handler: (response: RazorpayFailedResponse) => void) => void;
+  on: (
+    event: string,
+    handler: (response: RazorpayFailedResponse) => void,
+  ) => void;
   open: () => void;
 }
 
@@ -66,7 +72,9 @@ declare global {
 
 interface RazorpayCheckoutProps {
   checkoutData: CheckoutInput;
-  onPaymentSuccess: (response: RazorpayPaymentResponse | { message: string }) => void;
+  onPaymentSuccess: (
+    response: RazorpayPaymentResponse | { message: string },
+  ) => void;
   onPaymentError: (error: RazorpayPaymentError) => void;
   disabled?: boolean;
   userName?: string;
@@ -109,20 +117,6 @@ export default function RazorpayCheckout({
     // (dismiss, failure, verified success) may re-enable it.
     let gatewayOpened = false;
     try {
-      const isLoaded = await loadScript(
-        "https://checkout.razorpay.com/v1/checkout.js",
-      );
-
-      if (!isLoaded) {
-        toast({
-          title: "Payment System Not Loading",
-          description:
-            "The Razorpay payment system couldn't load. This may be due to a slow connection or ad blocker. Please check your internet connection, disable any ad blockers, and try again.",
-          variant: "destructive",
-        });
-        return;
-      }
-
       // B5 — a structured BUSY 409 (event mutex held / same account on
       // another device) auto-retries ONCE after the server-advised pause
       // instead of dead-ending; the stable idempotency key keeps the retry
@@ -159,12 +153,14 @@ export default function RazorpayCheckout({
         return;
       }
 
-      // FIX #520: Zero-amount payments (credits covered full cost) — no gateway needed
-      if (data.isZeroAmountPayment) {
+      // #1437 — WALLET/INVOICE/LICENSE org funding and zero-amount/mock
+      // payments confirm synchronously; the response carries no gateway
+      // order, so open() must never run for them.
+      if (!checkoutNeedsGateway(data)) {
         onPaymentSuccess({
           message:
             data.message ||
-            "Payment completed via referral credits. Appointment booked successfully.",
+            "Your booking is confirmed. Redirecting to your dashboard...",
         });
         return;
       }
@@ -174,6 +170,31 @@ export default function RazorpayCheckout({
           title: "Payment System Configuration Error",
           description:
             "The Razorpay payment system is not properly configured on this website. This is a technical issue on our end. Please contact support for assistance, or try a different payment method.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // #1396 — the hold already exists server-side; a CDN failure here is
+      // the same state a buyer produces by closing the modal, so leave it
+      // to the abandoned-payments sweep instead of cancelling client-side.
+      // #1414 — loadScript REJECTS on script.onerror, so `!isLoaded` alone
+      // never saw a blocked or failed CDN load; it fell through to the outer
+      // catch and the buyer got the generic message instead of this one.
+      let isLoaded = false;
+      try {
+        isLoaded = await loadScript(
+          "https://checkout.razorpay.com/v1/checkout.js",
+        );
+      } catch (scriptError) {
+        reportPaymentsError(scriptError);
+      }
+
+      if (!isLoaded) {
+        toast({
+          title: "Payment System Not Loading",
+          description:
+            "The Razorpay payment system couldn't load. This may be due to a slow connection or ad blocker. Please check your internet connection, disable any ad blockers, and try again.",
           variant: "destructive",
         });
         return;
@@ -211,7 +232,12 @@ export default function RazorpayCheckout({
             }
           } catch (verifyErr) {
             // Network failure — don't block; webhook is the ultimate authority
-            Sentry.captureException(verifyErr instanceof Error ? verifyErr : new Error(String(verifyErr)), { tags: { subsystem: "payments" } });
+            Sentry.captureException(
+              verifyErr instanceof Error
+                ? verifyErr
+                : new Error(String(verifyErr)),
+              { tags: { subsystem: "payments" } },
+            );
             console.error("Signature verification request failed:", verifyErr);
           }
           onPaymentSuccess(response);
@@ -248,9 +274,12 @@ export default function RazorpayCheckout({
       rzp.open();
       gatewayOpened = true;
     } catch (error) {
-      Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "payments" } });
+      reportPaymentsError(error);
       onPaymentError({
-        description: error instanceof Error ? error.message : "An unexpected error occurred",
+        description:
+          error instanceof Error
+            ? error.message
+            : "An unexpected error occurred",
       });
     } finally {
       if (!gatewayOpened) setIsProcessing(false);

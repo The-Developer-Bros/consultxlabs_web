@@ -2,16 +2,24 @@
  * Recording Details API Route
  * GET /api/stream/recordings/[recordingId]
  *
- * Gets details for a specific recording. Access control based on user role.
+ * Gets details for a specific recording. Access is a capability question, not
+ * a role question — see the branches below.
+ *
+ * #1270 — platform operators are no longer a single blanket grant. ADMIN gets
+ * the playback URL; STAFF gets metadata and never a URL that renders the
+ * session; both are audited. See lib/stream/recording-operator-access.ts.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { RecordingService } from "@/lib/stream/recording-service";
-import { RecordingTransferService } from "@/lib/stream/recording-transfer-service";
+import { getBestRecordingUrl } from "@/lib/stream/recording-storage";
 import prisma from "@/lib/prisma";
 import { streamLogger } from "@/lib/stream-logger";
 import { isPaymentEntitled } from "@/lib/payments/utils/refund-balance";
-import { isPrivileged } from "@/lib/auth-helpers";
+import {
+  auditOperatorRecordingAccess,
+  resolveOperatorRecordingAccess,
+} from "@/lib/stream/recording-operator-access";
 
 import { getSession } from "@/lib/auth-server";
 import * as Sentry from "@sentry/nextjs";
@@ -58,13 +66,20 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
     const appointment = recording.meetingSession.slotOfAppointment.appointment;
 
     let hasAccess = false;
+    // True when the ONLY thing letting this caller through is their platform
+    // role. Drives the audit write and the metadata-only downgrade below.
+    let viaOperatorGrant = false;
 
-    // Capability, not UserRole (#org-appts): an org EXPERT whose top-level role is CONSULTEE still owns recordings they delivered.
-    if (isPrivileged(session.user.role)) {
-      // Admin and staff can access all recordings
+    const operator = resolveOperatorRecordingAccess(session.user.role);
+
+    // #1270 — ADMIN holds `recordings.play`, the widest grant there is, so the
+    // ownership walk below cannot add anything for them. Short-circuit.
+    if (operator.canPlay) {
       hasAccess = true;
+      viaOperatorGrant = true;
     }
 
+    // Capability, not UserRole (#org-appts): an org EXPERT whose top-level role is CONSULTEE still owns recordings they delivered.
     // Provider path: gate on owning a consultant profile, not on role.
     if (!hasAccess && session.user.consultantProfileId) {
       const consultantProfileId = session.user.consultantProfileId;
@@ -134,11 +149,76 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
       }
     }
 
+    // #1270 — STAFF land here only after every ownership and entitlement path
+    // above has failed. A staff member who actually delivered or bought the
+    // session already passed one of those and keeps full playback; this branch
+    // is the operator with no relationship to the session at all.
+    if (!hasAccess && operator.canRead) {
+      hasAccess = true;
+      viaOperatorGrant = true;
+    }
+
     if (!hasAccess) {
       return NextResponse.json(
         { error: "Access denied to this recording" },
         { status: 403 },
       );
+    }
+
+    // Only an operator reaching in on their role alone is capped; anyone who
+    // arrived through participation or purchase plays as before.
+    const mayPlay = !viaOperatorGrant || operator.canPlay;
+
+    // Written before the URL is minted, so the trail cannot lag the access it
+    // describes. A failure here fails the request rather than serving an
+    // unaudited read.
+    if (viaOperatorGrant) {
+      await auditOperatorRecordingAccess({
+        actorUserId: session.user.id,
+        actorRole: String(session.user.role),
+        surface: "GET /api/stream/recordings/[recordingId]",
+        played: mayPlay,
+        recordingId: recording.id,
+        meetingSessionId: recording.meetingSession?.id ?? null,
+        streamCallId: recording.meetingSession?.streamCallId ?? null,
+        organizationId: recording.meetingSession?.organizationId ?? null,
+      });
+    }
+
+    // Everything an operator needs to answer "where is my replay" — and
+    // nothing that renders the session.
+    const metadata = {
+      id: recording.id,
+      title: recording.title,
+      durationInMinutes: recording.durationInMinutes,
+      recordedAt: recording.recordedAt,
+      status: recording.status,
+      storageType: recording.storageType,
+      resolution: recording.resolution,
+      previewClipDuration: recording.previewClipDuration,
+      streamUrlExpiresAt: recording.streamUrlExpiresAt,
+      createdAt: recording.createdAt,
+    };
+
+    if (!mayPlay) {
+      // Every media URL is withheld, not only `playbackUrl`. A thumbnail is a
+      // frame of the session and the preview clip is a cut of it, so handing
+      // either over is still handing over the content the cap exists to
+      // protect. `access.level` is what a consumer branches on — a null URL
+      // alone cannot distinguish "not permitted" from "not ready yet".
+      return NextResponse.json({
+        recording: {
+          ...metadata,
+          playbackUrl: null,
+          thumbnailUrl: null,
+          previewClipUrl: null,
+        },
+        access: {
+          level: "METADATA_ONLY" as const,
+          reason:
+            "Playback requires the recordings.play permission; staff receive metadata only.",
+        },
+      });
     }
 
     // Check if Stream URL has expired
@@ -159,24 +239,16 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
 
     // Get the best available URL (async — generates presigned URL for Supabase)
     const playbackUrl =
-      await RecordingTransferService.getBestRecordingUrl(recording);
+      await getBestRecordingUrl(recording);
 
     return NextResponse.json({
       recording: {
-        id: recording.id,
-        title: recording.title,
-        durationInMinutes: recording.durationInMinutes,
-        recordedAt: recording.recordedAt,
-        status: recording.status,
-        storageType: recording.storageType,
+        ...metadata,
         playbackUrl,
         thumbnailUrl: recording.thumbnailUrl,
-        resolution: recording.resolution,
         previewClipUrl: recording.previewClipUrl,
-        previewClipDuration: recording.previewClipDuration,
-        streamUrlExpiresAt: recording.streamUrlExpiresAt,
-        createdAt: recording.createdAt,
       },
+      access: { level: "FULL" as const },
     });
   } catch (error) {
     Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "stream" } });

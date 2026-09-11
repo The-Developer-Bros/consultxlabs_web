@@ -78,8 +78,17 @@ const CRON_HEARTBEAT_STALE_MS = 6 * 60 * 60 * 1000;
 type CronHeartbeat = {
   configured: boolean;
   lastRunAt: string | null;
-  /** null until the fleet has written its first heartbeat. */
-  stale: boolean | null;
+  /**
+   * `null` until the fleet has written its first heartbeat, or when the stored
+   * timestamp will not parse. `"unknown"` when the probe itself failed, which
+   * is a different fact and used to be reported as the same one: the Redis-error
+   * path returned a byte-identical `{configured:true, lastRunAt:null,
+   * stale:null}` to the never-run-yet path, so a monitor could not tell a fleet
+   * that has never started from a heartbeat we simply could not read.
+   */
+  stale: boolean | "unknown" | null;
+  /** True only on the probe-failed path, so an alert rule can key on it. */
+  probeError?: boolean;
 };
 
 async function checkCronHeartbeat(): Promise<CronHeartbeat> {
@@ -98,7 +107,12 @@ async function checkCronHeartbeat(): Promise<CronHeartbeat> {
       tags: { subsystem: "api" },
       extra: { message: err instanceof Error ? err.message : String(err) },
     });
-    return { configured: true, lastRunAt: null, stale: null };
+    return {
+      configured: true,
+      lastRunAt: null,
+      stale: "unknown",
+      probeError: true,
+    };
   }
 }
 

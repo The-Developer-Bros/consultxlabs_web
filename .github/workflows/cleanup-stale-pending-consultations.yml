@@ -6,6 +6,10 @@ on:
     - cron: "37 * * * *"
   workflow_dispatch: # Allow manual triggering
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   cleanup-stale-pending-consultations:
     runs-on: ubuntu-latest

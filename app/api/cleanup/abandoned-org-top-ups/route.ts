@@ -14,66 +14,18 @@
  * cleanup route — the Authorization header must carry the bearer token.
  */
 
-import * as Sentry from "@sentry/nextjs";
-import { NextResponse, type NextRequest } from "next/server";
+import { cleanupRoute } from "@/lib/cron/cleanup-route";
 import { cleanupAbandonedOrgTopUps } from "@/scripts/cleanup/cleanup-abandoned-org-top-ups";
-import { CronLockHeldError } from "@/lib/cron/with-cron-lock";
 
-export async function POST(req: NextRequest): Promise<NextResponse> {
-  const authHeader = req.headers.get("authorization");
-  const cronSecret =
-    process.env.CRON_SECRET || process.env.VERCEL_CRON_SECRET;
-
-  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
-    console.warn("Unauthorized abandoned-org-top-ups cleanup attempt");
-    return NextResponse.json(
-      {
-        error: "Unauthorized",
-        message:
-          "Please provide a valid authorization header with the CRON_SECRET",
-      },
-      { status: 401 },
-    );
-  }
-
-  try {
-    console.log("🧹 Starting abandoned org top-up cleanup via API...");
-    Sentry.logger.info("cron:cleanup-abandoned-org-top-ups started");
-    const result = await cleanupAbandonedOrgTopUps();
-
-    console.log("✅ Abandoned org top-up cleanup completed:", {
-      reaped: result.reaped,
-      graceHours: result.graceHours,
-      success: result.success,
-    });
-    Sentry.logger.info("cron:cleanup-abandoned-org-top-ups finished", {
-      reaped: result.reaped,
-      graceHours: result.graceHours,
-      success: result.success,
-    });
-
-    return NextResponse.json(result, { status: result.success ? 200 : 500 });
-  } catch (error) {
-    // #476 — concurrent invocation (schedule overlap / manual re-run)
-    // skips with a 409 instead of double-running.
-    if (error instanceof CronLockHeldError) {
-      return NextResponse.json({ error: error.message }, { status: 409 });
-    }
-    console.error("[cleanup/abandoned-org-top-ups] failed:", error);
-    Sentry.captureException(error, {
-      tags: { subsystem: "cron", job: "cleanup-abandoned-org-top-ups" },
-    });
-    return NextResponse.json(
-      {
-        error: "Cleanup failed",
-        details: error instanceof Error ? error.message : String(error),
-      },
-      { status: 500 },
-    );
-  }
-}
-
-// Some external schedulers (e.g. legacy Vercel Cron) only emit GET.
-export async function GET(req: NextRequest): Promise<NextResponse> {
-  return POST(req);
-}
+export const { GET, POST } = cleanupRoute({
+  job: "cleanup-abandoned-org-top-ups",
+  run: () => cleanupAbandonedOrgTopUps(),
+  summarize: (r) => ({
+    reaped: r.reaped,
+    graceHours: r.graceHours,
+    success: r.success,
+  }),
+  unauthorizedMessage:
+    "Please provide a valid authorization header with the CRON_SECRET",
+  failureMessage: "Cleanup failed",
+});

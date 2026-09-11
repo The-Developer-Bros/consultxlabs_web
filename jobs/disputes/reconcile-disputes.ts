@@ -30,6 +30,8 @@ function outputToGitHubActions(result: DisputeReconciliationResult): void {
       `reconciled_count=${result.reconciledCount}`,
       `urgent_count=${result.urgentCount}`,
       `razorpay_manual_review=${result.razorpayManualReviewCount}`,
+      // #1459 — a non-zero value here is the gateway fence, not a defect.
+      `skipped_fenced=${result.skippedFenced}`,
       `success=${result.success}`,
     ].join("\n");
 

@@ -1,7 +1,7 @@
 /**
  * Transfer Expiring Recordings Job (GitHub Actions Wrapper)
  *
- * Auto-transfers SUPABASE_PERMANENT recordings from Stream S3 to Supabase.
+ * Auto-transfers PERMANENT recordings from Stream S3 to Supabase.
  * Also identifies STREAM_ONLY recordings expiring soon for warnings.
  *
  * Runs every 6 hours via scheduled workflow.
@@ -71,7 +71,7 @@ async function main(): Promise<void> {
         await RecordingTransferService.processExpiringRecordings(
           14,
           10,
-          "SUPABASE_PERMANENT",
+          "PERMANENT",
         );
 
       // Find STREAM_ONLY recordings expiring in 3 days (for warnings)

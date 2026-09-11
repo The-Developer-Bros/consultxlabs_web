@@ -25,9 +25,12 @@ import {
   RefreshCw,
 } from "lucide-react";
 import Link from "next/link";
+import { ticketLabel } from "@/utils/supportTicketUrl";
 
 interface RecentTicket {
   id: string;
+  /** #705 — the minted handle; null on tickets that predate it. */
+  referenceNumber?: string | null;
   subject: string;
   user: string;
   userImage: string | null;
@@ -317,7 +320,7 @@ export default function HomePageClient({
                           {ticket.subject}
                         </p>
                         <p className="text-xs text-muted-foreground">
-                          {ticket.id.slice(-8).toUpperCase()} • {ticket.user}
+                          {ticketLabel(ticket)} • {ticket.user}
                         </p>
                       </div>
                     </div>

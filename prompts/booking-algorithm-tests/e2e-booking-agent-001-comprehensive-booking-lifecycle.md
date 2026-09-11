@@ -188,17 +188,15 @@ ON CONFLICT (id) DO NOTHING;
 
 -- Create consultee profile
 INSERT INTO "ConsulteeProfile" (
-  id, occupation, "aboutMe",
-  "preferredCommunicationMethod",
+  id, "aboutMe", goals,
   "careerStage",
   "userId",
   "createdAt", "updatedAt"
 )
 VALUES (
   'test-consultee-profile-001',
-  'Software Developer',
   'Looking to level up my system design and architecture skills.',
-  'VIDEO',
+  'Ship a distributed system end to end.',
   'MID_CAREER',
   'test-consultee-user-001',
   NOW(), NOW()
@@ -306,9 +304,9 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO "SubscriptionPlan" (
   id, title, description,
   "durationInMonths", price, "priceCurrency",
-  "callsPerWeek", "sessionDurationInHours", "totalSessions", "totalHours",
+  "sessionsPerWeek", "sessionDurationInHours", "totalSessions", "totalHours",
   "emailSupport", language, level,
-  "freeTrialEnabled", "freeTrialDurationMinutes",
+  "trialEnabled", "trialDurationMinutes",
   "consultantProfileId",
   "createdAt", "updatedAt"
 )
@@ -351,7 +349,7 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO "ClassPlan" (
   id, title, description, price, "priceCurrency",
   "certificateProvided", "recordingEnabled",
-  "durationInMonths", "meetingsPerWeek",
+  "durationInMonths", "sessionsPerWeek",
   "sessionDurationInHours", "totalSessions", "totalHours",
   "emailSupport", "maxParticipants",
   language, level,
@@ -422,7 +420,9 @@ SELECT id, name, email, role, "consultantProfileId", "consulteeProfileId" FROM u
 
 -- Verify profiles
 SELECT id, headline, "scheduleType", "userId" FROM "ConsultantProfile" WHERE id = 'test-consultant-profile-001';
-SELECT id, occupation, "userId" FROM "ConsulteeProfile" WHERE id = 'test-consultee-profile-001';
+SELECT id, "aboutMe", goals, "careerStage", "userId" FROM "ConsulteeProfile" WHERE id = 'test-consultee-profile-001';
+-- goals must read 'Ship a distributed system end to end.'; a null here means the
+-- profile predates this seed and later booking assertions run on stale data.
 
 -- Verify availability (weekly uses Int minutes 0-1439, custom uses timestamptz)
 SELECT id, "startDay", "startTimeUtc", "endDay", "endTimeUtc" FROM "SlotOfAvailabilityWeekly" WHERE "consultantProfileId" = 'test-consultant-profile-001';
@@ -430,9 +430,9 @@ SELECT id, "startsAt", "endsAt" FROM "SlotOfAvailabilityCustom" WHERE "consultan
 
 -- Verify plans
 SELECT id, title, price, "durationInHours" FROM "ConsultationPlan" WHERE id = 'test-consultation-plan-001';
-SELECT id, title, price, "callsPerWeek", "totalSessions", "durationInMonths" FROM "SubscriptionPlan" WHERE id = 'test-subscription-plan-001';
+SELECT id, title, price, "sessionsPerWeek", "totalSessions", "durationInMonths" FROM "SubscriptionPlan" WHERE id = 'test-subscription-plan-001';
 SELECT id, title, price, "maxParticipants", "durationInHours" FROM "WebinarPlan" WHERE id = 'test-webinar-plan-001';
-SELECT id, title, price, "maxParticipants", "meetingsPerWeek", "totalSessions" FROM "ClassPlan" WHERE id = 'test-class-plan-001';
+SELECT id, title, price, "maxParticipants", "sessionsPerWeek", "totalSessions" FROM "ClassPlan" WHERE id = 'test-class-plan-001';
 
 -- Verify webinar/class instances
 SELECT id, status, "webinarPlanId" FROM "Webinar" WHERE id = 'test-webinar-001';
@@ -643,8 +643,8 @@ async () => {
       appointmentType: "CONSULTATION",
       planId: "test-consultation-plan-001",
       paymentGateway: "STRIPE",
-      slotStartTimeInUTC: nextMonday.toISOString(),
-      slotEndTimeInUTC: slotEnd.toISOString(),
+      startsAt: nextMonday.toISOString(),
+      endsAt: slotEnd.toISOString(),
       slotOfAvailabilityWeeklyId: "test-weekly-slot-mon-am",
       isMockPayment: true,
     }),
@@ -711,7 +711,7 @@ LIMIT 1;
 
 ### Overview
 
-Subscriptions are multi-session bookings. A consultee gets `callsPerWeek` sessions over `durationInMonths`. Our test plan: 4 sessions over 1 month, 1 call/week, 1 hour each.
+Subscriptions are multi-session bookings. A consultee gets `sessionsPerWeek` sessions over `durationInMonths`. Our test plan: 4 sessions over 1 month, 1 call/week, 1 hour each.
 
 ### Test 2.1: Request a Subscription (REQUEST_SUBMITTED)
 
@@ -726,7 +726,7 @@ Subscriptions are multi-session bookings. A consultee gets `callsPerWeek` sessio
 ```sql
 SELECT s.id, s."requestStatus", s."bookingSource",
        s."schedulingPeriodStartsAt", s."schedulingPeriodEndsAt",
-       sp.title, sp."callsPerWeek", sp."totalSessions"
+       sp.title, sp."sessionsPerWeek", sp."totalSessions"
 FROM "Subscription" s
 JOIN "SubscriptionPlan" sp ON s."subscriptionPlanId" = sp.id
 WHERE s."requestedById" = 'test-consultee-profile-001'
@@ -734,7 +734,7 @@ ORDER BY s."createdAt" DESC
 LIMIT 1;
 ```
 
-**Expected:** `requestStatus` = `PENDING`, `callsPerWeek` = 1, `totalSessions` = 4
+**Expected:** `requestStatus` = `PENDING`, `sessionsPerWeek` = 1, `totalSessions` = 4
 
 ### Test 2.2: Consultant Auto-Allocates Subscription Slots
 
@@ -777,7 +777,7 @@ ORDER BY soa."startsAt" ASC;
    - Scheduling period boundaries (blue highlights)
    - Already-occupied slots (from previous allocations)
 5. Select 4 slots across 4 different weeks (one per week)
-6. **Verify:** Selecting a 2nd slot in the same week shows a warning about exceeding `callsPerWeek` limit
+6. **Verify:** Selecting a 2nd slot in the same week shows a warning about exceeding `sessionsPerWeek` limit
 7. Confirm allocation
 8. **Verify DB:** 4 sessions allocated, all within scheduling period, one per week
 
@@ -918,7 +918,7 @@ async () => {
   slotEnd.setUTCHours(10, 30, 0, 0); // 16:00 IST (2 hours)
 
   const response = await fetch(
-    "/api/events/webinars/test-webinar-001/allocate",
+    "/api/bookings/webinars/test-webinar-001/allocate",
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -976,6 +976,7 @@ This requires multiple consultee accounts. If testing capacity:
 3. The next checkout attempt should fail with "Webinar is full"
 
 ```sql
+
 ```
 
 ### Test 3.4: Webinar Reschedule (Consultant Only)
@@ -1046,14 +1047,17 @@ async () => {
     slots.push(thu.toISOString());
   }
 
-  const response = await fetch("/api/events/classes/test-class-001/allocate", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      isAuto: false,
-      slots: slots,
-    }),
-  });
+  const response = await fetch(
+    "/api/bookings/classes/test-class-001/allocate",
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        isAuto: false,
+        slots: slots,
+      }),
+    },
+  );
   return await response.json();
 };
 ```
@@ -1110,7 +1114,7 @@ Log out and make API calls without authentication:
 async () => {
   // Clear auth state
   const response = await fetch(
-    "/api/events/consultations?consultantProfileId=test-consultant-profile-001",
+    "/api/bookings/consultations?consultantProfileId=test-consultant-profile-001",
   );
   const data = await response.json();
   return { status: response.status, data };
@@ -1203,8 +1207,8 @@ async () => {
       appointmentType: "CONSULTATION",
       planId: "test-consultation-plan-001",
       paymentGateway: "STRIPE",
-      slotStartTimeInUTC: occupiedSlotStart,
-      slotEndTimeInUTC: occupiedSlotEnd,
+      startsAt: occupiedSlotStart,
+      endsAt: occupiedSlotEnd,
       slotOfAvailabilityWeeklyId: "test-weekly-slot-mon-am",
       isMockPayment: true,
     }),
@@ -1236,8 +1240,8 @@ async () => {
       appointmentType: "CONSULTATION",
       planId: "test-consultation-plan-001",
       paymentGateway: "STRIPE",
-      slotStartTimeInUTC: nextSunday.toISOString(),
-      slotEndTimeInUTC: slotEnd.toISOString(),
+      startsAt: nextSunday.toISOString(),
+      endsAt: slotEnd.toISOString(),
       slotOfAvailabilityWeeklyId: "test-weekly-slot-mon-am", // Wrong availability ID
       isMockPayment: true,
     }),
@@ -1296,10 +1300,24 @@ SELECT id, "requestStatus", "cancellationReason", "cancellationNotes", "cancelle
 FROM "Consultation"
 WHERE id = '<CONSULTATION_ID>';
 
--- Appointment and slots should be deleted
-SELECT COUNT(*) as "remainingSlots"
+-- The slots are SOFT-cancelled, not deleted. Deleting the appointment would
+-- cascade its Payment rows away (the #1074 class), so the cancel route only
+-- moves completionStatus from SCHEDULED/RESCHEDULED to CANCELLED.
+SELECT COUNT(*) AS "remainingSlots",
+       COUNT(*) FILTER (WHERE "completionStatus" = 'CANCELLED') AS "cancelledSlots"
 FROM "SlotOfAppointment"
 WHERE "appointmentId" = '<APPOINTMENT_ID>';
+-- Expected: remainingSlots unchanged from before the cancel, and every one of
+-- them CANCELLED. Zero rows means someone reintroduced the delete.
+
+-- The Payment trail is the thing the soft cancel exists to protect, so assert it
+-- directly rather than inferring it from the slot count.
+SELECT id, "paymentStatus", amount
+FROM "Payment"
+WHERE "appointmentId" = '<APPOINTMENT_ID>';
+-- Expected: the same rows, statuses and amounts as before the cancel. A missing
+-- row is the #1074 cascade, and a changed status or amount means the cancel
+-- route is touching money it has no business touching.
 ```
 
 ### Test 5.8: Cancel With Non-Participant (403)
@@ -1458,8 +1476,9 @@ async () => {
     appointmentType: "CONSULTATION",
     planId: "test-consultation-plan-001",
     paymentGateway: "STRIPE",
-    slotStartTimeInUTC: nextThu.toISOString(),
-    slotEndTimeInUTC: slotEnd.toISOString(),
+    startsAt: nextThu.toISOString(),
+    endsAt: slotEnd.toISOString(),
+    slotOfAvailabilityWeeklyId: "test-weekly-slot-thu-am",
     isMockPayment: true,
   });
 
@@ -1659,7 +1678,7 @@ async () => {
 
   const subscriptionId = "<SUBSCRIPTION_ID>";
   const response = await fetch(
-    `/api/events/subscriptions/${subscriptionId}/validate`,
+    `/api/bookings/subscriptions/${subscriptionId}/validate`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1713,7 +1732,7 @@ SELECT 'Tentative Slots', COUNT(*) FROM "SlotOfAppointment" WHERE "isTentative" 
 - [ ] **Subscription Request**: Multi-session booking with scheduling period
 - [ ] **Subscription Auto Allocate**: 4 sessions distributed across weeks
 - [ ] **Subscription Manual Allocate**: Consultant selected specific slots
-- [ ] **Subscription Weekly Limit**: Cannot exceed callsPerWeek
+- [ ] **Subscription Weekly Limit**: Cannot exceed sessionsPerWeek
 - [ ] **Subscription Partial Reschedule**: Only specific slots marked tentative
 - [ ] **Subscription Full Reschedule**: All slots marked tentative
 - [ ] **Webinar Allocation**: Time slot set by consultant
@@ -1727,7 +1746,7 @@ SELECT 'Tentative Slots', COUNT(*) FROM "SlotOfAppointment" WHERE "isTentative" 
 - [ ] **24-Hour Restriction**: Cannot reschedule within 24 hours
 - [ ] **Slot Conflict**: Cannot double-book occupied slots
 - [ ] **Outside Availability**: Warning for slots outside availability
-- [ ] **Cancellation**: Appointment cancelled, slots deleted, status updated
+- [ ] **Cancellation**: request CANCELLED, slots soft-cancelled in place (`completionStatus = 'CANCELLED'`), nothing deleted
 - [ ] **Availability API**: Occupied slots excluded from availability
 - [ ] **Unallocated API**: Correct totals after filtering
 - [ ] **RequestedSlotsDialog**: Conflicts displayed correctly
@@ -1779,64 +1798,101 @@ DELETE FROM "Domain" WHERE id = 'test-domain-001';
 
 ## APPENDIX A: Key Prisma Enums Reference
 
+There is no `RequestStatus` enum. The request lifecycle is `AppointmentStatus`,
+declared on `Consultation.status` and `Subscription.status`, both of which are
+`@map("requestStatus")` — so the Prisma field is `status` and the SQL column is
+`"requestStatus"`.
+
 ```
-RequestStatus: PENDING | APPROVED | APPROVED_PENDING_PAYMENT | SCHEDULED | COMPLETED | REJECTED | CANCELLED | EXPIRED
+AppointmentStatus: PENDING | APPROVED | APPROVED_PENDING_PAYMENT | SCHEDULED | COMPLETED | REJECTED | CANCELLED | EXPIRED
 AppointmentsType: CONSULTATION | SUBSCRIPTION | WEBINAR | CLASS | TRIAL
-PaymentStatus: PENDING | SUCCEEDED | FAILED
+SlotCompletionStatus: SCHEDULED | COMPLETED | UNVERIFIED | CANCELLED | RESCHEDULED
+PaymentStatus: PENDING | SUCCEEDED | FAILED | EXPIRED
 PaymentGateway: STRIPE | RAZORPAY | DODO_PAYMENTS | CARD
-WebinarStatus: SCHEDULED | IN_PROGRESS | COMPLETED | CANCELLED
-ClassStatus: SCHEDULED | IN_PROGRESS | COMPLETED | CANCELLED
-TrialSessionStatus: PENDING | SCHEDULED | COMPLETED | CONVERTED | CANCELLED | REJECTED
+WebinarStatus: DRAFT | SCHEDULED | IN_PROGRESS | COMPLETED | CANCELLED
+ClassStatus: DRAFT | SCHEDULED | IN_PROGRESS | COMPLETED | CANCELLED
+TrialSessionStatus: PENDING | AWAITING_PAYMENT | SCHEDULED | COMPLETED | CONVERTED | CANCELLED | REJECTED
 BookingSource: DIRECT_CHECKOUT | REQUEST_SUBMITTED
-CancellationReason: SCHEDULE_CONFLICT | FOUND_ALTERNATIVE | FINANCIAL_REASONS | PERSONAL_EMERGENCY | NO_LONGER_NEEDED | CONSULTANT_UNAVAILABLE | CONSULTANT_EMERGENCY | PAYMENT_FAILED | EXPIRED | CONSULTANT_ISSUE | TECHNICAL_ISSUE | OTHER
+CancellationReason: SCHEDULE_CONFLICT | FOUND_ALTERNATIVE | FINANCIAL_REASONS | PERSONAL_EMERGENCY | NO_LONGER_NEEDED | CONSULTANT_UNAVAILABLE | CONSULTANT_EMERGENCY | PAYMENT_FAILED | EXPIRED | CONSULTANT_ISSUE | TECHNICAL_ISSUE | MODERATION | OTHER
 DayOfWeek: MONDAY | TUESDAY | WEDNESDAY | THURSDAY | FRIDAY | SATURDAY | SUNDAY
 ScheduleType: WEEKLY | CUSTOM
-UserRole: CONSULTANT | CONSULTEE | STAFF | ADMIN
+UserRole: CONSULTANT | CONSULTEE | ADMIN | STAFF | ORG_WORKSPACE
+RescheduleRequestStatus: PENDING_REVIEW | COUNTERED | AUTO_ACCEPTED | ACCEPTED | DECLINED | WITHDRAWN | EXPIRED
 ```
 
 ## APPENDIX B: Key API Routes Reference
 
-| Route                                          | Method                  | Purpose                         |
-| ---------------------------------------------- | ----------------------- | ------------------------------- |
-| `/api/checkout`                                | POST                    | Create booking with payment     |
-| `/api/slots/request-for-approval`              | POST                    | Consultee requests booking      |
-| `/api/events/consultations`                    | GET, PATCH              | List/update consultations       |
-| `/api/events/consultations/[id]`               | GET, PUT, DELETE        | Single consultation CRUD        |
-| `/api/events/consultations/[id]/allocate`      | PATCH                   | Allocate consultation slots     |
-| `/api/events/consultations/[id]/validate`      | POST                    | Validate proposed slots         |
-| `/api/events/subscriptions`                    | GET, PATCH              | List/update subscriptions       |
-| `/api/events/subscriptions/[id]`               | GET, PUT, DELETE, PATCH | Single subscription CRUD        |
-| `/api/events/subscriptions/[id]/allocate`      | PATCH                   | Allocate subscription slots     |
-| `/api/events/subscriptions/[id]/validate`      | POST                    | Validate proposed slots         |
-| `/api/events/webinars/[id]/allocate`           | PATCH                   | Allocate webinar time slot      |
-| `/api/events/webinars/[id]/validate`           | POST                    | Validate webinar slots          |
-| `/api/events/classes/[id]/allocate`            | PATCH                   | Allocate class sessions         |
-| `/api/events/classes/[id]/validate`            | POST                    | Validate class slots            |
-| `/api/appointments/[id]/reschedule`            | POST                    | Reschedule appointment          |
-| `/api/appointments/[id]/cancel`                | POST                    | Cancel appointment              |
-| `/api/slots/availability-with-allocation/[id]` | GET                     | Available + occupied slots      |
-| `/api/slots/unallocated/weekly`                | GET                     | Unallocated weekly slots        |
-| `/api/slots/unallocated/custom`                | GET                     | Unallocated custom slots        |
-| `/api/slots/unallocated/[id]`                  | GET                     | Unallocated slots by consultant |
-| `/api/slots/appointments`                      | GET                     | List appointments with filters  |
+Verified against the route files on 2026-09-02. Note the dynamic segments are
+named for their entity (`[consultationId]`, `[webinarId]`, `[appointmentId]`),
+never `[id]`, and that every allocate route is a **PATCH**. The method column
+lists the verbs each route file exports, which is not the same as the verbs that
+succeed: both `[consultationId]` and `[subscriptionId]` export a `DELETE` whose
+whole body is a 405. That handler is deliberate rather than vestigial — it
+answers `code: "DELETE_NOT_SUPPORTED"` and names the cancel route in its message,
+which a bare framework 405 would not, and it is what replaced the raw
+`prisma.consultation.delete` that used to cascade Payment rows away.
+
+| Route                                                    | Methods exported        | Purpose                                                     |
+| -------------------------------------------------------- | ----------------------- | ----------------------------------------------------------- |
+| `/api/checkout`                                          | POST                    | Create a booking with payment                               |
+| `/api/checkout/pending/[paymentId]`                      | DELETE                  | Release your own pending hold early                         |
+| `/api/checkout/verify`                                   | GET                     | Verify a payment intent                                     |
+| `/api/slots/request-for-approval`                        | POST                    | Consultee requests a booking                                |
+| `/api/bookings/consultations`                            | GET, PATCH              | List consultations / update one status                      |
+| `/api/bookings/consultations/[consultationId]`           | GET, PUT, PATCH, DELETE | Read, edit, transition; DELETE answers 405                  |
+| `/api/bookings/consultations/[consultationId]/allocate`  | PATCH                   | Allocate consultation slots                                 |
+| `/api/bookings/consultations/[consultationId]/validate`  | POST                    | Validate proposed slots                                     |
+| `/api/bookings/subscriptions`                            | GET, PATCH              | List subscriptions / update one status                      |
+| `/api/bookings/subscriptions/[subscriptionId]`           | GET, PUT, PATCH, DELETE | Read, edit, transition; DELETE answers 405                  |
+| `/api/bookings/subscriptions/[subscriptionId]/allocate`  | PATCH                   | Allocate subscription slots                                 |
+| `/api/bookings/subscriptions/[subscriptionId]/validate`  | POST                    | Validate proposed slots                                     |
+| `/api/bookings/webinars`                                 | GET, POST               | List / create a webinar                                     |
+| `/api/bookings/webinars/[webinarId]`                     | GET, PUT, DELETE        | Single webinar                                              |
+| `/api/bookings/webinars/[webinarId]/allocate`            | PATCH                   | Allocate the webinar's time slot                            |
+| `/api/bookings/webinars/[webinarId]/validate`            | POST                    | Validate webinar slots                                      |
+| `/api/bookings/webinars/crud-with-plan`                  | POST, PATCH             | Create/update webinar plus its plan                         |
+| `/api/bookings/classes`                                  | GET                     | List classes                                                |
+| `/api/bookings/classes/[classId]`                        | GET, PUT, DELETE        | Single class                                                |
+| `/api/bookings/classes/[classId]/allocate`               | PATCH                   | Allocate class sessions                                     |
+| `/api/bookings/classes/[classId]/validate`               | POST                    | Validate class slots                                        |
+| `/api/bookings/classes/crud-with-plan`                   | POST, PATCH             | Create/update class plus its plan                           |
+| `/api/appointments`                                      | GET                     | Scoped appointment list (`?orgScope=`, `?appointmentType=`) |
+| `/api/appointments/[appointmentId]`                      | GET                     | Single appointment detail                                   |
+| `/api/appointments/[appointmentId]/cancel`               | POST                    | Cancel an appointment                                       |
+| `/api/appointments/[appointmentId]/cancel/preview`       | GET                     | Quote the refund before cancelling                          |
+| `/api/appointments/[appointmentId]/reschedule`           | POST                    | Open a reschedule proposal                                  |
+| `/api/appointments/[appointmentId]/reschedule/respond`   | POST                    | Counterparty accepts or declines                            |
+| `/api/appointments/[appointmentId]/reschedule/withdraw`  | POST                    | Initiator takes their proposal back                         |
+| `/api/trials`                                            | GET, POST               | List / request a trial                                      |
+| `/api/trials/[trialId]`                                  | GET, PATCH, DELETE      | Read, schedule/accept/reject, delete                        |
+| `/api/slots/availability-with-allocation/[consultantId]` | GET                     | Grid of available and occupied slots                        |
+| `/api/slots/availability/weekly`                         | GET, POST               | List / create weekly availability rows                      |
+| `/api/slots/availability/weekly/[id]`                    | GET, PUT, PATCH, DELETE | One weekly row                                              |
+| `/api/slots/availability/custom`                         | GET, POST               | List / create custom availability rows                      |
+| `/api/slots/availability/custom/[id]`                    | GET, PUT, PATCH, DELETE | One custom row                                              |
+| `/api/slots/unallocated/weekly`                          | GET                     | Unallocated weekly slots                                    |
+| `/api/slots/unallocated/custom`                          | GET                     | Unallocated custom slots                                    |
+| `/api/slots/unallocated/[consultantId]`                  | GET                     | Unallocated slots for one consultant                        |
+| `/api/slots/appointments`                                | GET                     | List appointments with filters                              |
 
 ## APPENDIX C: Key Dashboard Routes
 
-| Route                                       | Who        | Purpose                         |
-| ------------------------------------------- | ---------- | ------------------------------- |
-| `/auth/signin`                              | Both       | Login page                      |
-| `/auth/signup`                              | Both       | Registration page               |
-| `/dashboard/consultant/[id]/requests`       | Consultant | View/manage booking requests    |
-| `/dashboard/consultant/[id]/appointments`   | Consultant | View scheduled appointments     |
-| `/dashboard/consultant/[id]/planner`        | Consultant | Event management & availability |
-| `/dashboard/consultant/[id]/trials`         | Consultant | Free trial management           |
-| `/dashboard/consultee/[id]/home`            | Consultee  | Dashboard overview              |
-| `/dashboard/consultee/[id]/appointments`    | Consultee  | View bookings                   |
-| `/explore/experts`                          | Consultee  | Browse consultants              |
-| `/explore/experts/[consultantId]`           | Consultee  | Consultant profile + booking    |
-| `/explore/programs/plans/webinars/[planId]` | Consultee  | Webinar registration            |
-| `/explore/programs/plans/classes/[planId]`  | Consultee  | Class enrollment                |
-| `/checkout/plans/consultation/[planId]`     | Consultee  | Consultation checkout           |
-| `/checkout/plans/subscription/[planId]`     | Consultee  | Subscription checkout           |
-| `/checkout/plans/webinar/[planId]`          | Consultee  | Webinar checkout                |
-| `/checkout/plans/class/[planId]`            | Consultee  | Class checkout                  |
+| Route                                               | Who        | Purpose                         |
+| --------------------------------------------------- | ---------- | ------------------------------- |
+| `/auth/signin`                                      | Both       | Login page                      |
+| `/auth/signup`                                      | Both       | Registration page               |
+| `/dashboard/consultant/[consultantId]/requests`     | Consultant | View/manage booking requests    |
+| `/dashboard/consultant/[consultantId]/appointments` | Consultant | View scheduled appointments     |
+| `/dashboard/consultant/[consultantId]/planner`      | Consultant | Event management & availability |
+| `/dashboard/consultant/[consultantId]/trials`       | Consultant | Free trial management           |
+| `/dashboard/consultee/[consulteeId]/home`           | Consultee  | Dashboard overview              |
+| `/dashboard/consultee/[consulteeId]/appointments`   | Consultee  | View bookings                   |
+| `/explore/experts`                                  | Consultee  | Browse consultants              |
+| `/explore/experts/[consultantId]`                   | Consultee  | Consultant profile + booking    |
+| `/explore/programs/plans/webinars/[webinarPlanId]`  | Consultee  | Webinar registration            |
+| `/explore/programs/plans/classes/[classPlanId]`     | Consultee  | Class enrollment                |
+| `/checkout/plans/consultation/[planId]`             | Consultee  | Consultation checkout           |
+| `/checkout/plans/subscription/[planId]`             | Consultee  | Subscription checkout           |
+| `/checkout/plans/webinar/[planId]`                  | Consultee  | Webinar checkout                |
+| `/checkout/plans/class/[planId]`                    | Consultee  | Class checkout                  |
+| `/checkout/plans/trial/[trialId]`                   | Consultee  | Trial checkout                  |

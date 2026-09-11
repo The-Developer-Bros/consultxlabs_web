@@ -159,7 +159,8 @@ Notification system: Resend (transactional email) + Novu (multi-channel orchestr
 The `#support-hub` system: per-appointment support threads, stateless platform
 intake, org triage, and private CSAT feedback.
 
-- [support-hub.md](./support/support-hub.md) - Two-scope architecture, the error envelope + Sentry policy, authz gate, invariants, testing map
+- [support-hub.md](./support/support-hub.md) - Two-scope architecture, the error envelope + Sentry policy, authz gate, ticket references, the SLA model, the deflection counter, invariants, testing map
+- [engineering-log-2026-08-29.md](./support/engineering-log-2026-08-29.md) - The support-drawer turn loss: eight causes, the schema they required, and two stale audit claims
 
 ---
 
@@ -173,10 +174,15 @@ Storage management and document review system.
 
 ### Performance
 
-Implemented performance optimizations.
+Implemented performance optimizations. The numbering runs from the broad
+strategy documents to the individual slow-query investigations.
 
-- [dashboard-prefetching.md](./performance/dashboard-prefetching.md) - Dashboard prefetching
-- [optimization-checklist.md](./performance/optimization-checklist.md) - Optimization checklist
+- [00-optimization-checklist.md](./performance/00-optimization-checklist.md) - The React Query migration and the broader dashboard optimization history
+- [01-navigation-performance.md](./performance/01-navigation-performance.md) - Canonical record of the navigation and bundle round (PR #887)
+- [02-dashboard-prefetching.md](./performance/02-dashboard-prefetching.md) - Hover-based route prefetching strategy
+- [03-dashboard-appointments-perf.md](./performance/03-dashboard-appointments-perf.md) - Investigation: slow `/api/appointments` query
+- [04-availability-allocation-perf.md](./performance/04-availability-allocation-perf.md) - Investigation: slow wide-window availability-with-allocation query
+- [05-allocation-500-investigation.md](./performance/05-allocation-500-investigation.md) - Investigation: auto-allocate HTTP 500 and transaction-start timeout
 
 ---
 
@@ -207,8 +213,12 @@ Mobile API integration documentation.
 
 Prisma operations and migration documentation.
 
-- [migrations-guide.md](./prisma/migrations-guide.md) - Migrations guide
-- [prisma-7-migration.md](./prisma/prisma-7-migration.md) - Prisma 7 migration
+- [prisma/README.md](./prisma/README.md) - **Full index**, and which document applies to the current posture
+- [00-schema-map.md](./prisma/00-schema-map.md) - Domain diagrams of the Prisma schema
+- [01-migrations-guide.md](./prisma/01-migrations-guide.md) - General-purpose Prisma Migrate reference
+- [02-pre-mvp-reset-runbook.md](./prisma/02-pre-mvp-reset-runbook.md) - The one-time reset that finalises the launch schema
+- [03-cutover-to-migrations.md](./prisma/03-cutover-to-migrations.md) - Launch-day runbook: `db push` to versioned migrations
+- [04-prisma-7-migration.md](./prisma/04-prisma-7-migration.md) - Record of the Prisma 6 to 7 upgrade
 
 ---
 
@@ -264,17 +274,20 @@ Competitor analysis and research.
 
 ## Roadmap — Planned & Future Work
 
-All documentation for features, integrations, and improvements that are **not yet implemented**.
+Planned work is tracked in GitHub issues, not in this directory. `docs/roadmap/`
+was retired in #1535 because it had become a second backlog running alongside
+the issue tracker: the same work was recorded in both places and retired in only
+one, so the directory ended up asserting that Sentry, Upstash Redis, rate
+limiting and the BetterAuth migration were all unimplemented long after they
+shipped.
 
-- [roadmap/README.md](./roadmap/README.md) - **Full roadmap index**
+The rule now is that anything actionable is an issue. This directory holds
+architecture, decisions, runbooks and reference — what the system **is**, rather
+than what it might become.
 
-### Highlights
-
-- [Auth Migration (BetterAuth)](./roadmap/auth/betterauth-migration.md) - NextAuth → BetterAuth migration
+- [Open issues](https://github.com/Practitionist/familiarise_web/issues) — the backlog, banded by the `launch: pre-mvp`, `launch: post-mvp` and `launch: scale` labels
+- [#1535](https://github.com/Practitionist/familiarise_web/issues/1535) — the retirement record, with a verdict for each of the 45 deleted files
+- [#1532](https://github.com/Practitionist/familiarise_web/issues/1532) — ten unbuilt product features
+- [#1533](https://github.com/Practitionist/familiarise_web/issues/1533) — SMS and WhatsApp notification channels
+- [#1534](https://github.com/Practitionist/familiarise_web/issues/1534) — mega-menu, blog and community surfaces
 - [Enterprise Subsystem](enterprise/00-foundations/01-overview.md) - SSO, org management, billing, payouts (canonical implementation docs)
-- [Infrastructure Hardening](./roadmap/infrastructure/README.md) - Security, monitoring, scaling (14 audit documents)
-- [Service Integration Architecture](./roadmap/content-strategy/README.md) - Directus, ConvertKit, Enterprise interlinking (planned)
-- [Content Strategy](./roadmap/content-strategy/README.md) - CMS, blog, gated community
-- [Navigation Mega-Menu](./roadmap/navigation/README.md) - Mega-menu design
-- [15 Planned Features](./roadmap/features/) - AI summaries, smart matching, referrals, and more
-- [Performance Improvements](./roadmap/performance/) - Caching, scaling, zero-downtime migrations

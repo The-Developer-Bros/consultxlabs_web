@@ -26,6 +26,12 @@ export type WalkContext = {
   refundPctIfCancelledNow: number | null;
 };
 
+/** Reply when the input matches no option at the current prompt. Names the
+ *  escape hatch explicitly: "agent" is a HUMAN_KEYWORD (see escalation.ts), so
+ *  a user the tree cannot serve is never cornered by it. */
+const UNRECOGNIZED_BODY =
+  'I didn\'t catch that. Pick one of the options below — or type "agent" to reach a person.';
+
 /** Fail-safe escalation result for a broken/unknown cursor. */
 function escalateFallback(body: string): SupportTurnResult {
   return {
@@ -111,8 +117,27 @@ export function walkFlow(
   if (node.kind === "PROMPT") {
     const chosen = node.options.find((o) => o.id === input.chosenOptionId);
     if (!chosen) {
-      // Re-present the prompt on an unrecognized choice (idempotent).
-      return present(flow, node.id, ctx);
+      // Nothing matched. Re-emitting the identical prompt reads as the turn
+      // being ignored — and once the caller suppresses it as a duplicate, the
+      // user's message gets no reply at all. Answer instead, carrying the SAME
+      // options so the chips stay live and the cursor stays put.
+      return {
+        messages: [
+          {
+            sender: "BOT",
+            body: UNRECOGNIZED_BODY,
+            metadata: {
+              nodeId: node.id,
+              options: node.options.map((o) => ({ id: o.id, label: o.label })),
+            },
+          },
+        ],
+        nextNodeId: node.id,
+        actions: [],
+        escalate: false,
+        resolved: false,
+        unrecognized: true,
+      };
     }
     if (chosen.next === null) {
       // Choice ends the flow with no successor — treat as resolved.

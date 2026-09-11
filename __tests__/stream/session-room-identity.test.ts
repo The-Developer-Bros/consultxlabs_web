@@ -9,20 +9,43 @@
  * could each sit alone in one of them.
  *
  * The Stream SDK and the database are stubbed; what is exercised for real is
- * the anchor resolution in `actions/stream/meetings/meeting.action.ts` and the
- * id it produces in `lib/meeting.ts`.
+ * the anchor resolution and the mint in
+ * `actions/stream/meetings/meeting.action.ts`.
+ *
+ * #1270 — the mint moved out of the browser, so the stub is now the SERVER
+ * client (`lib/stream-client`) rather than a `StreamVideoClient` the test hands
+ * in as an argument. `getOrCreateAppointmentMeeting` no longer takes one.
  */
 
-import type { StreamVideoClient } from "@stream-io/video-react-sdk";
-import type { MeetingAppointment, MeetingSlot } from "@/lib/meeting";
+import type { MeetingSlot } from "@/lib/meeting";
 
-jest.mock("@stream-io/video-react-sdk", () => ({
-  __esModule: true,
-  StreamVideoClient: class {},
-}));
 jest.mock("@sentry/nextjs", () => ({
   captureException: jest.fn(),
 }));
+// The server-side Stream client the mint now goes through. `mock`-prefixed
+// recorders because a jest.mock factory may not close over anything else.
+jest.mock("../../lib/stream-client", () => ({
+  isStreamConfigured: () => true,
+  withStreamCircuitBreaker: <T>(fn: () => T | Promise<T>) => fn(),
+  getStreamVideoClient: () => ({
+    video: {
+      call: (_type: string, id: string) => ({
+        getOrCreate: async (payload: unknown) => {
+          mockStreamCallsCreated.push(id);
+          mockCallPayloads.push(payload as CallData);
+          return {};
+        },
+      }),
+    },
+  }),
+}));
+// #1270 — meeting.action now syncs call members to Stream before naming them,
+// which pulls the chat client (and its ESM-only node-sdk) into this module
+// graph. Mocked here for the same reason every other Stream suite mocks it.
+jest.mock("../../actions/stream/chat/user.action", () => ({
+  upsertUsersToStream: jest.fn().mockResolvedValue({ users: {} }),
+}));
+
 jest.mock("../../lib/stream-logger", () => ({
   streamLogger: {
     debug: jest.fn(),
@@ -150,8 +173,8 @@ const webinarAppointment = {
 let appointmentRow: Record<string, unknown> | null = consultationAppointment;
 let rows: SlotRow[] = [];
 let sessions: Array<{ id: string; streamCallId: string; slotId: string }> = [];
-let streamCallsCreated: string[] = [];
-let callPayloads: CallData[] = [];
+let mockStreamCallsCreated: string[] = [];
+let mockCallPayloads: CallData[] = [];
 
 function seed(
   slotRows: SlotRow[],
@@ -161,8 +184,8 @@ function seed(
   rows = slotRows;
   appointmentRow = appointment;
   sessions = [];
-  streamCallsCreated = [];
-  callPayloads = [];
+  mockStreamCallsCreated = [];
+  mockCallPayloads = [];
   signIn(caller);
 
   // Both resolvers read a single row through the authorization gate, which
@@ -233,23 +256,16 @@ interface CallMember {
 
 interface CallData {
   data?: {
-    starts_at?: string;
+    // The node SDK types `starts_at` as a Date, unlike the browser SDK the
+    // mint used to run through.
+    starts_at?: Date;
+    created_by_id?: string;
     custom?: Record<string, unknown>;
     members?: CallMember[];
     backstage?: unknown;
     settings_override?: unknown;
   };
 }
-
-const client = {
-  call: (_type: string, id: string) => ({
-    getOrCreate: async (payload: CallData) => {
-      streamCallsCreated.push(id);
-      callPayloads.push(payload);
-      return {};
-    },
-  }),
-} as unknown as StreamVideoClient;
 
 function meetingSlot(row: SlotRow): MeetingSlot {
   return {
@@ -261,14 +277,10 @@ function meetingSlot(row: SlotRow): MeetingSlot {
   };
 }
 
-const appointment: MeetingAppointment = {
-  id: "appt-1",
-  appointmentType: "CONSULTATION",
-  slotsOfAppointment: [],
-};
+const join = (row: SlotRow) => getOrCreateAppointmentMeeting(meetingSlot(row));
 
-const join = (row: SlotRow) =>
-  getOrCreateAppointmentMeeting(client, appointment, meetingSlot(row));
+/** `starts_at` as an ISO string, so the assertions below stay readable. */
+const startedAt = (payload: CallData) => payload.data?.starts_at?.toISOString();
 
 describe("room identity for a session longer than 30 minutes", () => {
   const rowA = () => slotRow("A", "10:00", "10:30");
@@ -285,7 +297,7 @@ describe("room identity for a session longer than 30 minutes", () => {
 
     expect(consultantRoom).toBe("slot-A");
     expect(consulteeRoom).toBe("slot-A");
-    expect(streamCallsCreated).toEqual(["slot-A"]);
+    expect(mockStreamCallsCreated).toEqual(["slot-A"]);
     expect(sessions).toHaveLength(1);
     expect(sessions[0].slotId).toBe("A");
   });
@@ -297,12 +309,12 @@ describe("room identity for a session longer than 30 minutes", () => {
     // Joined from row B, so an unanchored stamp would read "B" / 10:30.
     await join(b);
 
-    expect(callPayloads).toHaveLength(1);
-    const custom = callPayloads[0].data?.custom;
+    expect(mockCallPayloads).toHaveLength(1);
+    const custom = mockCallPayloads[0].data?.custom;
     expect(custom?.slotId).toBe("A");
     expect(custom?.anchorSlotId).toBe("A");
     expect(custom?.appointmentId).toBe("appt-1");
-    expect(callPayloads[0].data?.starts_at).toBe(a.startsAt.toISOString());
+    expect(startedAt(mockCallPayloads[0])).toBe(a.startsAt.toISOString());
   });
 
   it("anchors to row A even when row B is the first to be joined", async () => {
@@ -326,7 +338,7 @@ describe("room identity for a session longer than 30 minutes", () => {
     for (const row of all) roomIds.push(await join(row));
 
     expect(roomIds).toEqual(["slot-A", "slot-A", "slot-A", "slot-A"]);
-    expect(streamCallsCreated).toEqual(["slot-A"]);
+    expect(mockStreamCallsCreated).toEqual(["slot-A"]);
   });
 
   it("reuses the stored call id rather than re-deriving it", async () => {
@@ -340,7 +352,7 @@ describe("room identity for a session longer than 30 minutes", () => {
     });
 
     expect(await join(b)).toBe("legacy-uuid");
-    expect(streamCallsCreated).toEqual([]);
+    expect(mockStreamCallsCreated).toEqual([]);
   });
 });
 
@@ -349,8 +361,8 @@ describe("room identity for a session longer than 30 minutes", () => {
  * dashboard and leaves each surface to infer who is hosting.
  */
 describe("the call describes the session it belongs to", () => {
-  const custom = () => callPayloads[0].data?.custom ?? {};
-  const members = () => callPayloads[0].data?.members ?? [];
+  const custom = () => mockCallPayloads[0].data?.custom ?? {};
+  const members = () => mockCallPayloads[0].data?.members ?? [];
 
   it("reports the run's bounds, not the clicked row's", async () => {
     const [a, b] = [
@@ -363,7 +375,7 @@ describe("the call describes the session it belongs to", () => {
     // and a 30-minute meeting.
     await join(b);
 
-    expect(callPayloads[0].data?.starts_at).toBe(at("10:00").toISOString());
+    expect(startedAt(mockCallPayloads[0])).toBe(at("10:00").toISOString());
     expect(custom().sessionStartsAt).toBe(at("10:00").toISOString());
     expect(custom().sessionEndsAt).toBe(at("11:00").toISOString());
     expect(custom().sessionDurationMinutes).toBe(60);
@@ -377,7 +389,7 @@ describe("the call describes the session it belongs to", () => {
     expect(custom().offeringTitle).toBe("Career strategy deep dive");
   });
 
-  it("makes the consultant host and the consultee a plain member", async () => {
+  it("names both sides call_member, and records the host in custom", async () => {
     const [a, b] = [
       slotRow("A", "10:00", "10:30"),
       slotRow("B", "10:30", "11:00"),
@@ -386,12 +398,32 @@ describe("the call describes the session it belongs to", () => {
 
     await join(b);
 
+    // #1270 — the consultant used to be stamped `host` and the consultee
+    // `user`. The live `default` call type has no `host` role at all, so that
+    // consultant held nothing; and once ensure-call-type-grants strips
+    // `join-call` from `user`, the consultee holds nothing either. Both sides
+    // get the one role the join route assigns and the grants script keeps
+    // `join-call` on. Who hosts is carried in `custom`, which is what the UI
+    // has always read.
     expect(members()).toEqual([
-      { user_id: "user-consultant", role: "host" },
-      { user_id: "user-consultee", role: "user" },
+      { user_id: "user-consultant", role: "call_member" },
+      { user_id: "user-consultee", role: "call_member" },
     ]);
     expect(custom().consultantUserId).toBe("user-consultant");
     expect(custom().consulteeUserId).toBe("user-consultee");
+  });
+
+  it("makes the consultant the call's author, not whoever clicked Join", async () => {
+    const [a, b] = [
+      slotRow("A", "10:00", "10:30"),
+      slotRow("B", "10:30", "11:00"),
+    ];
+    // The consultee is the one joining, as they are for half of all sessions.
+    seed([a, b], consultationAppointment, { id: "user-consultee" });
+
+    await join(b);
+
+    expect(mockCallPayloads[0].data?.created_by_id).toBe("user-consultant");
   });
 
   it("resolves a webinar's hosts through plan ownership, not the joiner", async () => {
@@ -409,8 +441,8 @@ describe("the call describes the session it belongs to", () => {
     await join(rows[1]);
 
     expect(members()).toEqual([
-      { user_id: "user-owner", role: "host" },
-      { user_id: "user-collab", role: "host" },
+      { user_id: "user-owner", role: "call_member" },
+      { user_id: "user-collab", role: "call_member" },
     ]);
     // Attendees are not named: a large webinar would blow the request size
     // and turn a working join into a failure.
@@ -428,15 +460,55 @@ describe("the call describes the session it belongs to", () => {
     // Both are call SETTINGS, so they are pinned on the settings surface —
     // asserting them inside `custom` would pass for any implementation,
     // because nothing could ever put them there.
-    expect(callPayloads[0].data?.backstage).toBeUndefined();
-    expect(callPayloads[0].data?.settings_override).toBeUndefined();
-    // The strongest form of the same pin: adding either field, at any nesting,
-    // changes this key set and fails here.
-    expect(Object.keys(callPayloads[0].data ?? {}).sort()).toEqual([
+    expect(mockCallPayloads[0].data?.backstage).toBeUndefined();
+
+    // #1280 — `settings_override` is no longer empty, so the pin moved INTO it
+    // rather than being dropped.
+    //
+    // It used to assert the whole object absent, which was the strongest
+    // available form when nothing legitimately belonged there. The duration cap
+    // now does: `limits.max_duration_seconds` ENDS a session that is already
+    // running and cannot refuse anyone entry, so it does not touch the
+    // invariant this case exists for. Whitelisting the exact nested shape keeps
+    // that invariant sharper than the old blanket check did — a `backstage` or
+    // `join_ahead_time_seconds` smuggled in one level down would have satisfied
+    // "settings_override is undefined" only by not existing at all, whereas now
+    // it fails on the key set.
+    const settingsOverride = mockCallPayloads[0].data?.settings_override as
+      | Record<string, unknown>
+      | undefined;
+    expect(Object.keys(settingsOverride ?? {})).toEqual(["limits"]);
+    expect(
+      Object.keys((settingsOverride?.limits as Record<string, unknown>) ?? {}),
+    ).toEqual(["max_duration_seconds"]);
+
+    // Adding a field at the top level still fails here. `created_by_id` joined
+    // this set in #1270 — a server-side getOrCreate carries no user context, so
+    // Stream refuses the whole request without an explicit author.
+    expect(Object.keys(mockCallPayloads[0].data ?? {}).sort()).toEqual([
+      "created_by_id",
       "custom",
       "members",
+      "settings_override",
       "starts_at",
     ]);
+  });
+
+  it("sends a duration cap that cannot cut the booked session short", async () => {
+    // The cap counts from FIRST JOIN, not from `starts_at` (#1160 correcting
+    // #1144). A 30-minute booking whose consultant arrives 15 minutes early
+    // must still have the full booked window left when the clock starts.
+    seed([slotRow("A", "10:00", "10:30")]);
+
+    await join(rows[0]);
+
+    const cap = (
+      (mockCallPayloads[0].data?.settings_override as Record<string, unknown>)
+        ?.limits as Record<string, number>
+    ).max_duration_seconds;
+
+    expect(Number.isInteger(cap)).toBe(true);
+    expect(cap).toBeGreaterThan(30 * 60);
   });
 
   it("still creates the call when only the profile fails", async () => {
@@ -456,13 +528,20 @@ describe("the call describes the session it belongs to", () => {
     // Everything the profile feeds is optional, so a null profile must still
     // produce the anchored call this code produced before #1070.
     expect(await join(b)).toBe("slot-A");
-    expect(callPayloads[0].data?.members).toBeUndefined();
+    expect(mockCallPayloads[0].data?.members).toBeUndefined();
     expect(custom().sessionEndsAt).toBeUndefined();
     expect(custom().anchorSlotId).toBe("A");
-    expect(callPayloads[0].data?.starts_at).toBe(at("10:00").toISOString());
+    expect(startedAt(mockCallPayloads[0])).toBe(at("10:00").toISOString());
+
+    // #1305 review — and NO duration cap. The cap counts from first join, so a
+    // value guessed from a default would terminate a four-hour webinar two
+    // hours in. With no resolved run there is no safe number, and omitting the
+    // field is exactly the behaviour before the backstop existed: the call type
+    // carries no limit of its own.
+    expect(mockCallPayloads[0].data?.settings_override).toBeUndefined();
   });
 
-  it("still creates a call when nothing about the slot resolves", async () => {
+  it("creates nothing at all when the slot resolves to no appointment", async () => {
     const [a, b] = [
       slotRow("A", "10:00", "10:30"),
       slotRow("B", "10:30", "11:00"),
@@ -470,16 +549,18 @@ describe("the call describes the session it belongs to", () => {
     seed([a, b], null);
 
     // No appointment means entitlement cannot be established at all. The
-    // resolvers still degrade — the call is minted, unanchored and
-    // undescribed, exactly as before — but the WRITE fails closed rather than
-    // recording a session nobody could be shown to be part of. The column is
-    // required in the schema, so this is a guard against corrupt data, not a
-    // path any real booking takes.
+    // column is required in the schema, so this is a guard against corrupt
+    // data, not a path any real booking takes.
+    //
+    // #1270 — the browser used to mint the call FIRST and only then call
+    // `createDbMeetingSession`, where the entitlement check lived. So a refused
+    // join still left a real, billable Stream room behind that our database
+    // would never point at. The check now runs before the mint.
     await expect(join(b)).rejects.toThrow(
       "You are not a participant in this session.",
     );
-    expect(callPayloads[0].data?.members).toBeUndefined();
-    expect(custom().anchorSlotId).toBe("B");
+    expect(mockStreamCallsCreated).toEqual([]);
+    expect(mockCallPayloads).toEqual([]);
     expect(sessions).toEqual([]);
   });
 });
@@ -499,20 +580,14 @@ describe("only people involved in the booking may resolve it", () => {
   it("tells a stranger nothing about someone else's session", async () => {
     seed(twoRows(), consultationAppointment, { id: "user-stranger" });
 
-    // The join is not refused — entry must never regress on an authorization
-    // miss — but it degrades to the unanchored room and an undescribed call.
-    // The join is refused outright now that the WRITER is gated too. What is
-    // pinned here is that nothing leaked on the way to that refusal: the
-    // resolvers still degrade silently rather than describing the booking.
+    // The join is refused outright, and — since #1270 moved the mint behind the
+    // same gate — nothing reaches Stream on the way to that refusal either. It
+    // used to leave a real room behind, undescribed but billable and joinable.
     await expect(join(rows[1])).rejects.toThrow(
       "You are not a participant in this session.",
     );
-    expect(callPayloads[0].data?.members).toBeUndefined();
-    const custom = callPayloads[0].data?.custom ?? {};
-    expect(custom.offeringTitle).toBeUndefined();
-    expect(custom.consultantUserId).toBeUndefined();
-    expect(custom.consulteeUserId).toBeUndefined();
-    expect(custom.sessionEndsAt).toBeUndefined();
+    expect(mockStreamCallsCreated).toEqual([]);
+    expect(mockCallPayloads).toEqual([]);
     expect(sessions).toEqual([]);
   });
 
@@ -520,9 +595,9 @@ describe("only people involved in the booking may resolve it", () => {
     seed(twoRows(), consultationAppointment, { id: "user-consultee" });
 
     expect(await join(rows[1])).toBe("slot-A");
-    expect(callPayloads[0].data?.members).toEqual([
-      { user_id: "user-consultant", role: "host" },
-      { user_id: "user-consultee", role: "user" },
+    expect(mockCallPayloads[0].data?.members).toEqual([
+      { user_id: "user-consultant", role: "call_member" },
+      { user_id: "user-consultee", role: "call_member" },
     ]);
   });
 
@@ -539,7 +614,7 @@ describe("only people involved in the booking may resolve it", () => {
     );
 
     expect(await join(rows[1])).toBe("slot-A");
-    expect(callPayloads[0].data?.custom?.offeringTitle).toBe(
+    expect(mockCallPayloads[0].data?.custom?.offeringTitle).toBe(
       "Career strategy deep dive",
     );
   });
@@ -553,7 +628,7 @@ describe("only people involved in the booking may resolve it", () => {
     await expect(join(rows[1])).rejects.toThrow(
       "You are not a participant in this session.",
     );
-    expect(callPayloads[0].data?.members).toBeUndefined();
+    expect(mockStreamCallsCreated).toEqual([]);
     expect(sessions).toEqual([]);
   });
 
@@ -568,7 +643,7 @@ describe("only people involved in the booking may resolve it", () => {
     );
 
     expect(await join(rows[1])).toBe("slot-A");
-    expect(callPayloads[0].data?.custom?.offeringTitle).toBe(
+    expect(mockCallPayloads[0].data?.custom?.offeringTitle).toBe(
       "Scaling past Series A",
     );
   });
@@ -660,8 +735,8 @@ describe("a refused join creates nothing on Stream", () => {
       "New calls cannot be created during maintenance.",
     );
 
-    expect(streamCallsCreated).toEqual([]);
-    expect(callPayloads).toEqual([]);
+    expect(mockStreamCallsCreated).toEqual([]);
+    expect(mockCallPayloads).toEqual([]);
     expect(db.meetingSession.create).not.toHaveBeenCalled();
   });
 
@@ -673,23 +748,53 @@ describe("a refused join creates nothing on Stream", () => {
     mockedMaintenance.mockResolvedValue({ phase: "OFFLINE" });
 
     expect(await join(rows[0])).toBe("slot-A");
-    expect(streamCallsCreated).toEqual([]);
+    expect(mockStreamCallsCreated).toEqual([]);
   });
 
   it("does not mint a call for a slot that is not one", async () => {
     // The other precondition hoisted with the gate. Unresolvable id, so the
-    // anchor lookup falls back to this object and the shape check sees it.
+    // anchor lookup falls back to this object.
+    //
+    // #1270 review — the refusal a stranger sees is the ENTITLEMENT one, not
+    // the shape or booking-state one. Entitlement was moved ahead of
+    // `getMeetingCreationRefusal` because that helper reads the persisted slot
+    // and its parent booking status for any id it is handed, and returns the
+    // result to the caller as data: running it first let anyone who guessed a
+    // slot id learn another user's booking state. One answer, and it tells
+    // them nothing.
     seed([]);
 
     await expect(
-      getOrCreateAppointmentMeeting(client, appointment, {
+      getOrCreateAppointmentMeeting({
         id: "ghost",
         startsAt: "not a date",
         endsAt: null,
       }),
-    ).rejects.toThrow("Invalid slot for meeting session");
+    ).rejects.toThrow("You are not a participant in this session.");
 
-    expect(streamCallsCreated).toEqual([]);
+    expect(mockStreamCallsCreated).toEqual([]);
+  });
+
+  it("tells a stranger nothing about the booking they guessed at", async () => {
+    // The leak, stated as a test: a real slot on a real booking whose state
+    // WOULD produce a distinctive refusal. The caller is not on it, so they
+    // must get the same answer as for a slot that does not exist at all.
+    seed([
+      slotRow("A", "10:00", "10:30", {
+        isTentative: true,
+        user: [{ id: "someone-else" }],
+      }),
+    ]);
+
+    await expect(
+      getOrCreateAppointmentMeeting({
+        id: "A",
+        startsAt: "10:00",
+        endsAt: "10:30",
+      }),
+    ).rejects.toThrow("You are not a participant in this session.");
+
+    expect(mockStreamCallsCreated).toEqual([]);
   });
 });
 

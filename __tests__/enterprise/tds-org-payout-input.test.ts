@@ -17,9 +17,68 @@
  * silently ships `tdsAmountPaise=0` because the old code never called
  * the TDS helper at all — and the #785 regression where the encrypted-PAN
  * ciphertext was passed as `panNumber` and wrongly hit the 5% fallback.
+ *
+ * The last block leaves the pure-arithmetic surface and drives
+ * `markOrgPayoutCompleted` itself, because the rate a payout carries is what
+ * decides whether the completion can file a `TDSRecord` at all (#1354).
  */
 
+jest.mock("../../lib/prisma", () => ({
+  __esModule: true,
+  default: {
+    organizationPayout: {
+      updateMany: jest.fn(),
+      findUnique: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
+      aggregate: jest.fn(),
+    },
+    organizationEarnings: { updateMany: jest.fn().mockResolvedValue({}) },
+    orgAuditLog: { create: jest.fn().mockResolvedValue({}) },
+    tDSRecord: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
+    $transaction: jest.fn(),
+  },
+}));
+
+jest.mock("../../lib/payments/ledger/post", () => ({
+  __esModule: true,
+  postLedgerTxn: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock("../../lib/enterprise/system-events", () => ({
+  __esModule: true,
+  recordSystemError: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock("../../lib/observability/report", () => ({
+  __esModule: true,
+  reportSentryError: jest.fn(),
+  reportSentryMessage: jest.fn(),
+}));
+
+jest.mock("../../lib/payments/tax/tds-service", () => ({
+  __esModule: true,
+  ...jest.requireActual("../../lib/payments/tax/tds-service"),
+  recordOrgTDSDeduction: jest.fn().mockResolvedValue(undefined),
+  recordOrgTdsReversal: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock("../../lib/novu/org-workflows", () => ({
+  __esModule: true,
+  notifyOrgPayoutCompleted: jest.fn().mockResolvedValue(undefined),
+  notifyOrgPayoutFailed: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock("../../lib/payments/payouts/razorpay-payouts", () => ({
+  __esModule: true,
+  getRazorpayPayoutsService: jest.fn(),
+}));
+
 import { computeTdsForPayout } from "@/lib/compliance/tds";
+import prisma from "@/lib/prisma";
+import { recordSystemError } from "@/lib/enterprise/system-events";
+import { reportSentryMessage } from "@/lib/observability/report";
+import { recordOrgTDSDeduction } from "@/lib/payments/tax/tds-service";
+import { markOrgPayoutCompleted } from "@/lib/payments/payouts/org-payout-service";
 
 describe("org payout TDS construction", () => {
   it("Resident host org with valid PAN → 194-O 0.1%", () => {
@@ -123,5 +182,79 @@ describe("org payout TDS construction", () => {
       },
     });
     expect(r.tdsAmountPaise).toBe(9);
+  });
+});
+
+describe("markOrgPayoutCompleted — withheld TDS with no stored rate (#1354)", () => {
+  const PAYOUT_ID = "op_legacy_no_rate";
+  const ORG_ID = "org-legacy-1";
+
+  const mockedPrisma = prisma as unknown as {
+    organizationPayout: {
+      updateMany: jest.Mock;
+      findUniqueOrThrow: jest.Mock;
+      aggregate: jest.Mock;
+    };
+    tDSRecord: { deleteMany: jest.Mock };
+    $transaction: jest.Mock;
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // The service runs `prisma.$transaction(async (tx) => ...)`; handing the
+    // callback the same mocked client puts every inner call on these spies.
+    mockedPrisma.$transaction.mockImplementation(async (fn: unknown) =>
+      typeof fn === "function"
+        ? (fn as (tx: typeof mockedPrisma) => Promise<unknown>)(mockedPrisma)
+        : undefined,
+    );
+    mockedPrisma.organizationPayout.updateMany.mockResolvedValue({ count: 1 });
+    mockedPrisma.organizationPayout.aggregate.mockResolvedValue({
+      _sum: { netPayoutPaise: 0 },
+    });
+  });
+
+  it("writes no TDSRecord and reports the gap through the system-error recorder", async () => {
+    // A payout batched before `tdsRateAppliedBps` existed: the withholding is
+    // real and already on TDS_PAYABLE, but the rate the return must cite is
+    // not recoverable from it (computeTdsForPayout floors, so gross/tds does
+    // not invert).
+    mockedPrisma.organizationPayout.findUniqueOrThrow.mockResolvedValue({
+      id: PAYOUT_ID,
+      organizationId: ORG_ID,
+      netPayoutPaise: 999_000,
+      // #1470 — amountPaise is the post-withholding transfer, so it must
+      // satisfy amountPaise + tds === netPayoutPaise or the posting is refused.
+      amountPaise: 998_000,
+      tdsAmountPaise: 1_000,
+      tdsRateAppliedBps: null,
+      tdsSectionApplied: null,
+      currency: "INR",
+      organization: { name: "Legacy Org" },
+    });
+
+    const result = await markOrgPayoutCompleted(PAYOUT_ID);
+
+    // The completion still stands — cash moved, so it is never rolled back.
+    expect(result).toEqual({ wasNoOp: false, status: "COMPLETED" });
+    expect(recordOrgTDSDeduction).not.toHaveBeenCalled();
+    expect(mockedPrisma.tDSRecord.deleteMany).not.toHaveBeenCalled();
+
+    expect(recordSystemError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: ORG_ID,
+        category: "PAYOUT",
+        summary: expect.stringContaining("ORG_PAYOUT_TDS_RATE_MISSING"),
+        context: expect.objectContaining({
+          orgPayoutId: PAYOUT_ID,
+          organizationId: ORG_ID,
+          tdsAmountPaise: 1_000,
+        }),
+      }),
+    );
+    expect(reportSentryMessage).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ level: "warning" }),
+    );
   });
 });

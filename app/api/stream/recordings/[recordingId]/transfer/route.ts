@@ -85,7 +85,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     }
 
     // Check if recording is already transferred
-    if (recording.storageType === "SUPABASE") {
+    if (recording.storageType === "PLATFORM") {
       return NextResponse.json(
         { error: "Recording is already transferred to permanent storage" },
         { status: 400 },
@@ -108,7 +108,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     const apt = recording.meetingSession.slotOfAppointment.appointment;
     const { policy: storagePolicy } = resolveAppointmentStoragePolicy(apt);
 
-    if (storagePolicy !== "SUPABASE_PERMANENT") {
+    if (storagePolicy !== "PERMANENT") {
       return NextResponse.json(
         {
           error:
@@ -137,7 +137,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
         id: true,
         status: true,
         storageType: true,
-        supabaseUrl: true,
+        storageUrl: true,
         transferredAt: true,
       },
     });

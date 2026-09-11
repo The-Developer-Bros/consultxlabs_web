@@ -4,7 +4,7 @@
  * Thin wrapper around the core batch creation logic in scripts/create-payout-batch.ts.
  * Adds GitHub Actions-specific outputs and error handling.
  *
- * TODO #620: Migrate to canonical lib/payments/payouts service once return type
+ * TODO #1332: Migrate to canonical lib/payments/payouts service once return type
  * compatibility is addressed (canonical returns string batchId vs BatchResult).
  *
  * Runs weekly on Mondays at 8:00 PM UTC (1:30 AM IST next day).

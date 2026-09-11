@@ -107,6 +107,8 @@ All checkout data is stored in payment intent metadata:
 > **Webhook backward-compat note:** Razorpay order `notes` objects embedded with the old keys (`startsAt` / `endsAt`) are still accepted by the webhook handler for in-flight orders created before the rename. `normalizeLegacySlotKeys()` in `schemas/webhooks/metadata.ts` maps old → new on ingest; new orders always use `startsAt` / `endsAt`.
 ```
 
+> **Empty optional fields are omitted, never sent as `""` (#1462).** `buildPaymentMetadata()` in `lib/payments/operations/checkout.ts` includes an optional key only when it has a value, because the webhook schemas type those fields with `.optional()`, which accepts an absent key and rejects an empty string. A subscription bought for a scheduling period carries no direct slot times, so it used to reach the gateway with `startsAt: ""` and `endsAt: ""`, and every capture webhook for such a sale then failed validation and stamped the payment `REQUIRES_MANUAL_RECOVERY` with the buyer already charged. Because a Razorpay order never expires, orders minted before the fix keep replaying with those empty strings, so `validateWebhookMetadata()` also strips empty-string entries before it normalizes legacy keys and parses. Omitting empty keys has the useful side effect of giving the fifteen-key gateway ceiling more headroom.
+
 **Benefits:**
 
 - Webhook can recreate appointment even if frontend crashes
@@ -133,26 +135,37 @@ await prisma.$transaction(async (tx) => {
 // - Webhook will be retried by gateway
 ```
 
-### 5. Three-Layer Race Condition Protection
+### 5. Slot Occupancy Checks and the Buyer's Own Hold
 
-For consultation and subscription slot bookings:
+For consultation and subscription slot bookings, `validateSlotAvailability()` runs two blocking checks. The first rejects the request when any live appointment overlaps the requested window for this consultant, which includes another buyer's tentative hold. The second rejects it when the requesting buyer already holds an overlapping window with a live pending payment.
 
 ```typescript
-// Layer 1: Check confirmed bookings
-if (overlappingConfirmedBooking exists) {
+// Check 1: any live overlapping appointment for this consultant
+if (overlappingLiveAppointment exists) {
   throw Error("Time slot is already booked");
 }
 
-// Layer 2: Check same user duplicates
-if (userHasPendingBookingForThisSlot) {
-  throw Error("You already have a pending booking");
-}
-
-// Layer 3: Rate limiting
-if (pendingAttempts >= 3) {
-  throw Error("Time slot temporarily unavailable due to high demand");
+// Check 2: this buyer's own overlapping live hold
+if (buyerHasOverlappingPendingHold) {
+  throw Error("You already have a pending booking for this time slot...");
 }
 ```
+
+Both checks subtract the buyer's **self-hold** (#1463). A self-hold is an appointment that belongs to the requesting buyer, is for the same plan, has a payment that is still `PENDING` and still inside its expiry window, and covers exactly the window being requested. Such an appointment is not an occupant of the slot; it is the buyer's own open gateway order, and the open-order resume described below is the path that finishes or replaces it. Anything else keeps blocking, including a different buyer's hold on the same slot, a hold on a different plan, and this buyer's own hold on a window that merely overlaps the requested one. When the plan identity cannot be resolved at all, as with webinars and classes whose slot rows are shared between attendees, nothing is excluded.
+
+Exact coverage is compared against the appointment's whole slot run rather than a single row, because a booked window is stored as a series of contiguous thirty-minute atoms: the run's first start and last end are what must equal the request.
+
+The consultee-side conflict check inside the checkout lock applies the same exclusion, so the buyer's own hold does not resurface there as "You already have a session booked during this time."
+
+There is deliberately no per-slot attempt cap. Since check 1 blocks on any live hold, a count of pending attempts for one slot can never exceed one, so the hold itself is the cap.
+
+### 6. Open-Order Reuse
+
+A checkout that is remounted, reopened in a new tab, or retried after the buyer dismissed the gateway modal mints a fresh client idempotency key, so the same-key replay cannot recognise it. Before any gateway call, `findReusablePendingOrderPayment()` therefore looks for an open order the buyer can simply finish paying: a payment of theirs that is still `PENDING`, still inside its minted expiry window, on the same gateway, under the same organization, and joined to an appointment for the same plan.
+
+A candidate is adopted only when it is for the same booking as the current request. A consultation candidate must cover exactly the requested slot window, a subscription candidate must carry exactly the requested scheduling period, and every candidate's frozen amount must equal the total this request computed, so a changed coupon or credit balance can never be charged at a stale price. When a candidate is adopted, checkout returns the existing order id, amount and currency with `reused: true` and creates no second appointment and no second payment.
+
+Candidates that fail those gates are **superseded** rather than left open. Superseding runs in one transaction: the payment moves `PENDING` → `EXPIRED` through a compare-and-set that carries the old status in its `WHERE` clause, the appointment's tentative slots are cancelled through `transitionSlotCompletion()`, and the parent consultation or subscription is cancelled through its own guarded transition. Releasing the hold is not optional bookkeeping. If the payment were expired while its appointment kept occupying the calendar, the buyer's very next attempt would be rejected by the occupancy check above, which is the wall #1463 describes. Group events are excluded from the release because their slot rows are shared between attendees, so giving back a seat is a disconnect rather than a status move and belongs to the cancel-pending front door.
 
 ---
 

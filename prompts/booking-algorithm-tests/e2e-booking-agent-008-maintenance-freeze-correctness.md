@@ -5,12 +5,13 @@
 **Dev server:** already running (`npm run dev`)
 
 > **Coverage marker:** this case covers maintenance-freeze correctness for
-> in-flight money, whose guarantees land with **train PR 4 of #1169 (issue
-> #1163)**. Run it only on a branch where that PR is merged. The maintenance
-> subsystem itself (phases, middleware gate, financial-cron abort) is already
-> live — `lib/maintenance.ts`, `lib/maintenance-cron.ts`,
-> `app/api/admin/maintenance` — what PR 4 pins is that freezing never destroys
-> a payment and that freeze-then-cancel never refunds twice.
+> in-flight money. The whole subsystem is live on `dev` — the phases and the
+> financial-cron abort in `lib/maintenance.ts` and `lib/maintenance-cron.ts`,
+> the middleware gate in `lib/maintenance-edge.ts`, the admin API under
+> `app/api/admin/maintenance`, and the regression suite
+> `__tests__/maintenance/freeze-appointments.test.ts`. What this case proves is
+> that freezing never destroys a payment and that freeze-then-cancel never
+> refunds twice.
 
 You are a senior QA engineer. Your job is to prove two invariants across a
 maintenance freeze, using Supabase MCP for SQL and Chrome DevTools MCP for
@@ -59,8 +60,12 @@ for audit (`lib/maintenance.ts`). Two behaviors matter for money:
   jobs, precisely so half-frozen state is never "cleaned up" mid-freeze.
 
 The post-freeze catch-up order is documented in
-`docs/maintenance/04-cron-jobs-reference.md` §Post-Maintenance Catch-Up
-Priority; this case exercises the two money hazards in that hand-off.
+`docs/maintenance/07-post-maintenance-recovery.md` §4 "Run Critical
+Reconciliation Jobs", whose six priorities run payment reconciliation, slot
+reconciliation, payment-earnings sync, tentative-slot cleanup, refund
+reconciliation and payout reconciliation in that order. The fleet itself is
+catalogued in `docs/maintenance/04-cron-jobs-reference.md`. This case exercises
+the two money hazards in that hand-off.
 
 ---
 
@@ -197,20 +202,20 @@ refund, one clawback, one journal txn.
 
 ## Verification Checklist (End-to-End)
 
-| # | Check | Expected |
-| --- | --- | --- |
-| 1 | Freeze with PENDING payment: cleanup aborts under maintenance | job exits, no writes |
-| 2 | Payment row survives the freeze | row exists |
-| 3 | No hard-deleted slots mid-freeze | counts unchanged |
-| 4 | Post-thaw the payment resolves by STATUS, row intact | terminal status |
-| 5 | Cancel API blocked while frozen | 503 |
-| 6 | Manual cancel after thaw refunds once | 1 Refund row |
-| 7 | Second cancel is a dead CAS edge | 4xx |
-| 8 | Re-drives do not double-claw earnings | refundedShareAmount once |
-| 9 | Refund journal posting idempotent | 1 LedgerTransaction |
-| 10 | Ordering variant (freeze mid-cancel) identical | same as 6–9 |
-| 11 | Maintenance OFF at the end | GET reports OFF |
-| 12 | Cleanup complete | all `-008` counts = 0 |
+| #   | Check                                                         | Expected                 |
+| --- | ------------------------------------------------------------- | ------------------------ |
+| 1   | Freeze with PENDING payment: cleanup aborts under maintenance | job exits, no writes     |
+| 2   | Payment row survives the freeze                               | row exists               |
+| 3   | No hard-deleted slots mid-freeze                              | counts unchanged         |
+| 4   | Post-thaw the payment resolves by STATUS, row intact          | terminal status          |
+| 5   | Cancel API blocked while frozen                               | 503                      |
+| 6   | Manual cancel after thaw refunds once                         | 1 Refund row             |
+| 7   | Second cancel is a dead CAS edge                              | 4xx                      |
+| 8   | Re-drives do not double-claw earnings                         | refundedShareAmount once |
+| 9   | Refund journal posting idempotent                             | 1 LedgerTransaction      |
+| 10  | Ordering variant (freeze mid-cancel) identical                | same as 6–9              |
+| 11  | Maintenance OFF at the end                                    | GET reports OFF          |
+| 12  | Cleanup complete                                              | all `-008` counts = 0    |
 
 ---
 

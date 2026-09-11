@@ -28,6 +28,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { FINANCIAL_JOB_NAMES } from "../../lib/maintenance-cron";
+import { entrypointOf } from "../fixtures/workflow-introspection";
 
 const ROOT = path.join(__dirname, "..", "..");
 const WORKFLOW_DIR = path.join(ROOT, ".github", "workflows");
@@ -42,13 +43,16 @@ const LOCK_EXEMPT: Record<string, string> = {
   // lib/payments/payouts/payout-service.ts.
   "process-payouts.yml": "lock:payout_processing in payout-service.ts",
   "create-payout-batch.yml": "lock:payout_batch_creation in payout-service.ts",
-  // Bespoke lock plus a circuit breaker, because the job fans out to Stream's
-  // API and has to stop pounding it when that API is the thing failing.
-  "stream-sync.yml": "SYNC_LOCK_KEY in scripts/stream/stream-sync.ts",
   // The dead-man switch itself. Locking it through Redis would make the
   // watchdog depend on the infrastructure it exists to report on, and the
   // check is read-only, so a double-run costs nothing.
   "cron-heartbeat.yml": "deliberately unlocked — read-only dead-man switch",
+  // #1270 — a drift DETECTOR, not a job. It runs the operator script in
+  // `--check` mode, which makes no Stream write and no database write; the
+  // whole run is one `getAppSettings` read. Two concurrent reads cost one
+  // extra API call, so a lock would buy nothing and would give a read-only
+  // guard a hard dependency on Redis.
+  "stream-webhook-drift.yml": "deliberately unlocked — read-only drift check",
 };
 
 interface Row {
@@ -91,26 +95,6 @@ function findLock(
   if (!m) return null;
   const failMode = m[2].match(/failMode:\s*["']([^"']+)["']/);
   return { jobName: m[1], failMode: failMode ? failMode[1] : "unparsed" };
-}
-
-/** Extract the `.ts` file a workflow actually executes. */
-function entrypointOf(workflowSrc: string): string | null {
-  const tsx = workflowSrc.match(/tsx@[\d.]+\s+([^\s"']+\.ts)/);
-  if (tsx) return tsx[1];
-
-  // S6505-hardened variant (#1234): workflows running the locally-installed
-  // binary directly instead of on-demand npx resolution.
-  const localTsx = workflowSrc.match(/node_modules\/\.bin\/tsx\s+([^\s"']+\.ts)/);
-  if (localTsx) return localTsx[1];
-
-  const npmScript = workflowSrc.match(/run:\s*npm run ([a-z0-9:_-]+)/);
-  if (npmScript) {
-    const pkg = JSON.parse(read(path.join(ROOT, "package.json")) ?? "{}");
-    const cmd: string = pkg.scripts?.[npmScript[1]] ?? "";
-    const hit = cmd.match(/([^\s"']+\.ts)/);
-    return hit ? hit[1] : null;
-  }
-  return null;
 }
 
 function buildRegistry(): Row[] {
@@ -237,5 +221,64 @@ describe("cron lock registry (#1169)", () => {
       (name) => !registry.some((r) => r.jobName === name),
     );
     expect(orphaned).toEqual([]);
+  });
+
+  it("gates every refund front-door caller behind FINANCIAL_JOB_NAMES (#1506)", () => {
+    // A refunding sweep that is not in the set runs straight through DEGRADED
+    // maintenance, which is the exact bug #1506 fixed for the no-show and
+    // expiry sweeps. Grep scripts/** for callers rather than trusting a
+    // hand-maintained list, so a new refunding script fails this test instead
+    // of shipping unguarded.
+    const REFUND_FRONT_DOORS = [
+      "refundBookingPayment(",
+      "refundWholeEventPayments(",
+      "refundRemovedAttendeeSeat(",
+      "refundPaymentsForExpired(",
+    ];
+    const SCRIPTS_DIR = path.join(ROOT, "scripts");
+
+    function walk(dir: string): string[] {
+      const out: string[] = [];
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) out.push(...walk(full));
+        else if (entry.name.endsWith(".ts")) out.push(full);
+      }
+      return out;
+    }
+
+    const callers = walk(SCRIPTS_DIR).filter((file) => {
+      const src = read(file);
+      return !!src && REFUND_FRONT_DOORS.some((fn) => src.includes(fn));
+    });
+
+    expect(callers.length).toBeGreaterThan(0);
+
+    const ungated = callers
+      .map((file) => {
+        const lock = findLock(read(file));
+        return { file: path.relative(ROOT, file), jobName: lock?.jobName };
+      })
+      .filter((r) => !r.jobName || !FINANCIAL_JOB_NAMES.has(r.jobName))
+      .map((r) => `${r.file} → withCronLock("${r.jobName ?? "none"}")`);
+
+    expect(ungated).toEqual([]);
+  });
+
+  it("gives every scheduled workflow a queueing concurrency group", () => {
+    // #1413 — a second, redundant guard alongside withCronLock: an overlap
+    // should queue behind the in-flight run at the Actions layer too, not
+    // just at the Redis layer. cancel-in-progress must stay false, since
+    // killing a mid-flight money job is the one thing worse than a double run.
+    const missing = registry
+      .map((r) => r.workflow)
+      .filter((workflow) => {
+        const src = read(path.join(WORKFLOW_DIR, workflow));
+        if (!src) return true;
+        const hasGroup = /^concurrency:\s*\n\s*group:\s*\S+/m.test(src);
+        const hasNoCancel = /cancel-in-progress:\s*false/.test(src);
+        return !(hasGroup && hasNoCancel);
+      });
+    expect(missing).toEqual([]);
   });
 });

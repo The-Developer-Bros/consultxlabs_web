@@ -37,6 +37,7 @@ import {
   type RazorpayWebhookEnvelope,
 } from "@/schemas/webhooks/razorpay";
 import { getRazorpayClient } from "@/lib/payments/core/razorpay";
+import prisma from "@/lib/prisma";
 import { z } from "zod";
 
 // Strict inner-entity schemas used to narrow optional envelope fields at the
@@ -129,7 +130,10 @@ export async function routeCapturedPayment(params: {
     await handleRecordingPurchaseSuccess(orderId, gatewayPaymentId);
     return;
   }
-  await handlePaymentSuccess(orderId, notes, amountPaise);
+  // #1353 — the B2C pipeline persists the `pay_…` id on the Payment row it is
+  // already the single writer of, so later refund and dispute webhooks (which
+  // carry only that id) can find the row without a live gateway lookup.
+  await handlePaymentSuccess(orderId, notes, amountPaise, gatewayPaymentId);
 }
 
 /**
@@ -221,9 +225,23 @@ export async function processRazorpayWebhookEvent(
         );
         let paymentIntentId = refundEvent.payment_id;
 
+        // #1353 — ask our own database first. The capture pipeline persists the
+        // `pay_…` id on the Payment row, so the order id this refund needs is
+        // almost always one indexed read away; the gateway call below is now a
+        // fallback for pre-#1353 rows and for captures that never ran through
+        // the pipeline, not the only path. That matters because when the API
+        // call failed we used to continue with the `pay_…` id, which nothing
+        // downstream could match — the refund deferred for up to a week.
+        const knownPayment = await prisma.payment.findFirst({
+          where: { gatewayPaymentId: refundEvent.payment_id },
+          select: { paymentIntent: true },
+        });
+        const razorpayClient = knownPayment ? null : getRazorpayClient();
+        if (knownPayment) {
+          paymentIntentId = knownPayment.paymentIntent;
+        }
         // Only the refund family resolves payment_id → order_id via the SDK;
         // other event branches must not construct a client.
-        const razorpayClient = getRazorpayClient();
         if (razorpayClient) {
           try {
             const rzpPayment = await razorpayClient.payments.fetch(
@@ -274,7 +292,16 @@ export async function processRazorpayWebhookEvent(
         );
         let failedPaymentIntentId = failedRefundEvent.payment_id;
 
-        const razorpayClient = getRazorpayClient();
+        // #1353 — same order as the created/processed branch: our own row
+        // first, the gateway API only when we have never seen this capture.
+        const knownFailedPayment = await prisma.payment.findFirst({
+          where: { gatewayPaymentId: failedRefundEvent.payment_id },
+          select: { paymentIntent: true },
+        });
+        const razorpayClient = knownFailedPayment ? null : getRazorpayClient();
+        if (knownFailedPayment) {
+          failedPaymentIntentId = knownFailedPayment.paymentIntent;
+        }
         if (razorpayClient) {
           try {
             const rzpPayment = await razorpayClient.payments.fetch(
@@ -439,7 +466,20 @@ export async function processRazorpayWebhookEvent(
   } finally {
     // #813/#812 — on a defer, leave the row processed=false/error=null so the
     // stuck-event sweeper re-drives it once the awaited payment lands.
-    if (!deferred) {
+    if (deferred) {
+      // #1356 6.2 — that "leave it alone" is deliberately indistinguishable
+      // from "crashed before recording anything", which is exactly why a
+      // permanently-deferring event stayed invisible until the 168h give-up cap
+      // fired. Counting the deferrals is the only mark this path leaves, and it
+      // is what the sweeper alerts on. updateMany, not update, so a row that
+      // was archived between dispatch and here cannot throw inside a `finally`.
+      await prisma.webhookEvent
+        .updateMany({
+          where: { eventId },
+          data: { deferCount: { increment: 1 } },
+        })
+        .catch(() => {});
+    } else {
       await markWebhookEventProcessed(eventId, processingError);
     }
   }

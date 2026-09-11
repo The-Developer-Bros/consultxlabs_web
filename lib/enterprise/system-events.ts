@@ -49,12 +49,22 @@ export interface RecordSystemEventParams {
    * events for one invocation in a single query.
    */
   correlationId?: string | null;
+  /**
+   * Rethrow when the insert fails instead of swallowing it. For callers whose
+   * row is the only audit trail; see the note on the function below.
+   */
+  strict?: boolean;
 }
 
 /**
- * Record one operational event. Best-effort: if the insert fails we
+ * Record one operational event. Best-effort by default: if the insert fails we
  * log to console and return without throwing so the caller's main
  * code path is unaffected.
+ *
+ * #1270 — pass `strict` when the row is an AUTHORIZATION RECORD rather than
+ * telemetry. Operator access to a B2C recording has no `OrgAuditLog` to fall
+ * back on, so a swallowed insert there means the read is served with no
+ * persisted trail at all. Those callers need the failure, not the console line.
  */
 export async function recordSystemEvent(
   params: RecordSystemEventParams,
@@ -78,6 +88,7 @@ export async function recordSystemEvent(
     // The system_events insert itself failed — log and move on. An
     // outage of this table must not cascade into the calling worker.
     console.error("[recordSystemEvent] insert failed:", err);
+    if (params.strict) throw err;
   }
 
   // Fire-and-forget telemetry sink (#776 §K). The DB row above is the source

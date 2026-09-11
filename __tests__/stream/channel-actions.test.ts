@@ -103,6 +103,89 @@ describe("Channel Actions", () => {
       expect(mockChannel.create).toHaveBeenCalled();
     });
 
+    // #1270 — the roster travels inside the create() request body and Stream
+    // caps that at 100 members, the same ceiling `upsertUsersToStream` already
+    // respects. A 150-seat webinar built a valid roster and then had the whole
+    // create rejected, so the attendee who triggered it got no chat at all.
+    it("caps the create() roster at 100 and adds the rest in chunks", async () => {
+      const { createChannel } = await import(
+        "../../actions/stream/chat/channel.action"
+      );
+
+      mockChannel.query.mockResolvedValueOnce({ members: {} });
+      const members = Array.from({ length: 249 }, (_, i) => `attendee-${i}`);
+
+      const result = await createChannel({
+        channelType: "team",
+        channelId: "webinar-sold-out",
+        members,
+        createdById: "host",
+      });
+
+      const createData = mockStreamClient.channel.mock.calls.at(-1)?.[2] as {
+        members: string[];
+      };
+      expect(createData.members).toHaveLength(100);
+      // The creator has to be inside the atomic call — Stream needs
+      // created_by_id to resolve, and the host is the one channel member the
+      // channel cannot function without.
+      expect(createData.members[0]).toBe("host");
+
+      const followUps = mockChannel.addMembers.mock.calls.map(
+        ([batch]: [string[]]) => batch,
+      );
+      expect(followUps.map((b: string[]) => b.length)).toEqual([100, 50]);
+
+      // Nobody dropped, nobody duplicated, and the caller still sees everyone.
+      expect([...createData.members, ...followUps.flat()]).toEqual([
+        "host",
+        ...members,
+      ]);
+      expect(result.members).toHaveLength(250);
+    });
+
+    it("adds no follow-up request for an ordinary two-person channel", async () => {
+      const { createChannel } = await import(
+        "../../actions/stream/chat/channel.action"
+      );
+
+      mockChannel.query.mockResolvedValueOnce({ members: {} });
+
+      await createChannel({
+        channelType: "messaging",
+        channelId: "dm-a-b",
+        members: ["a", "b"],
+        createdById: "a",
+      });
+
+      // Chunking must not cost a second round trip on the shape almost every
+      // channel actually has.
+      expect(mockChannel.addMembers).not.toHaveBeenCalled();
+    });
+
+    it("still backfills the roster after losing a create race", async () => {
+      const { createChannel } = await import(
+        "../../actions/stream/chat/channel.action"
+      );
+
+      mockChannel.query.mockResolvedValueOnce({ members: {} });
+      mockChannel.create.mockRejectedValueOnce(
+        new Error('GetOrCreateChannel failed: "channel already exists"'),
+      );
+
+      await createChannel({
+        channelType: "team",
+        channelId: "webinar-raced",
+        members: Array.from({ length: 149 }, (_, i) => `attendee-${i}`),
+        createdById: "host",
+      });
+
+      // The winner created the same channel from the same roster, so the same
+      // remainder is owed either way and addMembers is idempotent.
+      expect(mockChannel.addMembers).toHaveBeenCalledTimes(1);
+      expect(mockChannel.addMembers.mock.calls[0][0]).toHaveLength(50);
+    });
+
     it("should deduplicate members list", async () => {
       const { createChannel } =
         await import("../../actions/stream/chat/channel.action");

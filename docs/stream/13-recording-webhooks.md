@@ -41,8 +41,8 @@ The recording system enables consultants to record webinars and classes for late
 - **Consultant-only recording control** - Only the session host can start/stop
 - **Automatic webhook processing** - Recording lifecycle managed via webhooks
 - **Idempotent operations** - Safe to receive duplicate webhook events
-- **Automatic transfer** - The `recording_ready` webhook enqueues the permanent-storage transfer immediately (via Next.js `after()`), and a cron job runs as a backstop sweeper that picks up any recording the webhook missed before its Stream URL expires
-- **Role-based access** - Different permissions for consultants, consultees, and admins
+- **Automatic transfer** - The `recording_ready` webhook enqueues the permanent-storage transfer immediately (via Next.js `after()`), and a cron job runs as a backstop sweeper that picks up any recording the webhook missed before its Stream URL expires. **See the correction below: this describes a pipeline that has never run.**
+- **Capability-based access** - Consultants, consultees, collaborators and replay buyers each reach a recording through a distinct ownership or entitlement path, and platform operators reach it through the back-office permission matrix: staff see metadata, admin alone plays the session, and either one is audited (#1270)
 
 ---
 
@@ -655,22 +655,53 @@ Stop recording for a video call.
 
 Get a single recording by ID.
 
-**Authorization:** Consultant (own recordings) or Consultee (paid enrollments) or Admin
+**Authorization:** the consultant who delivered the session, an accepted collaborator on its plan, a consultee holding a net-positive payment for the plan, or a standalone replay buyer. Platform operators reach it through the back-office matrix instead: `recordings.read` admits ADMIN and STAFF, while `recordings.play` is ADMIN-only. See the [Operator access](#operator-access-admin--staff) section below.
 
-**Response:**
+A successful response always carries an `access` object so a client can tell "you may not play this" apart from "there is nothing to play yet" — both of which present as a null `playbackUrl`. Error responses do not carry it, including the `410` returned when a Stream URL has lapsed for a caller entitled to play it.
+
+**Response (full access):**
 
 ```json
 {
-  "id": "clx123...",
-  "title": "Webinar: Introduction to React - Jan 15, 2025",
-  "recordingUrl": "https://...",
-  "supabaseUrl": "https://...",
-  "durationInMinutes": 45,
-  "recordedAt": "2025-01-15T10:00:00Z",
-  "status": "AVAILABLE",
-  "storageType": "SUPABASE"
+  "recording": {
+    "id": "clx123...",
+    "title": "Webinar: Introduction to React - Jan 15, 2025",
+    "playbackUrl": "https://...",
+    "thumbnailUrl": "https://...",
+    "previewClipUrl": "https://...",
+    "durationInMinutes": 45,
+    "recordedAt": "2025-01-15T10:00:00Z",
+    "status": "AVAILABLE",
+    "storageType": "SUPABASE"
+  },
+  "access": { "level": "FULL" }
 }
 ```
+
+**Response (staff, metadata only):**
+
+```json
+{
+  "recording": {
+    "id": "clx123...",
+    "title": "Webinar: Introduction to React - Jan 15, 2025",
+    "playbackUrl": null,
+    "thumbnailUrl": null,
+    "previewClipUrl": null,
+    "durationInMinutes": 45,
+    "recordedAt": "2025-01-15T10:00:00Z",
+    "status": "AVAILABLE",
+    "storageType": "SUPABASE",
+    "streamUrlExpiresAt": null
+  },
+  "access": {
+    "level": "METADATA_ONLY",
+    "reason": "Playback requires the recordings.play permission; staff receive metadata only."
+  }
+}
+```
+
+Every media URL is withheld from the metadata-only response, not only `playbackUrl`. A thumbnail is a frame of the session and the preview clip is a cut of it, so returning either would hand over exactly the content the cap exists to protect. The expiry branch behaves differently too: a full-access caller receives a `410` when a `STREAM_S3` recording's link has lapsed, whereas a metadata-only caller receives the record with `streamUrlExpiresAt` populated, because diagnosing that expiry is the reason a support agent is looking at all.
 
 ---
 
@@ -707,6 +738,8 @@ Sync recordings from Stream API for the current user.
   "recordings": [ ... ]
 }
 ```
+
+**Rate limit:** three calls per five minutes per user, via `streamRecordingSyncLimiter`. One POST here walks every session the caller owns or is enrolled in and issues a `listRecordings` request to Stream for each of them, so a single authenticated account could otherwise force an unbounded and billable fan-out. The edge `stream: api` rule already matched this path, but it is keyed by IP at sixty per minute, which neither identifies the caller nor reflects what the endpoint costs to serve. The user-keyed limiter is sized on what the feature is for: somebody presses "Sync" because a replay is missing, and the answer does not change on the second press.
 
 ---
 
@@ -815,13 +848,42 @@ Receives webhook events from Stream.
 
 ### Recording Operations
 
-| Role           | Start | Stop | View Own | View All | Transfer | Delete |
-| -------------- | :---: | :--: | :------: | :------: | :------: | :----: |
-| **Consultant** |  Yes  | Yes  |   Yes    |    No    |   Yes    |   No   |
-| **Consultee**  |  No   |  No  |  Yes\*   |    No    |    No    |   No   |
-| **Admin**      |  No   |  No  |   Yes    |   Yes    |    No    |   No   |
+| Role           | Start | Stop | View Own | Metadata (any) | Play (any) | Transfer | Delete |
+| -------------- | :---: | :--: | :------: | :------------: | :--------: | :------: | :----: |
+| **Consultant** |  Yes  | Yes  |   Yes    |       No       |     No     |   Yes    |   No   |
+| **Consultee**  |  No   |  No  |  Yes\*   |       No       |     No     |    No    |   No   |
+| **Staff**      |  No   |  No  |   Yes    |      Yes       |   **No**   |    No    |   No   |
+| **Admin**      |  No   |  No  |   Yes    |      Yes       |    Yes     |    No    |   No   |
 
 \*Consultees can only view recordings for webinars/classes they have a live paid enrollment for. As of #689 (STR-1), a successful payment alone is no longer sufficient — the entitlement nets any refunds, so a fully-refunded buyer loses access while a partially-refunded buyer keeps it.
+
+### Operator access (ADMIN / STAFF)
+
+Until #1270 the operator grant was a single line — `if (isPrivileged(session.user.role)) hasAccess = true` — in both `GET /api/stream/recordings/[recordingId]` and `GET /api/stream/meetings/[streamCallId]/recording-info`. Because `isPrivileged` returns true for STAFF as well as ADMIN, any staff member could fetch a playback URL for any recording on the platform, including a 1:1 consultation they had no relationship to, and nothing was written anywhere to record that they had. The operator path was therefore strictly less accountable than the tenant path, where deleting a recording or exporting a call log already produced an `OrgAuditLog` row.
+
+Three rules now hold, and they are implemented once in `lib/stream/recording-operator-access.ts` so no route can restate them differently.
+
+First, the grant is resolved through `BACKOFFICE_PERMISSIONS`, which is the declared single source of truth for who reaches which internal surface. `recordings.read` covers metadata and admits both ADMIN and STAFF; `recordings.play` covers any URL that renders the session and admits ADMIN alone. A bare `isPrivileged` call left the grant invisible to the file that is supposed to enumerate it.
+
+Second, staff receive metadata only. Everything a support agent needs in order to answer "where is my replay" — status, storage type, duration, recorded-at, and the Stream URL expiry — is metadata, and none of it requires watching the session. The session content belongs to the two people who agreed to record it for each other, not to the platform.
+
+Third, the operator branch is evaluated last, after every ownership and entitlement path. A staff member who actually delivered or bought the session passes one of those checks and keeps full playback; the operator branch only ever catches somebody with no relationship to the session at all. ADMIN is the one exception and short-circuits first, because holding `recordings.play` means the ownership walk cannot widen anything for them.
+
+### Auditing a privileged read
+
+Every read that is granted by the operator branch writes a trail before the response is built, and before any playback URL is minted, so the trail cannot lag the access it describes. There are two sinks.
+
+`OrgAuditLog` receives a `STREAM_RECORDING_ACCESSED` row whenever the session belongs to an organization, so the tenant can see that a platform operator reached into their sessions. `actorMembershipId` is null because the operator is acting as the platform rather than as a member; the actor's user id and role live in `details`, alongside `played`, which distinguishes a metadata read from playback. This write is deliberately not swallowed — it mirrors the sibling compliance export at `app/api/organizations/[orgId]/stream/calls/route.ts`, where a read that cannot be audited is not served.
+
+`SystemEvent` receives a `STREAM_RECORDING_ACCESS` row on every privileged read, including B2C recordings that have no tenant to write to. It is recorded at `WARN` severity rather than `INFO` so that reaching into someone else's session stands out when an on-call engineer scans the platform trail. `recordSystemEvent` is best-effort by its own contract, which is the honest ceiling today: there is no platform-wide audit table to write to instead, and introducing one is a schema change.
+
+### Playback URLs never leave the handler raw
+
+`Recording.recordingUrl` holds Stream's pre-signed S3 link. It is valid for fourteen days and carries its own credentials, so anybody who ends up holding the string can fetch the video with no session and no membership — a forwarded email, a pasted chat message, an exported CSV, or a third-party tool consuming the API all suffice. `GET /api/organizations/[orgId]/stream/calls` used to return that column verbatim to any org MANAGER+ when called with `?withRecordings=1`.
+
+That export now uses an explicit select allowlist that names no field which reaches the media — not `recordingUrl`, not `supabaseUrl`, not `supabasePath`, and not the thumbnail, preview clip or Stream identifiers. What remains is the retention picture the compliance pull actually exists for: whether a recording exists, whether it survived the transfer to permanent storage, how long it runs, and when its Stream link lapses.
+
+The route deliberately offers no playback arm at all, not even a short-lived signed one. [ADR 20](../enterprise/70-design-decisions/20-org-visibility-into-member-sessions.md) is the governing rule — an organization may see that a session happened, not what happened in it — and it considered and rejected exactly that design, on the grounds that an audit row does not change what a member has to assume about who can watch their coaching session. The equivalent allowlist already existed in `lib/api/scope/list-recordings.ts` for the org recordings page; this route was the arm the July 2026 audit missed.
 
 ### Access Verification Logic
 
@@ -875,17 +937,20 @@ const hasPaidEnrollment = payment != null && isPaymentEntitled(payment); // lib/
 | `lib/stream/recording-handlers.ts`         | Webhook event handlers         |
 | `lib/stream/recording-utils.ts`            | Helper functions               |
 | `lib/stream/recording-types.ts`            | Prisma payload types           |
+| `lib/stream/recording-operator-access.ts`  | Operator grant + audit (#1270) |
 
 ### API Routes
 
-| File                                                        | Endpoint           |
-| ----------------------------------------------------------- | ------------------ |
-| `app/api/stream/recordings/start/route.ts`                  | POST /start        |
-| `app/api/stream/recordings/stop/route.ts`                   | POST /stop         |
-| `app/api/stream/recordings/sync/route.ts`                   | POST /sync         |
-| `app/api/stream/recordings/[recordingId]/route.ts`          | GET /:id           |
-| `app/api/stream/recordings/[recordingId]/transfer/route.ts` | POST /:id/transfer |
-| `app/api/stream/webhooks/route.ts`                          | Webhook handler    |
+| File                                                             | Endpoint            |
+| ---------------------------------------------------------------- | ------------------- |
+| `app/api/stream/recordings/start/route.ts`                       | POST /start         |
+| `app/api/stream/recordings/stop/route.ts`                        | POST /stop          |
+| `app/api/stream/recordings/sync/route.ts`                        | POST /sync          |
+| `app/api/stream/recordings/[recordingId]/route.ts`               | GET /:id            |
+| `app/api/stream/recordings/[recordingId]/transfer/route.ts`      | POST /:id/transfer  |
+| `app/api/stream/webhooks/route.ts`                               | Webhook handler     |
+| `app/api/stream/meetings/[streamCallId]/recording-info/route.ts` | GET recording state |
+| `app/api/organizations/[orgId]/stream/calls/route.ts`            | GET org call export |
 
 ### Session Handlers
 
@@ -942,31 +1007,92 @@ SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
    USING (bucket_id = 'recordings');
    ```
 
-### Cron Job Configuration
+### The scheduled fleet behind recordings
 
-Set up a cron job to process expiring recordings:
+Four scheduled workflows keep the recording pipeline honest. Each one runs as a
+bare `npx tsx jobs/...` process under GitHub Actions, takes the fleet cron lock
+so that a manual dispatch cannot race the schedule, and writes a
+`SystemJobExecution` row that the staff Jobs page reads.
 
-```typescript
-// Example: Run daily at 3:00 AM UTC
-// 0 3 * * *
+| Workflow                            | Schedule (UTC)         | What it does                                                                                                                                                                                                                                                                 |
+| ----------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `transfer-expiring-recordings.yml`  | Every six hours at :58 | Copies every `SUPABASE_PERMANENT` recording out of Stream's S3 before the fourteen-day URL lapses, warns consultants whose `STREAM_ONLY` recordings are about to expire, and pages when a permanent recording is within seventy-two hours of expiry and still untransferred. |
+| `mark-expired-recordings.yml`       | Daily at 03:20         | Flips `STREAM_S3` recordings whose `streamUrlExpiresAt` has passed to `EXPIRED`, so the dashboard stops offering a URL that no longer resolves.                                                                                                                              |
+| `cleanup-old-stream-recordings.yml` | Daily at 03:00         | Deletes the Supabase object and tombstones the row for every recording past its organization's `streamRecordingRetentionDays`. This is the erasure half of the retention promise, so a failure here is a compliance problem rather than an untidy database.                  |
+| `reconcile-orphaned-recordings.yml` | Daily at 05:00         | Recovers recordings whose `call.recording_ready` webhook was never delivered. See the section below.                                                                                                                                                                         |
 
-import { RecordingTransferService } from "@/lib/stream/recording-transfer-service";
+### Recovering a recording whose webhook never arrived
 
-async function processExpiringRecordings() {
-  const result = await RecordingTransferService.processExpiringRecordings(
-    14, // daysBeforeExpiry — full Stream URL lifetime, sweeps near-ready (#899)
-    10, // batchSize
-  );
+A recording reaches the database exactly one way in normal operation: Stream
+delivers `call.recording_ready` and the webhook route writes a `Recording` row.
+When that delivery is lost, nothing in the system notices. The `MeetingSession`
+still carries `recordingStartedAt`, because our own code wrote it rather than a
+webhook, so the database records that a recording was started and simply has no
+row for the recording itself.
 
-  console.log(`Processed: ${result.processed}`);
-  console.log(`Succeeded: ${result.succeeded}`);
-  console.log(`Failed: ${result.failed}`);
+Before #1270 the only repair was `POST /api/stream/recordings/sync`, which a
+consultant has to click from the recordings page. That is not a backstop,
+because the person who would click it is the person who does not yet know
+anything is missing. Stream deletes the file fourteen days after the call, so a
+dropped webhook was a permanent loss of the customer's recording on a
+fourteen-day fuse — and #1134 established that dropped webhooks here were not
+hypothetical, since every delivery was lost for the whole period the webhook
+secret was unset in production.
 
-  // Also mark expired recordings
-  const expired = await RecordingTransferService.markExpiredRecordings();
-  console.log(`Marked expired: ${expired}`);
-}
-```
+`jobs/stream/reconcile-orphaned-recordings.ts` closes that gap. It selects every
+meeting session whose `recordingStartedAt` falls between two hours and fourteen
+days ago and which has no `Recording` row, asks Stream directly what recordings
+exist for that call, and writes whatever it finds through
+`RecordingService.syncSessionRecordings` — the same single writer the
+user-triggered sync uses, so a reconciled row is indistinguishable from a
+webhook-written one. The two-hour floor exists because Stream needs minutes to
+finish the egress and upload for a long session, and sweeping earlier would race
+the webhook it is backstopping.
+
+The job reports three counts, and each one means something different. A non-zero
+`recovered` is good news about this job and bad news about the webhook, so it
+raises a Sentry warning: the row exists now, but it only exists because a
+delivery was lost. A non-zero `stillMissing` means Stream held nothing for a call
+that claims to have been recorded, which usually means the recording failed
+rather than that it was lost in transit. A non-zero `unrecoverable` counts
+sessions already past Stream's retention window; those recordings are gone for
+good, and the number only grows, which makes it the honest measure of what the
+missing webhook secret cost.
+
+### Subscription drift is checked, not assumed
+
+`scripts/stream/ensure-webhook-subscription.ts` compares the event types the live
+Stream hook is subscribed to against `HANDLED_EVENT_TYPES`, the single list that
+`lib/stream/webhook-dispatch.ts` also reads. Run it with no flags to see the
+difference, with `--apply` to widen the hook, and with `--check` for the CI mode,
+which never writes, annotates each finding for the Actions log and exits `2` when
+the live app does not cover everything the dispatcher handles. An exit code of
+`1` is different and means the check could not run at all, usually because the
+runner has no Stream credentials.
+
+`.github/workflows/stream-webhook-drift.yml` runs the `--check` mode daily and on
+any pull request that touches the handled event list or the script itself.
+Applying is deliberately left to a human, because `--apply` calls
+`updateAppSettings` on a shared production Stream app that has no rehearsal
+environment.
+
+### Never import `@/lib/supabase` from a cron job
+
+`lib/supabase.ts` opens with `import "server-only"`. That marker package's main
+entry does nothing but throw; Next resolves it to an empty module under the
+`react-server` export condition, and every other resolver — including the bare
+Node process a workflow runs — gets the throw. Five scheduled workflows reached
+it transitively and therefore died during module evaluation, before a line of
+their own code ran, on every run they had ever had.
+
+The Supabase clients and the storage primitives a job needs now live in
+`lib/supabase-storage-core.ts`, which carries no marker. `lib/supabase.ts`
+re-exports every one of those names, so application code is unaffected and still
+gets the client-import guard. `__tests__/maintenance/workflow-import-env.test.ts`
+re-derives each scheduled workflow's import graph on every test run and fails if
+any of them reaches a `server-only` module again, or if a job that reaches the
+Supabase client module is not given the `NEXT_PUBLIC_SUPABASE_URL` and
+`NEXT_PUBLIC_SUPABASE_ANON_KEY` that module throws without.
 
 ---
 
@@ -1017,4 +1143,37 @@ streamLogger.error("Transfer failed", error, { recordingId });
 
 ---
 
-**Last Updated:** 2025-01-22
+## Correction — 2026-09-01
+
+**The transfer pipeline described above has never executed once.** Measured
+against the live database on 2026-08-30: 191 `Recording` rows, every one of them
+`READY` / `STREAM_S3`, and `transferAttempts = 0` across the board. Not "runs and
+sometimes fails" — never started.
+
+Two causes stacked. The `recording_ready` webhook could not enqueue anything
+because the whole Stream webhook endpoint 500'd on every delivery for months
+(it demanded a `STREAM_WEBHOOK_SECRET` Stream does not issue — fixed 2026-08-13
+in #1136), and the six-hourly backstop cron is one of the eight that could not
+start at all because `lib/auth-server.ts` called React 18's absent `cache()` at
+module scope (fixed in #1281).
+
+The section above is left in place rather than deleted because it still
+describes the design accurately, and because #1284 has since **decoupled new
+recordings from that pipeline entirely** in favour of Stream's external storage —
+writing straight to our own bucket, which removes the download-reupload hop, the
+fourteen-day race, the size cap and the cron together. That work is tracked in
+#1280 and is not yet shipped, so the transfer service and its workflow are still
+in the tree.
+
+Separately, #1280 catalogues four correctness defects that would have bitten had
+it ever run: a 500MB size cap below a normal 60-minute recording, a success gate
+that never verifies the uploaded bytes (a zero-byte MP4 can become the permanent
+record of a paid session), a non-CAS status write that lets two concurrent
+transfers permanently strand a recording, and a random path per retry that makes
+orphaned objects impossible to collect.
+
+**Do not read the section above as a description of production behaviour.**
+
+---
+
+**Last Updated:** 2026-09-01

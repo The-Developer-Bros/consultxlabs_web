@@ -22,24 +22,45 @@
 
 import prisma from "../../lib/prisma";
 import { withCronLock } from "@/lib/cron/with-cron-lock";
+import { abortIfMaintenance } from "@/lib/maintenance-cron";
+import { runJob } from "@/lib/observability/job-sentry";
 
 const RETENTION_DAYS = 400;
 
 export async function pruneSystemEvents(): Promise<{
   pruned: number;
 }> {
-  return withCronLock("prune-system-events", { failMode: "closed" }, async () => {
-    const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000);
-    const result = await prisma.systemEvent.deleteMany({
-      where: { createdAt: { lt: cutoff } },
-    });
-    if (result.count > 0) {
-      console.log(
-        `[prune-system-events] removed ${result.count} rows older than ${cutoff.toISOString()}`,
+  return withCronLock(
+    "prune-system-events",
+    { failMode: "closed" },
+    async () => {
+      const cutoff = new Date(
+        Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000,
       );
-    } else {
-      console.log("[prune-system-events] nothing to prune");
+      const result = await prisma.systemEvent.deleteMany({
+        where: { createdAt: { lt: cutoff } },
+      });
+      if (result.count > 0) {
+        console.log(
+          `[prune-system-events] removed ${result.count} rows older than ${cutoff.toISOString()}`,
+        );
+      } else {
+        console.log("[prune-system-events] nothing to prune");
+      }
+      return { pruned: result.count };
+    },
+  );
+}
+
+// The workflow executes this file directly; without an entry the scheduled run
+// only loaded the module and exited, so nothing was ever pruned.
+if (require.main === module) {
+  runJob("prune-system-events", async () => {
+    await abortIfMaintenance("prune-system-events");
+    try {
+      await pruneSystemEvents();
+    } finally {
+      await prisma.$disconnect();
     }
-    return { pruned: result.count };
   });
 }

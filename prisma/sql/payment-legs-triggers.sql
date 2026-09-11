@@ -1,17 +1,29 @@
 -- #1020-4 / C-02 — PaymentLeg funding-sum invariant, enforced by the DATABASE.
 --
 -- `lib/payments/payment-legs.ts::checkPaymentLegsSumToAmount` defines the
--- invariant: sum of non-reversal legs === Payment.amount, and every
--- *_REVERSAL leg is negative and never exceeds its original sibling in
--- magnitude. Checkout logs drift warn-only (a surprise 500 on the hot path
+-- invariant: sum of non-reversal, non-REFERRAL_CREDIT legs === Payment.amount,
+-- and every *_REVERSAL leg is negative and never exceeds its original sibling
+-- in magnitude. Checkout logs drift warn-only (a surprise 500 on the hot path
 -- blocks real bookings); reconcilers assert it after the fact. Both are
 -- detection. This trigger makes the imbalance UNCOMMITTABLE — the same
 -- posture ledger-triggers.sql already gives the journal — so no writer
 -- (app code, raw SQL, a future script) can persist drifted legs.
 --
--- Semantics mirror checkPaymentLegsSumToAmount EXACTLY:
+-- Semantics mirror checkPaymentLegsSumToAmount:
 --   * funding sum  = Σ amountPaise over legs whose source does not end in
---     `_REVERSAL` (LICENSE's intentional 0-value legs are part of the sum)
+--     `_REVERSAL`
+--   * a payment whose non-reversal legs are ALL 0-value LICENSE legs skips the
+--     sum comparison outright: the licence is absorbed at contract time, so the
+--     leg is deliberately 0 while Payment.amount stays at full price and the
+--     comparison is structurally false for every one of them. The checker
+--     carves the same shape out; without it here the trigger would reject at
+--     COMMIT the very checkout the checker waves through. The carve suppresses
+--     the sum comparison ONLY — both sides still run their reversal-pair loop
+--     over a licence-only payment, because a reversal with no original sibling
+--     is corrupt under either reading.
+--   * REFERRAL_CREDIT is EXCLUDED from that sum (#1347): Payment.amount is the
+--     gateway charge and the credit is already netted out of it, so counting
+--     the leg would demand the credit twice and fail every credit checkout
 --   * reversal leg = must be negative; |reversal| ≤ Σ its original siblings
 --
 -- DEFERRABLE INITIALLY DEFERRED: fires at COMMIT, so multi-statement writes
@@ -24,6 +36,8 @@ DECLARE
   v_amount BIGINT;
   v_funding_sum BIGINT;
   v_sibling_sum BIGINT;
+  v_original_count BIGINT;
+  v_non_license_count BIGINT;
   r RECORD;
 BEGIN
   SELECT "amount" INTO v_amount FROM "Payment" WHERE "id" = p_payment_id;
@@ -31,15 +45,32 @@ BEGIN
     RETURN; -- payment already gone (cascade delete) — nothing to guard
   END IF;
 
-  SELECT COALESCE(SUM("amountPaise"), 0) INTO v_funding_sum
+  -- Both counts span every non-reversal leg INCLUDING REFERRAL_CREDIT, so the
+  -- carve fires on exactly the shapes checkPaymentLegsSumToAmount carves: a
+  -- credit sitting beside a licence leg is a real funding leg and keeps the
+  -- payment in the comparison.
+  SELECT
+    COUNT(*),
+    COUNT(*) FILTER (
+      WHERE NOT ("source"::text = 'LICENSE' AND "amountPaise" = 0)
+    )
+  INTO v_original_count, v_non_license_count
   FROM "PaymentLeg"
   WHERE "paymentId" = p_payment_id
     AND RIGHT("source"::text, 9) <> '_REVERSAL';
 
-  IF v_funding_sum <> v_amount THEN
-    RAISE EXCEPTION 'payment_legs_sum_to_amount violated for payment %: legs sum to % but Payment.amount is %',
-      p_payment_id, v_funding_sum, v_amount
-      USING ERRCODE = 'check_violation';
+  IF NOT (v_original_count > 0 AND v_non_license_count = 0) THEN
+    SELECT COALESCE(SUM("amountPaise"), 0) INTO v_funding_sum
+    FROM "PaymentLeg"
+    WHERE "paymentId" = p_payment_id
+      AND RIGHT("source"::text, 9) <> '_REVERSAL'
+      AND "source"::text <> 'REFERRAL_CREDIT';
+
+    IF v_funding_sum <> v_amount THEN
+      RAISE EXCEPTION 'payment_legs_sum_to_amount violated for payment %: legs sum to % but Payment.amount is %',
+        p_payment_id, v_funding_sum, v_amount
+        USING ERRCODE = 'check_violation';
+    END IF;
   END IF;
 
   FOR r IN
@@ -70,15 +101,21 @@ $$ LANGUAGE plpgsql;
 -- SPLIT
 -- #1205-triage — a leg RE-PARENTING must validate BOTH payments: moving one
 -- leg from payment A to B can leave A under-funded while B validates clean.
+--
+-- The column references MUST stay double-quoted. PL/pgSQL case-folds a bare
+-- `NEW.paymentId` to `paymentid`, which is not a field on a Prisma-generated
+-- camelCase table, so every leg write died at COMMIT on `record "new" has no
+-- field "paymentid"` — the sum was never reached and the guard below never
+-- actually guarded anything.
 CREATE OR REPLACE FUNCTION assert_payment_legs_on_leg_write() RETURNS trigger AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN
-    PERFORM assert_payment_legs_ok(OLD.paymentId);
-  ELSIF TG_OP = 'UPDATE' AND NEW.paymentId IS DISTINCT FROM OLD.paymentId THEN
-    PERFORM assert_payment_legs_ok(OLD.paymentId);
-    PERFORM assert_payment_legs_ok(NEW.paymentId);
+    PERFORM assert_payment_legs_ok(OLD."paymentId");
+  ELSIF TG_OP = 'UPDATE' AND NEW."paymentId" IS DISTINCT FROM OLD."paymentId" THEN
+    PERFORM assert_payment_legs_ok(OLD."paymentId");
+    PERFORM assert_payment_legs_ok(NEW."paymentId");
   ELSE
-    PERFORM assert_payment_legs_ok(NEW.paymentId);
+    PERFORM assert_payment_legs_ok(NEW."paymentId");
   END IF;
   RETURN NULL;
 END;

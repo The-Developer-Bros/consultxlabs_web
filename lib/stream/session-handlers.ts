@@ -8,6 +8,7 @@
  */
 
 import prisma from "@/lib/prisma";
+import { transitionSlotCompletion } from "@/lib/booking/transitions";
 import { streamLogger } from "@/lib/stream-logger";
 
 // Types for Stream webhook payloads
@@ -113,24 +114,63 @@ export async function handleSessionEnded(
 
     const endedAt = new Date(created_at);
 
-    // Update meeting session and mark slot as completed atomically
-    await prisma.$transaction([
-      prisma.meetingSession.update({
+    // #1270 — Stream fires this `inactivity_timeout_seconds` after the LAST
+    // participant leaves, which on the live call type is 30 seconds. An empty
+    // room is not a finished session: one party stepping out for coffee at
+    // 09:56 of a 10:00-11:00 booking produced this event, and marking the slot
+    // COMPLETED then made it review-eligible and handed it to
+    // auto-complete-appointments — for a session that had not started.
+    //
+    // The session row still records that Stream's session ended, because it
+    // did; `endedReason` distinguishes it from a host closing the room, and
+    // `isDeliberateEnd` is what the join gates read. The SLOT only completes
+    // once its booked time is actually over.
+    const slotEndsAt = meetingSession.slotOfAppointment.endsAt;
+    const bookedTimeIsOver = !slotEndsAt || endedAt >= new Date(slotEndsAt);
+
+    await prisma.$transaction(async (tx) => {
+      await tx.meetingSession.update({
         where: { id: meetingSession.id },
         data: {
           endedAt,
           endedReason: "session_timeout",
           isRecording: false,
         },
-      }),
-      prisma.slotOfAppointment.update({
+      });
+      if (!bookedTimeIsOver) return;
+      // CAS (#1319): a late webhook must not resurrect a CANCELLED slot as
+      // COMPLETED. Zero rows is expected here, so log rather than throw; the
+      // session row above still records the truth about the call.
+      const moved = await transitionSlotCompletion(tx, {
         where: { id: meetingSession.slotOfAppointmentId },
-        data: {
-          completionStatus: "COMPLETED",
-          completedAt: endedAt,
+        to: "COMPLETED",
+        // Never lift UNVERIFIED: the maintenance drain parked it for a human.
+        fromIn: ["SCHEDULED"],
+        data: { completedAt: endedAt },
+        allowZero: true,
+      });
+      if (moved === 0) {
+        streamLogger.info(
+          "Slot not completable — already cancelled or completed",
+          {
+            sessionId: meetingSession.id,
+            streamCallId,
+          },
+        );
+      }
+    });
+
+    if (!bookedTimeIsOver) {
+      streamLogger.info(
+        "Stream session ended before the booked window closed — slot left open",
+        {
+          sessionId: meetingSession.id,
+          streamCallId,
+          endedAt: endedAt.toISOString(),
+          slotEndsAt: slotEndsAt ? new Date(slotEndsAt).toISOString() : null,
         },
-      }),
-    ]);
+      );
+    }
 
     // Calculate session duration if we have a start reference
     const slotStartTime = meetingSession.slotOfAppointment.startsAt;
@@ -210,23 +250,34 @@ export async function handleCallEnded(
     const endedAt = new Date(created_at);
 
     // Update meeting session and mark slot as completed atomically
-    await prisma.$transaction([
-      prisma.meetingSession.update({
+    await prisma.$transaction(async (tx) => {
+      await tx.meetingSession.update({
         where: { id: meetingSession.id },
         data: {
           endedAt,
           endedReason: "call_ended",
           isRecording: false,
         },
-      }),
-      prisma.slotOfAppointment.update({
+      });
+      // CAS (#1319) — see the session_timeout arm above.
+      const moved = await transitionSlotCompletion(tx, {
         where: { id: meetingSession.slotOfAppointmentId },
-        data: {
-          completionStatus: "COMPLETED",
-          completedAt: endedAt,
-        },
-      }),
-    ]);
+        to: "COMPLETED",
+        // Never lift UNVERIFIED: the maintenance drain parked it for a human.
+        fromIn: ["SCHEDULED"],
+        data: { completedAt: endedAt },
+        allowZero: true,
+      });
+      if (moved === 0) {
+        streamLogger.info(
+          "Slot not completable — already cancelled or completed",
+          {
+            sessionId: meetingSession.id,
+            streamCallId,
+          },
+        );
+      }
+    });
 
     // Calculate session duration if we have a start reference
     const slotStartTime = meetingSession.slotOfAppointment.startsAt;

@@ -1,3 +1,4 @@
+/** @jsxImportSource @/lib/pdf/react-runtime */
 /**
  * Credit-note PDF renderer — CGST s.34 `CreditNote` documents (#1230).
  *
@@ -14,7 +15,6 @@
  * tax split, and rate of tax.
  */
 
-import React from "react";
 import {
   Document,
   Page,
@@ -24,6 +24,16 @@ import {
   renderToBuffer,
 } from "@react-pdf/renderer";
 import type { Currency } from "@prisma/client";
+// #1365 — the consumer documents share their page furniture, their Devanagari
+// registration and their formatting with the consumer tax invoice.
+import {
+  StatutoryDocumentFrame,
+  statutoryStyles,
+  formatStatutoryDate,
+  taxTotalLines,
+  type StatutorySupplier,
+  type StatutoryBuyer,
+} from "./statutory-document-frame";
 
 export type CreditNotePdfData = {
   creditNoteNumber: string;
@@ -53,10 +63,11 @@ export type CreditNotePdfData = {
 };
 
 function formatMoney(paise: number, currency: Currency): string {
-  return new Intl.NumberFormat(
-    currency === "INR" ? "en-IN" : "en-US",
-    { style: "currency", currency, minimumFractionDigits: 2 },
-  ).format(paise / 100);
+  return new Intl.NumberFormat(currency === "INR" ? "en-IN" : "en-US", {
+    style: "currency",
+    currency,
+    minimumFractionDigits: 2,
+  }).format(paise / 100);
 }
 
 function fmt(d: Date | null | undefined): string {
@@ -77,7 +88,11 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: 15, fontWeight: "bold" },
   subtitle: { fontSize: 9, color: "#555", marginTop: 3 },
-  kv: { flexDirection: "row", justifyContent: "space-between", marginBottom: 3 },
+  kv: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 3,
+  },
   k: { color: "#666" },
   v: { fontWeight: "bold" },
   sectionTitle: {
@@ -97,7 +112,11 @@ const styles = StyleSheet.create({
   row: { flexDirection: "row", padding: 6, borderBottom: "0.5 solid #eee" },
   colDesc: { flex: 2 },
   colNum: { flex: 1, textAlign: "right" },
-  totalsRow: { flexDirection: "row", justifyContent: "flex-end", marginTop: 10 },
+  totalsRow: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    marginTop: 10,
+  },
   totalsBox: { width: 220 },
   totalLine: {
     flexDirection: "row",
@@ -129,7 +148,11 @@ function Kv({
   );
 }
 
-export function OrgCreditNoteDocument({ data }: { readonly data: CreditNotePdfData }) {
+export function OrgCreditNoteDocument({
+  data,
+}: {
+  readonly data: CreditNotePdfData;
+}) {
   // CR #1234 — a CN spanning multiple rates would render an aggregate ratio
   // ("11.5%") as if it were a statutory rate. Label it honestly as an
   // EFFECTIVE rate; per-line statutory breakdowns land with the CN data model.
@@ -253,4 +276,96 @@ export async function renderOrgCreditNotePdf(
   data: CreditNotePdfData,
 ): Promise<Buffer> {
   return await renderToBuffer(<OrgCreditNoteDocument data={data} />);
+}
+
+// ============================================================================
+// Consumer (B2C ConsumerCreditNote) — #1365
+// ============================================================================
+
+export type ConsumerCreditNotePdfData = {
+  creditNoteNumber: string;
+  issuedAt: Date;
+  reason?: string | null;
+  currency: Currency;
+  taxableValuePaise: number;
+  cgstPaise: number;
+  sgstPaise: number;
+  igstPaise: number;
+  totalPaise: number;
+  /** s.34(1) requires the credit note to reference the invoice it adjusts. */
+  originalInvoiceNumber: string;
+  originalInvoiceDate: Date;
+  placeOfSupply: string | null;
+  sacCode: string;
+  /** The ORIGINAL invoice's rate. Rule 46 read with s.34 requires the note to
+   *  state the rate of the tax it reverses, and a credit note may never move a
+   *  supply to a different rate. */
+  taxRateBps: number;
+  supplier: StatutorySupplier;
+  buyer: StatutoryBuyer;
+};
+
+export function ConsumerCreditNoteDocument({
+  data,
+}: {
+  readonly data: ConsumerCreditNotePdfData;
+}) {
+  return (
+    <Document>
+      <Page size="A4" style={statutoryStyles.page}>
+        <StatutoryDocumentFrame
+          title="TAX CREDIT NOTE"
+          subtitle={`Issued under Section 34 of the CGST Act, 2017${
+            data.reason ? ` — ${data.reason}` : ""
+          }`}
+          documentNumber={data.creditNoteNumber}
+          currency={data.currency}
+          supplier={data.supplier}
+          buyer={data.buyer}
+          buyerHeading="Recipient"
+          details={[
+            {
+              label: "Credit note date",
+              value: formatStatutoryDate(data.issuedAt),
+            },
+            // s.34(1)(a) — the original document must be identified on the note.
+            { label: "Original invoice", value: data.originalInvoiceNumber },
+            {
+              label: "Invoice date",
+              value: formatStatutoryDate(data.originalInvoiceDate),
+            },
+            { label: "Place of supply", value: data.placeOfSupply ?? "—" },
+          ]}
+          itemsHeading="Adjustment"
+          codeHeading="SAC"
+          items={[
+            {
+              description: "Taxable value reduced",
+              code: data.sacCode,
+              amountPaise: data.taxableValuePaise,
+            },
+          ]}
+          totals={[
+            { label: "Taxable value reduced", paise: data.taxableValuePaise },
+            ...taxTotalLines(data).map((line) => ({
+              ...line,
+              label: `${line.label} reversed`,
+            })),
+          ]}
+          grandTotalLabel="Total credit to recipient"
+          grandTotalPaise={data.totalPaise}
+          footer="System-generated credit note — does not require a signature per Notification No. 61/2020-Central Tax. This document reduces the supplier's output tax liability corresponding to the referenced invoice."
+        />
+      </Page>
+    </Document>
+  );
+}
+
+export async function renderConsumerCreditNotePdf(
+  data: ConsumerCreditNotePdfData,
+): Promise<Buffer> {
+  const buffer = await renderToBuffer(
+    <ConsumerCreditNoteDocument data={data} />,
+  );
+  return Buffer.from(buffer);
 }

@@ -28,7 +28,7 @@ BetterAuth is the authentication library powering sign-in, sign-up, session mana
 
 ### 3.1 Plugin Chain
 
-Plugins are registered in [`lib/auth.ts`](file:///Users/kaustavghosh/Desktop/familiarise_web/lib/auth.ts#L319-L530) in this order:
+Plugins are registered in [`lib/auth.ts`](../../../lib/auth.ts#L319-L530) in this order:
 
 ```
 organization() → sso() → customSession() → nextCookies()
@@ -74,7 +74,7 @@ session: {
 ```
 
 > [!IMPORTANT]
-> When you need the freshest session data (e.g., checking `onboardingCompleted` right after the user finishes onboarding), call `getSession(true)` — the `true` parameter sets `disableCookieCache` and forces a DB read. See [`lib/auth-server.ts`](file:///Users/kaustavghosh/Desktop/familiarise_web/lib/auth-server.ts).
+> When you need the freshest session data (e.g., checking `onboardingCompleted` right after the user finishes onboarding), call `getSession(true)` — the `true` parameter sets `disableCookieCache` and forces a DB read. See [`lib/auth-server.ts`](../../../lib/auth-server.ts).
 
 ### 3.3 Password Hashing
 
@@ -103,11 +103,11 @@ Fields marked `input: false` cannot be set by the client during sign-up — they
 
 | File | Role | Runtime |
 |---|---|---|
-| [`lib/auth.ts`](file:///Users/kaustavghosh/Desktop/familiarise_web/lib/auth.ts) | BetterAuth config + export `auth` | Node |
-| [`lib/auth-server.ts`](file:///Users/kaustavghosh/Desktop/familiarise_web/lib/auth-server.ts) | `getSession()` wrapper — used by server components and API routes | Node |
-| [`lib/auth-client.ts`](file:///Users/kaustavghosh/Desktop/familiarise_web/lib/auth-client.ts) | `authClient` + `useSession`, `signIn`, `signOut` — used by React components | Browser |
-| [`lib/auth-guard.ts`](file:///Users/kaustavghosh/Desktop/familiarise_web/lib/auth-guard.ts) | Page-level guards: `requireAuth`, `requireOnboarded`, `requireUserRole`, `requireNotOnboarded` | Node (server components) |
-| [`lib/auth-providers.ts`](file:///Users/kaustavghosh/Desktop/familiarise_web/lib/auth-providers.ts) | Centralized OAuth provider UI config (labels, button classes) | Shared |
+| [`lib/auth.ts`](../../../lib/auth.ts) | BetterAuth config + export `auth` | Node |
+| [`lib/auth-server.ts`](../../../lib/auth-server.ts) | `getSession()` wrapper — used by server components and API routes | Node |
+| [`lib/auth-client.ts`](../../../lib/auth-client.ts) | `authClient` + `useSession`, `signIn`, `signOut` — used by React components | Browser |
+| [`lib/auth-guard.ts`](../../../lib/auth-guard.ts) | Page-level guards: `requireAuth`, `requireOnboarded`, `requireUserRole`, `requireNotOnboarded` | Node (server components) |
+| [`lib/auth-providers.ts`](../../../lib/auth-providers.ts) | Centralized OAuth provider UI config (labels, button classes) | Shared |
 
 ### 4.2 Database Hooks
 

@@ -62,8 +62,8 @@ const recordingMetadataSelect = {
 const recordingParticipantSelect = {
   ...recordingMetadataSelect,
   recordingUrl: true,
-  supabaseUrl: true,
-  supabasePath: true,
+  storageUrl: true,
+  storagePath: true,
   thumbnailUrl: true,
   previewClipUrl: true,
   previewClipDuration: true,

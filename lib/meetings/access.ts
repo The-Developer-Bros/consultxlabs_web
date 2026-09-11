@@ -2,11 +2,23 @@ import { Prisma } from "@prisma/client";
 
 import prisma from "@/lib/prisma";
 import {
+  getStreamVideoClient,
+  isStreamConfigured,
+  withStreamCircuitBreaker,
+} from "@/lib/stream-client";
+import { STREAM_CALL_TYPE, toCallId } from "@/lib/stream/call-cid";
+import {
   CONSULTEE_JOIN_WINDOW_MS,
   CONSULTANT_JOIN_WINDOW_MS,
   getCurrentOrNextSession,
   getSessionJoinState,
+  isDeliberateEnd,
 } from "@/lib/appointments/slots";
+import {
+  isCancelledLikeStatus,
+  isCompletedLikeStatus,
+  isConfirmedStatus,
+} from "@/lib/appointments/status";
 
 /**
  * #1134 P0-1 — the single definition of "may this user join this meeting".
@@ -82,61 +94,61 @@ export type MeetingAppointment =
 
 /** Hoisted so `MeetingAppointment` can be inferred from the real query. */
 const MEETING_SESSION_INCLUDE = {
-      slotOfAppointment: {
+  slotOfAppointment: {
+    include: {
+      user: { select: { id: true } },
+      appointment: {
         include: {
-          user: { select: { id: true } },
-          appointment: {
+          consultation: {
             include: {
-              consultation: {
-                include: {
-                  consultationPlan: {
-                    select: {
-                      consultantProfileId: true,
-                      recordingEnabled: true,
-                    },
-                  },
+              consultationPlan: {
+                select: {
+                  consultantProfileId: true,
+                  recordingEnabled: true,
                 },
-              },
-              subscription: {
-                include: {
-                  subscriptionPlan: {
-                    select: {
-                      consultantProfileId: true,
-                      recordingEnabled: true,
-                    },
-                  },
-                },
-              },
-              webinar: {
-                include: {
-                  webinarPlan: {
-                    select: {
-                      id: true,
-                      consultantProfileId: true,
-                      recordingEnabled: true,
-                    },
-                  },
-                },
-              },
-              class: {
-                include: {
-                  classPlan: {
-                    select: {
-                      id: true,
-                      consultantProfileId: true,
-                      recordingEnabled: true,
-                    },
-                  },
-                },
-              },
-              trialSession: {
-                select: { consultantProfileId: true, status: true },
               },
             },
           },
+          subscription: {
+            include: {
+              subscriptionPlan: {
+                select: {
+                  consultantProfileId: true,
+                  recordingEnabled: true,
+                },
+              },
+            },
+          },
+          webinar: {
+            include: {
+              webinarPlan: {
+                select: {
+                  id: true,
+                  consultantProfileId: true,
+                  recordingEnabled: true,
+                },
+              },
+            },
+          },
+          class: {
+            include: {
+              classPlan: {
+                select: {
+                  id: true,
+                  consultantProfileId: true,
+                  recordingEnabled: true,
+                },
+              },
+            },
+          },
+          trialSession: {
+            select: { consultantProfileId: true, status: true },
+          },
         },
       },
-    } satisfies Prisma.MeetingSessionInclude;
+    },
+  },
+} satisfies Prisma.MeetingSessionInclude;
 
 function loadMeetingSession(meetingId: string) {
   return prisma.meetingSession.findUnique({
@@ -146,13 +158,45 @@ function loadMeetingSession(meetingId: string) {
 }
 
 /**
- * Booking states from which a join is refused outright, regardless of time.
+ * Whether a booking's own status permits joining its room at all, and what to
+ * say when it does not (#1270).
+ *
+ * This used to be a DENYLIST of three values — CANCELLED, REJECTED, EXPIRED —
+ * while the Join affordance in every dashboard is an ALLOWLIST,
+ * `isConfirmedStatus` = {APPROVED, SCHEDULED, IN_PROGRESS}. Everything in
+ * neither set passed the server gate while the UI hid the button: PENDING, a
+ * DRAFT webinar, and — the one that mattered — `APPROVED_PENDING_PAYMENT` and
+ * its trial twin `AWAITING_PAYMENT`. A consultant who typed /meetings/<id>
+ * walked into a booking nobody had paid for. #1272 closed that in the UI only.
+ * The two now read the same predicate, which is what the header of this file
+ * says the whole module exists for.
+ *
+ * Completed-like statuses are the deliberate exception, and they are handed to
+ * the time gate rather than refused here. `meetingPolicyRefusal` already owns
+ * "has this session finished", including the 30-minute reconnect grace, and it
+ * is stricter than a status check everywhere except inside that grace — where a
+ * status check would be WRONG. #1278 deleted the bufferless
+ * `app/api/cleanup/auto-complete-trials` route this paragraph used to cite as
+ * the concrete hazard: it flipped a trial to COMPLETED the moment any one of
+ * its slots ended. Trials now complete only through the hourly
+ * `auto-complete-appointments` job, which waits a full hour past the last slot
+ * and so lands outside the grace. The delegation stands regardless, because
+ * status is a coarse eventually-consistent summary while the time gate reads
+ * the slot rows and the meeting session itself.
+ *
+ * @returns The refusal message, or null when the status permits a join.
  */
-const TERMINAL_APPOINTMENT_STATUSES = new Set([
-  "CANCELLED",
-  "REJECTED",
-  "EXPIRED",
-]);
+function bookingStatusRefusal(status: string | null): string | null {
+  if (!status) return null;
+  if (isConfirmedStatus(status) || isCompletedLikeStatus(status)) return null;
+  // Cancelled, rejected and expired are over for good; everything else that
+  // lands here — pending, awaiting payment, a draft event — is a booking that
+  // has not been confirmed yet, and says so in the same words the tentative
+  // slot check uses.
+  return isCancelledLikeStatus(status)
+    ? "This booking is no longer active."
+    : "This session is not confirmed yet.";
+}
 
 /**
  * How long after the scheduled run end a disconnected participant may still
@@ -169,13 +213,14 @@ const REJOIN_GRACE_MS = 30 * 60 * 1000;
  * cancellation, or on an unpaid tentative booking — every one of those rules
  * lived only in React. This answers "is this session live/open yet?" from the
  * same run/window helpers the dashboards use, so the gate and the affordance
-* cannot drift.
+ * cannot drift.
  *
  * Returns null when joining is permitted; otherwise a user-facing refusal.
  */
 async function meetingPolicyRefusal(args: {
   appointmentId: string;
   role: Exclude<MeetingRole, null>;
+  streamCallId: string;
 }): Promise<string | null> {
   const now = new Date();
 
@@ -189,7 +234,9 @@ async function meetingPolicyRefusal(args: {
       isTentative: true,
       completionStatus: true,
       appointmentId: true,
-      meetingSession: { select: { id: true, endedAt: true } },
+      meetingSession: {
+        select: { id: true, endedAt: true, endedReason: true },
+      },
     },
   });
 
@@ -216,21 +263,63 @@ async function meetingPolicyRefusal(args: {
           : CONSULTEE_JOIN_WINDOW_MS) / 60000
       } minutes before the start time.`;
     case "ended": {
-      // Host ended the call → closed for everyone. Time-passed → brief
-      // rejoin grace for reconnects during an overrun.
-      const hostEndedEarly = run.slots.some(
-        (slot) => Boolean(slot.meetingSession?.endedAt),
-      );
-      if (
-        !hostEndedEarly &&
-        now.getTime() <= run.endsAt.getTime() + REJOIN_GRACE_MS
-      ) {
-        return null;
+      // A DELIBERATE end — the host closing the room, or a maintenance drain —
+      // closes it for everyone, immediately. An inactivity timeout does not:
+      // see isDeliberateEnd. #1270.
+      if (run.slots.some((slot) => isDeliberateEnd(slot.meetingSession))) {
+        return "This session has ended.";
       }
+
+      // Inside the clock grace, a reconnect is fine.
+      if (now.getTime() <= run.endsAt.getTime() + REJOIN_GRACE_MS) return null;
+
+      // #1270 — past the clock grace, ask the room rather than the calendar.
+      // Sessions overrun, and a fixed window locked a dropped participant out
+      // of a call that was demonstrably still running with their counterpart
+      // in it. Only reached on the path that was about to refuse, so the happy
+      // path pays nothing for it.
+      if (await callHasLiveParticipants(args.streamCallId)) return null;
+
       return "This session has ended.";
     }
     default:
       return null;
+  }
+}
+
+/**
+ * Does this call currently have anyone in it?
+ *
+ * #1270 — the rejoin grace used to be a fixed 30 minutes from the SCHEDULED
+ * end, which locked a dropped participant out of a session that was visibly
+ * still running. Sessions overrun; the calendar is a worse authority on
+ * "is this over" than the room itself.
+ *
+ * Fails CLOSED on a Stream error, and that is the right direction here even
+ * though it reads backwards. This probe only ever ADDS permission: it runs
+ * solely on the path that was already about to refuse, because the scheduled
+ * end plus the grace has passed. So "we could not ask the room" lands on the
+ * same answer the caller would have got without the probe at all. Failing open
+ * would be a new grant issued on the strength of an outage.
+ */
+async function callHasLiveParticipants(streamCallId: string): Promise<boolean> {
+  if (!isStreamConfigured()) return false;
+  try {
+    // #1270 review — through the breaker, like every other server-side Stream
+    // call in this cohort. Without it, during a Stream incident this probe runs
+    // on the request thread for every refused join and waits out the SDK's
+    // 30-second default, and its failures never feed the breaker that exists to
+    // stop exactly that.
+    const { call: state } = await withStreamCircuitBreaker(() =>
+      getStreamVideoClient()
+        .video.call(STREAM_CALL_TYPE, toCallId(streamCallId))
+        .get(),
+    );
+    if (state.ended_at) return false;
+    return (state.session?.participants?.length ?? 0) > 0;
+  } catch {
+    // Includes "call does not exist", which is a legitimate no.
+    return false;
   }
 }
 
@@ -279,23 +368,24 @@ export async function resolveMeetingAccess(
     message: string,
   ): Promise<MeetingAccess> => {
     // The booking's status lives on its parent row, not on Appointment.
+    //
+    // #1270 — the trial's status is now passed through as itself. It used to be
+    // flattened to "CANCELLED" for two values and to null for every other one,
+    // which is how AWAITING_PAYMENT — the trial equivalent of
+    // APPROVED_PENDING_PAYMENT — reached the room without anyone paying.
     const bookingStatus =
       appointment.consultation?.status ??
       appointment.subscription?.status ??
       appointment.webinar?.status ??
       appointment.class?.status ??
-      (appointment.trialSession?.status === "CANCELLED" ||
-      appointment.trialSession?.status === "REJECTED"
-        ? "CANCELLED"
-        : null);
-    if (
-      (bookingStatus && TERMINAL_APPOINTMENT_STATUSES.has(bookingStatus)) ||
-      appointment.deletedAt
-    ) {
+      appointment.trialSession?.status ??
+      null;
+    const statusRefusal = bookingStatusRefusal(bookingStatus);
+    if (statusRefusal || appointment.deletedAt) {
       return {
         hasAccess: false,
         role: null,
-        message: "This booking is no longer active.",
+        message: statusRefusal ?? "This booking is no longer active.",
         reason: "unauthorized",
         streamCallId,
         meetingSessionId,
@@ -305,6 +395,7 @@ export async function resolveMeetingAccess(
     const refusal = await meetingPolicyRefusal({
       appointmentId: appointment.id,
       role,
+      streamCallId,
     });
     if (refusal) {
       return {

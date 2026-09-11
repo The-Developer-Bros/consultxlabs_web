@@ -10,7 +10,7 @@ import { transitionConsultationRequest } from "@/lib/booking/transitions";
 import { refundRejectedRequest } from "@/lib/booking/rejection-refund";
 import { IllegalTransitionError } from "@/lib/enterprise/transitions";
 import { applyRateLimit, eventMutationLimiter } from "@/lib/rate-limit";
-import { resolveOrgScope } from "@/lib/api/scope/parse";
+import { resolveOrgScope, scopeOrgId } from "@/lib/api/scope/parse";
 import {
   requireApiAuth,
   isPrivileged,
@@ -65,7 +65,9 @@ export async function GET(request: NextRequest) {
           });
         }
         if (session.user.consulteeProfileId) {
-          ownershipArms.push({ requestedById: session.user.consulteeProfileId });
+          ownershipArms.push({
+            requestedById: session.user.consulteeProfileId,
+          });
         }
       }
       if (ownershipArms.length === 0) {
@@ -131,10 +133,14 @@ export async function GET(request: NextRequest) {
           { status: scopeResolution.status },
         );
       }
-      if (scopeResolution.scope.kind === "org") {
-        whereClause.appointment = {
-          organizationId: scopeResolution.scope.orgId,
-        };
+      // #674 B2B gap 9 — `orgMember` pins an org too: it is what an active
+      // member below `operations.read` resolves to, meaning "my own rows in
+      // THAT org". Testing `kind === "org"` alone dropped them into the
+      // unfiltered arm, so picking one org returned every org plus personal.
+      // scopeOrgId is the single place that knows which kinds pin.
+      const pinnedOrgId = scopeOrgId(scopeResolution.scope);
+      if (pinnedOrgId) {
+        whereClause.appointment = { organizationId: pinnedOrgId };
       }
       // kind === "all": no additional filter
     }
@@ -183,7 +189,10 @@ export async function GET(request: NextRequest) {
       },
     });
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "bookings" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "bookings" } },
+    );
     console.error("Error fetching consultations:", error);
     return NextResponse.json(
       { error: "An error occurred while fetching consultations" },
@@ -213,7 +222,9 @@ export async function PATCH(request: NextRequest) {
       );
     }
 
-    if (!Object.values(AppointmentStatus).includes(status as AppointmentStatus)) {
+    if (
+      !Object.values(AppointmentStatus).includes(status as AppointmentStatus)
+    ) {
       return NextResponse.json({ error: "Invalid status" }, { status: 400 });
     }
 
@@ -295,24 +306,58 @@ export async function PATCH(request: NextRequest) {
           include: {
             consultantProfile: {
               include: {
-                user: { select: { id: true, name: true, email: true, image: true, role: true, phone: true } },
+                user: {
+                  select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    image: true,
+                    role: true,
+                    phone: true,
+                  },
+                },
               },
             },
           },
         },
         requestedBy: {
           include: {
-            user: { select: { id: true, name: true, email: true, image: true, role: true, phone: true } },
+            user: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                image: true,
+                role: true,
+                phone: true,
+              },
+            },
           },
         },
         appointment: {
           include: {
             slotsOfAppointment: {
               include: {
-                user: { select: { id: true, name: true, email: true, image: true, role: true, phone: true } },
+                user: {
+                  select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    image: true,
+                    role: true,
+                    phone: true,
+                  },
+                },
               },
             },
-            payment: { select: { id: true, paymentStatus: true, amount: true, currency: true } },
+            payment: {
+              select: {
+                id: true,
+                paymentStatus: true,
+                amount: true,
+                currency: true,
+              },
+            },
           },
         },
       },
@@ -326,7 +371,10 @@ export async function PATCH(request: NextRequest) {
         { status: error.httpStatus },
       );
     }
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "bookings" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "bookings" } },
+    );
     console.error("Error updating consultation:", error);
     return NextResponse.json(
       { error: "An error occurred while updating consultation" },

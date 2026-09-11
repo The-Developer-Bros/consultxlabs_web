@@ -354,7 +354,33 @@ export async function DELETE() {
     endedBy: auth.userId,
   });
 
-  const recoveryResult = await runPostRecovery();
+  // #1146 — the unfreeze must not be able to be skipped by something upstream
+  // of it throwing.
+  //
+  // This used to be a bare `await`, with the chat unfreeze below it. Every step
+  // inside `runPostRecovery` is individually wrapped today, so a rejection is
+  // unlikely in practice — but the call site took no responsibility for it, and
+  // a single future unguarded `await` inside that function would make an OFF
+  // transition skip the unfreeze entirely and brick group chat with no signal.
+  // Stream grants `use-frozen-channel` to no role, so "bricked" means unwritable
+  // by every user AND every admin, with no error and no visible cause.
+  //
+  // The recovery report is best-effort; the unfreeze is not.
+  let recoveryResult: Awaited<ReturnType<typeof runPostRecovery>>;
+  try {
+    recoveryResult = await runPostRecovery();
+  } catch (error) {
+    reportSentryError(error, {
+      subsystem: "admin",
+      op: "maintenance.post-recovery",
+    });
+    recoveryResult = {
+      database: false,
+      redis: false,
+      notification: false,
+      errors: [formatError("runPostRecovery failed", error)],
+    };
+  }
 
   // #1134 — the drain freezes group chat channels on the way into OFFLINE, and
   // Stream grants `use-frozen-channel` to NO role by default, so a channel left
@@ -391,6 +417,7 @@ export async function DELETE() {
     chat = {
       unfrozen: 0,
       errors: [error instanceof Error ? error.message : String(error)],
+      source: "none",
     };
   }
 

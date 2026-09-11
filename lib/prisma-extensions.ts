@@ -150,6 +150,20 @@ export const moneyResultExtensions = {
     sgstPaise: f("sgstPaise"),
     totalPaise: f("totalPaise"),
   },
+  consumerInvoice: {
+    taxableValuePaise: f("taxableValuePaise"),
+    cgstPaise: f("cgstPaise"),
+    sgstPaise: f("sgstPaise"),
+    igstPaise: f("igstPaise"),
+    totalPaise: f("totalPaise"),
+  },
+  consumerCreditNote: {
+    taxableValuePaise: f("taxableValuePaise"),
+    cgstPaise: f("cgstPaise"),
+    sgstPaise: f("sgstPaise"),
+    igstPaise: f("igstPaise"),
+    totalPaise: f("totalPaise"),
+  },
   tdsAdjustment: { amountPaise: f("amountPaise") },
   gstTcsBatch: {
     netSupplyPaise: f("netSupplyPaise"),

@@ -4,7 +4,7 @@ import { useToast } from "@/components/ui/use-toast";
 import type { ConsultantDetailData } from "./types";
 import { TSlotTiming } from "@/types/slots";
 import { TUserWithProfessionalBackground } from "@/types/user";
-import { TConsultantReview } from "@/types/review";
+import { TPublicConsultantReview } from "@/types/review";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
@@ -24,7 +24,7 @@ import { formatInTimeZone } from "date-fns-tz";
 interface ExpertProfileClientProps {
   consultantDetails: ConsultantDetailData;
   userDetails: TUserWithProfessionalBackground;
-  reviews: TConsultantReview[];
+  reviews: TPublicConsultantReview[];
 }
 
 export function ExpertProfileClient({
@@ -297,7 +297,7 @@ export function ExpertProfileClient({
               <ProfileHeader
                 userDetails={userDetails}
                 consultantDetails={consultantDetails}
-                reviewCount={reviews.length}
+                reviewCount={consultantDetails.reviewCount}
               />
 
               <AboutSection
@@ -375,7 +375,11 @@ export function ExpertProfileClient({
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.3 }}
           >
-            <ReviewsSection reviews={reviews} />
+            <ReviewsSection
+              reviews={reviews}
+              publishedRating={consultantDetails.publishedRating}
+              reviewCount={consultantDetails.reviewCount}
+            />
           </motion.div>
           {/* Spacer to match pricing sidebar width */}
           <div className="hidden xl:block w-[450px] 2xl:w-[500px] flex-shrink-0" />

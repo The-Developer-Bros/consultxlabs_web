@@ -2,7 +2,7 @@ import * as Sentry from "@sentry/nextjs";
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import prisma from "@/lib/prisma";
-import { RecordingTransferService } from "@/lib/stream/recording-transfer-service";
+import { getBestRecordingUrl } from "@/lib/stream/recording-storage";
 import { RecordingService } from "@/lib/stream/recording-service";
 import {
   requireApiAuth,
@@ -463,7 +463,7 @@ async function extractRecordings(appointments: AppointmentWithSlots[]) {
       title: rec.title,
       durationInMinutes: rec.durationInMinutes,
       recordedAt: rec.recordedAt,
-      playbackUrl: await RecordingTransferService.getBestRecordingUrl(rec),
+      playbackUrl: await getBestRecordingUrl(rec),
       thumbnailUrl: rec.thumbnailUrl,
       status: rec.status,
     })),

@@ -83,7 +83,7 @@ Three Prisma models support SSO:
 
 **Layer 1: Write-time (primary gate)**
 
-`session.create.before` hook in `lib/auth.ts` calls [`shouldRejectSession()`](file:///Users/kaustavghosh/Desktop/familiarise_web/lib/sso/enforce-session.ts):
+`session.create.before` hook in `lib/auth.ts` calls [`shouldRejectSession()`](../../../../lib/sso/enforce-session.ts):
 
 1. Extract email domain → look up `OrgDomainClaim` (must be verified)
 2. Check `OrganizationSSOSettings.enforceSSO` (must be true, org must be ACTIVE)
@@ -101,7 +101,7 @@ Consequence: sessions created *before* an admin flips `enforceSSO` are not retro
 
 ### 3.4 Domain Check API
 
-[`GET /api/auth/sso/domain-check?email=<email>`](file:///Users/kaustavghosh/Desktop/familiarise_web/app/api/auth/sso/domain-check/route.ts) — Pre-auth discovery endpoint. The signin page calls this on email blur. Returns:
+[`GET /api/auth/sso/domain-check?email=<email>`](../../../../app/api/auth/sso/domain-check/route.ts) — Pre-auth discovery endpoint. The signin page calls this on email blur. Returns:
 
 ```json
 // Enforced domain with provider:
@@ -115,7 +115,7 @@ Rate limited at 60/hr per IP to prevent org-existence enumeration.
 
 ### 3.5 Provider Registration
 
-[`POST /api/organizations/[orgId]/sso/providers`](file:///Users/kaustavghosh/Desktop/familiarise_web/app/api/organizations/%5BorgId%5D/sso/providers/route.ts) — Owner-only. Creates a `SsoProvider` row:
+[`POST /api/organizations/[orgId]/sso/providers`](../../../../app/api/organizations/%5BorgId%5D/sso/providers/route.ts) — Owner-only. Creates a `SsoProvider` row:
 
 - Validates via `createProviderSchema` (Zod)
 - `providerId` must be alphanumeric (prevents path injection in derived URLs)
@@ -126,7 +126,7 @@ Rate limited at 60/hr per IP to prevent org-existence enumeration.
 
 ### 3.6 URL Derivation
 
-[`lib/sso/derive-urls.ts`](file:///Users/kaustavghosh/Desktop/familiarise_web/lib/sso/derive-urls.ts) derives ACS and metadata URLs from `providerId`:
+[`lib/sso/derive-urls.ts`](../../../../lib/sso/derive-urls.ts) derives ACS and metadata URLs from `providerId`:
 
 | Type | URL pattern |
 |---|---|
@@ -139,7 +139,7 @@ Rate limited at 60/hr per IP to prevent org-existence enumeration.
 
 ### 3.7 Provider Schema Validation
 
-[`lib/sso/provider-schemas.ts`](file:///Users/kaustavghosh/Desktop/familiarise_web/lib/sso/provider-schemas.ts):
+[`lib/sso/provider-schemas.ts`](../../../../lib/sso/provider-schemas.ts):
 
 - `samlConfigSchema`: `issuer` (string), `entryPoint` (URL), `cert` (string). **No `callbackUrl`** — BetterAuth derives it.
 - `oidcConfigSchema`: `issuer` (URL), `clientId`, `clientSecret`, `discoveryEndpoint` (URL), `pkce` (defaults to `true`).

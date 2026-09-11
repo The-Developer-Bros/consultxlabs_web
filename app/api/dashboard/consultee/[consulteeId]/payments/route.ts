@@ -7,6 +7,11 @@ import {
   forbiddenResponse,
 } from "@/lib/auth-helpers";
 import { resolveOrgScope, scopeOrgId } from "@/lib/api/scope/parse";
+import {
+  CONSUMER_INVOICE_SUMMARY_SELECT,
+  DISCOUNT_CODE_SUMMARY_SELECT,
+  REFUND_SUMMARY_SELECT,
+} from "@/lib/data/payments-select";
 
 export async function GET(
   request: Request,
@@ -78,8 +83,9 @@ export async function GET(
           ? { organizationId: scopedOrgId }
           : {};
 
-    // Per-Payment invoices stay out of this response since the v0 lockdown
-    // (#768) — v1.1 re-introduces a per-Payment invoice flow.
+    // #1365 — the per-Payment tax invoice is back. The v0 lockdown (#768) took
+    // it out; the platform bills as principal supplier, so a consumer charged
+    // 18% GST is owed the document and needs to be able to find it here.
     const [payments, credits, creditAgg, creditUsages] = await Promise.all([
       // All payments for this user, scoped to the selected org context
       prisma.payment.findMany({
@@ -110,26 +116,17 @@ export async function GET(
               },
             },
           },
-          discountCode: {
-            select: {
-              code: true,
-              discountType: true,
-              discountValue: true,
-            },
-          },
-          // #776 — refund visibility. Without this a cancelled-with-refund
-          // booking reads "SUCCEEDED" in the payment history forever.
+          discountCode: { select: DISCOUNT_CODE_SUMMARY_SELECT },
+          // Column shapes are shared with the admin payment route so the
+          // privacy boundary is defined once (lib/data/payments-select.ts).
+          // The soft-delete filter is buyer-side only: an operator still needs
+          // to see a withdrawn refund row, a buyer does not.
           refunds: {
             where: { deletedAt: null },
-            select: {
-              id: true,
-              amountPaise: true,
-              status: true,
-              reason: true,
-              createdAt: true,
-            },
+            select: REFUND_SUMMARY_SELECT,
             orderBy: { createdAt: "desc" },
           },
+          consumerInvoice: { select: CONSUMER_INVOICE_SUMMARY_SELECT },
         },
         orderBy: { createdAt: "desc" },
         // Per-user history; bound the payload (mirrors the main consultee
@@ -229,6 +226,7 @@ export async function GET(
         refunds,
         refundedPaise,
         displayStatus,
+        consumerInvoice: p.consumerInvoice,
         receiptUrl: p.receiptUrl,
         expiresAt: p.expiresAt,
         createdAt: p.createdAt,

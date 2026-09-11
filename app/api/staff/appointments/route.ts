@@ -10,6 +10,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePrivilegedAuth } from "@/lib/auth-helpers";
 import { getStaffAppointments } from "@/lib/data/staff-appointments";
+import type { Scope } from "@/lib/api/scope/parse";
 
 // Coerce a query param to a positive integer; NaN / <1 / non-integer falls
 // back to `fallback`. `parseInt("abc")` returns NaN (truthy), so a bare
@@ -17,6 +18,15 @@ import { getStaffAppointments } from "@/lib/data/staff-appointments";
 function positiveIntParam(raw: string | null, fallback: number): number {
   const n = Number(raw);
   return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
+/**
+ * #674 defect 13 — `?orgId=` drills into one tenant; its absence is the
+ * platform-wide view this endpoint exists for. requirePrivilegedAuth above is
+ * what earns `all`, so no membership check is needed to widen it.
+ */
+function staffScope(orgId: string | null): Scope {
+  return orgId ? { kind: "org", orgId } : { kind: "all" };
 }
 
 export async function GET(req: NextRequest) {
@@ -31,7 +41,7 @@ export async function GET(req: NextRequest) {
       search: searchParams.get("search"),
       dateFrom: searchParams.get("dateFrom"),
       dateTo: searchParams.get("dateTo"),
-      orgId: searchParams.get("orgId"),
+      scope: staffScope(searchParams.get("orgId")),
       page: positiveIntParam(searchParams.get("page"), 1),
       limit: positiveIntParam(searchParams.get("limit"), 20),
     });

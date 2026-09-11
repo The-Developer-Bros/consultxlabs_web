@@ -88,7 +88,7 @@ export async function GET(
   return NextResponse.json({ contract: { ...contract, locked } });
 }
 
-// TODO(#777 server-actions): kept as a Route Handler + useMutation to match the
+// TODO(#1332 server-actions): kept as a Route Handler + useMutation to match the
 // rest of the dashboard. New first-party form mutations should prefer a Server
 // Action (co-located write + revalidate, progressive enhancement) per the
 // agreed direction — migrate this when the dashboard converges on that pattern.
@@ -167,10 +167,7 @@ export async function PATCH(
       // would then 500 on the assignment lookup. Force the operator to
       // cancel the assignments (or wait for the cycle to roll) before
       // they can terminate. EXPIRED is fine: the cycle naturally ended.
-      if (
-        body.status === "TERMINATED" &&
-        current.status === "ACTIVE"
-      ) {
+      if (body.status === "TERMINATED" && current.status === "ACTIVE") {
         const now = new Date();
         const liveAssignmentCount = await tx.programAssignment.count({
           where: {
@@ -197,14 +194,11 @@ export async function PATCH(
           },
         });
         if (outstandingInvoices > 0) {
-          throw Object.assign(
-            new Error("CONTRACT_HAS_OUTSTANDING_INVOICES"),
-            {
-              httpStatus: 409,
-              code: "CONTRACT_HAS_OUTSTANDING_INVOICES",
-              counts: { outstandingInvoices },
-            },
-          );
+          throw Object.assign(new Error("CONTRACT_HAS_OUTSTANDING_INVOICES"), {
+            httpStatus: 409,
+            code: "CONTRACT_HAS_OUTSTANDING_INVOICES",
+            counts: { outstandingInvoices },
+          });
         }
       }
 
@@ -292,8 +286,7 @@ export async function PATCH(
     return NextResponse.json({ contract: updated });
   } catch (err) {
     if (err instanceof Error && "httpStatus" in err) {
-      const status =
-        typeof err.httpStatus === "number" ? err.httpStatus : 500;
+      const status = typeof err.httpStatus === "number" ? err.httpStatus : 500;
       const code =
         "code" in err && typeof err.code === "string" ? err.code : undefined;
       // #779 §A — forward counts so the UI can render the outstanding-invoice
@@ -303,11 +296,18 @@ export async function PATCH(
           ? err.counts
           : undefined;
       return NextResponse.json(
-        { error: err.message, ...(code && { code }), ...(counts && { counts }) },
+        {
+          error: err.message,
+          ...(code && { code }),
+          ...(counts && { counts }),
+        },
         { status },
       );
     }
-    Sentry.captureException(err instanceof Error ? err : new Error(String(err)), { tags: { subsystem: "enterprise" } });
+    Sentry.captureException(
+      err instanceof Error ? err : new Error(String(err)),
+      { tags: { subsystem: "enterprise" } },
+    );
     throw err;
   }
 }
@@ -367,11 +367,13 @@ export async function DELETE(
     return new NextResponse(null, { status: 204 });
   } catch (err) {
     if (err instanceof Error && "httpStatus" in err) {
-      const status =
-        typeof err.httpStatus === "number" ? err.httpStatus : 500;
+      const status = typeof err.httpStatus === "number" ? err.httpStatus : 500;
       return NextResponse.json({ error: err.message }, { status });
     }
-    Sentry.captureException(err instanceof Error ? err : new Error(String(err)), { tags: { subsystem: "enterprise" } });
+    Sentry.captureException(
+      err instanceof Error ? err : new Error(String(err)),
+      { tags: { subsystem: "enterprise" } },
+    );
     throw err;
   }
 }

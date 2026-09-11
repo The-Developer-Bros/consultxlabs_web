@@ -4,24 +4,20 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useSyncExternalStore } from "react";
 import { reportSentryError } from "@/lib/observability/report";
 import { CURRENCY_LOCALE_MAP } from "@/utils/formatting";
+import {
+  SUPPORTED_CURRENCIES,
+  type SupportedCurrency,
+} from "@/lib/currency-codes";
 
 const STORAGE_KEY = "preferred-currency";
 const DEFAULT_CURRENCY = "INR";
 
-// Currencies offered in the navbar dropdown (keep this list lean)
-export const SUPPORTED_CURRENCIES = [
-  { code: "INR", symbol: "\u20B9", label: "INR (\u20B9)" },
-  { code: "USD", symbol: "$", label: "USD ($)" },
-  { code: "EUR", symbol: "\u20AC", label: "EUR (\u20AC)" },
-  { code: "GBP", symbol: "\u00A3", label: "GBP (\u00A3)" },
-  { code: "AUD", symbol: "A$", label: "AUD (A$)" },
-  { code: "CAD", symbol: "C$", label: "CAD (C$)" },
-  { code: "SGD", symbol: "S$", label: "SGD (S$)" },
-  { code: "AED", symbol: "AED", label: "AED" },
-  { code: "JPY", symbol: "\u00A5", label: "JPY (\u00A5)" },
-] as const;
-
-export type SupportedCurrency = (typeof SUPPORTED_CURRENCIES)[number]["code"];
+// #1396 — the list itself moved to lib/currency-codes.ts so schemas/checkout.ts
+// can allowlist `displayCurrency` against the same codes without importing a
+// React module. Re-exported here because every existing consumer imports it
+// from the hook.
+export { SUPPORTED_CURRENCIES };
+export type { SupportedCurrency };
 
 // ---------- shared external store (cross-component reactivity) ----------
 
@@ -94,12 +90,6 @@ export function useCurrency() {
     retry: 2,
   });
 
-  const currency = isINR ? "INR" : (data?.currency ?? selectedCurrency);
-  const symbol = isINR
-    ? "\u20B9"
-    : (data?.symbol ??
-      SUPPORTED_CURRENCIES.find((c) => c.code === selectedCurrency)?.symbol ??
-      selectedCurrency);
   // No rate yet (still loading, or the provider failed after retries). Falling
   // back to 1 meant multiplying by nothing and then stamping a foreign symbol
   // on the result: a ₹5,000 session rendered as "$5,000" — about 83x its real
@@ -107,6 +97,24 @@ export function useCurrency() {
   // it never did. `rate === null` lets formatPrice show the true INR figure
   // instead, which is honest at any moment rather than wrong for a while.
   const rate: number | null = isINR ? 1 : (data?.rate ?? null);
+
+  // #1396 — `currency` and `symbol` used to keep naming the selected currency
+  // even while `rate` was null and formatPrice was already rendering rupees, so
+  // the navbar advertised "$ USD" over prices denominated in INR. The whole
+  // triple degrades together now: no rate means no foreign labelling anywhere.
+  const degradedToINR = isINR || rate === null;
+  const currency = degradedToINR ? "INR" : (data?.currency ?? selectedCurrency);
+  const symbol = degradedToINR
+    ? "\u20B9"
+    : (data?.symbol ??
+      SUPPORTED_CURRENCIES.find((c) => c.code === selectedCurrency)?.symbol ??
+      selectedCurrency);
+
+  // True exactly when the figures on screen are a converted estimate rather
+  // than the amount the gateway will charge. Checkout uses it to say so; the
+  // navbar uses it to attribute the rate provider. It is deliberately false
+  // during the degrade, because rupees shown as rupees are not an estimate.
+  const isEstimate = !isINR && rate !== null;
 
   const convert = useCallback(
     (amountINR: number): number => {
@@ -121,9 +129,9 @@ export function useCurrency() {
       // Convert from paise (smallest unit) to major unit for display
       const amountInMajor = amountInPaise / 100;
       const converted = convert(amountInMajor);
-      // Until a rate arrives, render the amount in the currency it is actually
-      // denominated in rather than relabelling it.
-      const displayCurrency = rate === null ? "INR" : currency;
+      // `currency` is already "INR" whenever `rate` is null, so the amount is
+      // rendered in the currency it is actually denominated in.
+      const displayCurrency = currency;
       // Use currency-appropriate locale for correct grouping (e.g. ₹1,00,000 vs $100,000)
       const locale =
         CURRENCY_LOCALE_MAP[displayCurrency.toUpperCase()] ||
@@ -136,16 +144,19 @@ export function useCurrency() {
           maximumFractionDigits: 0,
         }).format(converted);
       } catch (error) {
-        // Only throws on a malformed currency code (e.g. a bad value from
-        // /api/currency) \u2014 a real data bug, not the "still loading" case.
+        // Intl accepts any well-formed three-letter code, so a merely unknown
+        // currency renders rather than throws \u2014 reaching here means the code is
+        // structurally malformed, which only happens when a tampered
+        // localStorage value is echoed back by /api/currency. Report it; the
+        // fallback below still renders an honest number.
         reportSentryError(error, {
           subsystem: "client",
           extra: { displayCurrency },
         });
-        return `${rate === null ? "\u20B9" : symbol}${Math.round(converted).toLocaleString()}`;
+        return `${symbol}${Math.round(converted).toLocaleString()}`;
       }
     },
-    [convert, currency, symbol, rate],
+    [convert, currency, symbol],
   );
 
   const setCurrency = useCallback(
@@ -161,6 +172,7 @@ export function useCurrency() {
     currency,
     symbol,
     rate,
+    isEstimate,
     convert,
     formatPrice,
     setCurrency,

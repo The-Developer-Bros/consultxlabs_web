@@ -8,10 +8,8 @@ import {
   resolveBookingRefundContext,
 } from "@/lib/booking/cancellation-scope";
 import { isOrgAdminOfAppointment } from "@/lib/booking/org-actor";
-import {
-  computeRefundPct,
-  parsePolicySnapshot,
-} from "@/lib/payments/operations/cancellation-policy";
+import { fundingRailForIntent } from "@/lib/payments/operations/booking-refund";
+import { quoteBookingRefund } from "@/lib/payments/operations/cancellation-policy";
 import {
   REFUNDABLE_BALANCE_SELECT,
   refundableBalancePaise,
@@ -244,45 +242,46 @@ async function quoteIndividualBooking(
     (!!actor.consultantProfileId && roles.consultantUserId === actor.id) ||
     (isPrivilegedUser && actor.id !== roles.consulteeUserId);
 
-  // A booking that was never scheduled has no session to give notice on, so it
-  // sits in the top tier rather than the "already started" floor.
-  const nextSessionHours = ctx.hoursUntilNextSession ?? -1;
-  const noticeHours =
-    ctx.slotsTotal === 0 ? Number.POSITIVE_INFINITY : nextSessionHours;
-  const refundPct = computeRefundPct(
-    parsePolicySnapshot(ctx.policySnapshot),
-    noticeHours,
+  // #1319 — the notice tier, the proration and the clamp are the POST route's
+  // own code now, not a restatement of it. An unpaid booking quotes off zeros,
+  // which the clamp turns into zero.
+  const quote = quoteBookingRefund({
+    policy: ctx.policy,
+    hoursUntilNextSession: ctx.hoursUntilNextSession,
+    slotsTotal: ctx.slotsTotal,
+    sessionsRemaining: ctx.sessionsRemaining,
+    isSubscription: !!appointment.subscriptionId,
     isConsultantInitiated,
-  );
-
-  const grossPaise = ctx.paidPayment?.amountPaise ?? 0;
-  // #1006 — the refundable base is the undelivered share of the plan price.
-  // The denominator is `slotsTotal`, every session the plan ever held time
-  // for, because that is what the POST route divides by (#1174). Summing
-  // completed + live instead drops every terminal-but-not-completed session
-  // out of the plan, and the quote then promises more than the cancel pays.
-  const isProratable = !!appointment.subscriptionId && ctx.slotsTotal > 0;
-  const proratedBasePaise = isProratable
-    ? Math.floor((grossPaise * ctx.sessionsRemaining) / ctx.slotsTotal)
-    : grossPaise;
-  const estimatedRefundPaise = ctx.paidPayment
-    ? Math.min(
-        Math.floor((proratedBasePaise * refundPct) / 100),
-        ctx.paidPayment.refundablePaise,
-      )
-    : 0;
+    // #1500 — a booking funded entirely by referral credit. The rail alone is not
+    // enough: `free_` with a non-zero amount is a mixed payment and settles on the
+    // money arm, so both halves of the predicate are load-bearing.
+    isFreeCreditFunded:
+      fundingRailForIntent(bookingPayment?.paymentIntent) === "CREDITS" &&
+      (ctx.paidPayment?.amountPaise ?? 0) === 0,
+    grossPaise: ctx.paidPayment?.amountPaise ?? 0,
+    refundablePaise: ctx.paidPayment?.refundablePaise ?? 0,
+  });
 
   return {
-    refundPct,
-    estimatedRefundPaise,
+    refundPct: quote.refundPct,
+    estimatedRefundPaise: quote.refundPaise,
+    // #1500 — the dialog must say "your credit comes back in full" rather than show
+    // a ₹0 refund next to a 100% tier, which is what a credit-funded quote looks
+    // like when only the money fields are read.
+    creditRestoresInFull: quote.creditRestoresInFull,
     currency: bookingPayment?.currency ?? "INR",
     hoursUntilNextSession: ctx.hoursUntilNextSession,
     // Only true when proration actually moves the number — an untouched
     // subscription refunds off the whole price, like every other booking.
     // Keyed on the same two numbers the base is: any session that is no
     // longer live has already shrunk the quote, whether or not it COMPLETED.
-    prorated: isProratable && ctx.sessionsRemaining < ctx.slotsTotal,
-    creditFunded: bookingPayment?.paymentIntent.startsWith("free_") ?? false,
+    prorated: quote.prorated,
+    // Which rail the money comes back on, which is the sentence the dialog
+    // actually needs. `free_` alone was not enough: a wallet-, invoice- or
+    // licence-funded learner was told their card would be credited in 5–7
+    // working days for a card that was never charged, and the org whose
+    // balance was actually restored was not mentioned at all.
+    fundingRail: fundingRailForIntent(bookingPayment?.paymentIntent),
     wholeEvent: false,
     attendeeCount: null,
   };
@@ -300,10 +299,6 @@ async function quoteIndividualBooking(
  * same tier function, the same linear proration and the same clamp to the
  * refundable balance. Restating any of that here would let the quote and the
  * charge drift.
- *
- * TODO(#1174): `lib/booking/org-actor` is replicated from
- * fix/reschedule-cancel-lifecycle, which introduces it for the POST route.
- * Drop this note once the two have converged on one copy.
  */
 export async function GET(
   _request: Request,
@@ -372,9 +367,10 @@ export async function GET(
         hoursUntilNextSession: null,
         prorated: false,
         // Seats fund through several rails at once (card, org wallet, credits),
-        // so no single funding sentence is true of the aggregate. The
-        // whole-event copy stands on its own.
-        creditFunded: false,
+        // so no single funding sentence is true of the aggregate. Null rather
+        // than a rail: the whole-event copy stands on its own and naming one
+        // rail here would be a claim about seats it does not cover.
+        fundingRail: null,
         wholeEvent: true,
         attendeeCount: quote.attendeeCount,
       });

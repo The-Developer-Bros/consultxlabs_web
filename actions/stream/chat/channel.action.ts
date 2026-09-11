@@ -30,6 +30,7 @@ import {
   isChannelAlreadyExistsError,
 } from "@/lib/stream-utils";
 import { assertCanDirectMessage } from "@/lib/stream/dm-eligibility";
+import { addRemainingMembers, createMemberChunk } from "@/lib/stream/batch";
 
 // Input validation schemas
 const channelTypeSchema = z.enum(["messaging", "team"]);
@@ -128,10 +129,16 @@ export async function createChannel(input: {
 
   // Create the channel with members atomically
   // Note: Explicitly typing channel data for stream-chat v9
+  // #1270 — `create()` carries its roster in the request body and Stream caps
+  // that at 100 members, the same ceiling `upsertUsersToStream` above already
+  // respects. A 150-seat webinar therefore built a valid roster and then threw
+  // it at Stream in one oversized call, which was rejected outright. The
+  // creator is first in `allMembers` by construction, so they are always inside
+  // this chunk; the rest are added below.
   const createChannelData = {
     name: validated.channelName,
     created_by_id: validated.createdById,
-    members: allMembers,
+    members: createMemberChunk(allMembers),
     ...mergedAdditionalData,
   };
   const channel = client.channel(
@@ -161,6 +168,12 @@ export async function createChannel(input: {
       type: validated.channelType,
     });
   }
+
+  // #1270 — everyone the create() chunk could not carry, 100 at a time. Runs
+  // on the adopted path too: the winner created the same channel from the same
+  // roster, so the same remainder is owed either way and `addMembers` is
+  // idempotent for anyone already in.
+  await addRemainingMembers(channel, allMembers);
 
   // Channel-scoped moderation replaces the old global-admin Stream role
   // (#899). Only the channel HOST may moderate — never an arbitrary creator:

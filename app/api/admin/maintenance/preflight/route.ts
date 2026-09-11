@@ -29,6 +29,9 @@ export async function GET() {
       where: {
         startsAt: { gte: now, lte: fourHoursFromNow },
         isTentative: false,
+        // A cancelled session is tombstoned, not deleted, so an unfiltered
+        // count warns the operator about sessions that will never happen.
+        deletedAt: null,
       },
     }),
     prisma.consultantPayout.count({ where: { status: "PENDING" } }),

@@ -12,6 +12,10 @@ import { RecordingTransferService } from "@/lib/stream/recording-transfer-servic
 import { streamLogger } from "@/lib/stream-logger";
 import { withCronLock, CronLockHeldError } from "@/lib/cron/with-cron-lock";
 import * as Sentry from "@sentry/nextjs";
+import {
+  assertNotInMaintenance,
+  MaintenanceActiveError,
+} from "@/lib/maintenance-cron";
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
   try {
@@ -22,6 +26,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    // The cron core is shared with the jobs/** entrypoint, which exits on
+    // maintenance; this HTTP twin cannot exit, so it answers 503 instead.
+    await assertNotInMaintenance("mark-expired-recordings");
 
     streamLogger.info("Starting mark-expired-recordings cron");
     Sentry.logger.info("cron:mark-expired-recordings started");
@@ -33,7 +40,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       () => RecordingTransferService.markExpiredRecordings(),
     );
 
-    Sentry.logger.info("cron:mark-expired-recordings finished", { expiredCount });
+    Sentry.logger.info("cron:mark-expired-recordings finished", {
+      expiredCount,
+    });
     return NextResponse.json({
       success: true,
       expiredCount,
@@ -44,12 +53,17 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     if (error instanceof CronLockHeldError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
-    Sentry.captureException(error, { tags: { subsystem: "cron", job: "mark-expired-recordings" } });
+    if (error instanceof MaintenanceActiveError) {
+      return NextResponse.json(
+        { error: error.message, phase: error.phase },
+        { status: error.httpStatus },
+      );
+    }
+    Sentry.captureException(error, {
+      tags: { subsystem: "cron", job: "mark-expired-recordings" },
+    });
     streamLogger.error("Mark expired recordings cron failed", error);
-    return NextResponse.json(
-      { error: "Cron job failed" },
-      { status: 500 },
-    );
+    return NextResponse.json({ error: "Cron job failed" }, { status: 500 });
   }
 }
 

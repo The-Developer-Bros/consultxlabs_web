@@ -65,12 +65,14 @@ function ExpertMiniCardImpl({ expert, badge }: ExpertMiniCardProps) {
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-1">
-              <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
-              <span className="text-xs font-medium text-muted-foreground">
-                {expert.rating.toFixed(1)}
-              </span>
-            </div>
+            {expert.rating !== null && (
+              <div className="flex items-center gap-1">
+                <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
+                <span className="text-xs font-medium text-muted-foreground">
+                  {expert.rating.toFixed(1)}
+                </span>
+              </div>
+            )}
           </div>
         </div>
 

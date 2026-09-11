@@ -23,7 +23,6 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import { PricingOption } from "../defaults";
 import { useToast } from "@/hooks/use-toast";
 import { addMonths, differenceInDays, format } from "date-fns";
-import { useCurrency } from "@/hooks/useCurrency";
 import { formatCurrencyAmount } from "@/utils/formatting";
 import { TrialBookingModal } from "./TrialBookingModal";
 
@@ -84,7 +83,6 @@ export default function SubscriptionPricingToggle({
 }: Readonly<SubscriptionPricingToggleProps>) {
   const { data: session } = useSession();
   const { toast } = useToast();
-  const { formatPrice } = useCurrency();
   // Track the active plan by id so plans that share a duration (e.g. two
   // 3-month subscriptions) remain independently selectable and bookable.
   const [activeSubscriptionOption, setActiveSubscriptionOption] =
@@ -365,8 +363,14 @@ export default function SubscriptionPricingToggle({
             </div>
 
             <div className="flex items-end gap-2 my-5">
+              {/* #1396 — this is the headline price of a plan the server will
+                  charge, so it renders in the plan's own currency, exactly as
+                  the trial price above it does for the reason given at #1167.
+                  `formatPrice` took INR paise and applied the viewer's FX rate,
+                  which relabelled the plan and disagreed with the trial line
+                  two elements away. */}
               <span className="text-5xl font-bold tracking-tight text-white">
-                {formatPrice(option.price)}
+                {formatCurrencyAmount(option.price, option.priceCurrency || "INR")}
               </span>
               <span className="text-zinc-500 text-sm mb-1.5">/ month</span>
             </div>

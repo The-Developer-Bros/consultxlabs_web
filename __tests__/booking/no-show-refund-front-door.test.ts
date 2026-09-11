@@ -54,18 +54,47 @@ jest.mock("../../lib/novu/service", () => ({
   notifyRefundProcessed: jest.fn(),
 }));
 
-jest.mock("../../lib/prisma", () => ({
-  __esModule: true,
-  default: {
+// #1493 — claimConsultantNoShow now runs the cancel through
+// transitionConsultationRequest inside prisma.$transaction, so the mock needs
+// $transaction (running its callback against this same client),
+// consultation.findUnique (the helper's pre-read of the from-status), and
+// bookingStatusHistory.create (the audit row the helper appends).
+jest.mock("../../lib/prisma", () => {
+  const client: Record<string, unknown> = {
     consultation: {
       findMany: jest.fn(),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      findUnique: jest.fn().mockResolvedValue({
+        status: "APPROVED",
+        appointment: { id: "appt-1" },
+      }),
     },
     slotOfAppointment: {
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
+    bookingStatusHistory: {
+      create: jest.fn().mockResolvedValue({}),
+    },
     $disconnect: jest.fn(),
-  },
+  };
+  client.$transaction = jest.fn((fn: (tx: unknown) => unknown) => fn(client));
+  return { __esModule: true, default: client };
+});
+
+// #1280 — the detector now corroborates against Stream before refunding,
+// because our attendance rows come from per-participant webhook deliveries that
+// can be lost independently. These cases model a no-show Stream AGREES with:
+// exactly one participant was in the call. Without this the suite exercises the
+// refusal path instead, and no refund fires at all.
+jest.mock("../../lib/stream/call-presence", () => ({
+  getCallPresenceEvidence: jest.fn(async () => ({
+    unique: 1,
+    maxConcurrent: 1,
+  })),
+}));
+
+jest.mock("../../lib/support/create-ticket", () => ({
+  createSupportTicket: jest.fn(async () => ({ id: "ticket-1" })),
 }));
 
 jest.mock("../../lib/cron/with-cron-lock", () => ({
@@ -110,6 +139,11 @@ function noShowCandidate(payment: {
       slotsOfAppointment: [
         {
           meetingSession: {
+            // #1280 — the detector now asks Stream to corroborate before any
+            // money moves, so the session needs a call id for it to ask about.
+            // Without one it refuses, which is the correct behaviour and not
+            // what these cases are exercising.
+            streamCallId: "slot-cons-1",
             // Only the consultee shows up.
             attendances: [{ userId: CONSULTEE_USER }],
           },

@@ -1,12 +1,12 @@
 "use client";
 
-import * as Sentry from "@sentry/nextjs";
 import { useEffect, useState, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { CheckoutResultSkeleton } from "@/app/checkout/CheckoutSkeletons";
 import { CheckCircle, Clock, Calendar, ArrowRight } from "lucide-react";
+import { reportPaymentsError } from "@/app/checkout/plans/utils";
 interface PaymentDetails {
   paymentIntent: string;
   appointmentType: string;
@@ -77,10 +77,7 @@ function CheckoutSuccessContent() {
             return;
           }
         } catch (error) {
-          Sentry.captureException(
-            error instanceof Error ? error : new Error(String(error)),
-            { tags: { subsystem: "payments" } },
-          );
+          reportPaymentsError(error);
           console.error("Payment verification error:", error);
         }
 

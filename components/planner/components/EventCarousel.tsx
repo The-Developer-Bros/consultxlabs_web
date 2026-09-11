@@ -13,14 +13,20 @@ import {
 } from "lucide-react";
 import { cn } from "@/utils/tailwind";
 import {
-  WebinarEvent,
-  ClassEvent,
   PlannerWebinarEvent,
   PlannerClassEvent,
   ConsultationPlanEvent,
   SubscriptionPlanEvent,
   Event,
 } from "@/types/planner-events";
+import {
+  getPlanArchivedAt,
+  getPlanId,
+  isClassEvent,
+  isConsultationPlanEvent,
+  isSubscriptionPlanEvent,
+  isWebinarEvent,
+} from "@/lib/planner/archive-state";
 import { EventCard } from "./EventCard";
 import { FormConfirmationDialog } from "./form-fields/FormConfirmationDialog";
 
@@ -33,6 +39,8 @@ interface WebinarCarouselProps {
   onJoinMeeting?: (event: PlannerWebinarEvent) => void;
   joinableEventIds?: Set<string>;
   joiningEventId?: string | null;
+  onArchiveToggle?: (planId: string, archived: boolean) => void;
+  archivingPlanId?: string | null;
 }
 
 interface ClassCarouselProps {
@@ -44,6 +52,8 @@ interface ClassCarouselProps {
   onJoinMeeting?: (event: PlannerClassEvent) => void;
   joinableEventIds?: Set<string>;
   joiningEventId?: string | null;
+  onArchiveToggle?: (planId: string, archived: boolean) => void;
+  archivingPlanId?: string | null;
 }
 
 interface ConsultationCarouselProps {
@@ -52,6 +62,8 @@ interface ConsultationCarouselProps {
   onDelete: (eventId: string) => Promise<void>;
   eventType: "consultation";
   participantCounts: Record<string, number>;
+  onArchiveToggle?: (planId: string, archived: boolean) => void;
+  archivingPlanId?: string | null;
 }
 
 interface SubscriptionCarouselProps {
@@ -62,6 +74,8 @@ interface SubscriptionCarouselProps {
   participantCounts: Record<string, number>;
   pendingTrialCounts?: Record<string, number>;
   onTrialsClick?: () => void;
+  onArchiveToggle?: (planId: string, archived: boolean) => void;
+  archivingPlanId?: string | null;
 }
 
 type EventCarouselProps =
@@ -69,22 +83,6 @@ type EventCarouselProps =
   | ClassCarouselProps
   | ConsultationCarouselProps
   | SubscriptionCarouselProps;
-
-function isWebinarEvent(event: Event): event is WebinarEvent {
-  return event.type === "webinar";
-}
-
-function isClassEvent(event: Event): event is ClassEvent {
-  return event.type === "class";
-}
-
-function isConsultationPlanEvent(event: Event): event is ConsultationPlanEvent {
-  return event.type === "consultation";
-}
-
-function isSubscriptionPlanEvent(event: Event): event is SubscriptionPlanEvent {
-  return event.type === "subscription";
-}
 
 // Empty state configuration
 const emptyStateConfig = {
@@ -182,6 +180,10 @@ export function EventCarousel({
       : eventType === "class"
         ? (props as ClassCarouselProps).joiningEventId
         : undefined;
+  const onArchiveToggle = (props as { onArchiveToggle?: (planId: string, archived: boolean) => void })
+    .onArchiveToggle;
+  const archivingPlanId = (props as { archivingPlanId?: string | null })
+    .archivingPlanId;
   const [currentPage, setCurrentPage] = React.useState(1);
   const itemsPerPage = 8;
 
@@ -335,6 +337,20 @@ export function EventCarousel({
               }
               canJoinNow={joinableEventIds?.has(event.id ?? "") ?? false}
               isJoiningMeeting={joiningEventId === event.id}
+              onArchiveToggle={
+                onArchiveToggle && getPlanId(event)
+                  ? () =>
+                      onArchiveToggle(
+                        getPlanId(event) as string,
+                        getPlanArchivedAt(event) === null,
+                      )
+                  : undefined
+              }
+              isArchiveToggling={
+                archivingPlanId !== null &&
+                archivingPlanId !== undefined &&
+                archivingPlanId === getPlanId(event)
+              }
             />
           </motion.div>
         ))}
