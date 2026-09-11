@@ -11,7 +11,7 @@ import { CreateReviewSchema } from "@/schemas/feedbacks";
 import { apiError } from "@/lib/errors";
 import { getSession } from "@/lib/auth-server";
 import { purgeReviewSurfaces } from "@/lib/data/public-cache";
-import { spamLimiter, applyRateLimit } from "@/lib/rate-limit";
+import { reviewWriteLimiter, applyRateLimit } from "@/lib/rate-limit";
 import {
   ModeratedReviewError,
   recomputeConsultantRating,
@@ -104,8 +104,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Rate limit: 5 reviews per hour per user
-    const rl = await applyRateLimit(spamLimiter, `reviews:${session.user.id}`);
+    // 20 writes an hour: an edit is a POST too, so 5 shut out "write, tweak twice".
+    const rl = await applyRateLimit(
+      reviewWriteLimiter,
+      `reviews:${session.user.id}`,
+    );
     if (rl) return rl;
 
     const body = await req.json();

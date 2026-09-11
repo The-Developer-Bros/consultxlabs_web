@@ -81,6 +81,10 @@ export const referralApplyLimiter = makeLimiter(3, "24 h", "rl:referral-apply");
 /** 5 per hour — support-tickets, feedbacks, reviews, report (scope key by route) */
 export const spamLimiter = makeLimiter(5, "1 h", "rl:spam");
 
+// Review writes: the composer POSTs for every edit, and a new review is already
+// bounded by the pair unique and a held session, so this only stops hammering.
+export const reviewWriteLimiter = makeLimiter(20, "1 h", "rl:review-write");
+
 /**
  * 120 per minute per IP — POST /api/csp-report.
  *
