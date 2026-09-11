@@ -109,7 +109,7 @@ const DefaultStreamErrorFallback: React.FC<
   );
 };
 
-export class StreamErrorBoundary extends React.Component<
+class StreamErrorBoundary extends React.Component<
   StreamErrorBoundaryProps,
   StreamErrorBoundaryState
 > {

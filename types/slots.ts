@@ -4,8 +4,8 @@ export type TSlotTiming = {
   slotId: string;
   dateInISO: string;
   dayOfWeek: DayOfWeek;
-  slotStartTimeInUTC: string;
-  slotEndTimeInUTC: string;
+  startsAt: string;
+  endsAt: string;
   slotOfAvailabilityId: string;
   slotOfAppointmentId: string;
   localStartTime: string;

@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import type { ProgramType, TopicWithCount } from "../utils";
+import type { ProgramType, TopicWithCount } from "@/lib/explore/programs";
 import { fetchTopics } from "./_helpers";
 
 /**

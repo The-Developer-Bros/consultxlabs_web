@@ -144,7 +144,7 @@ switch (options.eventType) {
     selectedSlots = this.allocateRecurringSlots(
       filteredSlots,
       requiredSlots,
-      callsPerWeek,
+      sessionsPerWeek,
       duration,
       preferences,
     );

@@ -1,18 +1,10 @@
+import * as Sentry from "@sentry/nextjs";
 import React, { useState, useEffect, useMemo } from "react";
 import { format } from "date-fns";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -21,13 +13,20 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  ResponsiveModal,
+  ResponsiveModalContent,
+  ResponsiveModalDescription,
+  ResponsiveModalFooter,
+  ResponsiveModalHeader,
+  ResponsiveModalTitle,
+} from "@/components/ui/responsive-modal";
+import {
+  ResponsiveTable,
+  type ResponsiveColumn,
+} from "@/components/ui/responsive-table";
+import { DashboardHeader } from "@/components/dashboard/PageScaffold";
+import { StatusBadge } from "@/components/dashboard/StatusBadge";
+import { documentReviewStatusBadge } from "@/lib/labels/session-labels";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -51,20 +50,40 @@ import {
 import { ConsultantResponseUpload } from "./ConsultantResponseUpload";
 import {
   formatFileSize,
-  getStatusColor,
-  getStatusLabel,
   getDocumentTypeIcon,
-} from "@/app/dashboard/shared/utils/document-utils";
+} from "@/lib/documents/document-utils";
 
-const PAGE_LIMIT = 10;
+// Appointment types are fixed on the server (Consultation | Subscription).
+// Hardcoding here so the type filter dropdown isn't dependent on the current
+// page's rows (which would give an incomplete list under pagination).
+const APPOINTMENT_TYPES = ["Consultation", "Subscription"] as const;
+
+// The reviewable document statuses, single-sourced so the status filter and the
+// single + bulk review dialogs can't drift. Labels come from session-labels.
+const REVIEW_STATUSES = [
+  "PENDING",
+  "IN_REVIEW",
+  "APPROVED",
+  "REJECTED",
+  "NEEDS_REVISION",
+];
 
 interface ExtendedDocumentsTabProps extends DocumentsTabProps {
   onRefresh?: () => void;
 }
 
 export function DocumentsTab({
-  documents,
+  documentsPage,
+  isPlaceholderData,
   onRefresh,
+  page,
+  pageSize,
+  onPageChange,
+  onPageSizeChange,
+  statusFilter,
+  typeFilter,
+  onStatusFilterChange,
+  onTypeFilterChange,
 }: Readonly<ExtendedDocumentsTabProps>) {
   const [selectedDocument, setSelectedDocument] = useState<IDocument | null>(
     null,
@@ -78,71 +97,71 @@ export function DocumentsTab({
   const [isUpdating, setIsUpdating] = useState(false);
   const { toast } = useToast();
 
-  // Search, filter, and pagination state
+  // Search is client-side (scoped to the current page). Status and type
+  // filters are server-side and lifted to the parent page component so the
+  // React Query key depends on them (issue #346).
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [typeFilter, setTypeFilter] = useState<string>("all");
-  const [page, setPage] = useState(1);
 
   // Bulk selection state
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isBulkUpdating, setIsBulkUpdating] = useState(false);
 
-  // Debounce search input
+  // Bulk review dialog state
+  const [bulkReviewDialogOpen, setBulkReviewDialogOpen] = useState(false);
+  const [bulkReviewStatus, setBulkReviewStatus] = useState<string>("");
+  const [bulkReviewNotes, setBulkReviewNotes] = useState<string>("");
+
+  // Debounce search input. Search is local to the current page, so we don't
+  // need to reset server-side pagination on every keystroke.
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedSearch(search);
-      setPage(1);
     }, 300);
     return () => clearTimeout(timer);
   }, [search]);
 
-  // Reset page when filters change
+  // Documents and pagination metadata come straight from the server envelope.
+  // Memoise documents so the reference is stable across renders where the
+  // underlying SWR data has not changed — this keeps the filteredDocuments
+  // useMemo below from invalidating on unrelated parent re-renders.
+  const documents = useMemo(
+    () => documentsPage?.data ?? [],
+    [documentsPage?.data],
+  );
+  const pagination = documentsPage?.pagination;
+  const totalCount = pagination?.totalCount ?? 0;
+  const totalPages = pagination?.totalPages ?? 1;
+  const currentPage = pagination?.currentPage ?? page;
+  const hasNextPage = pagination?.hasNextPage ?? false;
+  const hasPrevPage = pagination?.hasPrevPage ?? false;
+
+  // Clear bulk selection when the server page or page size changes — rows
+  // that were selected are no longer visible, so acting on them would be
+  // surprising. Matches the Gmail pattern for paginated bulk actions.
   useEffect(() => {
-    setPage(1);
-  }, [statusFilter, typeFilter]);
+    setSelectedIds(new Set());
+  }, [page, pageSize]);
 
-  // Client-side filtering
+  // Client-side search filter only. Status and type filters are applied on
+  // the server so pagination metadata stays accurate across all matching rows.
   const filteredDocuments = useMemo(() => {
+    if (!debouncedSearch) return documents;
+    const query = debouncedSearch.toLowerCase();
     return documents.filter((doc) => {
-      // Status filter
-      if (statusFilter !== "all" && doc.reviewStatus !== statusFilter) {
-        return false;
-      }
-      // Type filter
-      if (typeFilter !== "all" && doc.appointmentType !== typeFilter) {
-        return false;
-      }
-      // Search filter
-      if (debouncedSearch) {
-        const query = debouncedSearch.toLowerCase();
-        return (
-          doc.originalName.toLowerCase().includes(query) ||
-          doc.clientName.toLowerCase().includes(query) ||
-          doc.appointmentTitle.toLowerCase().includes(query) ||
-          (doc.description?.toLowerCase().includes(query) ?? false)
-        );
-      }
-      return true;
+      return (
+        doc.originalName.toLowerCase().includes(query) ||
+        doc.clientName.toLowerCase().includes(query) ||
+        doc.appointmentTitle.toLowerCase().includes(query) ||
+        (doc.description?.toLowerCase().includes(query) ?? false)
+      );
     });
-  }, [documents, statusFilter, typeFilter, debouncedSearch]);
+  }, [documents, debouncedSearch]);
 
-  // Pagination
-  const totalPages = Math.max(1, Math.ceil(filteredDocuments.length / PAGE_LIMIT));
-  const paginatedDocuments = useMemo(() => {
-    const start = (page - 1) * PAGE_LIMIT;
-    return filteredDocuments.slice(start, start + PAGE_LIMIT);
-  }, [filteredDocuments, page]);
-
-  const showStart = filteredDocuments.length === 0 ? 0 : (page - 1) * PAGE_LIMIT + 1;
-  const showEnd = Math.min(page * PAGE_LIMIT, filteredDocuments.length);
-
-  // Unique appointment types for type filter
-  const appointmentTypes = useMemo(() => {
-    const types = new Set(documents.map((d) => d.appointmentType));
-    return Array.from(types).sort();
-  }, [documents]);
+  // "Showing X-Y of Z" values derive from the server pagination envelope so
+  // they remain consistent across pages regardless of client-side search.
+  const showStart = totalCount === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const showEnd = Math.min(currentPage * pageSize, totalCount);
 
   const hasActiveFilters =
     statusFilter !== "all" || typeFilter !== "all" || debouncedSearch !== "";
@@ -150,24 +169,24 @@ export function DocumentsTab({
   const clearFilters = () => {
     setSearch("");
     setDebouncedSearch("");
-    setStatusFilter("all");
-    setTypeFilter("all");
-    setPage(1);
+    onStatusFilterChange("all");
+    onTypeFilterChange("all");
   };
 
-  // Bulk selection helpers
+  // Bulk selection helpers. "On page" here means rows currently visible, i.e.
+  // the server-paginated page intersected with the client-side search.
   const allOnPageSelected =
-    paginatedDocuments.length > 0 &&
-    paginatedDocuments.every((d) => selectedIds.has(d.id));
+    filteredDocuments.length > 0 &&
+    filteredDocuments.every((d) => selectedIds.has(d.id));
 
   const toggleSelectAll = () => {
     if (allOnPageSelected) {
       const next = new Set(selectedIds);
-      paginatedDocuments.forEach((d) => next.delete(d.id));
+      filteredDocuments.forEach((d) => next.delete(d.id));
       setSelectedIds(next);
     } else {
       const next = new Set(selectedIds);
-      paginatedDocuments.forEach((d) => next.add(d.id));
+      filteredDocuments.forEach((d) => next.add(d.id));
       setSelectedIds(next);
     }
   };
@@ -182,39 +201,49 @@ export function DocumentsTab({
     setSelectedIds(next);
   };
 
-  const handleBulkStatusUpdate = async (newStatus: string) => {
+  const handleBulkStatusUpdate = async (newStatus: string, notes?: string) => {
     if (selectedIds.size === 0) return;
     setIsBulkUpdating(true);
 
     try {
-      const selectedDocs = documents.filter((d) => selectedIds.has(d.id));
-      const results = await Promise.allSettled(
-        selectedDocs.map((doc) =>
-          fetch(
-            `/api/appointments/${doc.appointmentId}/documents/${doc.id}`,
-            {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ reviewStatus: newStatus }),
-            },
-          ),
-        ),
-      );
+      const documentIds = Array.from(selectedIds);
+      // #347 — one transactional bulk-review request instead of an N-PATCH
+      // fan-out; the server reports how many it actually updated.
+      const res = await fetch("/api/documents/bulk-review", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          documentIds,
+          reviewStatus: newStatus,
+          reviewNotes: notes?.trim() || null,
+        }),
+      });
 
-      const succeeded = results.filter((r) => r.status === "fulfilled").length;
-      const failed = results.length - succeeded;
+      if (!res.ok) throw new Error("Bulk review failed");
+
+      const { data } = await res.json();
+      const updated: number = data?.updated ?? 0;
+      const failed = documentIds.length - updated;
 
       toast({
-        title: "Bulk Update Complete",
+        title: "Bulk Review Complete",
         description: failed
-          ? `${succeeded} updated, ${failed} failed`
-          : `${succeeded} document${succeeded !== 1 ? "s" : ""} updated to ${getStatusLabel(newStatus)}`,
+          ? `${updated} updated, ${failed} not updated`
+          : `${updated} document${updated !== 1 ? "s" : ""} updated to ${documentReviewStatusBadge(newStatus).label}`,
         variant: failed ? "destructive" : "default",
       });
 
-      setSelectedIds(new Set());
       onRefresh?.();
-    } catch {
+      // Only clear the selection + close on full success; on a partial failure
+      // keep the dialog open so the consultant sees what didn't update and can retry.
+      if (failed === 0) {
+        setSelectedIds(new Set());
+        setBulkReviewDialogOpen(false);
+        setBulkReviewStatus("");
+        setBulkReviewNotes("");
+      }
+    } catch (error) {
+      Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "client" } });
       toast({
         title: "Error",
         description: "Failed to update documents",
@@ -263,12 +292,13 @@ export function DocumentsTab({
 
       toast({
         title: "Review Updated",
-        description: `Document review status updated to ${getStatusLabel(reviewStatus)}`,
+        description: `Document review status updated to ${documentReviewStatusBadge(reviewStatus).label}`,
       });
 
       setReviewDialogOpen(false);
       onRefresh?.();
     } catch (error) {
+      Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "client" } });
       console.error("Error updating review:", error);
       toast({
         title: "Error",
@@ -291,6 +321,7 @@ export function DocumentsTab({
       link.click();
       window.document.body.removeChild(link);
     } catch (error) {
+      Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "client" } });
       console.error("Error downloading file:", error);
       toast({
         title: "Error",
@@ -304,27 +335,187 @@ export function DocumentsTab({
     window.open(document.fileUrl, "_blank");
   };
 
-  return (
-    <div className="bg-white p-6 overflow-hidden">
-      {/* Fix #2 + #5: h1 heading with badge count */}
-      <div className="mb-6">
-        <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-bold whitespace-nowrap">Documents For Review</h1>
-          <Badge variant="secondary" className="text-sm">
-            {filteredDocuments.length !== documents.length
-              ? `${filteredDocuments.length} / ${documents.length}`
-              : documents.length}
-          </Badge>
-        </div>
-        <p className="text-sm text-gray-600 mt-1">
-          Review documents submitted by your consultees and subscribers
-        </p>
-      </div>
+  const renderRowActions = (document: IDocument) => (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 cursor-pointer"
+        >
+          <MoreHorizontal className="h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem
+          className="cursor-pointer"
+          onClick={() => handleView(document)}
+        >
+          <Eye className="mr-2 h-4 w-4" />
+          View
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className="cursor-pointer"
+          onClick={() => handleDownload(document)}
+        >
+          <Download className="mr-2 h-4 w-4" />
+          Download
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className="cursor-pointer"
+          onClick={() => handleUploadResponse(document)}
+        >
+          <Reply className="mr-2 h-4 w-4" />
+          Upload Response
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className="cursor-pointer"
+          onClick={() => handleReviewClick(document)}
+        >
+          <MessageSquare className="mr-2 h-4 w-4" />
+          Review
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 
-      {/* Fix #3: Search bar and filter dropdowns */}
-      <div className="flex flex-wrap items-center gap-3 mb-4">
-        <div className="relative flex-1 min-w-[200px] max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+  const columns: ResponsiveColumn<IDocument>[] = [
+    {
+      key: "document",
+      header: "Document",
+      primary: true,
+      cell: (document) => (
+        <div className="flex items-center gap-3">
+          <div className="shrink-0">{getDocumentTypeIcon(document.mimeType)}</div>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-medium text-foreground">
+              {document.originalName}
+            </div>
+            {document.description && (
+              <div className="truncate text-sm text-muted-foreground">
+                {document.description}
+              </div>
+            )}
+            <div className="text-xs text-muted-foreground/70">
+              {formatFileSize(document.fileSize)}
+            </div>
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: "client",
+      header: "Client",
+      cell: (document) => (
+        <div className="text-sm">
+          <div className="font-medium text-foreground">
+            {document.clientName}
+          </div>
+          <div className="text-xs text-muted-foreground">
+            {document.invoiceNo}
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: "appointment",
+      header: "Appointment",
+      cell: (document) => (
+        <div className="text-sm">
+          <div className="font-medium text-foreground">
+            {document.appointmentTitle}
+          </div>
+          <div className="text-xs text-muted-foreground">
+            {document.appointmentType?.toLowerCase()}
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: "uploadDate",
+      header: "Upload Date",
+      cell: (document) => (
+        <div>
+          <div className="text-sm text-foreground">
+            {format(new Date(document.uploadedAt), "MMM d, yyyy")}
+          </div>
+          <div className="text-xs text-muted-foreground">
+            {format(new Date(document.uploadedAt), "h:mm a")}
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: "status",
+      header: "Status",
+      cell: (document) => (
+        <div>
+          <StatusBadge {...documentReviewStatusBadge(document.reviewStatus)} />
+          {(document.versionNo ?? 1) > 1 && (
+            <div className="mt-1 text-xs text-muted-foreground">
+              {document.uploadedByRole === "CONSULTANT"
+                ? `Response #${document.versionNo}`
+                : `Version ${document.versionNo}`}
+            </div>
+          )}
+          {document.reviewedAt && (
+            <div className="mt-1 text-xs text-muted-foreground">
+              Reviewed {format(new Date(document.reviewedAt), "MMM d, yyyy")}
+            </div>
+          )}
+        </div>
+      ),
+    },
+  ];
+
+  const emptyState = hasActiveFilters ? (
+    <div className="py-12 text-center text-muted-foreground">
+      <Search className="mx-auto mb-4 h-12 w-12 text-muted-foreground/40" />
+      <p className="text-lg font-medium text-foreground">No matching documents</p>
+      {debouncedSearch && (
+        <p className="mt-1 text-sm">No results for &quot;{debouncedSearch}&quot;</p>
+      )}
+      <Button
+        variant="outline"
+        size="sm"
+        className="mt-4"
+        onClick={clearFilters}
+      >
+        Clear Filters
+      </Button>
+    </div>
+  ) : (
+    <div className="py-12 text-center text-muted-foreground">
+      <FileText className="mx-auto mb-4 h-12 w-12 text-muted-foreground/40" />
+      <p className="text-lg font-medium text-foreground">
+        No documents for review
+      </p>
+      <p className="mx-auto mt-1 max-w-md text-sm">
+        When clients submit files for their consultations or subscriptions, you
+        can review, approve, or request revisions from this tab.
+      </p>
+    </div>
+  );
+
+  return (
+    <>
+      <DashboardHeader
+        title="Documents For Review"
+        subtitle="Review documents submitted by your consultees and subscribers"
+        actions={
+          <Badge variant="secondary" className="text-sm">
+            {debouncedSearch && filteredDocuments.length !== documents.length
+              ? `${filteredDocuments.length} / ${totalCount}`
+              : totalCount}
+          </Badge>
+        }
+      />
+
+      <div className="overflow-hidden bg-card p-4 text-card-foreground sm:p-6">
+      {/* Search bar and filter dropdowns — stack full-width on phones */}
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div className="relative w-full min-w-0 sm:w-auto sm:max-w-sm sm:flex-1">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             placeholder="Search by name, client, or appointment..."
             value={search}
@@ -334,36 +525,49 @@ export function DocumentsTab({
           {search && (
             <button
               onClick={() => setSearch("")}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
             >
               <X className="h-4 w-4" />
             </button>
           )}
         </div>
-        <Select value={statusFilter} onValueChange={setStatusFilter}>
-          <SelectTrigger className="w-[160px]">
+        <Select value={statusFilter} onValueChange={onStatusFilterChange}>
+          <SelectTrigger className="w-full sm:w-[160px]">
             <SelectValue placeholder="Status" />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Statuses</SelectItem>
-            <SelectItem value="PENDING">Pending</SelectItem>
-            <SelectItem value="IN_REVIEW">In Review</SelectItem>
-            <SelectItem value="APPROVED">Approved</SelectItem>
-            <SelectItem value="REJECTED">Rejected</SelectItem>
-            <SelectItem value="NEEDS_REVISION">Needs Revision</SelectItem>
+            {REVIEW_STATUSES.map((s) => (
+              <SelectItem key={s} value={s}>
+                {documentReviewStatusBadge(s).label}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
-        <Select value={typeFilter} onValueChange={setTypeFilter}>
-          <SelectTrigger className="w-[160px]">
+        <Select value={typeFilter} onValueChange={onTypeFilterChange}>
+          <SelectTrigger className="w-full sm:w-[160px]">
             <SelectValue placeholder="Type" />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Types</SelectItem>
-            {appointmentTypes.map((type) => (
+            {APPOINTMENT_TYPES.map((type) => (
               <SelectItem key={type} value={type}>
-                {type.charAt(0) + type.slice(1).toLowerCase()}
+                {type}
               </SelectItem>
             ))}
+          </SelectContent>
+        </Select>
+        <Select
+          value={String(pageSize)}
+          onValueChange={(value) => onPageSizeChange(Number(value))}
+        >
+          <SelectTrigger className="w-full sm:w-[120px]">
+            <SelectValue placeholder="Page size" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="10">10 / page</SelectItem>
+            <SelectItem value="25">25 / page</SelectItem>
+            <SelectItem value="50">50 / page</SelectItem>
           </SelectContent>
         </Select>
         {hasActiveFilters && (
@@ -373,40 +577,34 @@ export function DocumentsTab({
         )}
       </div>
 
-      {/* Fix #3: Results count */}
-      {filteredDocuments.length > 0 && (
-        <div className="text-sm text-gray-500 mb-2">
-          Showing {showStart}-{showEnd} of {filteredDocuments.length} document
-          {filteredDocuments.length !== 1 ? "s" : ""}
+      {/* Results count — driven by the server pagination envelope */}
+      {totalCount > 0 && (
+        <div className="mb-2 text-sm text-muted-foreground">
+          Showing {showStart}-{showEnd} of {totalCount} document
+          {totalCount !== 1 ? "s" : ""}
+          {debouncedSearch && filteredDocuments.length !== documents.length && (
+            <>
+              {" "}
+              ({filteredDocuments.length} match
+              {filteredDocuments.length !== 1 ? "es" : ""} on this page)
+            </>
+          )}
         </div>
       )}
 
-      {/* Fix #8: Bulk action bar */}
+      {/* Bulk action bar */}
       {selectedIds.size > 0 && (
-        <div className="flex items-center gap-3 mb-3 p-3 bg-blue-50 rounded-lg border border-blue-200">
-          <span className="text-sm font-medium text-blue-800">
+        <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3">
+          <span className="text-sm font-medium text-foreground">
             {selectedIds.size} selected
           </span>
-          <Select
-            value=""
-            onValueChange={handleBulkStatusUpdate}
+          <Button
+            size="sm"
+            onClick={() => setBulkReviewDialogOpen(true)}
             disabled={isBulkUpdating}
           >
-            <SelectTrigger className="w-[180px] h-8">
-              <SelectValue
-                placeholder={
-                  isBulkUpdating ? "Updating..." : "Set status..."
-                }
-              />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="PENDING">Pending</SelectItem>
-              <SelectItem value="IN_REVIEW">In Review</SelectItem>
-              <SelectItem value="APPROVED">Approved</SelectItem>
-              <SelectItem value="REJECTED">Rejected</SelectItem>
-              <SelectItem value="NEEDS_REVISION">Needs Revision</SelectItem>
-            </SelectContent>
-          </Select>
+            {isBulkUpdating ? "Updating..." : "Review Selected"}
+          </Button>
           <Button
             variant="ghost"
             size="sm"
@@ -417,188 +615,33 @@ export function DocumentsTab({
         </div>
       )}
 
-      <div className="overflow-x-auto">
-        <Table className="min-w-[900px]">
-          <TableHeader>
-            <TableRow>
-              {/* Fix #8: Checkbox column header */}
-              <TableHead className="w-10">
-                <Checkbox
-                  checked={allOnPageSelected && paginatedDocuments.length > 0}
-                  onCheckedChange={toggleSelectAll}
-                  aria-label="Select all documents on this page"
-                />
-              </TableHead>
-              <TableHead>Document</TableHead>
-              <TableHead>Client</TableHead>
-              <TableHead>Appointment</TableHead>
-              <TableHead>Upload Date</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {paginatedDocuments.map((document) => (
-              <TableRow key={document.id}>
-                {/* Fix #8: Checkbox column */}
-                <TableCell>
-                  <Checkbox
-                    checked={selectedIds.has(document.id)}
-                    onCheckedChange={() => toggleSelect(document.id)}
-                    aria-label={`Select ${document.originalName}`}
-                  />
-                </TableCell>
-                <TableCell>
-                  <div className="flex items-center space-x-3">
-                    {/* Fix #7: Document type icon */}
-                    <div className="flex-shrink-0">
-                      {getDocumentTypeIcon(document.mimeType)}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium text-gray-900 truncate">
-                        {document.originalName}
-                      </div>
-                      {document.description && (
-                        <div className="text-sm text-gray-500 truncate">
-                          {document.description}
-                        </div>
-                      )}
-                      <div className="text-xs text-gray-400">
-                        {formatFileSize(document.fileSize)}
-                      </div>
-                    </div>
-                  </div>
-                </TableCell>
-                <TableCell>
-                  <div className="text-sm">
-                    <div className="font-medium">{document.clientName}</div>
-                    <div className="text-gray-500 text-xs">
-                      {document.invoiceNo}
-                    </div>
-                  </div>
-                </TableCell>
-                <TableCell>
-                  <div className="text-sm">
-                    <div className="font-medium">
-                      {document.appointmentTitle}
-                    </div>
-                    <div className="text-gray-500 text-xs">
-                      {document.appointmentType?.toLowerCase()}
-                    </div>
-                  </div>
-                </TableCell>
-                {/* Fix #4: Formatted timestamps */}
-                <TableCell>
-                  <div className="text-sm text-gray-900">
-                    {format(new Date(document.uploadedAt), "MMM d, yyyy")}
-                  </div>
-                  <div className="text-xs text-gray-500">
-                    {format(new Date(document.uploadedAt), "h:mm a")}
-                  </div>
-                </TableCell>
-                <TableCell>
-                  {/* Fix #1: Proper status label */}
-                  <Badge
-                    variant="secondary"
-                    className={getStatusColor(document.reviewStatus)}
-                  >
-                    {getStatusLabel(document.reviewStatus)}
-                  </Badge>
-                  {document.reviewedAt && (
-                    <div className="text-xs text-gray-500 mt-1">
-                      Reviewed{" "}
-                      {format(new Date(document.reviewedAt), "MMM d, yyyy")}
-                    </div>
-                  )}
-                </TableCell>
-                <TableCell>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon" className="h-8 w-8 cursor-pointer">
-                        <MoreHorizontal className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem className="cursor-pointer" onClick={() => handleView(document)}>
-                        <Eye className="h-4 w-4 mr-2" />
-                        View
-                      </DropdownMenuItem>
-                      <DropdownMenuItem className="cursor-pointer" onClick={() => handleDownload(document)}>
-                        <Download className="h-4 w-4 mr-2" />
-                        Download
-                      </DropdownMenuItem>
-                      <DropdownMenuItem className="cursor-pointer" onClick={() => handleUploadResponse(document)}>
-                        <Reply className="h-4 w-4 mr-2" />
-                        Upload Response
-                      </DropdownMenuItem>
-                      <DropdownMenuItem className="cursor-pointer" onClick={() => handleReviewClick(document)}>
-                        <MessageSquare className="h-4 w-4 mr-2" />
-                        Review
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </TableCell>
-              </TableRow>
-            ))}
-            {/* Fix #6: Enhanced empty states */}
-            {paginatedDocuments.length === 0 && hasActiveFilters && (
-              <TableRow>
-                <TableCell
-                  colSpan={7}
-                  className="text-center text-gray-500 py-12"
-                >
-                  <Search className="h-12 w-12 text-gray-300 mx-auto mb-4" />
-                  <p className="text-lg font-medium">
-                    No matching documents
-                  </p>
-                  {debouncedSearch && (
-                    <p className="text-sm mt-1">
-                      No results for &quot;{debouncedSearch}&quot;
-                    </p>
-                  )}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="mt-4"
-                    onClick={clearFilters}
-                  >
-                    Clear Filters
-                  </Button>
-                </TableCell>
-              </TableRow>
-            )}
-            {documents.length === 0 && (
-              <TableRow>
-                <TableCell
-                  colSpan={7}
-                  className="text-center text-gray-500 py-12"
-                >
-                  <FileText className="h-12 w-12 text-gray-300 mx-auto mb-4" />
-                  <p className="text-lg font-medium">No documents for review</p>
-                  <p className="text-sm mt-1 max-w-md mx-auto">
-                    When clients submit files for their consultations or
-                    subscriptions, you can review, approve, or request revisions
-                    from this tab.
-                  </p>
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
-      </div>
+      <ResponsiveTable<IDocument>
+        columns={columns}
+        rows={filteredDocuments}
+        getRowId={(d) => d.id}
+        selectable
+        selectedIds={selectedIds}
+        onToggle={toggleSelect}
+        onToggleAll={toggleSelectAll}
+        allSelected={allOnPageSelected && filteredDocuments.length > 0}
+        rowActions={renderRowActions}
+        empty={emptyState}
+      />
 
-      {/* Fix #3: Pagination controls */}
+      {/* Pagination controls — driven by the server envelope (issue #346).
+          Buttons are disabled while a placeholder page is visible so users
+          can't fire off duplicate requests mid-transition. */}
       {totalPages > 1 && (
-        <div className="flex items-center justify-between mt-4">
-          <div className="text-sm text-gray-500">
-            Page {page} of {totalPages}
+        <div className="mt-4 flex items-center justify-between">
+          <div className="text-sm text-muted-foreground">
+            Page {currentPage} of {totalPages}
           </div>
           <div className="flex items-center gap-2">
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setPage((p) => p - 1)}
-              disabled={page <= 1}
+              onClick={() => onPageChange(page - 1)}
+              disabled={!hasPrevPage || isPlaceholderData}
             >
               <ChevronLeft className="h-4 w-4 mr-1" />
               Previous
@@ -606,8 +649,8 @@ export function DocumentsTab({
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setPage((p) => p + 1)}
-              disabled={page >= totalPages}
+              onClick={() => onPageChange(page + 1)}
+              disabled={!hasNextPage || isPlaceholderData}
             >
               Next
               <ChevronRight className="h-4 w-4 ml-1" />
@@ -617,16 +660,16 @@ export function DocumentsTab({
       )}
 
       {/* Review Dialog */}
-      <Dialog open={reviewDialogOpen} onOpenChange={setReviewDialogOpen}>
-        <DialogContent className="sm:max-w-[425px]">
-          <DialogHeader>
-            <DialogTitle>Review Document</DialogTitle>
-            <DialogDescription>
+      <ResponsiveModal open={reviewDialogOpen} onOpenChange={setReviewDialogOpen}>
+        <ResponsiveModalContent className="sm:max-w-[425px] max-h-[90dvh] overflow-hidden flex flex-col">
+          <ResponsiveModalHeader className="shrink-0">
+            <ResponsiveModalTitle>Review Document</ResponsiveModalTitle>
+            <ResponsiveModalDescription>
               Update the review status and add notes for{" "}
               {selectedDocument?.originalName}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4 py-4">
+            </ResponsiveModalDescription>
+          </ResponsiveModalHeader>
+          <div className="min-h-0 flex-1 grid gap-4 overflow-y-auto py-4">
             <div className="space-y-2">
               <label className="text-sm font-medium">Review Status</label>
               <Select value={reviewStatus} onValueChange={setReviewStatus}>
@@ -634,11 +677,11 @@ export function DocumentsTab({
                   <SelectValue placeholder="Select status" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="PENDING">Pending</SelectItem>
-                  <SelectItem value="IN_REVIEW">In Review</SelectItem>
-                  <SelectItem value="APPROVED">Approved</SelectItem>
-                  <SelectItem value="REJECTED">Rejected</SelectItem>
-                  <SelectItem value="NEEDS_REVISION">Needs Revision</SelectItem>
+                  {REVIEW_STATUSES.map((s) => (
+                    <SelectItem key={s} value={s}>
+                      {documentReviewStatusBadge(s).label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -652,7 +695,7 @@ export function DocumentsTab({
               />
             </div>
             {selectedDocument && (
-              <div className="text-sm text-gray-600 bg-gray-50 p-3 rounded">
+              <div className="rounded-md bg-muted p-3 text-sm text-muted-foreground">
                 <p>
                   <strong>Client:</strong> {selectedDocument.clientName}
                 </p>
@@ -671,7 +714,7 @@ export function DocumentsTab({
               </div>
             )}
           </div>
-          <DialogFooter>
+          <ResponsiveModalFooter className="shrink-0">
             <Button
               variant="outline"
               onClick={() => setReviewDialogOpen(false)}
@@ -685,9 +728,99 @@ export function DocumentsTab({
             >
               {isUpdating ? "Updating..." : "Update Review"}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </ResponsiveModalFooter>
+        </ResponsiveModalContent>
+      </ResponsiveModal>
+
+      {/* Bulk Review Dialog */}
+      <ResponsiveModal
+        open={bulkReviewDialogOpen}
+        onOpenChange={(open) => {
+          setBulkReviewDialogOpen(open);
+          if (!open) {
+            setBulkReviewStatus("");
+            setBulkReviewNotes("");
+          }
+        }}
+      >
+        <ResponsiveModalContent className="sm:max-w-[500px] max-h-[90dvh] overflow-hidden flex flex-col">
+          <ResponsiveModalHeader className="shrink-0">
+            <ResponsiveModalTitle>
+              Review {selectedIds.size} Documents
+            </ResponsiveModalTitle>
+            <ResponsiveModalDescription>
+              Set a review status and optional notes for all selected documents.
+            </ResponsiveModalDescription>
+          </ResponsiveModalHeader>
+          <div className="min-h-0 flex-1 grid gap-4 overflow-y-auto py-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Review Status</label>
+              <Select value={bulkReviewStatus} onValueChange={setBulkReviewStatus}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select status" />
+                </SelectTrigger>
+                <SelectContent>
+                  {REVIEW_STATUSES.map((s) => (
+                    <SelectItem key={s} value={s}>
+                      {documentReviewStatusBadge(s).label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">
+                Shared Notes{" "}
+                <span className="font-normal text-muted-foreground">
+                  (optional)
+                </span>
+              </label>
+              <Textarea
+                placeholder="Add notes that will apply to all selected documents..."
+                value={bulkReviewNotes}
+                onChange={(e) => setBulkReviewNotes(e.target.value)}
+                className="min-h-[100px]"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Selected Documents</label>
+              <div className="max-h-[200px] overflow-y-auto border rounded-md p-2 space-y-2">
+                {documents
+                  .filter((d) => selectedIds.has(d.id))
+                  .map((doc) => (
+                    <div
+                      key={doc.id}
+                      className="flex items-center justify-between text-sm py-1"
+                    >
+                      <span className="truncate mr-2">{doc.originalName}</span>
+                      <StatusBadge
+                        {...documentReviewStatusBadge(doc.reviewStatus)}
+                        size="sm"
+                      />
+                    </div>
+                  ))}
+              </div>
+            </div>
+          </div>
+          <ResponsiveModalFooter className="shrink-0">
+            <Button
+              variant="outline"
+              onClick={() => setBulkReviewDialogOpen(false)}
+              disabled={isBulkUpdating}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() =>
+                handleBulkStatusUpdate(bulkReviewStatus, bulkReviewNotes)
+              }
+              disabled={isBulkUpdating || !bulkReviewStatus}
+            >
+              {isBulkUpdating ? "Updating..." : "Review All"}
+            </Button>
+          </ResponsiveModalFooter>
+        </ResponsiveModalContent>
+      </ResponsiveModal>
 
       {/* Response Upload Dialog */}
       {documentForResponse && (
@@ -702,6 +835,7 @@ export function DocumentsTab({
           onSuccess={onRefresh}
         />
       )}
-    </div>
+      </div>
+    </>
   );
 }

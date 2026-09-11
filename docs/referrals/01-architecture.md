@@ -213,17 +213,19 @@ processQualifyingAction(userId, action)
         ├── Not found → return (user wasn't referred, or already qualified)
         │
         ▼
-  Found referral. Check qualification window:
-  Is (signedUpAt + 30 days) > now?
+  Atomically claim the reward in ONE guarded write:
+  UPDATE Referral
+    WHERE status = "SIGNED_UP"
+      AND signedUpAt >= (now - 30 days)   ← window folded into the WHERE
+    SET status → REWARDED ...
         │
-        ├── NO (expired) ──────────────────────────────────┐
-        │                                                   │
-        │                                                   ▼
-        │                                     UPDATE Referral
-        │                                       status → EXPIRED
-        │                                     (no rewards given)
+        ├── 0 rows updated (lost the race, or past the window)
+        │        │
+        │        ▼
+        │   If still un-rewarded SIGNED_UP AND signedUpAt < cutoff:
+        │     UPDATE Referral status → EXPIRED (no rewards given)
         │
-        ▼ YES (within window)
+        ▼ 1 row updated (claimed within window)
   Qualify and reward:
   1. UPDATE Referral
        status → REWARDED
@@ -247,6 +249,8 @@ processQualifyingAction(userId, action)
 The qualification window exists to prevent gaming. Without it, someone could sign up via a referral link, never use the platform, and then make a purchase months later — giving the referrer a reward for a connection that was essentially cold. The 30-day window ensures the referral has some causal relationship to the signup.
 
 If the window expires and the user later makes a purchase, the referral status changes to `EXPIRED` rather than `REWARDED`. The referrer gets nothing. The cron job (`scripts/referrals/expire-referrals.ts`) handles bulk expiration daily, but the `processQualifyingAction` function also handles it inline to avoid a race between the cron job and a late payment.
+
+As of #692 (REF-3), the window check is no longer evaluated in application code separately from the status guard. Previously `processQualifyingAction` compared `Date.now()` against `signedUpAt` in JavaScript and then issued a separate update to flip the status, which left a gap between the read and the write. The window condition is now folded directly into the reward `updateMany` WHERE clause as `signedUpAt >= cutoff` alongside the `status = "SIGNED_UP"` guard, so claiming the reward and deciding it is still in-window are a single atomic operation. If that guarded update affects zero rows — because a concurrent call already claimed it, or because the referral is genuinely past the window — the function only then issues the `EXPIRED` transition, and only for a referral that is still an un-rewarded `SIGNED_UP` whose `signedUpAt` is before the cutoff. Reward-versus-expire is therefore a single guarded decision that two concurrent webhooks cannot both win.
 
 ### Why the referral goes directly to REWARDED (not QUALIFIED)
 

@@ -1,6 +1,14 @@
 {
   "compilerOptions": {
-    "target": "es5",
+    // ES2017 is the Next.js default and matches what the app actually ships:
+    // Next transpiles for its own browserslist targets regardless of this, so
+    // "es5" only ever constrained the type checker. It is also deprecated and
+    // stops working in TypeScript 7.0.
+    //
+    // The practical effect is that iterator spread (`[...map.values()]`,
+    // `[...str.matchAll()]`) now typechecks instead of demanding
+    // `--downlevelIteration` or an Array.from rewrite.
+    "target": "es2017",
     "lib": ["dom", "dom.iterable", "esnext"],
     "types": ["jest", "node"],
     "allowJs": true,
@@ -20,6 +28,11 @@
         "name": "next"
       }
     ],
+    // `baseUrl` is deprecated in TS 7.0 and should eventually go, but it is
+    // load-bearing today: ~40 files import via bare specifiers ("lib/prisma"
+    // rather than "@/lib/prisma") and resolve only through it. Removing it is a
+    // mechanical import rewrite across those files — worth doing, but not on a
+    // branch about org chat surfaces.
     "baseUrl": ".",
     "paths": {
       "@/*": ["./*"]

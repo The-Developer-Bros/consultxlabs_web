@@ -43,7 +43,9 @@ const CallEnded = ({
         </div>
 
         {/* Text */}
-        <h1 className="text-2xl font-bold text-white mb-2">{message}</h1>
+        <h1 className="text-fluid-3xl font-bold tracking-tight text-white mb-2">
+          {message}
+        </h1>
         <p className="text-zinc-400 mb-8">
           You can return to the home page or try to rejoin the meeting.
         </p>
@@ -62,7 +64,7 @@ const CallEnded = ({
           {onRejoin && (
             <Button
               onClick={onRejoin}
-              className="bg-emerald-500 hover:bg-emerald-600 text-white px-6 py-2.5 h-auto"
+              className="bg-primary hover:bg-primary/90 text-primary-foreground px-6 py-2.5 h-auto"
             >
               <RefreshCw className="w-4 h-4 mr-2" />
               Try to Rejoin

@@ -1,5 +1,6 @@
 import { faker } from "@faker-js/faker";
 import {
+  Currency,
   PaymentGateway,
   PaymentStatus,
   Prisma,
@@ -21,8 +22,8 @@ export async function createPayments(users: UserWithProfiles[]) {
         none: {},
       },
       OR: [
-        { consultation: { requestStatus: "APPROVED" } },
-        { subscription: { requestStatus: "APPROVED" } },
+        { consultation: { status: "APPROVED" } },
+        { subscription: { status: "APPROVED" } },
         { webinar: { status: "SCHEDULED" } },
         { class: { status: "SCHEDULED" } },
       ],
@@ -99,7 +100,13 @@ export async function createPayments(users: UserWithProfiles[]) {
         user: { connect: { id: user.id } },
         amount: finalAmount,
         originalAmount: amount,
-        currency: faker.helpers.arrayElement(["USD", "EUR", "GBP"]),
+        // INR, like every real payment. This used to pick a random foreign
+        // currency, which is why 386 of 397 seeded payments were non-INR while
+        // no plan has ever been priced in anything but INR. Dashboards then
+        // summed EUR + GBP + USD + INR minor units into one figure and labelled
+        // it with a single symbol — the operator home page read ₹26,47,683.47
+        // for a number that was four currencies added together.
+        currency: Currency.INR,
         description,
         receiptUrl: faker.internet.url(),
         paymentMethod: faker.helpers.arrayElement([
@@ -121,8 +128,17 @@ export async function createPayments(users: UserWithProfiles[]) {
           : {}),
       };
 
-      await prisma.payment.create({
+      const created = await prisma.payment.create({
         data: paymentData,
+      });
+      // #1319 A9 — stamp the funding payment on the buyer's participant row.
+      await prisma.appointmentParticipant.updateMany({
+        where: {
+          appointmentId: appointment.id,
+          userId: user.id,
+          paymentId: null,
+        },
+        data: { paymentId: created.id },
       });
     } catch (error) {
       console.error(

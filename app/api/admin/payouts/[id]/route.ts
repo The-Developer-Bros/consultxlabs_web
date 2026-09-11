@@ -3,12 +3,13 @@
  * Approve, reject, or get details of specific payouts
  */
 
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { z } from "zod";
 import {
   requireAdminAuth,
-  requirePrivilegedAuth,
+  requireBackofficeSurface,
 } from "@/lib/auth-helpers";
 import {
   getPayoutById,
@@ -31,7 +32,7 @@ const actionSchema = z.object({
  */
 export async function GET(req: NextRequest, { params }: RouteParams) {
   try {
-    const auth = await requirePrivilegedAuth();
+    const auth = await requireBackofficeSurface("payouts.read");
     if (auth.error) return auth.error;
 
     const { id } = await params;
@@ -44,6 +45,7 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ payout });
   } catch (error) {
     console.error("Error fetching payout:", error);
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "admin" } });
     return NextResponse.json(
       { error: "Failed to fetch payout" },
       { status: 500 },
@@ -68,7 +70,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     const { action, reason } = actionSchema.parse(body);
 
     // Verify payout exists and is pending
-    const payout = await prisma.payout.findUnique({
+    const payout = await prisma.consultantPayout.findUnique({
       where: { id },
     });
 
@@ -110,6 +112,14 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
         { status: 400 },
       );
     }
+    // The service-layer CAS (approve/reject claim PENDING atomically) throws
+    // a plain state error when a concurrent action won the race — surface it
+    // as 409, not a 500 that reads like an infrastructure fault.
+    const msg = error instanceof Error ? error.message : String(error);
+    if (msg.includes("cannot be approved") || msg.includes("cannot be rejected")) {
+      return NextResponse.json({ error: msg }, { status: 409 });
+    }
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "admin" } });
     return NextResponse.json(
       { error: "Failed to process payout action" },
       { status: 500 },

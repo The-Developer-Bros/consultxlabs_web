@@ -8,9 +8,14 @@ import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { useMaintenanceGuard } from "@/hooks/useMaintenanceGuard";
 import { useToast } from "@/hooks/use-toast";
+import { CheckoutPlanSkeleton } from "@/app/checkout/CheckoutSkeletons";
 import { fetchReviews } from "@/lib/user";
-import { SearchParams, searchParamsSchema, createCheckoutData } from "@/schemas/checkout";
-import { PaymentGateway } from "@prisma/client";
+import {
+  SearchParams,
+  searchParamsSchema,
+  createCheckoutData,
+  type SupportedCheckoutGateway,
+} from "@/schemas/checkout";
 import { CreditCard as CreditCardIcon } from "lucide-react";
 import { CompanyLogo } from "@/components/ui/company-logo";
 import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -22,10 +27,18 @@ import {
   createRazorpayCheckoutHandlers,
   createStripeCheckoutHandlers,
   handleUnifiedCheckout,
+  paymentGateways,
+  reportPaymentsError,
 } from "../../utils";
 import { calculatePricing, formatPercentage } from "../../math";
 import { useCurrency } from "@/hooks/useCurrency";
 import type { AppliedDiscount } from "@/types/checkout";
+import { OrgPayerSelector } from "@/app/checkout/components/OrgPayerSelector";
+import { FxEstimateNote } from "@/app/checkout/components/FxEstimateNote";
+import {
+  BillingStateSelect,
+  useBillingState,
+} from "@/app/checkout/components/BillingStateSelect";
 import { useCheckoutTaxContext } from "../../useCheckoutTaxContext";
 
 import type {
@@ -43,7 +56,9 @@ import type {
   User,
 } from "@prisma/client";
 
-export type CheckoutClassPlanData = ClassPlan & {
+// price arrives as number: extended client + JSON serialization (#780)
+export type CheckoutClassPlanData = Omit<ClassPlan, "price"> & {
+  price: number;
   consultantProfile:
     | (ConsultantProfile & {
         user: User & {
@@ -102,6 +117,12 @@ export default function ClassCheckoutPage({
   const [isApplyingDiscount, setIsApplyingDiscount] = useState(false);
   const [discountError, setDiscountError] = useState<string | null>(null);
   const [useReferralCredits, setUseReferralCredits] = useState(false);
+  // #1365 — GST place of supply. Blank is the statutory s.12(2)(b) default, so
+  // this never blocks checkout.
+  const billingState = useBillingState(checkoutTaxContext.billingStateCode);
+  const [selectedOrganizationId, setSelectedOrganizationId] = useState<
+    string | null
+  >(null);
   const [availableCredits, setAvailableCredits] = useState(0);
   const [isLoadingCredits, setIsLoadingCredits] = useState(true);
 
@@ -182,6 +203,7 @@ export default function ClassCheckoutPage({
           );
         }
       } catch (error) {
+        reportPaymentsError(error);
         console.error("Error fetching referral credits:", error);
       } finally {
         setIsLoadingCredits(false);
@@ -191,12 +213,18 @@ export default function ClassCheckoutPage({
   }, []);
 
   const handleApiError = useMemo(() => createHandleApiError(toast), [toast]);
-  const handleCheckoutSuccess = useMemo(() => createHandleCheckoutSuccess(toast, "CLASS"), [toast]);
+  const handleCheckoutSuccess = useMemo(
+    () => createHandleCheckoutSuccess(toast, "CLASS"),
+    [toast],
+  );
   const stripeHandlers = createStripeCheckoutHandlers(toast);
   const razorpayHandlers = createRazorpayCheckoutHandlers(toast);
 
   const handleCheckout = useCallback(
-    async (gateway: PaymentGateway, isMockPayment: boolean = false) => {
+    async (
+      gateway: SupportedCheckoutGateway,
+      isMockPayment: boolean = false,
+    ) => {
       // Block checkout during maintenance mode
       if (isMaintenanceBlocked) {
         toast({
@@ -231,11 +259,6 @@ export default function ClassCheckoutPage({
           );
         }
 
-        // fromWaitlist is not in searchParamsSchema — read from raw params
-        const fromWaitlist =
-          typeof resolvedSearchParams.fromWaitlist === "string"
-            ? resolvedSearchParams.fromWaitlist
-            : undefined;
         const checkoutData = createCheckoutData({
           appointmentType: "CLASS",
           planId: planData.data.id,
@@ -243,8 +266,11 @@ export default function ClassCheckoutPage({
           discountCode: appliedDiscount?.code,
           displayCurrency: currency,
           paymentGateway: gateway,
-          fromWaitlist,
-          useReferralCredits,
+          useReferralCredits: selectedOrganizationId
+            ? false
+            : useReferralCredits,
+          organizationId: selectedOrganizationId ?? undefined,
+          ...billingState.bodyField,
         });
 
         await handleUnifiedCheckout(
@@ -255,6 +281,7 @@ export default function ClassCheckoutPage({
           isMockPayment,
         );
       } catch (error) {
+        reportPaymentsError(error);
         console.error("Checkout error:", error);
         if (error instanceof Error) {
           // Provide more informative error messages based on the error type
@@ -303,6 +330,8 @@ export default function ClassCheckoutPage({
       toast,
       appliedDiscount,
       useReferralCredits,
+      selectedOrganizationId,
+      billingState.bodyField,
       validatedSearchParams,
       currency,
       availableClassId,
@@ -333,6 +362,7 @@ export default function ClassCheckoutPage({
         );
         _setReviews(reviewsData);
       } catch (error) {
+        reportPaymentsError(error);
         console.error("Error fetching plan data:", error);
         setError(
           error instanceof Error
@@ -369,6 +399,7 @@ export default function ClassCheckoutPage({
       discountAmount,
       creditsApplied: useReferralCredits ? availableCredits : 0,
       isInternational: checkoutTaxContext.isInternational,
+      exportZeroRated: checkoutTaxContext.exportZeroRated,
     });
   }, [
     planData?.data?.price,
@@ -376,6 +407,7 @@ export default function ClassCheckoutPage({
     useReferralCredits,
     availableCredits,
     checkoutTaxContext.isInternational,
+    checkoutTaxContext.exportZeroRated,
   ]);
 
   // Periodic staleness check: detect if all class sessions have ended or been cancelled
@@ -399,23 +431,19 @@ export default function ClassCheckoutPage({
   }, [planData]);
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-screen bg-zinc-50">
-        <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-zinc-900"></div>
-      </div>
-    );
+    return <CheckoutPlanSkeleton />;
   }
 
   if (error) {
     return (
-      <div className="col-span-full flex items-center justify-center min-h-screen bg-zinc-50">
+      <div className="col-span-full flex items-center justify-center min-h-screen bg-muted">
         <div
-          className="bg-zinc-900 border border-zinc-800 text-white p-8 max-w-md w-full mx-4 text-center rounded-xl shadow-xl"
+          className="bg-foreground border border-border text-background p-8 max-w-md w-full mx-4 text-center rounded-xl shadow-xl"
           role="alert"
         >
-          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-zinc-800">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-background/10">
             <svg
-              className="h-6 w-6 text-zinc-400"
+              className="h-6 w-6 text-background/70"
               fill="none"
               viewBox="0 0 24 24"
               strokeWidth={1.5}
@@ -429,10 +457,10 @@ export default function ClassCheckoutPage({
             </svg>
           </div>
           <p className="font-semibold text-lg mb-2">Unable to load checkout</p>
-          <p className="text-zinc-400 text-sm">{error}</p>
+          <p className="text-background/70 text-sm">{error}</p>
           <button
             onClick={() => window.history.back()}
-            className="mt-5 inline-flex items-center rounded-lg bg-white px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-zinc-100 transition-colors"
+            className="mt-5 inline-flex items-center rounded-lg bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors"
           >
             Go back
           </button>
@@ -458,10 +486,10 @@ export default function ClassCheckoutPage({
 
   return (
     <>
-      <div className="flex flex-col gap-6 border-r border-zinc-300 bg-gradient-to-br from-zinc-200 via-zinc-100 to-gray-200 p-8">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <Avatar className="w-12 h-12 border">
+      <div className="flex flex-col gap-6 border-r border-border bg-gradient-to-br from-muted via-background to-muted p-6 sm:p-8">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-4 min-w-0">
+            <Avatar className="w-12 h-12 border shrink-0">
               <AvatarImage
                 src={userDetails?.image || "/placeholder-user.jpg"}
                 alt={userDetails?.name || "Consultant"}
@@ -470,11 +498,11 @@ export default function ClassCheckoutPage({
                 {userDetails?.name ? userDetails.name.charAt(0) : "C"}
               </AvatarFallback>
             </Avatar>
-            <div>
-              <div className="font-semibold">
+            <div className="min-w-0">
+              <div className="font-semibold truncate">
                 {userDetails?.name || "Consultant Name"}
               </div>
-              <div className="text-sm text-muted-foreground">
+              <div className="text-sm text-muted-foreground truncate">
                 {consultantDetails?.headline ||
                   consultantDetails?.domain?.name ||
                   "Consultant"}
@@ -488,21 +516,21 @@ export default function ClassCheckoutPage({
                         companyName={exp.company}
                         companyDomain={exp.companyDomain ?? undefined}
                         size={20}
-                        className="border-zinc-200"
+                        className="border-border"
                       />
                     ))}
                   </div>
                 )}
             </div>
           </div>
-          <div className="text-right">
+          <div className="text-right min-w-0">
             <div className="font-semibold">Class</div>
-            <div className="text-sm text-muted-foreground">
+            <div className="text-sm text-muted-foreground truncate">
               {planDetails?.title || "Online Class"}
             </div>
           </div>
         </div>
-        <Separator className="bg-zinc-200" />
+        <Separator className="bg-border" />
         <div className="grid gap-2">
           <div className="font-semibold">Class Details</div>
           <div className="grid gap-2">
@@ -544,7 +572,7 @@ export default function ClassCheckoutPage({
             </div>
             <div className="flex items-center justify-between">
               <div className="text-muted-foreground">Sessions per Week</div>
-              <div>{planDetails?.meetingsPerWeek || 2}</div>
+              <div>{planDetails?.sessionsPerWeek || 2}</div>
             </div>
             <div className="flex items-center justify-between">
               <div className="text-muted-foreground">Max Participants</div>
@@ -568,7 +596,22 @@ export default function ClassCheckoutPage({
             </div>
           </div>
         </div>
-        <Separator className="bg-zinc-200" />
+        <Separator className="bg-border" />
+        <OrgPayerSelector
+          selectedOrganizationId={selectedOrganizationId}
+          planType="CLASS"
+          planId={resolvedParams.planId}
+          onSelect={(id) => {
+            setSelectedOrganizationId(id);
+            if (id) setUseReferralCredits(false);
+          }}
+        />
+        <Separator className="bg-border" />
+        <BillingStateSelect
+          value={billingState.value}
+          onChange={billingState.onChange}
+        />
+        <Separator className="bg-border" />
         <div className="grid gap-4">
           <div className="font-semibold">Discount Codes</div>
           <div className="flex items-center gap-2">
@@ -592,9 +635,9 @@ export default function ClassCheckoutPage({
             <div className="text-sm text-red-500">{discountError}</div>
           )}
           {appliedDiscount && (
-            <div className="flex items-center justify-between bg-green-50 p-3 rounded-md">
-              <div>
-                <div className="font-medium text-green-700">
+            <div className="flex items-center justify-between gap-3 bg-green-50 p-3 rounded-md">
+              <div className="min-w-0">
+                <div className="font-medium text-green-700 truncate">
                   {appliedDiscount.code}
                 </div>
                 <div className="text-sm text-green-600">
@@ -606,6 +649,7 @@ export default function ClassCheckoutPage({
               <Button
                 variant="ghost"
                 size="sm"
+                className="shrink-0"
                 onClick={() => {
                   setAppliedDiscount(null);
                   setDiscountError(null);
@@ -616,14 +660,14 @@ export default function ClassCheckoutPage({
             </div>
           )}
           <div className="grid gap-2">
-            <div className="flex items-center justify-between">
-              <div>
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
                 <div className="font-medium">CLASS15</div>
                 <div className="text-sm text-muted-foreground">
                   Get 15% off your class enrollment
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0">
                 <div className="text-muted-foreground">15% off</div>
                 <Button
                   variant="outline"
@@ -637,7 +681,7 @@ export default function ClassCheckoutPage({
             </div>
           </div>
         </div>
-        <Separator className="bg-zinc-200" />
+        <Separator className="bg-border" />
         <div className="grid gap-4">
           <div className="font-semibold">Referral Credits</div>
           {isLoadingCredits ? (
@@ -645,12 +689,12 @@ export default function ClassCheckoutPage({
               Loading credits...
             </div>
           ) : availableCredits > 0 ? (
-            <div className="flex items-center justify-between bg-blue-50 p-3 rounded-lg border border-blue-200">
-              <div>
-                <div className="font-medium text-blue-700">
+            <div className="flex items-center justify-between gap-3 bg-muted p-3 rounded-lg border border-border">
+              <div className="min-w-0">
+                <div className="font-medium text-foreground">
                   {formatPrice(availableCredits)} available
                 </div>
-                <div className="text-sm text-blue-600">
+                <div className="text-sm text-muted-foreground">
                   Apply to this purchase
                 </div>
               </div>
@@ -666,10 +710,10 @@ export default function ClassCheckoutPage({
           )}
         </div>
       </div>
-      <div className="flex flex-col gap-8 p-8 bg-white">
-        <Card className="border-zinc-200 shadow-sm">
+      <div className="flex flex-col gap-8 p-6 sm:p-8 bg-card">
+        <Card className="border-border shadow-sm">
           <CardHeader>
-            <CardTitle className="text-zinc-900">Class Pricing</CardTitle>
+            <CardTitle className="text-foreground">Class Pricing</CardTitle>
           </CardHeader>
           <CardContent className="grid gap-4">
             <div className="grid gap-2">
@@ -685,18 +729,18 @@ export default function ClassCheckoutPage({
                   <ul className="list-disc">
                     <li>
                       {planDetails?.totalSessions ||
-                        (planDetails?.meetingsPerWeek || 2) *
+                        (planDetails?.sessionsPerWeek || 2) *
                           (planDetails?.durationInMonths || 1) *
                           4}{" "}
                       total sessions (
                       {planDetails?.totalHours ||
-                        (planDetails?.meetingsPerWeek || 2) *
+                        (planDetails?.sessionsPerWeek || 2) *
                           (planDetails?.durationInMonths || 1) *
                           4}{" "}
                       hours)
                     </li>
                     <li>
-                      {planDetails?.meetingsPerWeek || 2} sessions per week
+                      {planDetails?.sessionsPerWeek || 2} sessions per week
                     </li>
                     <li>Course materials</li>
                     <li>Certificate of completion</li>
@@ -704,7 +748,7 @@ export default function ClassCheckoutPage({
                 </div>
               </div>
             </div>
-            <Separator className="bg-zinc-200" />
+            <Separator className="bg-border" />
             <div className="grid gap-2">
               <div className="flex items-center justify-between">
                 <div>Subtotal</div>
@@ -725,16 +769,20 @@ export default function ClassCheckoutPage({
                 </div>
               )}
               {pricing.creditsApplied > 0 && (
-                <div className="flex items-center justify-between text-blue-600">
+                <div className="flex items-center justify-between text-foreground">
                   <div>Referral Credits</div>
                   <div>-{formatPrice(pricing.creditsApplied)}</div>
                 </div>
               )}
-              <Separator className="bg-zinc-200" />
+              <Separator className="bg-border" />
               <div className="flex items-center justify-between font-semibold">
                 <div>Total</div>
                 <div>{formatPrice(pricing.total)}</div>
               </div>
+              <FxEstimateNote
+                totalPaise={pricing.total}
+                organizationId={selectedOrganizationId}
+              />
             </div>
           </CardContent>
         </Card>
@@ -745,33 +793,22 @@ export default function ClassCheckoutPage({
               Select your preferred payment method
             </div>
           </div>
-          {[
-            {
-              name: "Stripe",
-              description: "Card payments (international)",
-              gateway: "STRIPE" as const,
-              isActive: true,
-            },
-            {
-              name: "Razorpay",
-              description: "UPI, cards & bank transfer",
-              gateway: "RAZORPAY" as const,
-              isActive: true,
-            },
-          ].map((gateway) => (
-            <Card key={gateway.name} className="border-zinc-200">
+          {paymentGateways.map((gateway) => (
+            <Card key={gateway.name} className="border-border">
               <CardHeader>
-                <CardTitle className="text-zinc-900">{gateway.name}</CardTitle>
+                <CardTitle className="text-foreground">
+                  {gateway.name}
+                </CardTitle>
               </CardHeader>
               <CardContent className="grid gap-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-4">
-                    <CreditCardIcon className="w-8 h-8 text-zinc-600" />
-                    <div>
-                      <div className="font-semibold text-zinc-900">
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div className="flex items-center gap-4 min-w-0">
+                    <CreditCardIcon className="w-8 h-8 text-muted-foreground shrink-0" />
+                    <div className="min-w-0">
+                      <div className="font-semibold text-foreground">
                         Credit/Debit Card
                       </div>
-                      <div className="text-sm text-zinc-500">
+                      <div className="text-sm text-muted-foreground/70">
                         {gateway.description}
                       </div>
                     </div>
@@ -787,7 +824,11 @@ export default function ClassCheckoutPage({
                             paymentGateway: "RAZORPAY",
                             discountCode: appliedDiscount?.code,
                             displayCurrency: currency,
-                            useReferralCredits,
+                            useReferralCredits: selectedOrganizationId
+                              ? false
+                              : useReferralCredits,
+                            organizationId: selectedOrganizationId ?? undefined,
+                            ...billingState.bodyField,
                           })}
                           onPaymentSuccess={razorpayHandlers.onPaymentSuccess}
                           onPaymentError={razorpayHandlers.onPaymentError}
@@ -802,7 +843,11 @@ export default function ClassCheckoutPage({
                             paymentGateway: "STRIPE",
                             discountCode: appliedDiscount?.code,
                             displayCurrency: currency,
-                            useReferralCredits,
+                            useReferralCredits: selectedOrganizationId
+                              ? false
+                              : useReferralCredits,
+                            organizationId: selectedOrganizationId ?? undefined,
+                            ...billingState.bodyField,
                           })}
                           onPaymentSuccess={stripeHandlers.onPaymentSuccess}
                           onPaymentError={stripeHandlers.onPaymentError}
@@ -813,7 +858,9 @@ export default function ClassCheckoutPage({
                         <Button
                           variant="secondary"
                           onClick={() => handleCheckout(gateway.gateway, true)}
-                          disabled={isCheckoutProcessing || isMaintenanceBlocked}
+                          disabled={
+                            isCheckoutProcessing || isMaintenanceBlocked
+                          }
                         >
                           {isCheckoutProcessing &&
                           processingGateway === `${gateway.gateway}-mock` ? (

@@ -2,12 +2,14 @@
 
 ## Overview
 
-A trial session is a free, one-time session that lets a consultee try a consultant's subscription plan before committing to a paid subscription. Trials are tied to a `SubscriptionPlan` that has `freeTrialEnabled: true`, and each consultee-consultant pair is limited to exactly one trial (enforced by a unique constraint).
+A trial session is a one-time session that lets a consultee try a consultant's subscription plan before committing to a paid subscription. Trials are tied to a `SubscriptionPlan` that has `trialEnabled: true`, and each consultee-consultant pair is limited to exactly one trial (enforced by a unique constraint).
 
 Key characteristics:
 
-- No payment required
-- Duration configured per plan via `freeTrialDurationMinutes` (default 30 min)
+- Priced per plan via `trialPriceInPaise` (free by default until paid-trial checkout is wired, after which the default flips to ₹100; the consultant can always set it to ₹0 for a genuinely free trial)
+- A platform-wide minimum sits under every plan's trial price: admin or staff set `PlatformPricingConfig.minTrialPriceInPaise` via `PATCH /api/admin/trial-pricing`, and the plan create/update routes reject prices below it. The floor defaults to 0, which keeps free trials allowed.
+- Booking a trial whose price is above 0 is rejected with a "Paid trials are not yet available" error until the payment wiring ships. The schema is already shaped for it: `TrialSession.pendingPaymentUrl` carries the checkout hand-off and `TrialSession.paymentId` links the settled `Payment`.
+- Duration configured per plan via `trialDurationMinutes` (default 30 min)
 - Consultant must approve and schedule the session
 - Successful trials can convert into a full subscription
 
@@ -15,7 +17,7 @@ Key characteristics:
 
 - Model: `prisma/schema.prisma` (TrialSession, TrialSessionStatus)
 - API: `app/api/trials/route.ts`, `app/api/trials/[trialId]/route.ts`, `app/api/trials/check-eligibility/route.ts`
-- Locking: `utils/appointmentlock.ts` (lockTrialSlot, unlockTrialSlot)
+- Locking: `utils/appointmentlock.ts` (lockSlotBooking, unlockSlotBooking — the shared slot-interval lock)
 - Auto-completion: `scripts/appointments/auto-complete-appointments.ts`
 - Notifications: `lib/novu/workflows.ts`
 
@@ -135,7 +137,7 @@ sequenceDiagram
 
     Consultee->>API: POST /api/trials (request trial)
     API->>DB: Check unique constraint (one trial per pair)
-    API->>DB: Verify plan has freeTrialEnabled
+    API->>DB: Verify plan has trialEnabled
     API->>DB: Create TrialSession (PENDING)
     API->>Novu: trial-session-requested (to consultant)
     API-->>Consultee: 201 Created
@@ -143,10 +145,9 @@ sequenceDiagram
     Note over API: Consultant reviews request
 
     Consultee->>API: PATCH /api/trials/id with status SCHEDULED and slotData
-    API->>Redis: lockTrialSlot(consultantProfileId, startsAt)
-    API->>DB: Validate slot availability (no overlaps)
-    API->>DB: $transaction: create Appointment (TRIAL) + update TrialSession
-    API->>Redis: unlockTrialSlot()
+    API->>Redis: lockSlotBooking(consultantProfileId, startsAt, endsAt)
+    API->>DB: $transaction: validate availability (both participants) + create Appointment (TRIAL) + update TrialSession
+    API->>Redis: unlockSlotBooking()
     API->>Novu: trial-session-scheduled (to consultee)
     API-->>Consultee: 200 OK
 
@@ -161,12 +162,37 @@ sequenceDiagram
 
 ### Step-by-step
 
-1. **Request** -- Consultee calls `POST /api/trials` with `consulteeProfileId`, `consultantProfileId`, `subscriptionPlanId`, and optional `notes`. The API checks the unique constraint and verifies `freeTrialEnabled` on the plan.
+1. **Request** -- Consultee calls `POST /api/trials` with `consulteeProfileId`, `consultantProfileId`, `subscriptionPlanId`, and optional `notes`. The API checks the unique constraint and verifies `trialEnabled` on the plan.
 2. **Eligibility check** -- `GET /api/trials/check-eligibility` can be called beforehand to verify the consultee has not already used their trial with this consultant.
 3. **Approve & Schedule** -- Consultant calls `PATCH /api/trials/[trialId]` with `status: "SCHEDULED"` and `slotData: { startsAt, endsAt }`. The system acquires a distributed lock, validates slot availability, then creates an `Appointment` (type `TRIAL`) and a `SlotOfAppointment` inside a Prisma transaction.
 4. **Session** -- Both parties join the meeting via Stream video call.
 5. **Auto-complete** -- The hourly cron marks `SCHEDULED` trials as `COMPLETED` once all appointment slots have ended (with a 1-hour buffer).
 6. **Conversion** -- If the consultee subscribes, the trial status transitions to `CONVERTED` and `convertedToSubscriptionId` is set.
+
+### Paying for a trial
+
+A priced trial is paid for on our own checkout page at
+`/checkout/plans/trial/[trialId]`, and every "Pay Now" affordance in the product
+has to land there. The page exists because the gateway pay-link on
+`TrialSession.pendingPaymentUrl` opens straight into Razorpay with none of the
+context a buyer needs: the branded page names the amount, shows the held session
+in the viewer's own timezone, states the deadline the hold expires at, and only
+then hands off (#1167).
+
+The one place that decision is made is `trialCheckoutHref` in
+`lib/appointments/trial-checkout-href.ts`. It returns the branded href for a
+trial row and `null` for everything else, and a caller that gets `null` falls
+back to opening `vm.pendingPaymentUrl` in a new tab. The `TrialSession` id only
+survives in the synthetic view-model id the mappers mint (`trial-<id>`), which
+is why the helper parses that prefix rather than reading a field. Both Pay Now
+buttons on the appointment detail page and the one in the appointment sheet call
+it, because the branch previously lived inline in the sheet and a second entry
+point added on the detail page shipped without it, quietly regressing paid
+trials back to the raw gateway link (#1428, #1429).
+
+If you add a new surface that offers to pay for a booking, call the helper
+first; do not re-derive the branch, and do not link to `pendingPaymentUrl`
+directly.
 
 ---
 
@@ -174,12 +200,12 @@ sequenceDiagram
 
 | Aspect                | Trial                                                             | Consultation                                                  |
 | --------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------- |
-| **Payment**           | Free                                                              | Required (via checkout)                                       |
-| **Duration**          | Fixed per plan (`freeTrialDurationMinutes`, default 30 min)       | Variable (`durationInHours`, 0.5-4h)                          |
-| **Lock type**         | `lockTrialSlot()` -- key: `trial-slot-booking:{profileId}:{time}` | `lockSlotBooking()` -- key: `slot-booking:{profileId}:{time}` |
+| **Payment**           | Per plan's `trialPriceInPaise` (0 = free, the default until paid-trial checkout ships)         | Required (via checkout)                                       |
+| **Duration**          | Fixed per plan (`trialDurationMinutes`, default 30 min)           | Variable (`durationInHours`, 0.5-4h)                          |
+| **Lock type**         | `lockSlotBooking()` -- shared `slot-booking:` atom keys           | `lockSlotBooking()` -- shared `slot-booking:` atom keys       |
 | **Uniqueness**        | One per consultee-consultant pair                                 | Multiple allowed                                              |
 | **Conversion**        | Leads to Subscription (`convertedToSubscriptionId`)               | Standalone                                                    |
-| **Status field**      | `status` (TrialSessionStatus enum)                                | `requestStatus` (RequestStatus enum)                          |
+| **Status field**      | `status` (TrialSessionStatus enum)                                | `status` (AppointmentStatus enum)                          |
 | **Appointment type**  | `TRIAL`                                                           | `CONSULTATION`                                                |
 | **Booking flow**      | Request -> consultant schedules                                   | Direct checkout or request-based                              |
 | **Scheduling period** | None                                                              | None                                                          |
@@ -189,21 +215,23 @@ sequenceDiagram
 
 ## Concurrency Protection
 
-Trial scheduling uses the same distributed locking infrastructure as consultations and subscriptions, via `lockTrialSlot()` in `utils/appointmentlock.ts`.
+Trial scheduling takes the SAME lock as every other direct slot writer: `lockSlotBooking()` in `utils/appointmentlock.ts`, which acquires one key per 30-minute atom of the requested interval. Until #1169 PR 1 trials locked a private `trial-slot-booking:` namespace that no other path read, so a trial and a consultation checkout for the same consultant-minute never contended — and because the trial slot also carried no `consultantProfileId`, it fell outside the `slot_no_confirmed_overlap` exclusion constraint too (#1093 §1). Both halves are fixed: the slot is stamped with `consultantProfileId` at creation, and the availability check now runs inside the scheduling transaction and covers the consultee's calendar as well as the consultant's.
 
-**Redis key pattern:** `trial-slot-booking:{consultantProfileId}:{slotStartTimeInUTC}`
+Because the consultee-calendar check is only a read, the route also takes `lockConsulteeBooking(consulteeUserId)` before the slot lock, following the same consultant → consultee → slot lock order that checkout uses. Without it, two trials for the same consultee with two different consultants would hold disjoint consultant-keyed atoms, pass the consultee check concurrently, and both commit — the exact cross-consultant double-book the consultant-keyed exclusion constraint cannot see.
+
+**Redis key pattern:** `slot-booking:{consultantProfileId}:{atomStartISO}` (one key per 30-minute atom)
 
 | Parameter           | Value                                    |
 | ------------------- | ---------------------------------------- |
 | Default TTL         | 60,000 ms (60 seconds)                   |
-| Retry count         | 10                                       |
+| Retry count         | 5 per atom (interval config)             |
 | Base retry delay    | 200 ms                                   |
 | Retry jitter        | 200 ms (random)                          |
 | Exponential backoff | Yes                                      |
 | Drift factor        | 0.01                                     |
 | Release mechanism   | Atomic Lua script (check value then DEL) |
 
-The lock is acquired before slot validation and released in a `finally` block regardless of success or failure. On lock contention, the API returns HTTP 423 (Locked).
+The locks are acquired before slot validation and released in a `finally` block regardless of success or failure. On lock contention, the API returns HTTP 423 (Locked); when Redis is unreachable, acquisition fails closed with HTTP 503 (`BookingLockUnavailableError`) instead of reading as contention.
 
 Slot validation inside the lock checks for overlaps across all appointment types (consultations, subscriptions, webinars, classes, and other trials).
 

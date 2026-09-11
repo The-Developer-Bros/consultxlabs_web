@@ -139,6 +139,12 @@ Action:
 
 ---
 
+## Refund Reversal
+
+When a payment that consumed referral credits is refunded, `reverseCreditsForPayment` restores the consumed amount to the originating credit so the balance is made whole again. As of #692 (REF-2), that restoration is skipped for any credit that has since expired. Putting `remainingAmount` back onto a lapsed credit would only create dead balance that the daily expiry cron immediately re-zeroes and that the available-balance query already filters out, so the buyer would gain nothing. When a refund touches an expired credit the reversal instead logs the skipped amount and leaves the usage record in place, so the credit reads as genuinely consumed rather than briefly resurrected. Reissuing fresh credit for a refund of an already-expired purchase is a deliberate product decision and is not done automatically.
+
+---
+
 ## Available Balance Calculation
 
 ```sql

@@ -89,14 +89,14 @@ Use Razorpay test API keys. All test transactions will be simulated.
 ### Stripe Webhooks
 
 1. Go to [Stripe Dashboard > Webhooks](https://dashboard.stripe.com/webhooks)
-2. Add endpoint: `https://yourdomain.com/api/webhooks/unified`
+2. Add endpoint: `https://yourdomain.com/api/webhooks/stripe`
 3. Select events: `payment_intent.succeeded`, `payment_intent.payment_failed`
 4. Copy webhook secret to `STRIPE_WEBHOOK_SECRET`
 
 ### Razorpay Webhooks
 
 1. Go to [Razorpay Dashboard > Webhooks](https://dashboard.razorpay.com/app/webhooks)
-2. Add endpoint: `https://yourdomain.com/api/webhooks/unified`
+2. Add endpoint: `https://yourdomain.com/api/webhooks/razorpay`
 3. Select events: `payment.captured`, `payment.failed`
 4. Copy webhook secret to `RAZORPAY_WEBHOOK_SECRET`
 

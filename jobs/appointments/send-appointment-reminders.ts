@@ -14,6 +14,8 @@ import {
 } from "../../scripts/appointments/send-appointment-reminders";
 import fs from "fs";
 import { abortIfMaintenance } from "../../lib/maintenance-cron";
+import * as Sentry from "@sentry/nextjs";
+import { runJob } from "../../lib/observability/job-sentry";
 
 /**
  * Output results to GitHub Actions
@@ -51,6 +53,7 @@ function outputToGitHubActions(result: ReminderResult): void {
  */
 async function main(): Promise<void> {
   await abortIfMaintenance("send-appointment-reminders");
+  Sentry.logger.info("job:send-appointment-reminders started");
   console.log("⏰ Starting appointment reminders job...");
   console.log(`Timestamp: ${new Date().toISOString()}`);
 
@@ -69,15 +72,17 @@ async function main(): Promise<void> {
 
     outputToGitHubActions(result);
 
+    Sentry.logger.info("job:send-appointment-reminders finished", {
+      reminders24h: result.reminders24h,
+      reminders1h: result.reminders1h,
+    });
+
     if (!result.success) {
-      process.exit(1);
+      process.exitCode = 1;
     }
-  } catch (error) {
-    console.error("❌ Fatal error in appointment reminders:", error);
-    process.exit(1);
   } finally {
     await disconnectDatabase();
   }
 }
 
-main();
+runJob("send-appointment-reminders", main);

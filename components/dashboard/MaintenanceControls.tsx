@@ -288,7 +288,7 @@ export default function MaintenanceControls() {
   if (loading) {
     return (
       <div className="flex items-center justify-center p-12">
-        <Loader2 className="h-8 w-8 animate-spin text-zinc-400" />
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground/70" />
       </div>
     );
   }
@@ -306,16 +306,18 @@ export default function MaintenanceControls() {
           <div className="flex items-center gap-4">
             <StatusIndicator phase={state?.phase || "OFF"} />
             <div>
-              <p className="font-medium text-zinc-900">
+              <p className="font-medium text-foreground">
                 {state?.phase === "OFF" && "All systems operational"}
                 {state?.phase === "DEGRADED" && "Degraded mode active"}
                 {state?.phase === "OFFLINE" && "Offline — site unreachable"}
               </p>
               {isActive && state?.reason && (
-                <p className="text-sm text-zinc-500 mt-0.5">{state.reason}</p>
+                <p className="text-sm text-muted-foreground mt-0.5">
+                  {state.reason}
+                </p>
               )}
               {isActive && state?.estimatedEnd && (
-                <p className="text-sm text-zinc-500 mt-0.5">
+                <p className="text-sm text-muted-foreground mt-0.5">
                   ETA: {new Date(state.estimatedEnd).toLocaleString()}
                 </p>
               )}
@@ -354,21 +356,21 @@ export default function MaintenanceControls() {
             <CardContent className="space-y-3">
               <div className="flex items-center gap-3">
                 {preflight.recommendation === "SAFE" && (
-                  <Badge className="bg-green-100 text-green-700 border-green-200">
+                  <Badge className="bg-green-100 text-green-700 border-green-200 dark:bg-green-950/40 dark:text-green-400 dark:border-green-900">
                     SAFE
                   </Badge>
                 )}
                 {preflight.recommendation === "CAUTION" && (
-                  <Badge className="bg-yellow-100 text-yellow-700 border-yellow-200">
+                  <Badge className="bg-yellow-100 text-yellow-700 border-yellow-200 dark:bg-yellow-950/40 dark:text-yellow-400 dark:border-yellow-900">
                     CAUTION
                   </Badge>
                 )}
                 {preflight.recommendation === "RISKY" && (
-                  <Badge className="bg-red-100 text-red-700 border-red-200">
+                  <Badge className="bg-red-100 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-400 dark:border-red-900">
                     RISKY
                   </Badge>
                 )}
-                <span className="text-xs text-zinc-400">
+                <span className="text-xs text-muted-foreground/70">
                   Checked {new Date(preflight.checkedAt).toLocaleTimeString()}
                 </span>
               </div>
@@ -400,10 +402,10 @@ export default function MaintenanceControls() {
                 />
               </div>
               {preflight.warnings.length > 0 && (
-                <ul className="text-sm text-zinc-600 space-y-1">
+                <ul className="text-sm text-muted-foreground space-y-1">
                   {preflight.warnings.map((w, i) => (
                     <li key={i} className="flex items-start gap-1.5">
-                      <AlertTriangle className="h-4 w-4 text-yellow-500 shrink-0 mt-0.5" />
+                      <AlertTriangle className="h-4 w-4 text-yellow-500 dark:text-yellow-400 shrink-0 mt-0.5" />
                       {w}
                     </li>
                   ))}
@@ -430,7 +432,7 @@ export default function MaintenanceControls() {
             <div className="space-y-2">
               <Label htmlFor="reason">
                 Reason{" "}
-                <span className="text-zinc-400 font-normal">
+                <span className="text-muted-foreground/70 font-normal">
                   (shown in banner)
                 </span>
               </Label>
@@ -460,11 +462,11 @@ export default function MaintenanceControls() {
 
           {/* Action buttons */}
           {!isActive ? (
-            <div className="flex gap-3 pt-2">
+            <div className="flex flex-wrap gap-3 pt-2">
               <Button
                 onClick={() => startMaintenance("DEGRADED")}
                 disabled={actionLoading}
-                className="bg-yellow-500 hover:bg-yellow-600 text-white"
+                className="bg-yellow-500 hover:bg-yellow-600 text-white dark:bg-yellow-600 dark:hover:bg-yellow-700"
               >
                 {actionLoading && (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -508,7 +510,7 @@ export default function MaintenanceControls() {
                 <Button
                   onClick={() => updateMaintenance({ phase: "DEGRADED" })}
                   disabled={actionLoading}
-                  className="bg-yellow-500 hover:bg-yellow-600 text-white"
+                  className="bg-yellow-500 hover:bg-yellow-600 text-white dark:bg-yellow-600 dark:hover:bg-yellow-700"
                 >
                   Downgrade to Degraded
                 </Button>
@@ -517,7 +519,7 @@ export default function MaintenanceControls() {
                 onClick={endMaintenance}
                 disabled={actionLoading}
                 variant="outline"
-                className="text-green-700 border-green-300 hover:bg-green-50"
+                className="text-green-700 border-green-300 hover:bg-green-50 dark:text-green-400 dark:border-green-900 dark:hover:bg-green-950/40"
               >
                 End Maintenance
               </Button>
@@ -528,25 +530,25 @@ export default function MaintenanceControls() {
 
       {/* Bypass Secret */}
       {bypassSecret && (
-        <Card className="border-blue-200 bg-blue-50/50">
+        <Card className="border-border bg-muted/50">
           <CardHeader className="pb-3">
-            <CardTitle className="text-base text-blue-900">
+            <CardTitle className="text-base text-foreground">
               Bypass Access
             </CardTitle>
-            <CardDescription className="text-blue-700">
+            <CardDescription>
               Use this token to bypass maintenance. Add as a request header or
               browser cookie.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="flex items-center gap-2">
-              <code className="flex-1 rounded-md bg-blue-100 px-3 py-2 text-sm text-blue-900 font-mono break-all">
+              <code className="flex-1 rounded-md bg-muted px-3 py-2 text-sm text-foreground font-mono break-all">
                 {bypassSecret}
               </code>
               <Button
                 variant="outline"
                 size="icon"
-                className="shrink-0 border-blue-200 text-blue-700 hover:bg-blue-100"
+                className="shrink-0"
                 onClick={() => copyToClipboard(bypassSecret)}
               >
                 {copied ? (
@@ -556,16 +558,16 @@ export default function MaintenanceControls() {
                 )}
               </Button>
             </div>
-            <div className="text-xs text-blue-600 space-y-1">
+            <div className="text-xs text-muted-foreground space-y-1">
               <p>
                 Header:{" "}
-                <code className="bg-blue-100 px-1 rounded">
+                <code className="bg-muted px-1 rounded">
                   x-maintenance-bypass: {bypassSecret}
                 </code>
               </p>
               <p>
                 Cookie:{" "}
-                <code className="bg-blue-100 px-1 rounded">
+                <code className="bg-muted px-1 rounded">
                   maintenance_bypass={bypassSecret}
                 </code>
               </p>
@@ -585,36 +587,36 @@ export default function MaintenanceControls() {
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b text-left">
-                    <th className="pb-2 pr-4 font-medium text-zinc-500">
+                  <tr className="border-b border-border text-left">
+                    <th className="pb-2 pr-4 font-medium text-muted-foreground">
                       Phase
                     </th>
-                    <th className="pb-2 pr-4 font-medium text-zinc-500">
+                    <th className="pb-2 pr-4 font-medium text-muted-foreground">
                       Reason
                     </th>
-                    <th className="pb-2 pr-4 font-medium text-zinc-500">
+                    <th className="pb-2 pr-4 font-medium text-muted-foreground">
                       Started
                     </th>
-                    <th className="pb-2 pr-4 font-medium text-zinc-500">
+                    <th className="pb-2 pr-4 font-medium text-muted-foreground">
                       Ended
                     </th>
                   </tr>
                 </thead>
                 <tbody>
                   {history.map((w) => (
-                    <tr key={w.id} className="border-b last:border-0">
+                    <tr key={w.id} className="border-b border-border last:border-0">
                       <td className="py-2.5 pr-4">
                         <PhaseBadge phase={w.phase} />
                       </td>
-                      <td className="py-2.5 pr-4 text-zinc-600 max-w-[200px] truncate">
+                      <td className="py-2.5 pr-4 text-muted-foreground max-w-[200px] truncate">
                         {w.reason || "—"}
                       </td>
-                      <td className="py-2.5 pr-4 text-zinc-500 whitespace-nowrap">
+                      <td className="py-2.5 pr-4 text-muted-foreground whitespace-nowrap">
                         {w.startedAt
                           ? new Date(w.startedAt).toLocaleString()
                           : "—"}
                       </td>
-                      <td className="py-2.5 pr-4 text-zinc-500 whitespace-nowrap">
+                      <td className="py-2.5 pr-4 text-muted-foreground whitespace-nowrap">
                         {w.endedAt ? new Date(w.endedAt).toLocaleString() : "—"}
                       </td>
                     </tr>
@@ -632,21 +634,21 @@ export default function MaintenanceControls() {
 function StatusIndicator({ phase }: { phase: string }) {
   if (phase === "DEGRADED") {
     return (
-      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-yellow-100">
-        <AlertTriangle className="h-6 w-6 text-yellow-600" />
+      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-yellow-100 dark:bg-yellow-950/40">
+        <AlertTriangle className="h-6 w-6 text-yellow-600 dark:text-yellow-400" />
       </div>
     );
   }
   if (phase === "OFFLINE") {
     return (
-      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-red-100">
-        <XCircle className="h-6 w-6 text-red-600" />
+      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-red-100 dark:bg-red-950/40">
+        <XCircle className="h-6 w-6 text-red-600 dark:text-red-400" />
       </div>
     );
   }
   return (
-    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-green-100">
-      <CheckCircle2 className="h-6 w-6 text-green-600" />
+    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-green-100 dark:bg-green-950/40">
+      <CheckCircle2 className="h-6 w-6 text-green-600 dark:text-green-400" />
     </div>
   );
 }
@@ -661,22 +663,24 @@ function PreflightStat({
   warn: boolean;
 }) {
   return (
-    <div className="rounded-md border px-3 py-2 text-center">
+    <div className="rounded-md border border-border px-3 py-2 text-center">
       <p
-        className={`text-lg font-semibold ${warn ? "text-yellow-600" : "text-zinc-900"}`}
+        className={`text-lg font-semibold ${warn ? "text-yellow-600 dark:text-yellow-400" : "text-foreground"}`}
       >
         {value}
       </p>
-      <p className="text-xs text-zinc-500">{label}</p>
+      <p className="text-xs text-muted-foreground">{label}</p>
     </div>
   );
 }
 
 function PhaseBadge({ phase }: { phase: string }) {
   const variants: Record<string, string> = {
-    OFF: "bg-green-100 text-green-700 border-green-200",
-    DEGRADED: "bg-yellow-100 text-yellow-700 border-yellow-200",
-    OFFLINE: "bg-red-100 text-red-700 border-red-200",
+    OFF: "bg-green-100 text-green-700 border-green-200 dark:bg-green-950/40 dark:text-green-400 dark:border-green-900",
+    DEGRADED:
+      "bg-yellow-100 text-yellow-700 border-yellow-200 dark:bg-yellow-950/40 dark:text-yellow-400 dark:border-yellow-900",
+    OFFLINE:
+      "bg-red-100 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-400 dark:border-red-900",
   };
 
   return (

@@ -8,13 +8,14 @@ import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { useMaintenanceGuard } from "@/hooks/useMaintenanceGuard";
 import { useToast } from "@/hooks/use-toast";
+import { CheckoutPlanSkeleton } from "@/app/checkout/CheckoutSkeletons";
 import { fetchReviews } from "@/lib/user";
 import {
   createCheckoutData,
   WebinarSearchParams,
   webinarSearchParamsSchema,
+  type SupportedCheckoutGateway,
 } from "@/schemas/checkout";
-import { PaymentGateway } from "@prisma/client";
 import { CreditCard as CreditCardIcon } from "lucide-react";
 import { CompanyLogo } from "@/components/ui/company-logo";
 import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -26,11 +27,20 @@ import {
   createRazorpayCheckoutHandlers,
   createStripeCheckoutHandlers,
   handleUnifiedCheckout,
+  paymentGateways,
+  reportPaymentsError,
 } from "../../utils";
 import { calculatePricing, formatPercentage } from "../../math";
+import { getWebinarCapacity } from "@/lib/events/capacity";
 import { useCurrency } from "@/hooks/useCurrency";
 import { useCheckoutTaxContext } from "../../useCheckoutTaxContext";
 import type { AppliedDiscount } from "@/types/checkout";
+import { OrgPayerSelector } from "@/app/checkout/components/OrgPayerSelector";
+import { FxEstimateNote } from "@/app/checkout/components/FxEstimateNote";
+import {
+  BillingStateSelect,
+  useBillingState,
+} from "@/app/checkout/components/BillingStateSelect";
 
 import type {
   Appointment,
@@ -46,8 +56,10 @@ import type {
   WebinarPlan,
 } from "@prisma/client";
 
-// Define a type for the fetched WebinarPlan data
-export type CheckoutWebinarPlanData = WebinarPlan & {
+// Define a type for the fetched WebinarPlan data.
+// price arrives as number: extended client + JSON serialization (#780)
+export type CheckoutWebinarPlanData = Omit<WebinarPlan, "price"> & {
+  price: number;
   consultantProfile:
     | (ConsultantProfile & {
         user: User & {
@@ -65,7 +77,12 @@ export type CheckoutWebinarPlanData = WebinarPlan & {
   webinars: (PrismaWebinar & {
     appointment:
       | (Appointment & {
-          slotsOfAppointment: SlotOfAppointment[];
+          // `user` is what makes a seat count a seat — `fetchWebinarPlanDetail`
+          // has always included it, the type simply never said so, and
+          // `countWebinarParticipants` answers 0 in silence when it is absent.
+          slotsOfAppointment: (SlotOfAppointment & {
+            user: { id: string }[];
+          })[];
         })
       | null;
   })[];
@@ -108,6 +125,12 @@ export default function WebinarCheckoutPage({
   const [isApplyingDiscount, setIsApplyingDiscount] = useState(false);
   const [discountError, setDiscountError] = useState<string | null>(null);
   const [useReferralCredits, setUseReferralCredits] = useState(false);
+  // #1365 — GST place of supply. Blank is the statutory s.12(2)(b) default, so
+  // this never blocks checkout.
+  const billingState = useBillingState(checkoutTaxContext.billingStateCode);
+  const [selectedOrganizationId, setSelectedOrganizationId] = useState<
+    string | null
+  >(null);
   const [availableCredits, setAvailableCredits] = useState(0);
   const [isLoadingCredits, setIsLoadingCredits] = useState(true);
 
@@ -180,6 +203,7 @@ export default function WebinarCheckoutPage({
           );
         }
       } catch (error) {
+        reportPaymentsError(error);
         console.error("Error fetching referral credits:", error);
       } finally {
         setIsLoadingCredits(false);
@@ -190,12 +214,18 @@ export default function WebinarCheckoutPage({
 
   // Create utility functions using the toast instance
   const handleApiError = useMemo(() => createHandleApiError(toast), [toast]);
-  const handleCheckoutSuccess = useMemo(() => createHandleCheckoutSuccess(toast, "WEBINAR"), [toast]);
+  const handleCheckoutSuccess = useMemo(
+    () => createHandleCheckoutSuccess(toast, "WEBINAR"),
+    [toast],
+  );
   const stripeHandlers = createStripeCheckoutHandlers(toast);
   const razorpayHandlers = createRazorpayCheckoutHandlers(toast);
 
   const handleCheckout = useCallback(
-    async (gateway: PaymentGateway, isMockPayment: boolean = false) => {
+    async (
+      gateway: SupportedCheckoutGateway,
+      isMockPayment: boolean = false,
+    ) => {
       // Block checkout during maintenance mode
       if (isMaintenanceBlocked) {
         toast({
@@ -240,12 +270,21 @@ export default function WebinarCheckoutPage({
         if (targetWebinar.status === "CANCELLED") {
           throw new Error("This webinar has been cancelled.");
         }
+        // Seats can go while this tab sits open. The server holds the real
+        // gate under the allocation lock; this stops the buyer paying into a
+        // rejection.
+        if (
+          getWebinarCapacity({
+            webinar: targetWebinar,
+            plan: { maxParticipants: planData.data.maxParticipants },
+            excludeUserIds: planData.data.consultantProfile?.user?.id
+              ? [planData.data.consultantProfile.user.id]
+              : [],
+          }).isFull
+        ) {
+          throw new Error("This webinar is now full.");
+        }
 
-        // fromWaitlist is not in webinarSearchParamsSchema — read from raw params
-        const fromWaitlist =
-          typeof resolvedSearchParams.fromWaitlist === "string"
-            ? resolvedSearchParams.fromWaitlist
-            : undefined;
         const checkoutData = createCheckoutData({
           appointmentType: "WEBINAR",
           planId: planData.data.id,
@@ -253,8 +292,11 @@ export default function WebinarCheckoutPage({
           discountCode: appliedDiscount?.code,
           paymentGateway: gateway,
           displayCurrency: currency,
-          fromWaitlist,
-          useReferralCredits,
+          useReferralCredits: selectedOrganizationId
+            ? false
+            : useReferralCredits,
+          organizationId: selectedOrganizationId ?? undefined,
+          ...billingState.bodyField,
         });
 
         // Handle unified checkout flow using the utility
@@ -266,6 +308,7 @@ export default function WebinarCheckoutPage({
           isMockPayment,
         );
       } catch (error) {
+        reportPaymentsError(error);
         console.error("Checkout error:", error);
         if (error instanceof Error) {
           // Provide more informative error messages based on the error type
@@ -307,18 +350,77 @@ export default function WebinarCheckoutPage({
       isCheckoutProcessing,
       isMaintenanceBlocked,
       maintenanceBlockReason,
-      resolvedSearchParams,
       planData?.data?.id,
       planData?.data?.webinars,
+      planData?.data?.maxParticipants,
+      planData?.data?.consultantProfile?.user?.id,
       handleApiError,
       handleCheckoutSuccess,
       toast,
       appliedDiscount,
       useReferralCredits,
+      selectedOrganizationId,
+      billingState.bodyField,
       validatedSearchParams,
       currency,
     ],
   );
+
+  /**
+   * Re-check the seat count against the click, not the last render.
+   *
+   * The gate above lives inside `handleCheckout`, whose only production caller
+   * is the development mock-pay button — the real Razorpay and Stripe controls
+   * take `checkoutData` and open the gateway themselves. So the soft gate was
+   * inert exactly where money moves: a webinar that filled while this tab sat
+   * open still let the buyer pay into a rejection.
+   *
+   * `no-store` because the plan endpoint is cached `s-maxage=60`, and a
+   * minute-old seat count is the thing being corrected. Refreshing `planData`
+   * also re-derives `isSoldOut`, so both gateway buttons disable behind this.
+   *
+   * A failed check does NOT block the sale: the allocation lock on the server
+   * is the authority, and refusing a paying customer because a display query
+   * timed out trades a real sale for a race we do not own.
+   */
+  const revalidateSeatsBeforePayment = useCallback(async () => {
+    if (!validatedSearchParams?.eventId) return true;
+    try {
+      const response = await fetch(
+        `/api/plans/webinars/${resolvedParams.planId}`,
+        { cache: "no-store" },
+      );
+      if (!response.ok) return true;
+      const fresh: PlanResponse = await response.json();
+      const freshWebinar = fresh.data?.webinars?.find(
+        (w) => w.id === validatedSearchParams.eventId,
+      );
+      if (!fresh.data || !freshWebinar) return true;
+
+      setPlanData(fresh);
+
+      if (
+        getWebinarCapacity({
+          webinar: freshWebinar,
+          plan: { maxParticipants: fresh.data.maxParticipants },
+          excludeUserIds: fresh.data.consultantProfile?.user?.id
+            ? [fresh.data.consultantProfile.user.id]
+            : [],
+        }).isFull
+      ) {
+        toast({
+          title: "This webinar is now full",
+          description:
+            "The last seat went while this page was open, so we stopped the payment before you were charged.",
+          variant: "destructive",
+        });
+        return false;
+      }
+      return true;
+    } catch {
+      return true;
+    }
+  }, [resolvedParams.planId, validatedSearchParams?.eventId, toast]);
 
   useEffect(() => {
     async function fetchPlanData() {
@@ -345,6 +447,7 @@ export default function WebinarCheckoutPage({
         );
         _setReviews(reviewsData);
       } catch (error) {
+        reportPaymentsError(error);
         console.error("Error fetching plan data:", error);
         setError(
           error instanceof Error
@@ -381,6 +484,7 @@ export default function WebinarCheckoutPage({
       discountAmount,
       creditsApplied: useReferralCredits ? availableCredits : 0,
       isInternational: checkoutTaxContext.isInternational,
+      exportZeroRated: checkoutTaxContext.exportZeroRated,
     });
   }, [
     planData?.data?.price,
@@ -388,6 +492,7 @@ export default function WebinarCheckoutPage({
     useReferralCredits,
     availableCredits,
     checkoutTaxContext.isInternational,
+    checkoutTaxContext.exportZeroRated,
   ]);
 
   // Periodic staleness check: detect if webinar has ended or been cancelled
@@ -417,9 +522,7 @@ export default function WebinarCheckoutPage({
           ].endsAt,
         );
         if (firstSlotEnd.getTime() < Date.now()) {
-          setError(
-            "This webinar session has already ended. Please go back.",
-          );
+          setError("This webinar session has already ended. Please go back.");
         }
       }
     };
@@ -430,23 +533,19 @@ export default function WebinarCheckoutPage({
   }, [planData, resolvedSearchParams.eventId]);
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-screen bg-zinc-50">
-        <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-zinc-900"></div>
-      </div>
-    );
+    return <CheckoutPlanSkeleton />;
   }
 
   if (error) {
     return (
-      <div className="col-span-full flex items-center justify-center min-h-screen bg-zinc-50">
+      <div className="col-span-full flex items-center justify-center min-h-screen bg-muted">
         <div
-          className="bg-zinc-900 border border-zinc-800 text-white p-8 max-w-md w-full mx-4 text-center rounded-xl shadow-xl"
+          className="bg-foreground border border-border text-background p-8 max-w-md w-full mx-4 text-center rounded-xl shadow-xl"
           role="alert"
         >
-          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-zinc-800">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-background/10">
             <svg
-              className="h-6 w-6 text-zinc-400"
+              className="h-6 w-6 text-background/70"
               fill="none"
               viewBox="0 0 24 24"
               strokeWidth={1.5}
@@ -460,10 +559,10 @@ export default function WebinarCheckoutPage({
             </svg>
           </div>
           <p className="font-semibold text-lg mb-2">Unable to load checkout</p>
-          <p className="text-zinc-400 text-sm">{error}</p>
+          <p className="text-background/70 text-sm">{error}</p>
           <button
             onClick={() => window.history.back()}
-            className="mt-5 inline-flex items-center rounded-lg bg-white px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-zinc-100 transition-colors"
+            className="mt-5 inline-flex items-center rounded-lg bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors"
           >
             Go back
           </button>
@@ -476,8 +575,26 @@ export default function WebinarCheckoutPage({
   const consultantDetails = planDetails?.consultantProfile;
   const userDetails = consultantDetails?.user;
 
-  const nextSession =
-    planDetails?.webinars?.[0]?.appointment?.slotsOfAppointment?.[0];
+  // The instance being bought, not the plan's first one — ?eventId names it.
+  const targetWebinar = validatedSearchParams?.eventId
+    ? planDetails?.webinars?.find((w) => w.id === validatedSearchParams.eventId)
+    : planDetails?.webinars?.[0];
+
+  // Date and time of the session being paid for, for the same reason.
+  const nextSession = targetWebinar?.appointment?.slotsOfAppointment?.[0];
+
+  // Seats, honestly. This line used to print the PLAN's maxParticipants, which
+  // an instance override silently contradicts, and counted nobody — so a sold
+  // out webinar advertised its full capacity and took the money anyway.
+  const capacity =
+    targetWebinar && planDetails
+      ? getWebinarCapacity({
+          webinar: targetWebinar,
+          plan: { maxParticipants: planDetails.maxParticipants },
+          excludeUserIds: userDetails?.id ? [userDetails.id] : [],
+        })
+      : null;
+  const isSoldOut = capacity?.isFull ?? false;
 
   if (!planData || !planDetails || !consultantDetails || !userDetails) {
     return (
@@ -489,10 +606,10 @@ export default function WebinarCheckoutPage({
 
   return (
     <>
-      <div className="flex flex-col gap-6 border-r border-zinc-300 bg-gradient-to-br from-zinc-200 via-zinc-100 to-gray-200 p-8">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <Avatar className="w-12 h-12 border">
+      <div className="flex flex-col gap-6 border-r border-border bg-gradient-to-br from-muted via-background to-muted p-6 sm:p-8">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-4 min-w-0">
+            <Avatar className="w-12 h-12 border shrink-0">
               <AvatarImage
                 src={userDetails?.image || "/placeholder-user.jpg"}
                 alt={userDetails?.name || "Consultant"}
@@ -501,11 +618,11 @@ export default function WebinarCheckoutPage({
                 {userDetails?.name ? userDetails.name.charAt(0) : "C"}
               </AvatarFallback>
             </Avatar>
-            <div>
-              <div className="font-semibold">
+            <div className="min-w-0">
+              <div className="font-semibold truncate">
                 {userDetails?.name || "Consultant Name"}
               </div>
-              <div className="text-sm text-muted-foreground">
+              <div className="text-sm text-muted-foreground truncate">
                 {consultantDetails?.headline ||
                   consultantDetails?.domain?.name ||
                   "Consultant"}
@@ -519,21 +636,21 @@ export default function WebinarCheckoutPage({
                         companyName={exp.company}
                         companyDomain={exp.companyDomain ?? undefined}
                         size={20}
-                        className="border-zinc-200"
+                        className="border-border"
                       />
                     ))}
                   </div>
                 )}
             </div>
           </div>
-          <div className="text-right">
+          <div className="text-right min-w-0">
             <div className="font-semibold">Webinar</div>
-            <div className="text-sm text-muted-foreground">
+            <div className="text-sm text-muted-foreground truncate">
               {planDetails?.title || "Online Session"}
             </div>
           </div>
         </div>
-        <Separator className="bg-zinc-200" />
+        <Separator className="bg-border" />
         <div className="grid gap-2">
           <div className="font-semibold">Webinar Details</div>
           <div className="grid gap-2">
@@ -568,8 +685,14 @@ export default function WebinarCheckoutPage({
               <div>{planDetails?.durationInHours || 1} hours</div>
             </div>
             <div className="flex items-center justify-between">
-              <div className="text-muted-foreground">Max Participants</div>
-              <div>{planDetails?.maxParticipants || "Unlimited"}</div>
+              <div className="text-muted-foreground">Seats left</div>
+              <div className={isSoldOut ? "font-medium text-red-600" : ""}>
+                {capacity
+                  ? isSoldOut
+                    ? "Sold out"
+                    : `${capacity.remaining} of ${capacity.max}`
+                  : (planDetails?.maxParticipants ?? "—")}
+              </div>
             </div>
             <div className="flex items-center justify-between">
               <div className="text-muted-foreground">Language</div>
@@ -589,7 +712,22 @@ export default function WebinarCheckoutPage({
             </div>
           </div>
         </div>
-        <Separator className="bg-zinc-200" />
+        <Separator className="bg-border" />
+        <OrgPayerSelector
+          selectedOrganizationId={selectedOrganizationId}
+          planType="WEBINAR"
+          planId={resolvedParams.planId}
+          onSelect={(id) => {
+            setSelectedOrganizationId(id);
+            if (id) setUseReferralCredits(false);
+          }}
+        />
+        <Separator className="bg-border" />
+        <BillingStateSelect
+          value={billingState.value}
+          onChange={billingState.onChange}
+        />
+        <Separator className="bg-border" />
         <div className="grid gap-4">
           <div className="font-semibold">Discount Codes</div>
           <div className="flex items-center gap-2">
@@ -613,9 +751,9 @@ export default function WebinarCheckoutPage({
             <div className="text-sm text-red-500">{discountError}</div>
           )}
           {appliedDiscount && (
-            <div className="flex items-center justify-between bg-green-50 p-3 rounded-md">
-              <div>
-                <div className="font-medium text-green-700">
+            <div className="flex items-center justify-between gap-3 bg-green-50 p-3 rounded-md">
+              <div className="min-w-0">
+                <div className="font-medium text-green-700 truncate">
                   {appliedDiscount.code}
                 </div>
                 <div className="text-sm text-green-600">
@@ -627,6 +765,7 @@ export default function WebinarCheckoutPage({
               <Button
                 variant="ghost"
                 size="sm"
+                className="shrink-0"
                 onClick={() => {
                   setAppliedDiscount(null);
                   setDiscountError(null);
@@ -637,14 +776,14 @@ export default function WebinarCheckoutPage({
             </div>
           )}
           <div className="grid gap-2">
-            <div className="flex items-center justify-between">
-              <div>
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
                 <div className="font-medium">WEBINAR10</div>
                 <div className="text-sm text-muted-foreground">
                   Get 10% off your webinar registration
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0">
                 <div className="text-muted-foreground">10% off</div>
                 <Button
                   variant="outline"
@@ -658,7 +797,7 @@ export default function WebinarCheckoutPage({
             </div>
           </div>
         </div>
-        <Separator className="bg-zinc-200" />
+        <Separator className="bg-border" />
         <div className="grid gap-4">
           <div className="font-semibold">Referral Credits</div>
           {isLoadingCredits ? (
@@ -666,12 +805,12 @@ export default function WebinarCheckoutPage({
               Loading credits...
             </div>
           ) : availableCredits > 0 ? (
-            <div className="flex items-center justify-between bg-blue-50 p-3 rounded-lg border border-blue-200">
-              <div>
-                <div className="font-medium text-blue-700">
+            <div className="flex items-center justify-between gap-3 bg-muted p-3 rounded-lg border border-border">
+              <div className="min-w-0">
+                <div className="font-medium text-foreground">
                   {formatPrice(availableCredits)} available
                 </div>
-                <div className="text-sm text-blue-600">
+                <div className="text-sm text-muted-foreground">
                   Apply to this purchase
                 </div>
               </div>
@@ -687,10 +826,10 @@ export default function WebinarCheckoutPage({
           )}
         </div>
       </div>
-      <div className="flex flex-col gap-8 p-8 bg-white">
-        <Card className="border-zinc-200 shadow-sm">
+      <div className="flex flex-col gap-8 p-6 sm:p-8 bg-card">
+        <Card className="border-border shadow-sm">
           <CardHeader>
-            <CardTitle className="text-zinc-900">Webinar Pricing</CardTitle>
+            <CardTitle className="text-foreground">Webinar Pricing</CardTitle>
           </CardHeader>
           <CardContent className="grid gap-4">
             <div className="grid gap-2">
@@ -712,7 +851,7 @@ export default function WebinarCheckoutPage({
                 </div>
               </div>
             </div>
-            <Separator className="bg-zinc-200" />
+            <Separator className="bg-border" />
             <div className="grid gap-2">
               <div className="flex items-center justify-between">
                 <div>Subtotal</div>
@@ -733,16 +872,20 @@ export default function WebinarCheckoutPage({
                 </div>
               )}
               {pricing.creditsApplied > 0 && (
-                <div className="flex items-center justify-between text-blue-600">
+                <div className="flex items-center justify-between text-foreground">
                   <div>Referral Credits</div>
                   <div>-{formatPrice(pricing.creditsApplied)}</div>
                 </div>
               )}
-              <Separator className="bg-zinc-200" />
+              <Separator className="bg-border" />
               <div className="flex items-center justify-between font-semibold">
                 <div>Total</div>
                 <div>{formatPrice(pricing.total)}</div>
               </div>
+              <FxEstimateNote
+                totalPaise={pricing.total}
+                organizationId={selectedOrganizationId}
+              />
             </div>
           </CardContent>
         </Card>
@@ -753,40 +896,34 @@ export default function WebinarCheckoutPage({
               Select your preferred payment method
             </div>
           </div>
-          {[
-            {
-              name: "Stripe",
-              description: "Card payments (international)",
-              gateway: "STRIPE" as const,
-              isActive: true,
-            },
-            {
-              name: "Razorpay",
-              description: "UPI, cards & bank transfer",
-              gateway: "RAZORPAY" as const,
-              isActive: true,
-            },
-          ].map((gateway) => (
-            <Card key={gateway.name} className="border-zinc-200">
+          {paymentGateways.map((gateway) => (
+            <Card key={gateway.name} className="border-border">
               <CardHeader>
-                <CardTitle className="text-zinc-900">{gateway.name}</CardTitle>
+                <CardTitle className="text-foreground">
+                  {gateway.name}
+                </CardTitle>
               </CardHeader>
               <CardContent className="grid gap-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-4">
-                    <CreditCardIcon className="w-8 h-8 text-zinc-600" />
-                    <div>
-                      <div className="font-semibold text-zinc-900">
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div className="flex items-center gap-4 min-w-0">
+                    <CreditCardIcon className="w-8 h-8 text-muted-foreground shrink-0" />
+                    <div className="min-w-0">
+                      <div className="font-semibold text-foreground">
                         Credit/Debit Card
                       </div>
-                      <div className="text-sm text-zinc-500">
+                      <div className="text-sm text-muted-foreground/70">
                         {gateway.description}
                       </div>
                     </div>
                   </div>
-                  {gateway.isActive ? (
+                  {isSoldOut ? (
+                    <Button variant="outline" disabled>
+                      Sold out
+                    </Button>
+                  ) : gateway.isActive ? (
                     <div className="flex gap-2">
-                      {validatedSearchParams && gateway.gateway === "RAZORPAY" ? (
+                      {validatedSearchParams &&
+                      gateway.gateway === "RAZORPAY" ? (
                         <RazorpayCheckout
                           checkoutData={createCheckoutData({
                             appointmentType: "WEBINAR",
@@ -795,13 +932,19 @@ export default function WebinarCheckoutPage({
                             paymentGateway: "RAZORPAY",
                             discountCode: appliedDiscount?.code,
                             displayCurrency: currency,
-                            useReferralCredits,
+                            useReferralCredits: selectedOrganizationId
+                              ? false
+                              : useReferralCredits,
+                            organizationId: selectedOrganizationId ?? undefined,
+                            ...billingState.bodyField,
                           })}
                           onPaymentSuccess={razorpayHandlers.onPaymentSuccess}
                           onPaymentError={razorpayHandlers.onPaymentError}
-                          disabled={isMaintenanceBlocked}
+                          onBeforeCheckout={revalidateSeatsBeforePayment}
+                          disabled={isMaintenanceBlocked || isSoldOut}
                         />
-                      ) : validatedSearchParams && gateway.gateway === "STRIPE" ? (
+                      ) : validatedSearchParams &&
+                        gateway.gateway === "STRIPE" ? (
                         <StripeCheckout
                           checkoutData={createCheckoutData({
                             appointmentType: "WEBINAR",
@@ -810,18 +953,25 @@ export default function WebinarCheckoutPage({
                             paymentGateway: "STRIPE",
                             discountCode: appliedDiscount?.code,
                             displayCurrency: currency,
-                            useReferralCredits,
+                            useReferralCredits: selectedOrganizationId
+                              ? false
+                              : useReferralCredits,
+                            organizationId: selectedOrganizationId ?? undefined,
+                            ...billingState.bodyField,
                           })}
                           onPaymentSuccess={stripeHandlers.onPaymentSuccess}
                           onPaymentError={stripeHandlers.onPaymentError}
-                          disabled={isMaintenanceBlocked}
+                          onBeforeCheckout={revalidateSeatsBeforePayment}
+                          disabled={isMaintenanceBlocked || isSoldOut}
                         />
                       ) : null}
                       {process.env.NODE_ENV === "development" && (
                         <Button
                           variant="secondary"
                           onClick={() => handleCheckout(gateway.gateway, true)}
-                          disabled={isCheckoutProcessing || isMaintenanceBlocked}
+                          disabled={
+                            isCheckoutProcessing || isMaintenanceBlocked
+                          }
                         >
                           {isCheckoutProcessing &&
                           processingGateway === `${gateway.gateway}-mock` ? (

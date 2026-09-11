@@ -4,7 +4,25 @@ import {
   TSubscription,
 } from "@/types/appointment";
 import { TConsultantProfile } from "@/types/consultant";
-import { ApiResponse, IActivity, IApproval, IDocument } from "../types";
+import {
+  ApiResponse,
+  DocumentsPage,
+  IActivity,
+  IApproval,
+} from "../types";
+
+/**
+ * Query params accepted by the consultant documents API (issue #346).
+ * All fields are optional; defaults match the server's behavior.
+ */
+export interface FetchDocumentsParams {
+  limit?: number;
+  offset?: number;
+  status?: string; // "PENDING" | "IN_REVIEW" | "APPROVED" | "REJECTED" | "NEEDS_REVISION"
+  appointmentType?: string; // "Consultation" | "Subscription"
+  /** B1-personal-retrofit: org-scope filter ("personal" | <orgId> | "all"). */
+  orgScope?: string | null;
+}
 
 /** Enhanced error with additional diagnostic fields for the document fetch system */
 export interface DocumentFetchError extends Error {
@@ -63,10 +81,10 @@ export async function fetchApprovals(
     // Fetch both consultations and subscriptions
     const [consultationsRes, subscriptionsRes] = await Promise.all([
       fetch(
-        `/api/events/consultations?consultantProfileId=${consultantId}&status=PENDING`,
+        `/api/bookings/consultations?consultantProfileId=${consultantId}&status=PENDING`,
       ),
       fetch(
-        `/api/events/subscriptions?consultantProfileId=${consultantId}&status=PENDING`,
+        `/api/bookings/subscriptions?consultantProfileId=${consultantId}&status=PENDING`,
       ),
     ]);
 
@@ -137,11 +155,24 @@ export async function fetchActivities(
 
 export async function fetchDocuments(
   consultantId: string,
-): Promise<IDocument[]> {
+  params: FetchDocumentsParams = {},
+): Promise<DocumentsPage> {
   try {
-    const response = await fetch(
-      `/api/dashboard/consultant/${consultantId}/documents`,
-    );
+    const qs = new URLSearchParams();
+    if (params.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params.offset !== undefined) qs.set("offset", String(params.offset));
+    if (params.status) qs.set("status", params.status);
+    if (params.appointmentType)
+      qs.set("appointmentType", params.appointmentType);
+    // B1-personal-retrofit: forward orgScope to the dashboard endpoint
+    // (which was retrofitted in PR-1 to accept ?orgScope=).
+    if (params.orgScope && params.orgScope !== "personal")
+      qs.set("orgScope", params.orgScope);
+
+    const query = qs.toString();
+    const url = `/api/dashboard/consultant/${consultantId}/documents${query ? `?${query}` : ""}`;
+
+    const response = await fetch(url);
 
     if (!response.ok) {
       let errorMessage = "Failed to load documents";
@@ -222,20 +253,56 @@ export async function fetchDocuments(
       throw enhancedError;
     }
 
-    const data: ApiResponse<IDocument[]> = await response.json();
-
-    // Handle successful response but validate data structure
-    if (!data.data) {
-      console.warn("API response missing data array, returning empty array");
-      return [];
-    }
+    const data = (await response.json()) as Partial<DocumentsPage>;
 
     // Log helpful information for debugging
     if (data.message) {
       console.info("Documents API message:", data.message);
     }
 
-    return data.data;
+    // Handle successful response but validate data structure. If the server
+    // returns an unexpected shape, fall back to an empty page that matches
+    // the DocumentsPage contract so callers never have to null-check.
+    const fallbackPagination = {
+      limit: params.limit ?? 10,
+      offset: params.offset ?? 0,
+      totalCount: 0,
+      totalPages: 1,
+      currentPage: 1,
+      hasNextPage: false,
+      hasPrevPage: false,
+    };
+    const fallbackMetadata = {
+      pendingCount: 0,
+      reviewingCount: 0,
+      needsRevisionCount: 0,
+      completedCount: 0,
+    };
+
+    if (!data.data) {
+      console.warn(
+        "Documents API response missing data array, returning empty page",
+      );
+      return {
+        data: [],
+        pagination: data.pagination ?? fallbackPagination,
+        metadata: data.metadata ?? fallbackMetadata,
+        count: data.count,
+        message: data.message,
+        consultant: data.consultant,
+        filters: data.filters,
+      };
+    }
+
+    return {
+      data: data.data,
+      pagination: data.pagination ?? fallbackPagination,
+      metadata: data.metadata ?? fallbackMetadata,
+      count: data.count,
+      message: data.message,
+      consultant: data.consultant,
+      filters: data.filters,
+    };
   } catch (error) {
     // Handle network errors and other exceptions
     if (error instanceof Error) {

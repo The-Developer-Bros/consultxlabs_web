@@ -15,6 +15,8 @@ import {
 } from "../../scripts/disputes/handle-lost-disputes";
 import fs from "fs";
 import { abortIfMaintenance } from "../../lib/maintenance-cron";
+import * as Sentry from "@sentry/nextjs";
+import { runJob } from "../../lib/observability/job-sentry";
 
 /**
  * Output results to GitHub Actions
@@ -55,6 +57,7 @@ function outputToGitHubActions(result: LostDisputeHandlerResult): void {
  */
 async function main(): Promise<void> {
   await abortIfMaintenance("handle-lost-disputes");
+  Sentry.logger.info("job:handle-lost-disputes started");
   console.log("🔄 Starting lost dispute handler job...");
   console.log(`Timestamp: ${new Date().toISOString()}`);
 
@@ -74,18 +77,22 @@ async function main(): Promise<void> {
       result.errors.forEach((e) => console.log(`   - ${e}`));
     }
 
+    Sentry.logger.info("job:handle-lost-disputes finished", {
+      totalProcessed: result.totalProcessed,
+      updatedCount: result.updatedCount,
+      skippedCount: result.skippedCount,
+      alreadyPaidCount: result.alreadyPaidCount,
+      errorCount: result.errorCount,
+    });
     outputToGitHubActions(result);
 
     // Exit with error if we have critical cases
     if (!result.success || result.alreadyPaidCount > 0) {
-      process.exit(1);
+      process.exitCode = 1;
     }
-  } catch (error) {
-    console.error("❌ Fatal error in lost dispute handler:", error);
-    process.exit(1);
   } finally {
     await disconnectDatabase();
   }
 }
 
-main();
+runJob("handle-lost-disputes", main);

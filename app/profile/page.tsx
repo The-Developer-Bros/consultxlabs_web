@@ -477,7 +477,7 @@ export default function Profile() {
   };
 
   return (
-    <div className="min-h-screen bg-zinc-50 pt-20">
+    <div className="min-h-screen bg-muted pt-20">
       {/* Hero Header */}
       <div className="bg-gradient-to-br from-zinc-900 via-zinc-900 to-zinc-800 relative overflow-hidden">
         <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:32px_32px]" />
@@ -502,7 +502,7 @@ export default function Profile() {
                 }}
               >
                 <DialogTrigger asChild>
-                  <button className="absolute bottom-0 right-0 h-10 w-10 rounded-full bg-white text-zinc-900 flex items-center justify-center shadow-lg hover:bg-zinc-100 transition-colors">
+                  <button className="absolute bottom-0 right-0 h-10 w-10 rounded-full bg-card text-foreground flex items-center justify-center shadow-lg hover:bg-muted transition-colors">
                     <Camera className="h-5 w-5" />
                   </button>
                 </DialogTrigger>
@@ -515,7 +515,7 @@ export default function Profile() {
                     </DialogDescription>
                   </DialogHeader>
                   <div className="flex flex-col items-center gap-4 py-6">
-                    <div className="h-32 w-32 rounded-full bg-zinc-100 flex items-center justify-center overflow-hidden">
+                    <div className="h-32 w-32 rounded-full bg-muted flex items-center justify-center overflow-hidden">
                       {previewUrl ? (
                         <Image
                           src={previewUrl}
@@ -534,7 +534,7 @@ export default function Profile() {
                           className="h-full w-full object-cover"
                         />
                       ) : (
-                        <Upload className="h-10 w-10 text-zinc-400" />
+                        <Upload className="h-10 w-10 text-muted-foreground/70" />
                       )}
                     </div>
                     <Input
@@ -563,7 +563,7 @@ export default function Profile() {
                       <Button variant="outline">Cancel</Button>
                     </DialogClose>
                     <Button
-                      className="bg-zinc-900 hover:bg-zinc-800 text-white"
+                      className="bg-primary hover:bg-primary/90 text-primary-foreground"
                       onClick={handleUploadProfilePicture}
                       disabled={!selectedFile || isUploading}
                     >
@@ -577,7 +577,7 @@ export default function Profile() {
               </Dialog>
             </div>
             <div className="text-center md:text-left">
-              <h1 className="text-3xl md:text-4xl font-bold text-white mb-2">
+              <h1 className="text-fluid-4xl font-bold tracking-tight text-white mb-2">
                 {session?.user?.name || "Welcome"}
               </h1>
               <p className="text-zinc-400 text-lg">
@@ -598,11 +598,11 @@ export default function Profile() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
           {/* Profile Information */}
           <motion.div variants={fadeInUp} className="h-full">
-            <Card className="border-zinc-200 shadow-sm hover:shadow-md transition-shadow h-full flex flex-col">
+            <Card className="border-border shadow-sm hover:shadow-md transition-shadow h-full flex flex-col">
               <CardHeader className="pb-4">
                 <div className="flex items-center gap-3">
-                  <div className="h-10 w-10 rounded-xl bg-zinc-100 flex items-center justify-center">
-                    <UserIcon className="h-5 w-5 text-zinc-600" />
+                  <div className="h-10 w-10 rounded-xl bg-muted flex items-center justify-center">
+                    <UserIcon className="h-5 w-5 text-muted-foreground" />
                   </div>
                   <div>
                     <CardTitle className="text-lg">
@@ -613,44 +613,44 @@ export default function Profile() {
                 </div>
               </CardHeader>
               <CardContent className="space-y-4 flex-1">
-                <div className="flex items-center gap-4 p-4 rounded-xl bg-zinc-50 border border-zinc-100">
-                  <Avatar className="h-14 w-14 ring-2 ring-zinc-200">
+                <div className="flex items-center gap-4 p-4 rounded-xl bg-muted border border-border">
+                  <Avatar className="h-14 w-14 ring-2 ring-border">
                     <AvatarImage src={session?.user?.image ?? ""} />
-                    <AvatarFallback className="bg-zinc-200 text-zinc-600 font-semibold">
+                    <AvatarFallback className="bg-muted text-muted-foreground font-semibold">
                       {session?.user?.name?.charAt(0) || "U"}
                     </AvatarFallback>
                   </Avatar>
                   <div className="flex-1">
-                    <p className="font-semibold text-zinc-900">
+                    <p className="font-semibold text-foreground">
                       {session?.user?.name || "Your Name"}
                     </p>
-                    <p className="text-sm text-zinc-500">
+                    <p className="text-sm text-muted-foreground">
                       {session?.user?.email || "your@email.com"}
                     </p>
                   </div>
                 </div>
 
                 <div className="space-y-3">
-                  <div className="flex items-center gap-3 p-3 rounded-lg hover:bg-zinc-50 transition-colors">
-                    <div className="h-9 w-9 rounded-lg bg-zinc-100 flex items-center justify-center">
-                      <MapPin className="h-4 w-4 text-zinc-500" />
+                  <div className="flex items-center gap-3 p-3 rounded-lg hover:bg-muted transition-colors">
+                    <div className="h-9 w-9 rounded-lg bg-muted flex items-center justify-center">
+                      <MapPin className="h-4 w-4 text-muted-foreground" />
                     </div>
                     <div className="flex-1">
-                      <p className="text-sm font-medium text-zinc-700">
+                      <p className="text-sm font-medium text-muted-foreground">
                         Address
                       </p>
-                      <p className="text-sm text-zinc-500">
+                      <p className="text-sm text-muted-foreground">
                         {session?.user?.address || "Not provided"}
                       </p>
                     </div>
                   </div>
-                  <div className="flex items-center gap-3 p-3 rounded-lg hover:bg-zinc-50 transition-colors">
-                    <div className="h-9 w-9 rounded-lg bg-zinc-100 flex items-center justify-center">
-                      <Phone className="h-4 w-4 text-zinc-500" />
+                  <div className="flex items-center gap-3 p-3 rounded-lg hover:bg-muted transition-colors">
+                    <div className="h-9 w-9 rounded-lg bg-muted flex items-center justify-center">
+                      <Phone className="h-4 w-4 text-muted-foreground" />
                     </div>
                     <div className="flex-1">
-                      <p className="text-sm font-medium text-zinc-700">Phone</p>
-                      <p className="text-sm text-zinc-500">
+                      <p className="text-sm font-medium text-muted-foreground">Phone</p>
+                      <p className="text-sm text-muted-foreground">
                         {session?.user?.phone || "Not provided"}
                       </p>
                     </div>
@@ -662,7 +662,7 @@ export default function Profile() {
                   <DialogTrigger asChild>
                     <Button
                       variant="outline"
-                      className="w-full border-zinc-200 hover:bg-zinc-50"
+                      className="w-full border-border hover:bg-muted"
                     >
                       <Settings className="h-4 w-4 mr-2" />
                       Update Information
@@ -708,7 +708,7 @@ export default function Profile() {
                       <DialogFooter>
                         <Button
                           type="submit"
-                          className="bg-zinc-900 hover:bg-zinc-800 text-white"
+                          className="bg-primary hover:bg-primary/90 text-primary-foreground"
                         >
                           Save Changes
                         </Button>
@@ -722,11 +722,11 @@ export default function Profile() {
 
           {/* Account Settings */}
           <motion.div variants={fadeInUp} className="h-full">
-            <Card className="border-zinc-200 shadow-sm hover:shadow-md transition-shadow h-full flex flex-col">
+            <Card className="border-border shadow-sm hover:shadow-md transition-shadow h-full flex flex-col">
               <CardHeader className="pb-4">
                 <div className="flex items-center gap-3">
-                  <div className="h-10 w-10 rounded-xl bg-zinc-100 flex items-center justify-center">
-                    <Shield className="h-5 w-5 text-zinc-600" />
+                  <div className="h-10 w-10 rounded-xl bg-muted flex items-center justify-center">
+                    <Shield className="h-5 w-5 text-muted-foreground" />
                   </div>
                   <div>
                     <CardTitle className="text-lg">Account Settings</CardTitle>
@@ -737,16 +737,16 @@ export default function Profile() {
                 </div>
               </CardHeader>
               <CardContent className="space-y-3 flex-1">
-                <div className="flex items-center gap-4 p-4 rounded-xl bg-zinc-50 border border-zinc-100">
-                  <Avatar className="h-12 w-12 ring-2 ring-zinc-200">
+                <div className="flex items-center gap-4 p-4 rounded-xl bg-muted border border-border">
+                  <Avatar className="h-12 w-12 ring-2 ring-border">
                     <AvatarImage src={session?.user?.image ?? ""} />
-                    <AvatarFallback className="bg-zinc-200 text-zinc-600 font-semibold">
+                    <AvatarFallback className="bg-muted text-muted-foreground font-semibold">
                       {session?.user?.name?.charAt(0) || "U"}
                     </AvatarFallback>
                   </Avatar>
                   <div className="flex-1">
-                    <p className="font-medium text-zinc-900">Current User</p>
-                    <p className="text-sm text-zinc-500">
+                    <p className="font-medium text-foreground">Current User</p>
+                    <p className="text-sm text-muted-foreground">
                       {session?.user?.email || "user@example.com"}
                     </p>
                   </div>
@@ -758,15 +758,15 @@ export default function Profile() {
                   onOpenChange={setLogoutDialogOpen}
                 >
                   <DialogTrigger asChild>
-                    <button className="w-full flex items-center gap-3 p-4 rounded-xl hover:bg-zinc-50 transition-colors text-left border border-transparent hover:border-zinc-100">
-                      <div className="h-10 w-10 rounded-lg bg-zinc-100 flex items-center justify-center">
-                        <LogOut className="h-5 w-5 text-zinc-600" />
+                    <button className="w-full flex items-center gap-3 p-4 rounded-xl hover:bg-muted transition-colors text-left border border-transparent hover:border-border">
+                      <div className="h-10 w-10 rounded-lg bg-muted flex items-center justify-center">
+                        <LogOut className="h-5 w-5 text-muted-foreground" />
                       </div>
                       <div className="flex-1">
-                        <p className="font-medium text-zinc-900">
+                        <p className="font-medium text-foreground">
                           Logout of all devices
                         </p>
-                        <p className="text-sm text-zinc-500">
+                        <p className="text-sm text-muted-foreground">
                           Sign out from all active sessions
                         </p>
                       </div>
@@ -815,7 +815,7 @@ export default function Profile() {
                         <p className="font-medium text-red-600">
                           Delete Account
                         </p>
-                        <p className="text-sm text-zinc-500">
+                        <p className="text-sm text-muted-foreground">
                           Permanently delete your account and data
                         </p>
                       </div>
@@ -874,11 +874,11 @@ export default function Profile() {
 
         {/* Connected Accounts */}
         <motion.div variants={fadeInUp} className="mt-6">
-          <Card className="border-zinc-200 shadow-sm hover:shadow-md transition-shadow">
+          <Card className="border-border shadow-sm hover:shadow-md transition-shadow">
             <CardHeader className="pb-4">
               <div className="flex items-center gap-3">
-                <div className="h-10 w-10 rounded-xl bg-emerald-50 flex items-center justify-center">
-                  <Link2 className="h-5 w-5 text-emerald-600" />
+                <div className="h-10 w-10 rounded-xl bg-muted flex items-center justify-center">
+                  <Link2 className="h-5 w-5 text-muted-foreground" />
                 </div>
                 <div>
                   <CardTitle className="text-lg">Connected Accounts</CardTitle>
@@ -892,22 +892,22 @@ export default function Profile() {
             <CardContent>
               {isLoadingAccounts ? (
                 <div className="flex items-center justify-center py-8">
-                  <Loader2 className="h-6 w-6 animate-spin text-zinc-400" />
+                  <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/70" />
                 </div>
               ) : (
                 <div className="space-y-3">
                   {/* Credential account (email/password) */}
                   {linkedAccounts.some((a) => a.provider === "credential") && (
-                    <div className="flex items-center justify-between p-4 rounded-xl border border-zinc-100">
+                    <div className="flex items-center justify-between p-4 rounded-xl border border-border">
                       <div className="flex items-center gap-3">
-                        <div className="h-10 w-10 rounded-lg bg-zinc-100 flex items-center justify-center">
-                          <UserIcon className="h-5 w-5 text-zinc-600" />
+                        <div className="h-10 w-10 rounded-lg bg-muted flex items-center justify-center">
+                          <UserIcon className="h-5 w-5 text-muted-foreground" />
                         </div>
                         <div>
-                          <p className="font-medium text-zinc-900">
+                          <p className="font-medium text-foreground">
                             Email & Password
                           </p>
-                          <p className="text-sm text-zinc-500">
+                          <p className="text-sm text-muted-foreground">
                             {session?.user?.email}
                           </p>
                         </div>
@@ -930,17 +930,17 @@ export default function Profile() {
                     return (
                       <div
                         key={provider.id}
-                        className="flex items-center justify-between p-4 rounded-xl border border-zinc-100 hover:border-zinc-200 transition-colors"
+                        className="flex items-center justify-between p-4 rounded-xl border border-border hover:border-border/70 transition-colors"
                       >
                         <div className="flex items-center gap-3">
-                          <div className="h-10 w-10 rounded-lg bg-zinc-100 flex items-center justify-center">
-                            {Icon && <Icon className="h-5 w-5 text-zinc-600" />}
+                          <div className="h-10 w-10 rounded-lg bg-muted flex items-center justify-center">
+                            {Icon && <Icon className="h-5 w-5 text-muted-foreground" />}
                           </div>
                           <div>
-                            <p className="font-medium text-zinc-900">
+                            <p className="font-medium text-foreground">
                               {provider.label}
                             </p>
-                            <p className="text-sm text-zinc-500">
+                            <p className="text-sm text-muted-foreground">
                               {linked ? "Account linked" : "Not connected"}
                             </p>
                           </div>
@@ -955,7 +955,7 @@ export default function Profile() {
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                className="text-zinc-500 hover:text-red-600 hover:bg-red-50"
+                                className="text-muted-foreground hover:text-red-600 hover:bg-red-50"
                                 onClick={() => handleUnlinkAccount(provider.id)}
                               >
                                 <X className="h-4 w-4" />
@@ -982,11 +982,11 @@ export default function Profile() {
 
         {/* Cookie Preferences */}
         <motion.div variants={fadeInUp} className="mt-6">
-          <Card className="border-zinc-200 shadow-sm hover:shadow-md transition-shadow">
+          <Card className="border-border shadow-sm hover:shadow-md transition-shadow">
             <CardHeader className="pb-4">
               <div className="flex items-center gap-3">
-                <div className="h-10 w-10 rounded-xl bg-amber-50 flex items-center justify-center">
-                  <Cookie className="h-5 w-5 text-amber-600" />
+                <div className="h-10 w-10 rounded-xl bg-muted flex items-center justify-center">
+                  <Cookie className="h-5 w-5 text-muted-foreground" />
                 </div>
                 <div>
                   <CardTitle className="text-lg">Cookie Preferences</CardTitle>
@@ -998,25 +998,25 @@ export default function Profile() {
             </CardHeader>
             <CardContent>
               <div className="grid gap-4 md:grid-cols-3">
-                <div className="p-4 rounded-xl border border-zinc-100 hover:border-zinc-200 transition-colors">
+                <div className="p-4 rounded-xl border border-border hover:border-border/70 transition-colors">
                   <div className="flex items-center justify-between mb-3">
                     <Label
                       htmlFor="essential"
-                      className="font-semibold text-zinc-900"
+                      className="font-semibold text-foreground"
                     >
                       Essential
                     </Label>
                     <Switch id="essential" defaultChecked disabled />
                   </div>
-                  <p className="text-sm text-zinc-500">
+                  <p className="text-sm text-muted-foreground">
                     Required for basic site functionality
                   </p>
                 </div>
-                <div className="p-4 rounded-xl border border-zinc-100 hover:border-zinc-200 transition-colors">
+                <div className="p-4 rounded-xl border border-border hover:border-border/70 transition-colors">
                   <div className="flex items-center justify-between mb-3">
                     <Label
                       htmlFor="analytics"
-                      className="font-semibold text-zinc-900"
+                      className="font-semibold text-foreground"
                     >
                       Analytics
                     </Label>
@@ -1026,15 +1026,15 @@ export default function Profile() {
                       onCheckedChange={setCookieAnalytics}
                     />
                   </div>
-                  <p className="text-sm text-zinc-500">
+                  <p className="text-sm text-muted-foreground">
                     Help us improve site performance
                   </p>
                 </div>
-                <div className="p-4 rounded-xl border border-zinc-100 hover:border-zinc-200 transition-colors">
+                <div className="p-4 rounded-xl border border-border hover:border-border/70 transition-colors">
                   <div className="flex items-center justify-between mb-3">
                     <Label
                       htmlFor="marketing"
-                      className="font-semibold text-zinc-900"
+                      className="font-semibold text-foreground"
                     >
                       Marketing
                     </Label>
@@ -1044,7 +1044,7 @@ export default function Profile() {
                       onCheckedChange={setCookieMarketing}
                     />
                   </div>
-                  <p className="text-sm text-zinc-500">
+                  <p className="text-sm text-muted-foreground">
                     Personalized recommendations
                   </p>
                 </div>
@@ -1052,7 +1052,7 @@ export default function Profile() {
             </CardContent>
             <CardFooter className="pt-0">
               <Button
-                className="ml-auto bg-zinc-900 hover:bg-zinc-800 text-white"
+                className="ml-auto bg-primary hover:bg-primary/90 text-primary-foreground"
                 onClick={saveCookiePreferences}
                 disabled={isSavingCookies}
               >
@@ -1071,11 +1071,11 @@ export default function Profile() {
 
         {/* Notification Preferences */}
         <motion.div variants={fadeInUp} className="mt-6">
-          <Card className="border-zinc-200 shadow-sm hover:shadow-md transition-shadow">
+          <Card className="border-border shadow-sm hover:shadow-md transition-shadow">
             <CardHeader className="pb-4">
               <div className="flex items-center gap-3">
-                <div className="h-10 w-10 rounded-xl bg-indigo-50 flex items-center justify-center">
-                  <Bell className="h-5 w-5 text-indigo-600" />
+                <div className="h-10 w-10 rounded-xl bg-muted flex items-center justify-center">
+                  <Bell className="h-5 w-5 text-muted-foreground" />
                 </div>
                 <div>
                   <CardTitle className="text-lg">
@@ -1089,16 +1089,16 @@ export default function Profile() {
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                <div className="flex items-center justify-between p-4 rounded-xl border border-zinc-100 hover:border-zinc-200 transition-colors">
+                <div className="flex items-center justify-between p-4 rounded-xl border border-border hover:border-border/70 transition-colors">
                   <div className="flex items-center gap-3">
-                    <div className="h-9 w-9 rounded-lg bg-zinc-100 flex items-center justify-center">
-                      <Bell className="h-4 w-4 text-zinc-600" />
+                    <div className="h-9 w-9 rounded-lg bg-muted flex items-center justify-center">
+                      <Bell className="h-4 w-4 text-muted-foreground" />
                     </div>
                     <div>
-                      <p className="font-medium text-zinc-900">
+                      <p className="font-medium text-foreground">
                         All Notifications
                       </p>
-                      <p className="text-sm text-zinc-500">
+                      <p className="text-sm text-muted-foreground">
                         Receive all updates and alerts
                       </p>
                     </div>
@@ -1109,14 +1109,14 @@ export default function Profile() {
                     onCheckedChange={setNotifAll}
                   />
                 </div>
-                <div className="flex items-center justify-between p-4 rounded-xl border border-zinc-100 hover:border-zinc-200 transition-colors">
+                <div className="flex items-center justify-between p-4 rounded-xl border border-border hover:border-border/70 transition-colors">
                   <div className="flex items-center gap-3">
-                    <div className="h-9 w-9 rounded-lg bg-zinc-100 flex items-center justify-center">
-                      <AtSign className="h-4 w-4 text-zinc-600" />
+                    <div className="h-9 w-9 rounded-lg bg-muted flex items-center justify-center">
+                      <AtSign className="h-4 w-4 text-muted-foreground" />
                     </div>
                     <div>
-                      <p className="font-medium text-zinc-900">Mentions</p>
-                      <p className="text-sm text-zinc-500">
+                      <p className="font-medium text-foreground">Mentions</p>
+                      <p className="text-sm text-muted-foreground">
                         When someone mentions you
                       </p>
                     </div>
@@ -1127,16 +1127,16 @@ export default function Profile() {
                     onCheckedChange={setNotifMentions}
                   />
                 </div>
-                <div className="flex items-center justify-between p-4 rounded-xl border border-zinc-100 hover:border-zinc-200 transition-colors">
+                <div className="flex items-center justify-between p-4 rounded-xl border border-border hover:border-border/70 transition-colors">
                   <div className="flex items-center gap-3">
-                    <div className="h-9 w-9 rounded-lg bg-zinc-100 flex items-center justify-center">
-                      <MessageSquare className="h-4 w-4 text-zinc-600" />
+                    <div className="h-9 w-9 rounded-lg bg-muted flex items-center justify-center">
+                      <MessageSquare className="h-4 w-4 text-muted-foreground" />
                     </div>
                     <div>
-                      <p className="font-medium text-zinc-900">
+                      <p className="font-medium text-foreground">
                         Direct Messages
                       </p>
-                      <p className="text-sm text-zinc-500">
+                      <p className="text-sm text-muted-foreground">
                         New messages from experts
                       </p>
                     </div>
@@ -1147,16 +1147,16 @@ export default function Profile() {
                     onCheckedChange={setNotifDirect}
                   />
                 </div>
-                <div className="flex items-center justify-between p-4 rounded-xl border border-zinc-100 hover:border-zinc-200 transition-colors">
+                <div className="flex items-center justify-between p-4 rounded-xl border border-border hover:border-border/70 transition-colors">
                   <div className="flex items-center gap-3">
-                    <div className="h-9 w-9 rounded-lg bg-zinc-100 flex items-center justify-center">
-                      <Sparkles className="h-4 w-4 text-zinc-600" />
+                    <div className="h-9 w-9 rounded-lg bg-muted flex items-center justify-center">
+                      <Sparkles className="h-4 w-4 text-muted-foreground" />
                     </div>
                     <div>
-                      <p className="font-medium text-zinc-900">
+                      <p className="font-medium text-foreground">
                         Product Updates
                       </p>
-                      <p className="text-sm text-zinc-500">
+                      <p className="text-sm text-muted-foreground">
                         New features and improvements
                       </p>
                     </div>
@@ -1171,7 +1171,7 @@ export default function Profile() {
             </CardContent>
             <CardFooter className="pt-0">
               <Button
-                className="ml-auto bg-zinc-900 hover:bg-zinc-800 text-white"
+                className="ml-auto bg-primary hover:bg-primary/90 text-primary-foreground"
                 onClick={saveNotificationPreferences}
                 disabled={isSavingNotifs}
               >

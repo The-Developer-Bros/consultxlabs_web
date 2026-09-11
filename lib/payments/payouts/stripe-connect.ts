@@ -5,6 +5,7 @@
  * API Documentation: https://docs.stripe.com/connect
  */
 
+import { reportSentryError } from "@/lib/observability/report";
 import Stripe from "stripe";
 
 // ============================================
@@ -71,6 +72,7 @@ export interface CreateTransferRequest {
   sourceTransaction?: string; // Charge ID for direct charges
   metadata?: Record<string, string>;
   transferGroup?: string;
+  idempotencyKey?: string;
 }
 
 export interface StripeTransfer {
@@ -235,15 +237,20 @@ export class StripeConnectService {
   async createTransfer(
     request: CreateTransferRequest,
   ): Promise<StripeTransfer> {
-    const transfer = await this.stripe.transfers.create({
-      amount: request.amount,
-      currency: request.currency,
-      destination: request.destinationAccountId,
-      description: request.description,
-      source_transaction: request.sourceTransaction,
-      transfer_group: request.transferGroup,
-      metadata: request.metadata,
-    });
+    const transfer = await this.stripe.transfers.create(
+      {
+        amount: request.amount,
+        currency: request.currency,
+        destination: request.destinationAccountId,
+        description: request.description,
+        source_transaction: request.sourceTransaction,
+        transfer_group: request.transferGroup,
+        metadata: request.metadata,
+      },
+      request.idempotencyKey
+        ? { idempotencyKey: request.idempotencyKey }
+        : undefined,
+    );
 
     return this.mapTransfer(transfer);
   }
@@ -528,7 +535,14 @@ export function isStripeConnectConfigured(): boolean {
   try {
     const service = getStripeConnectService();
     return service.isConfigured();
-  } catch {
+  } catch (error) {
+    // Constructor throws only on a missing secret key — a modelled
+    // "not configured yet" outcome (e.g. local/dev env), not a fault.
+    reportSentryError(error, {
+      subsystem: "payments",
+      tags: { provider: "stripe" },
+      expected: true,
+    });
     return false;
   }
 }

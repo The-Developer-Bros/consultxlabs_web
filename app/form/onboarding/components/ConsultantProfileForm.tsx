@@ -14,7 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { PersonalInfoAndRole } from "@/schemas/user";
+import { LONG_FORM_TEXT_MAX, PersonalInfoAndRole } from "@/schemas/user";
 import { Domain, SubDomain, Tag } from "@/schemas/plans";
 import {
   ConsultantProfileFormSchema,
@@ -133,7 +133,10 @@ const ConsultantProfileForm: React.FC<Props> = ({
   };
 
   const addCustomTag = useCallback(
-    async (name: string, tagsField: { value?: Tag[]; onChange: (v: Tag[]) => void }) => {
+    async (
+      name: string,
+      tagsField: { value?: Tag[]; onChange: (v: Tag[]) => void },
+    ) => {
       const trimmed = name.trim();
       if (!trimmed || !selectedDomain?.id) return;
 
@@ -188,11 +191,17 @@ const ConsultantProfileForm: React.FC<Props> = ({
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center p-8">
-        <div className="text-center space-y-4">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
-          <p className="text-muted-foreground">Loading form data...</p>
-        </div>
+      <div
+        className="space-y-4 p-2 sm:p-4"
+        aria-busy="true"
+        aria-label="Loading form data"
+      >
+        {[1, 2, 3, 4].map((i) => (
+          <div key={i} className="space-y-2">
+            <div className="h-4 w-28 animate-pulse rounded bg-muted" />
+            <div className="h-11 w-full animate-pulse rounded-lg bg-muted" />
+          </div>
+        ))}
       </div>
     );
   }
@@ -223,6 +232,7 @@ const ConsultantProfileForm: React.FC<Props> = ({
             {...register("description")}
             placeholder="Tell us about your expertise and what you can offer to consultees"
             rows={4}
+            maxLength={LONG_FORM_TEXT_MAX}
           />
           {errors.description && (
             <p className="text-sm text-destructive">
@@ -400,10 +410,7 @@ const ConsultantProfileForm: React.FC<Props> = ({
                   {/* Checkbox grid for seeded tags */}
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-40 overflow-y-auto p-3 rounded-lg bg-muted/50 border">
                     {filteredTags.map((tag) => (
-                      <div
-                        key={tag.id}
-                        className="flex items-center space-x-2"
-                      >
+                      <div key={tag.id} className="flex items-center space-x-2">
                         <Checkbox
                           id={`tag-${tag.id}`}
                           checked={

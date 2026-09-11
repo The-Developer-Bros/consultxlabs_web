@@ -2,23 +2,35 @@
 # Multi-stage build for optimal image size
 
 # Stage 1: Dependencies
-FROM node:20-alpine AS deps
+FROM node:22-alpine AS deps
 RUN apk add --no-cache libc6-compat python3 make g++
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm ci
+# `.npmrc` comes along so the image resolves dependencies as local/CI do. It
+# no longer sets legacy-peer-deps — the better-call zod@^4 vs zod@3 conflict
+# is pinned by `overrides` in package.json instead.
+# Schema before install: package.json's `postinstall` runs `prisma generate`,
+# which fails with "Could not find Prisma Schema" if the schema lands after.
+COPY prisma ./prisma/
+COPY package.json package-lock.json .npmrc ./
+# `--ignore-scripts` then the one script we actually want, run explicitly —
+# see the Dockerfile for the reasoning (sonar docker:S6505).
+RUN npm ci --ignore-scripts && ./node_modules/.bin/prisma generate
 
 # Stage 2: Builder
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
 
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json .npmrc ./
 COPY --from=deps /app/node_modules ./node_modules
 
 COPY prisma ./prisma/
-RUN npx prisma generate
+# Local binary, not `npx`: npx may resolve and execute a package from the
+# registry on demand, and at whatever version it finds (docker:S6505,
+# docker:S8543). node_modules is copied from the deps stage above, so the
+# pinned prisma 7.7.0 is already here.
+RUN ./node_modules/.bin/prisma generate
 
 COPY . .
 
@@ -38,7 +50,7 @@ ENV NODE_ENV=production
 RUN npm run build
 
 # Stage 3: Runner
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production

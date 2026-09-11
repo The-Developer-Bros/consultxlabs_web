@@ -19,6 +19,7 @@
 
 import prisma from "../../lib/prisma";
 import { PaymentStatus } from "@prisma/client";
+import { withCronLock } from "@/lib/cron/with-cron-lock";
 
 // Only check payments within the last 7 days
 const ALERT_WINDOW_DAYS = 7;
@@ -44,7 +45,15 @@ export interface OrphanedPaymentsAlertResult {
 /**
  * Find succeeded payments without appointments and alert
  */
+// #476 — locked at the core so every entry (GH Actions / HTTP) shares one
+// mutual exclusion; fail-open: repeat-safe side effects, lock is belt-and-braces.
 export async function alertOrphanedPayments(): Promise<OrphanedPaymentsAlertResult> {
+  return withCronLock("alert-orphaned-payments", { failMode: "open" }, () =>
+    alertOrphanedPaymentsUnlocked(),
+  );
+}
+
+async function alertOrphanedPaymentsUnlocked(): Promise<OrphanedPaymentsAlertResult> {
   const errors: string[] = [];
   let criticalCount = 0;
   let totalAmount = 0;

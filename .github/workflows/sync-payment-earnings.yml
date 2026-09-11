@@ -3,8 +3,12 @@ name: Sync Payment to Earnings
 on:
   schedule:
     # Run every hour
-    - cron: "0 * * * *"
+    - cron: "22 * * * *"
   workflow_dispatch: # Allow manual triggering
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   sync-payment-earnings:
@@ -12,9 +16,22 @@ jobs:
     timeout-minutes: 15
 
     env:
+      # #1066 — jobs run as bare Node processes, so Sentry.init only sees
+      # what the step env carries. Without the DSN the runner initialises
+      # a disabled client and every captureException is a no-op again.
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
       # Database connection (required for Prisma)
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      # #476 — fail-closed cron lock: without these the job refuses to run.
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      # #1335 — this healer accrues through the same createEarningsFromPayment
+      # the webhook uses, so it has to see the same rate-card scope flag. Set on
+      # Netlify alone, the same booking would settle on the scoped card when the
+      # webhook caught it and on the org default when the healer did.
+      RATE_CARD_SCOPED_RESOLUTION: ${{ vars.RATE_CARD_SCOPED_RESOLUTION }}
 
     steps:
       - name: Checkout code
@@ -33,10 +50,13 @@ jobs:
         run: npx prisma generate
 
       - name: Run payment-earning sync
-        run: npx tsx jobs/earnings/sync-payment-earnings.ts
+        run: npx --yes tsx@4.23.1 jobs/earnings/sync-payment-earnings.ts
 
       - name: Notify on failure
         if: failure()
-        run: |
-          echo "Payment-earning sync failed"
-          # Add notification logic here (Slack, email, etc.)
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          # Fallback sink — Slack has never been provisioned, so this is
+          # what actually pages today. See 07-required-secrets.md.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "sync-payment-earnings"

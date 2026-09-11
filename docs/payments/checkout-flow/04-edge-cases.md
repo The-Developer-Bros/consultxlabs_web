@@ -1,5 +1,9 @@
 # Edge Cases, Special Flows & Issues
 
+> **Superseded (2026-09-03):** this document dates to November 2025. Its race-condition protection ("three-layer protection system") and capacity checks predate the interval-atom `slot-booking:` locks in `utils/appointmentlock.ts`, the CAS transitions in `lib/booking/transitions.ts`, and the union-coverage validation in `utils/slotAllocation/availabilityCoverage.ts`. For current concurrency and edge-case behavior, read [`docs/booking/00-architecture-decisions.md`](../../booking/00-architecture-decisions.md) (ADR B6, B7, B11), [`docs/booking/15-checklist.md`](../../booking/15-checklist.md), and the wave-5 entries in [`docs/booking/05-troubleshooting-and-changelog.md`](../../booking/05-troubleshooting-and-changelog.md). The rest of this file is kept for historical context only; do not cite its file:line references as current.
+
+---
+
 > **Navigation:** [Overview & Consultation](./01-overview-and-consultation.md) | [Webinar & Class](./02-webinar-and-class.md) | [Payment Processing](./03-payment-processing.md) | **Edge Cases** | [Status Flows](./05-status-flows.md)
 
 ## Table of Contents
@@ -10,11 +14,10 @@
 4. [Capacity Edge Cases](#4-capacity-edge-cases)
 5. [Validation Edge Cases](#5-validation-edge-cases)
 6. [Mock Payment Mode](#6-mock-payment-mode)
-7. [Waitlist Management](#7-waitlist-management)
-8. [Multi-Session Handling](#8-multi-session-handling)
-9. [Code Locations Reference](#9-code-locations-reference)
-10. [Integration Points](#10-integration-points)
-11. [Critical Issues & Improvements](#11-critical-issues--improvements)
+7. [Multi-Session Handling](#8-multi-session-handling)
+8. [Code Locations Reference](#9-code-locations-reference)
+9. [Integration Points](#10-integration-points)
+10. [Critical Issues & Improvements](#11-critical-issues--improvements)
 
 ---
 
@@ -117,6 +120,17 @@ if (allPendingCount >= 3) {
 }
 ```
 
+**DB backstop — `slot_no_confirmed_overlap` exclusion constraint (#440):**
+
+Even if two Serializable transactions race past all three application-layer checks, a PostgreSQL **exclusion constraint** on `SlotOfAppointment` prevents two _confirmed_ (non-tentative) rows from overlapping the same `(consultantId, startsAt, endsAt)` range. This is the last-resort guarantee that concurrent webhooks cannot double-confirm a slot. The constraint fires at `COMMIT` time; the losing transaction receives a `P2002` / `UniqueConstraintError` which surfaces to the webhook handler as a 409 and triggers a gateway refund cascade.
+
+```sql
+-- prisma/sql/check-constraints.sql lines 56-58
+ALTER TABLE "SlotOfAppointment"
+  ADD CONSTRAINT "slot_no_confirmed_overlap"
+  EXCLUDE USING gist (...) WHERE ("isTentative" = false);
+```
+
 **Resolution:**
 
 - First confirmed payment wins
@@ -185,6 +199,30 @@ if (uniqueUserIds.has(userId)) {
 
 **Additional Protection:** Unique constraint on payment intent IDs prevents duplicate payments.
 
+### 1.4 User Self-Cancel of Pending Checkout (#849)
+
+**Scenario:** User abandons checkout and wants to release their tentative hold immediately instead of waiting up to 24 hours for the cleanup cron.
+
+**Endpoint:** `DELETE /api/checkout/pending/[paymentId]`
+
+**File:** `/app/api/checkout/pending/[paymentId]/route.ts` + `/lib/payments/operations/cancel-pending.ts`
+
+**Mechanics:**
+
+1. Rate-limited to **10 requests/minute** per user (`cancelPendingLimiter`).
+2. The entire body runs in a single **Serializable transaction** with a CAS write as the first step: `UPDATE payment SET status = EXPIRED WHERE id = ? AND status = PENDING`. If `count = 0`, another winner already settled the payment (webhook confirm or parallel cancel).
+3. On CAS success: referral credits are reversed, tentative slots are deleted per-type (class = caller's slots across all sessions, webinar = caller-scoped slot, consultation/subscription = all slots on the appointment), parent consultation/subscription is transitioned to `CANCELLED` from the **narrow** from-set `[PENDING, APPROVED_PENDING_PAYMENT]` — an APPROVED parent blocks the cancellation via `IllegalTransitionError`, rolling back the entire tx.
+4. Post-commit, best-effort: gateway order is cancelled. Failure does not un-cancel the booking.
+5. Retry-exhausted Serializable write conflicts (P2034) map to **409 Conflict**, not 500.
+
+**Capacity counts:** This endpoint correctly counts tentative holds in capacity (the checkout layer already includes tentative slots in availability checks — the last-seat race is closed at checkout; `test-last-seat-storm` pins this).
+
+**Returns:**
+
+```json
+{ "success": true, "slotsReleased": 1 }
+```
+
 ---
 
 ## 2. Timeout Scenarios
@@ -216,7 +254,10 @@ expiresAt: new Date(Date.now() + 30 * 60 * 1000),
 
 - Gateway shows "Session expired" error
 - User must restart checkout process
-- Tentative slot is released by cleanup job
+- User can self-cancel immediately via `DELETE /api/checkout/pending/[paymentId]` (see §1.4)
+- Otherwise, tentative slot is released by the cron cleanup
+
+**TTL distinction:** The `Payment.expiresAt` field is set to **30 minutes** (matches the gateway checkout session). The `isTentative` slot itself has a **24-hour** cleanup window (#833 — changed from the old 7-day window). The abandoned-payments cron releases the slot once `expiresAt` has passed; the tentative-slots cron is a belt-and-braces fallback that runs every 2 hours and catches any orphans past the 24-hour mark.
 
 **Edge Case:** User completes payment at exactly 30:00 → May succeed or fail depending on gateway clock.
 
@@ -511,45 +552,6 @@ const currentParticipants = uniqueUserIds.size;
 
 **Edge Case:** User enrolled twice with different accounts → Counted as 2 participants.
 
-### 4.3 Waitlist Overflow
-
-**Scenario:** Waitlist is enabled, capacity is 10, 30 people want to join.
-
-**Current Behavior:**
-
-- First 10 get confirmed enrollment
-- Next 20 should join waitlist (functionality not in payment code)
-
-**Integration Point (Hypothetical):**
-
-```typescript
-// Check if waitlist exists for this event
-if (currentParticipants >= plan.capacity) {
-  if (event.waitlistEnabled) {
-    // Add to waitlist instead of failing
-    await tx.waitlistEntry.create({
-      data: {
-        userId,
-        eventId: event.id,
-        position: currentWaitlistSize + 1,
-      },
-    });
-
-    return {
-      status: "waitlisted",
-      position: currentWaitlistSize + 1,
-      message: "Added to waitlist",
-    };
-  } else {
-    throw new Error("Event is at capacity");
-  }
-}
-```
-
-**Note:** Waitlist management is not currently implemented in payment flow.
-
----
-
 ## 5. Validation Edge Cases
 
 ### 5.1 Slot Time Validation
@@ -560,15 +562,15 @@ if (currentParticipants >= plan.capacity) {
 
 ```typescript
 // Allows booking slots in the past
-slotStartTimeInUTC: z.string().datetime(),
-slotEndTimeInUTC: z.string().datetime(),
+startsAt: z.string().datetime(),   // renamed from `slotStartTimeInUTC`
+endsAt: z.string().datetime(),     // renamed from `slotEndTimeInUTC`
 ```
 
 **Recommendation:**
 
 ```typescript
 // Add custom validation
-slotStartTimeInUTC: z.string().datetime().refine(
+startsAt: z.string().datetime().refine(
   (val) => new Date(val) > new Date(),
   { message: "Slot start time must be in the future" }
 ),
@@ -576,8 +578,8 @@ slotStartTimeInUTC: z.string().datetime().refine(
 // Also validate slot duration
 .refine(
   (data) => {
-    const start = new Date(data.slotStartTimeInUTC);
-    const end = new Date(data.slotEndTimeInUTC);
+    const start = new Date(data.startsAt);
+    const end = new Date(data.endsAt);
     return end > start;
   },
   { message: "Slot end time must be after start time" }
@@ -757,112 +759,6 @@ sequenceDiagram
 
 ---
 
-## 7. Waitlist Management
-
-### 7.1 Waitlist Architecture (Hypothetical)
-
-**Note:** Waitlist is NOT currently implemented in payment flow. This section describes recommended integration.
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                   Waitlist Integration Points                │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                ┌─────────────┼─────────────┬─────────────┐
-                │             │             │             │
-                ▼             ▼             ▼             ▼
-    ┌───────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-    │  Capacity     │ │  User Joins  │ │ Cancellation │ │  Capacity    │
-    │  Full Check   │ │  Waitlist    │ │ Promotes    │ │  Increase    │
-    └───────────────┘ └──────────────┘ └──────────────┘ └──────────────┘
-```
-
-### 7.2 Recommended Waitlist Data Model
-
-```prisma
-model WaitlistEntry {
-  id        String   @id @default(uuid())
-  userId    String
-  eventId   String
-  eventType AppointmentsType
-  position  Int
-  status    WaitlistStatus
-  expiresAt DateTime?
-  notifiedAt DateTime?
-
-  user User @relation(fields: [userId], references: [id])
-  // Relations to specific event types...
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@unique([userId, eventId, eventType])
-  @@index([eventId, status, position])
-}
-
-enum WaitlistStatus {
-  WAITING       // On waitlist
-  NOTIFIED      // Slot available, notified
-  PROMOTED      // Joined from waitlist
-  EXPIRED       // Notification expired
-  CANCELLED     // User cancelled
-}
-```
-
-### 7.3 Waitlist Integration with Payment Flow
-
-```typescript
-// In checkout flow
-if (currentParticipants >= capacity) {
-  if (event.waitlistEnabled) {
-    // Option 1: Add to waitlist without payment
-    await addToWaitlist(userId, event.id);
-    return { status: "waitlisted" };
-
-    // Option 2: Create payment but keep PENDING until promoted
-    const payment = await createPaymentIntent({...});
-    await addToWaitlistWithPayment(userId, event.id, payment.id);
-    return { status: "waitlisted_with_reservation", payment };
-  } else {
-    throw new Error("Event is full");
-  }
-}
-```
-
-### 7.4 Waitlist Promotion Flow
-
-```typescript
-async function promoteFromWaitlist(eventId: string) {
-  // Find first waiting entry
-  const entry = await prisma.waitlistEntry.findFirst({
-    where: {
-      eventId,
-      status: "WAITING",
-    },
-    orderBy: { position: "asc" },
-  });
-
-  if (!entry) return null;
-
-  // Update status and send notification
-  await prisma.waitlistEntry.update({
-    where: { id: entry.id },
-    data: {
-      status: "NOTIFIED",
-      notifiedAt: new Date(),
-      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours
-    },
-  });
-
-  // Send notification to user
-  await sendWaitlistPromotionNotification(entry.userId, eventId);
-
-  return entry;
-}
-```
-
----
-
 ## 8. Multi-Session Handling
 
 ### 8.1 Subscription Multi-Session Creation
@@ -874,13 +770,13 @@ async function promoteFromWaitlist(eventId: string) {
 ```typescript
 // Calculate total sessions
 const totalWeeks = Math.ceil(plan.durationInMonths * 4.33);
-const totalSessions = totalWeeks * plan.callsPerWeek;
+const totalSessions = totalWeeks * plan.sessionsPerWeek;
 
 // Create ALL appointments upfront
 const appointments = [];
 for (let i = 0; i < totalSessions; i++) {
   const sessionStart = new Date(firstSessionStart);
-  const weekOffset = Math.floor(i / plan.callsPerWeek);
+  const weekOffset = Math.floor(i / plan.sessionsPerWeek);
   sessionStart.setDate(sessionStart.getDate() + weekOffset * 7);
   const sessionEnd = new Date(sessionStart.getTime() + sessionDurationMs);
 
@@ -906,7 +802,7 @@ for (let i = 0; i < totalSessions; i++) {
 ```typescript
 // Example: 3-month subscription, 2 calls/week
 const durationInMonths = 3;
-const callsPerWeek = 2;
+const sessionsPerWeek = 2;
 
 // Step 1: Convert months to weeks (1 month ≈ 4.33 weeks)
 const totalWeeks = Math.ceil(3 * 4.33) = Math.ceil(12.99) = 13 weeks
@@ -925,17 +821,17 @@ const totalSessions = 13 * 2 = 26 sessions
 
 **Current Implementation:**
 
-**File:** `/app/api/events/classes/crud-with-plan/route.ts` (lines 162-164)
+**File:** `/app/api/bookings/classes/crud-with-plan/route.ts` (lines 162-164)
 
 ```typescript
 // Calculate total sessions
 Array.from({
-  length: Math.ceil(durationInMonths * 4.33) * callsPerWeek,
+  length: Math.ceil(durationInMonths * 4.33) * sessionsPerWeek,
 }).map((_, index) => {
   // Create appointment for each session
   const sessionDate = new Date(schedulingPeriodStartsAt);
-  const weekOffset = Math.floor(index / callsPerWeek);
-  const dayOffset = (index % callsPerWeek) * daysBetweenCalls;
+  const weekOffset = Math.floor(index / sessionsPerWeek);
+  const dayOffset = (index % sessionsPerWeek) * daysBetweenCalls;
   sessionDate.setDate(sessionDate.getDate() + weekOffset * 7 + dayOffset);
 
   return {
@@ -958,10 +854,10 @@ Array.from({
 
 ```typescript
 // Issue: Sessions scheduled too close together
-// callsPerWeek = 7, only 1 day per week = 7 sessions in 1 day!
+// sessionsPerWeek = 7, only 1 day per week = 7 sessions in 1 day!
 
 // Solution: Add validation
-if (callsPerWeek > 7) {
+if (sessionsPerWeek > 7) {
   throw new Error("Cannot have more than 7 calls per week");
 }
 ```
@@ -1048,25 +944,25 @@ const zonedDate = utcToZonedTime(sessionStart, subscription.timezone);
 
 **Race Condition Protection:**
 
-- Consultation: `/lib/payments/operations/checkout.ts:196-248`
+- Consultation: `/lib/payments/operations/checkout.ts`
 - Subscription: Same protection mechanism
-- Class enrollment check: `/lib/payments/operations/checkout.ts:675-678`
+- Class enrollment check: `/lib/payments/operations/checkout.ts`
 
 **Capacity Counting:**
 
-- Webinar: `/lib/payments/operations/checkout.ts:595-597`
-- Class: `/lib/payments/operations/checkout.ts:647-656` (unique user counting)
+- Webinar: `/lib/payments/operations/checkout.ts`
+- Class: `/lib/payments/operations/checkout.ts` (unique user counting)
 
 **Session Calculations:**
 
-- Subscription: `/lib/payments/operations/checkout.ts:512-514`
-- Class: `/app/api/events/classes/crud-with-plan/route.ts:162-164`
+- Subscription: `/lib/payments/operations/checkout.ts`
+- Class: `/app/api/bookings/classes/crud-with-plan/route.ts`
 
 **Error Handling:**
 
-- Checkout API: `/app/api/checkout/route.ts:28-83`
-- Stripe errors: `/lib/payments/core/stripe.ts:449-482`
-- Razorpay errors: `/lib/payments/core/razorpay.ts:299-336`
+- Checkout API: `/app/api/checkout/route.ts`
+- Stripe errors: `/lib/payments/core/stripe.ts`
+- Razorpay errors: `/lib/payments/core/razorpay.ts`
 
 ### 9.3 Database Schema Locations
 
@@ -1106,8 +1002,8 @@ const response = await fetch("/api/checkout", {
   body: JSON.stringify({
     appointmentType: "CONSULTATION",
     planId: "plan-uuid",
-    slotStartTimeInUTC: "2025-11-07T10:00:00Z",
-    slotEndTimeInUTC: "2025-11-07T11:00:00Z",
+    startsAt: "2025-11-07T10:00:00Z", // renamed from `slotStartTimeInUTC`
+    endsAt: "2025-11-07T11:00:00Z", // renamed from `slotEndTimeInUTC`
     notes: "Follow-up consultation",
     isMockPayment: false, // Set to true for testing
   }),

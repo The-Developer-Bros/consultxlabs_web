@@ -2,6 +2,11 @@ import { PaymentGateway, RefundStatus, DisputeStatus } from "@prisma/client";
 
 /**
  * Common payment types and interfaces for all payment gateways
+ *
+ * #781 §A — `currency` here is deliberately `string`: these types face the
+ * gateways, which speak free-form ISO codes (incl. display currencies the
+ * Currency enum doesn't model). Database money rows store the Currency enum;
+ * every row-write must coerce through toCurrencyEnum() (currency-guards.ts).
  */
 
 // ============================================================================
@@ -11,11 +16,11 @@ import { PaymentGateway, RefundStatus, DisputeStatus } from "@prisma/client";
 export interface PaymentIntentParams {
   amount: number; // Amount in base currency (e.g., 100.00 for $100)
   currency: string;
-  metadata: {
-    appointmentId: string;
-    appointmentType: string;
-    [key: string]: string;
-  };
+  // Booking checkouts set appointmentId/appointmentType; standalone goods
+  // (#366 recording_purchase) have no booking context and omit them. Kept as
+  // a flat Record because Razorpay/Stripe metadata params reject
+  // optional-property index signatures (`string | undefined`).
+  metadata: Record<string, string>;
   paymentGateway: PaymentGateway;
   isMockPayment?: boolean; // For development: skip actual gateway calls
 }
@@ -37,6 +42,17 @@ export interface RefundParams {
   amount?: number; // Optional partial refund amount (in base currency)
   reason?: string; // Reason for refund
   metadata?: Record<string, string>;
+  // Stable per *logical* refund, not per attempt — a retry must reuse it so the
+  // gateway returns the original refund instead of issuing a second one. Must
+  // NOT be derived from paymentId+amount: two legitimate partial refunds of the
+  // same amount would collide and the second would silently under-refund.
+  //
+  // #1352 — required, not optional. Optionality here was the only thing that
+  // made a non-idempotent refund expressible: omit the key and a network-error
+  // retry credits the customer's card twice with nothing to detect it. Every
+  // real caller already passes its Phase-1 reservation id, so the type now says
+  // what the code already did.
+  idempotencyKey: string;
 }
 
 export interface RefundResult {
@@ -90,50 +106,6 @@ export interface DisputeResult {
   evidence?: Record<string, unknown>;
   isChargeRefundable: boolean;
   dueBy?: Date;
-}
-
-// ============================================================================
-// Helper Types
-// ============================================================================
-
-/** Supported currency codes for payment gateway amount conversion. */
-export type SupportedCurrency =
-  | "USD"
-  | "EUR"
-  | "GBP"
-  | "JPY"
-  | "INR"
-  | "AUD"
-  | "CAD"
-  | "SGD"
-  | "AED"
-  | "NGN";
-
-export const CURRENCY_MULTIPLIERS: Record<SupportedCurrency, number> = {
-  USD: 100, // cents
-  EUR: 100, // cents
-  GBP: 100, // pence
-  JPY: 1, // yen has no smaller unit
-  INR: 100, // paise
-  AUD: 100, // cents
-  CAD: 100, // cents
-  SGD: 100, // cents
-  AED: 100, // fils
-  NGN: 100, // kobo (for XFlow)
-};
-
-export interface PaymentGatewayConfig {
-  name: string;
-  isAvailable: boolean;
-  requiresKYC: boolean;
-  kycStatus?: "pending" | "approved" | "rejected";
-  supportedCurrencies: string[];
-  features: {
-    checkout: boolean;
-    refunds: boolean;
-    disputes: boolean;
-    subscriptions: boolean;
-  };
 }
 
 // ============================================================================

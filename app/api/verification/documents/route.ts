@@ -7,6 +7,7 @@ import {
 } from "@/lib/supabase";
 
 import { getSession } from "@/lib/auth-server";
+import * as Sentry from "@sentry/nextjs";
 const ALLOWED_TYPES = [
   "image/png",
   "image/jpeg",
@@ -221,6 +222,7 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error("Document upload error:", error);
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "auth" } });
     return NextResponse.json(
       {
         success: false,
@@ -309,6 +311,7 @@ export async function DELETE(request: NextRequest) {
     });
   } catch (error) {
     console.error("Document delete error:", error);
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "auth" } });
     return NextResponse.json(
       {
         success: false,

@@ -20,7 +20,9 @@ This document explains the complete status lifecycle for all 4 event types, incl
 
 ## Status Definitions
 
-### Request Status (Consultation & Subscription)
+### Appointment Status (Consultation & Subscription)
+
+> **Rename note:** The DB field was `status` (enum `AppointmentStatus`); after the terminology-unification refactor it is `status` (enum `AppointmentStatus`). The enum *values* are unchanged.
 
 | Status                     | Description                                                   |
 | -------------------------- | ------------------------------------------------------------- |

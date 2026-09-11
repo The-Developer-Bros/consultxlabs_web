@@ -82,27 +82,40 @@ const getRoleColor = (role: string) => {
   }
 };
 
+// Cases must be `ProfileVerificationStatus` values. This switch was written
+// against VERIFIED / PENDING_VERIFICATION / UNDER_REVIEW, none of which are in
+// that enum — only REJECTED happened to match — so an approved, pending or
+// needs-info consultant all fell through to "Not Submitted", which is a
+// different and materially wrong claim about their onboarding. A test pins the
+// cases to the schema so a future rename cannot quietly restore this.
 const getVerificationStatusBadge = (status: string | null) => {
   switch (status) {
-    case "VERIFIED":
+    case "APPROVED":
       return (
         <Badge className="bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">
           <CheckCircle className="h-3 w-3 mr-1" />
           Verified
         </Badge>
       );
-    case "PENDING_VERIFICATION":
+    case "PENDING":
       return (
         <Badge className="bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300">
           <Clock className="h-3 w-3 mr-1" />
           Pending
         </Badge>
       );
-    case "UNDER_REVIEW":
+    case "NEEDS_INFO":
       return (
         <Badge className="bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300">
           <AlertCircle className="h-3 w-3 mr-1" />
-          Under Review
+          Needs Info
+        </Badge>
+      );
+    case "SUPERSEDED":
+      return (
+        <Badge variant="secondary">
+          <Clock className="h-3 w-3 mr-1" />
+          Superseded
         </Badge>
       );
     case "REJECTED":
@@ -435,5 +448,3 @@ export function UserDetailModal({
     </Dialog>
   );
 }
-
-export default UserDetailModal;

@@ -1,5 +1,18 @@
+import * as Sentry from "@sentry/nextjs";
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+
+// Roster payload — never the full User row. The class/ and webinar/
+// siblings were hardened this way in the #946 sweep; these two were
+// missed and kept shipping phone, address, dateOfBirth, city and country
+// on every roster poll.
+const PARTICIPANT_USER_SELECT = {
+  id: true,
+  name: true,
+  email: true,
+  image: true,
+} as const;
+
 import {
   requireApiAuth,
   isPrivileged,
@@ -35,14 +48,14 @@ export async function GET(
           include: {
             slotsOfAppointment: {
               include: {
-                user: true,
+                user: { select: PARTICIPANT_USER_SELECT },
               },
             },
           },
         },
         requestedBy: {
           include: {
-            user: true,
+            user: { select: PARTICIPANT_USER_SELECT },
           },
         },
       },
@@ -85,6 +98,7 @@ export async function GET(
       participants,
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "bookings" } });
     console.error("[CONSULTATION_PARTICIPANTS_GET]", error);
     return new NextResponse("Internal error", { status: 500 });
   }
@@ -131,7 +145,7 @@ export async function DELETE(
           include: {
             slotsOfAppointment: {
               include: {
-                user: true,
+                user: { select: PARTICIPANT_USER_SELECT },
               },
             },
           },
@@ -161,6 +175,7 @@ export async function DELETE(
 
     return new NextResponse(null, { status: 204 });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "bookings" } });
     console.error("[CONSULTATION_PARTICIPANT_DELETE]", error);
     return new NextResponse("Internal error", { status: 500 });
   }

@@ -127,7 +127,7 @@ After signup, run:
 
 ```sql
 UPDATE "ConsulteeProfile"
-SET occupation = 'Night Tester',
+SET goals = 'Book across midnight without losing a session.',
     "aboutMe"  = 'Testing overnight booking flows.'
 FROM users u
 WHERE "ConsulteeProfile"."userId" = u.id
@@ -199,7 +199,7 @@ ON CONFLICT (id) DO NOTHING;
 ```sql
 INSERT INTO "ClassPlan" (
   id, title, "sessionDurationInHours", "totalSessions",
-  "meetingsPerWeek", "maxParticipants",
+  "sessionsPerWeek", "maxParticipants",
   price, "priceCurrency",
   "consultantProfileId", "createdAt", "updatedAt"
 )
@@ -550,6 +550,17 @@ WHERE "consultantProfileId" = 'test-consultant-profile-005'
 
 ## Phase 4 — Bulk Settings Overnight Overlap
 
+> **Body shape, verified against `app/api/user/consultants/[id]/route.ts`.** The
+> weekly rows take `dayOfWeekforStartTimeInUTC` / `dayOfWeekforEndTimeInUTC` plus
+> `startsAt` / `endsAt` (both ISO datetimes with an offset); custom rows take
+> `startsAt` / `endsAt` alone. `domainId`, `subDomainIds` and `tagIds` are all
+> validated with `z.string().uuid()`, so the readable `test-domain-0NN` ids this
+> case seeds will 400 the happy-path arms. Read the real UUIDs out of the
+> database first — `SELECT id FROM "Domain" WHERE name = '<seeded name>'` and the
+> matching `SubDomain` row — and substitute them into every bulk-PUT body below.
+> The authorization arms (403 / 401) short-circuit before validation, so they
+> pass either way.
+
 ### Test 4.1 — Two Overlapping Overnight Slots in Bulk
 
 Login as CONSULTANT:
@@ -572,14 +583,14 @@ async () => {
           {
             dayOfWeekforStartTimeInUTC: "MONDAY",
             dayOfWeekforEndTimeInUTC: "TUESDAY",
-            slotStartTimeInUTC: "2026-01-05T23:00:00.000Z",
-            slotEndTimeInUTC: "2026-01-06T01:00:00.000Z",
+            startsAt: "2026-01-05T23:00:00.000Z",
+            endsAt: "2026-01-06T01:00:00.000Z",
           },
           {
             dayOfWeekforStartTimeInUTC: "MONDAY",
             dayOfWeekforEndTimeInUTC: "TUESDAY",
-            slotStartTimeInUTC: "2026-01-05T22:00:00.000Z",
-            slotEndTimeInUTC: "2026-01-06T03:00:00.000Z",
+            startsAt: "2026-01-05T22:00:00.000Z",
+            endsAt: "2026-01-06T03:00:00.000Z",
           },
         ],
       }),
@@ -611,14 +622,14 @@ async () => {
           {
             dayOfWeekforStartTimeInUTC: "MONDAY",
             dayOfWeekforEndTimeInUTC: "TUESDAY",
-            slotStartTimeInUTC: "2026-01-05T23:00:00.000Z",
-            slotEndTimeInUTC: "2026-01-06T01:00:00.000Z",
+            startsAt: "2026-01-05T23:00:00.000Z",
+            endsAt: "2026-01-06T01:00:00.000Z",
           },
           {
             dayOfWeekforStartTimeInUTC: "TUESDAY",
             dayOfWeekforEndTimeInUTC: "TUESDAY",
-            slotStartTimeInUTC: "2026-01-06T00:30:00.000Z",
-            slotEndTimeInUTC: "2026-01-06T02:00:00.000Z",
+            startsAt: "2026-01-06T00:30:00.000Z",
+            endsAt: "2026-01-06T02:00:00.000Z",
           },
         ],
       }),
@@ -650,14 +661,14 @@ async () => {
           {
             dayOfWeekforStartTimeInUTC: "MONDAY",
             dayOfWeekforEndTimeInUTC: "TUESDAY",
-            slotStartTimeInUTC: "2026-01-05T23:00:00.000Z",
-            slotEndTimeInUTC: "2026-01-06T01:00:00.000Z",
+            startsAt: "2026-01-05T23:00:00.000Z",
+            endsAt: "2026-01-06T01:00:00.000Z",
           },
           {
             dayOfWeekforStartTimeInUTC: "WEDNESDAY",
             dayOfWeekforEndTimeInUTC: "WEDNESDAY",
-            slotStartTimeInUTC: "2026-01-07T09:00:00.000Z",
-            slotEndTimeInUTC: "2026-01-07T17:00:00.000Z",
+            startsAt: "2026-01-07T09:00:00.000Z",
+            endsAt: "2026-01-07T17:00:00.000Z",
           },
         ],
       }),
@@ -720,8 +731,9 @@ async () => {
       appointmentType: "CONSULTATION",
       planId: "test-consultation-plan-005",
       paymentGateway: "STRIPE",
-      slotStartTimeInUTC: nextMon.toISOString(),
-      slotEndTimeInUTC: slotEnd.toISOString(),
+      startsAt: nextMon.toISOString(),
+      endsAt: slotEnd.toISOString(),
+      slotOfAvailabilityWeeklyId: "test-w005-mon-night",
       isMockPayment: true,
     }),
   });
@@ -754,8 +766,9 @@ async () => {
       appointmentType: "CONSULTATION",
       planId: "test-consultation-plan-005",
       paymentGateway: "STRIPE",
-      slotStartTimeInUTC: nextTue.toISOString(),
-      slotEndTimeInUTC: slotEnd.toISOString(),
+      startsAt: nextTue.toISOString(),
+      endsAt: slotEnd.toISOString(),
+      slotOfAvailabilityWeeklyId: "test-w005-mon-night",
       isMockPayment: true,
     }),
   });
@@ -786,8 +799,9 @@ async () => {
       appointmentType: "CONSULTATION",
       planId: "test-consultation-plan-005",
       paymentGateway: "STRIPE",
-      slotStartTimeInUTC: nextMon.toISOString(),
-      slotEndTimeInUTC: slotEnd.toISOString(),
+      startsAt: nextMon.toISOString(),
+      endsAt: slotEnd.toISOString(),
+      slotOfAvailabilityWeeklyId: "test-w005-mon-night",
       isMockPayment: true,
     }),
   });
@@ -857,16 +871,16 @@ async () => {
         tagIds: [],
         slotsOfAvailabilityCustom: [
           {
-            slotStartTimeInUTC: baseDate.toISOString(),
-            slotEndTimeInUTC: new Date(
+            startsAt: baseDate.toISOString(),
+            endsAt: new Date(
               baseDate.getTime() + 4 * 3600000,
             ).toISOString(),
           },
           {
-            slotStartTimeInUTC: new Date(
+            startsAt: new Date(
               baseDate.getTime() + 3 * 3600000,
             ).toISOString(),
-            slotEndTimeInUTC: new Date(
+            endsAt: new Date(
               baseDate.getTime() + 6 * 3600000,
             ).toISOString(),
           },
@@ -902,16 +916,16 @@ async () => {
         tagIds: [],
         slotsOfAvailabilityCustom: [
           {
-            slotStartTimeInUTC: baseDate.toISOString(),
-            slotEndTimeInUTC: new Date(
+            startsAt: baseDate.toISOString(),
+            endsAt: new Date(
               baseDate.getTime() + 3 * 3600000,
             ).toISOString(),
           },
           {
-            slotStartTimeInUTC: new Date(
+            startsAt: new Date(
               baseDate.getTime() + 4 * 3600000,
             ).toISOString(),
-            slotEndTimeInUTC: new Date(
+            endsAt: new Date(
               baseDate.getTime() + 7 * 3600000,
             ).toISOString(),
           },
@@ -945,14 +959,14 @@ async () => {
           {
             dayOfWeekforStartTimeInUTC: "MONDAY",
             dayOfWeekforEndTimeInUTC: "TUESDAY",
-            slotStartTimeInUTC: "2026-01-05T23:00:00.000Z",
-            slotEndTimeInUTC: "2026-01-06T01:00:00.000Z",
+            startsAt: "2026-01-05T23:00:00.000Z",
+            endsAt: "2026-01-06T01:00:00.000Z",
           },
           {
             dayOfWeekforStartTimeInUTC: "WEDNESDAY",
             dayOfWeekforEndTimeInUTC: "WEDNESDAY",
-            slotStartTimeInUTC: "2026-01-07T09:00:00.000Z",
-            slotEndTimeInUTC: "2026-01-07T17:00:00.000Z",
+            startsAt: "2026-01-07T09:00:00.000Z",
+            endsAt: "2026-01-07T17:00:00.000Z",
           },
         ],
       }),
@@ -1039,7 +1053,7 @@ As CONSULTANT, try to manually allocate a class session that starts within the p
 ```javascript
 async () => {
   // Get the class scheduling period
-  const classResp = await fetch("/api/events/classes/test-class-005");
+  const classResp = await fetch("/api/bookings/classes/test-class-005");
   const classData = await classResp.json();
   const periodEnd = new Date(
     classData.data?.schedulingPeriodEndsAt || classData.schedulingPeriodEndsAt,
@@ -1049,18 +1063,21 @@ async () => {
   const slotStart = new Date(periodEnd.getTime() - 30 * 60000);
   const slotEnd = new Date(periodEnd.getTime() + 30 * 60000);
 
-  const response = await fetch("/api/events/classes/test-class-005/allocate", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      slots: [
-        {
-          startsAt: slotStart.toISOString(),
-          endsAt: slotEnd.toISOString(),
-        },
-      ],
-    }),
-  });
+  const response = await fetch(
+    "/api/bookings/classes/test-class-005/allocate",
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        slots: [
+          {
+            startsAt: slotStart.toISOString(),
+            endsAt: slotEnd.toISOString(),
+          },
+        ],
+      }),
+    },
+  );
   return { status: response.status, body: await response.json() };
 };
 ```
@@ -1082,18 +1099,21 @@ async () => {
   const slotEnd = new Date(slotStart);
   slotEnd.setUTCHours(11, 0, 0, 0); // 1h session
 
-  const response = await fetch("/api/events/classes/test-class-005/allocate", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      slots: [
-        {
-          startsAt: slotStart.toISOString(),
-          endsAt: slotEnd.toISOString(),
-        },
-      ],
-    }),
-  });
+  const response = await fetch(
+    "/api/bookings/classes/test-class-005/allocate",
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        slots: [
+          {
+            startsAt: slotStart.toISOString(),
+            endsAt: slotEnd.toISOString(),
+          },
+        ],
+      }),
+    },
+  );
   return { status: response.status, body: await response.json() };
 };
 ```

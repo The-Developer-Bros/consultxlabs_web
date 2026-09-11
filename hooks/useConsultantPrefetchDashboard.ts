@@ -2,6 +2,7 @@
 
 import { useQueryClient, type FetchQueryOptions } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef } from "react";
+import { reportSentryError } from "@/lib/observability/report";
 
 import {
   createConsultantQueries,
@@ -15,10 +16,11 @@ interface PrefetchDashboardOptions {
   enableAggressivePrefetch?: boolean;
 }
 
-// FAQ fetcher — specific to consultant help page, not a dashboard query
+// FAQ fetcher — backs the Help tab of the shared Support surface, which both
+// the consultant and consultee dashboards mount. Not a dashboard query.
 export const fetchHelpFAQs = async () => {
   const { faqs } =
-    await import("../app/dashboard/consultant/[consultantId]/(features)/help/questions");
+    await import("@/components/dashboard/shared/support/questions");
   return faqs;
 };
 
@@ -40,10 +42,29 @@ export function usePrefetchDashboard({
 }: PrefetchDashboardOptions = {}) {
   const queryClient = useQueryClient();
   const prefetchedRef = useRef(new Set<string>());
+  // Every delayed prefetch / throttle reset lands here so unmount can cancel
+  // them — otherwise post-unmount prefetchQuery calls (and mutations on the
+  // tracking Set) keep running for up to 5s after teardown. Fired handles
+  // self-remove before their callback runs so the Set stays bounded no matter
+  // how long the dashboard stays open.
+  const timersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+
+  const trackedTimeout = useCallback((fn: () => void, delay: number) => {
+    // The callback deletes its own handle first, so fired timers never
+    // accumulate; unmount clears whatever is still pending.
+    const handle = setTimeout(() => {
+      timersRef.current.delete(handle);
+      fn();
+    }, delay);
+    timersRef.current.add(handle);
+  }, []);
 
   // Utility function to safely prefetch queries
   const safePrefetch = useCallback(
-    async (queries: FetchQueryOptions[], priority: "high" | "medium" | "low" = "medium") => {
+    async (
+      queries: FetchQueryOptions[],
+      priority: "high" | "medium" | "low" = "medium",
+    ) => {
       const delay =
         priority === "high" ? 0 : priority === "medium" ? 500 : 1000;
 
@@ -52,27 +73,44 @@ export function usePrefetchDashboard({
           queries.map((query) => queryClient.prefetchQuery(query)),
         );
 
-        // Log failures in development
-        if (process.env.NODE_ENV === "development") {
-          results.forEach((result, index) => {
-            if (result.status === "rejected") {
+        // allSettled swallows rejections — the outer try/catch below never
+        // sees these, so they must be captured here or they vanish entirely.
+        results.forEach((result, index) => {
+          if (result.status === "rejected") {
+            if (process.env.NODE_ENV === "development") {
               console.warn(
                 `Prefetch failed for query:`,
                 queries[index].queryKey,
                 result.reason,
               );
             }
-          });
-        }
+            reportSentryError(result.reason, {
+              subsystem: "client",
+              expected: true,
+              extra: { queryKey: queries[index].queryKey },
+            });
+          }
+        });
       };
 
+      // executePrefetch itself shouldn't throw (allSettled never rejects),
+      // but the delayed branch is fire-and-forget, so guard against an
+      // unhandled rejection if that assumption is ever wrong.
+      const runPrefetch = () =>
+        executePrefetch().catch((error) => {
+          reportSentryError(error, {
+            subsystem: "client",
+            op: "safe-prefetch-unexpected",
+          });
+        });
+
       if (delay > 0) {
-        setTimeout(executePrefetch, delay);
+        trackedTimeout(runPrefetch, delay);
       } else {
-        executePrefetch();
+        runPrefetch();
       }
     },
-    [queryClient],
+    [queryClient, trackedTimeout],
   );
 
   // Enhanced consultant dashboard prefetching
@@ -99,10 +137,15 @@ export function usePrefetchDashboard({
         "high",
       );
 
-      // Priority 2: Secondary data (requests, planner)
-      safePrefetch([queries.requests, queries.planner], "medium");
+      // Priority 2: Secondary data (planner). The requests tab self-fetches
+      // /api/bookings/* — the old dashboard requests bundle was dead weight
+      // (data never read) and has been deleted.
+      safePrefetch([queries.planner], "medium");
     } catch (error) {
       console.warn("Consultant data prefetching failed:", error);
+      // Best-effort dashboard prefetch — the real useQuery on the actual
+      // tab still fetches on demand. Reported for volume visibility only.
+      reportSentryError(error, { subsystem: "client", expected: true });
     }
   }, [consultantId, safePrefetch]);
 
@@ -123,6 +166,8 @@ export function usePrefetchDashboard({
       );
     } catch (error) {
       console.warn("Consultee data prefetching failed:", error);
+      // Best-effort dashboard prefetch — see the consultant twin above.
+      reportSentryError(error, { subsystem: "client", expected: true });
     }
   }, [consulteeId, safePrefetch]);
 
@@ -138,7 +183,7 @@ export function usePrefetchDashboard({
         fn();
 
         // Clear throttle after 5 seconds
-        setTimeout(() => prefetchedRef.current.delete(key), 5000);
+        trackedTimeout(() => prefetchedRef.current.delete(key), 5000);
       };
 
       throttledPrefetch(() => {
@@ -154,9 +199,6 @@ export function usePrefetchDashboard({
               break;
             case "planner":
               safePrefetch([queries.planner], "high");
-              break;
-            case "requests":
-              safePrefetch([queries.requests], "high");
               break;
             default:
               // For other tabs, prefetch consultant details as fallback
@@ -180,20 +222,23 @@ export function usePrefetchDashboard({
         }
       });
     },
-    [consultantId, consulteeId, safePrefetch],
+    [consultantId, consulteeId, safePrefetch, trackedTimeout],
   );
 
   // Auto-prefetch on hook initialization when aggressive prefetching is enabled
   useEffect(() => {
     if (!enableAggressivePrefetch) return;
 
-    // Prefetch critical data immediately when component mounts
+    // Prefetch critical data immediately when component mounts; cancel the
+    // idle callbacks if we unmount first.
+    const cancels: Array<() => void> = [];
     if (consultantId) {
-      schedulePrefetch(() => prefetchAllConsultantData());
+      cancels.push(schedulePrefetch(() => prefetchAllConsultantData()));
     }
     if (consulteeId) {
-      schedulePrefetch(() => prefetchAllConsulteeData());
+      cancels.push(schedulePrefetch(() => prefetchAllConsulteeData()));
     }
+    return () => cancels.forEach((cancel) => cancel());
   }, [
     consultantId,
     consulteeId,
@@ -202,12 +247,17 @@ export function usePrefetchDashboard({
     prefetchAllConsulteeData,
   ]);
 
-  // Cleanup function to clear prefetch tracking on unmount
+  // Cleanup on unmount: cancel outstanding prefetch/throttle timers and clear
+  // the prefetch-tracking set.
   useEffect(() => {
+    const trackedSet = prefetchedRef.current;
+    const timers = timersRef.current;
     return () => {
-      prefetchedRef.current.clear();
+      timers.forEach((handle) => clearTimeout(handle));
+      timers.clear();
+      trackedSet.clear();
     };
-  }, []);
+  }, [trackedTimeout]);
 
   return {
     prefetchAllConsultantData,

@@ -28,11 +28,11 @@ Recurring events are multi-session programs that span days, weeks, or months. Th
 |--------|------------------|-----------|
 | Relationship | 1:1 (one consultant, one consultee) | 1:many (one consultant + collaborators, many consultees) |
 | Duration | `durationInMonths` (1-24) | `durationInMonths` (1+) |
-| Sessions/week | `callsPerWeek` (0-7) | `meetingsPerWeek` (1+) |
+| Sessions/week | `sessionsPerWeek` (0-7) | `sessionsPerWeek` (1+) |
 | Session duration | `sessionDurationInHours` (0.5-4) | `sessionDurationInHours` (0.5-4) |
-| Total sessions | `callsPerWeek x weeks x months` | `meetingsPerWeek x weeks x months` |
+| Total sessions | `sessionsPerWeek x weeks x months` | `sessionsPerWeek x weeks x months` |
 | Capacity | Always 1 consultee | `maxParticipants` (configurable) |
-| Free trial | Yes (30 or 60 min) | No |
+| Trial | Yes (30 or 60 min) | No |
 | Collaborators | No | Yes (co-instructors, TAs, guest lecturers) |
 | Certificates | No | Optional |
 | Recording | No | Optional (Stream S3 or Supabase permanent) |
@@ -58,10 +58,11 @@ Both share the same core flow: **Plan Creation -> Checkout -> Payment -> Slot Al
 | `description` | Text | Plan description |
 | `price` | Int (paise) | Total subscription price (e.g., 50000 = Rs 500) |
 | `durationInMonths` | Int (1-24) | How many months the subscription runs |
-| `callsPerWeek` | Int (0-7) | How many sessions per week |
+| `sessionsPerWeek` | Int (0-7) | How many sessions per week |
 | `sessionDurationInHours` | Float (0.5-4) | Duration of each individual session |
-| `freeTrialEnabled` | Boolean | Whether to offer a free trial first |
-| `freeTrialDurationMinutes` | 30 or 60 | Trial session length |
+| `trialEnabled` | Boolean | Whether to offer a trial first |
+| `trialDurationMinutes` | 30 or 60 | Trial session length |
+| `trialPriceInPaise` | Int (paise) | Trial price (0 = free, the default until paid-trial checkout ships) |
 | `subscriptionContents[]` | Array | Session-by-session curriculum (title, description, order) |
 | `topics[]` | Array | Topic tags for discoverability |
 | `learningOutcomes[]` | Array | What the consultee will learn |
@@ -71,7 +72,7 @@ Both share the same core flow: **Plan Creation -> Checkout -> Payment -> Slot Al
 1. Validates input with Zod schema
 2. Finds or creates `Topic` records
 3. Calculates `totalSessions` using `SlotCalculationService.countWeeks()`:
-   - `totalSessions = callsPerWeek x countWeeks(schedulingStart, schedulingEnd)`
+   - `totalSessions = sessionsPerWeek x countWeeks(schedulingStart, schedulingEnd)`
    - Where `countWeeks()` counts Sunday-start weeks in the date range
 4. Calculates `totalHours = totalSessions x sessionDurationInHours`
 5. Creates `SubscriptionPlan` record with `SubscriptionContent[]` (curriculum)
@@ -89,14 +90,14 @@ Both share the same core flow: **Plan Creation -> Checkout -> Payment -> Slot Al
 | Field | Type | Description |
 |-------|------|-------------|
 | `maxParticipants` | Int | Capacity limit for enrollment |
-| `meetingsPerWeek` | Int | Sessions per week (replaces `callsPerWeek`) |
+| `sessionsPerWeek` | Int | Sessions per week (replaces `sessionsPerWeek`) |
 | `recordingEnabled` | Boolean | Whether sessions are recorded |
 | `recordingStoragePolicy` | Enum | `STREAM_ONLY` (2-week temp) or `SUPABASE_PERMANENT` |
 | `certificateProvided` | Boolean | Whether completers get a certificate |
 | `classContents[]` | Array | Ordered curriculum items (title, description, hoursAllotted) |
 | `collaborators` | Via UI | Co-instructors invited through CollaboratorsTab |
 
-**Key difference from subscription:** Class plans support `ClassCollaborator[]` with revenue share percentages, and the capacity system via `maxParticipants`.
+**Key difference from subscription:** Class plans support co-instructors — `Collaborator[]` rows carrying `collaboratorType: CLASS`, whose revenue shares are stored as integer basis points in `revenueShareBps` (#784 merged the old `ClassCollaborator` and `WebinarCollaborator` models into one `Collaborator`; #772 B5 moved the share off a float percentage) — and the capacity system via `maxParticipants`.
 
 ---
 
@@ -151,7 +152,7 @@ POST /api/checkout
 handleCheckout()
     |-- Create Payment record (status: PENDING)
     |-- For Subscription:
-    |   |-- Create Subscription record (requestStatus: PENDING)
+    |   |-- Create Subscription record (status: PENDING)
     |   |-- Create placeholder Appointment (appointmentType: SUBSCRIPTION)
     |   |-- Store schedulingPeriod dates
     |-- For Class:
@@ -173,7 +174,7 @@ Webhook handler (lib/payments/webhooks/handlers.ts):
     |-- Call createEarningsFromPayment() -> creates ConsultantEarnings
     |-- Call createInvoiceFromPayment() -> creates Invoice with GST
     |-- Send payment success notification (Novu + email)
-    |-- For Subscription: update requestStatus to APPROVED or SCHEDULED
+    |-- For Subscription: update status to APPROVED or SCHEDULED
 ```
 
 **Important:** The two-phase commit pattern is used here. Appointments are created with tentative slots (`isTentative = true`) before payment confirmation. The webhook atomically confirms them. See `docs/booking/06-booking-lifecycle.md` for the full pattern explanation.
@@ -190,10 +191,10 @@ This is the core scheduling engine that converts a purchased plan into concrete 
 Frontend (useSlotAllocation hook)
     |
     v
-Validation: POST /api/events/{subscriptions|classes}/[id]/validate
+Validation: POST /api/bookings/{subscriptions|classes}/[id]/validate
     |
     v
-Allocation: PATCH /api/events/{subscriptions|classes}/[id]/allocate
+Allocation: PATCH /api/bookings/{subscriptions|classes}/[id]/allocate
     |
     v
 SlotValidationService (business rules)
@@ -224,13 +225,13 @@ Database: Appointment + SlotOfAppointment records created
 
 **Atomic unit:** 30-minute slots. There are 48 slots per day (00:00-23:30 UTC).
 
-**For a subscription** with `callsPerWeek=2`, `sessionDurationInHours=1`, `durationInMonths=1`:
+**For a subscription** with `sessionsPerWeek=2`, `sessionDurationInHours=1`, `durationInMonths=1`:
 1. `weeks = countWeeks(startDate, endDate)` -- e.g., 4 weeks
-2. `totalSessions = callsPerWeek x weeks = 2 x 4 = 8` sessions
+2. `totalSessions = sessionsPerWeek x weeks = 2 x 4 = 8` sessions
 3. `slotsPerSession = ceil(sessionDurationInHours / 0.5) = ceil(1 / 0.5) = 2` slots
 4. `totalSlots = totalSessions x slotsPerSession = 8 x 2 = 16` thirty-minute slots
 
-**For a class**, the math is identical but uses `meetingsPerWeek` instead of `callsPerWeek`, and slots are shared across all enrolled consultees.
+**For a class**, the math is identical but uses `sessionsPerWeek` instead of `sessionsPerWeek`, and slots are shared across all enrolled consultees.
 
 ### 4d. Availability Model
 
@@ -256,7 +257,7 @@ Before allocation, `SlotValidationService` checks:
 3. All slots fall within consultant's weekly or custom availability
 4. All slots are within the subscription/class scheduling period
 5. Slots are consecutive where required (per session)
-6. Weekly distribution limits are respected (no more than `callsPerWeek` sessions in a Sunday-start week)
+6. Weekly distribution limits are respected (no more than `sessionsPerWeek` sessions in a Sunday-start week)
 7. **For classes:** `maxParticipants` occupancy check via `occupancyPolicy.ts`
 
 ### 4f. What Gets Created
@@ -264,7 +265,7 @@ Before allocation, `SlotValidationService` checks:
 For a subscription with 8 sessions, 2 slots per session:
 
 ```
-Subscription (id: "sub_123", requestStatus: SCHEDULED)
+Subscription (id: "sub_123", status: SCHEDULED)
   |
   +-- Appointment #1 (appointmentType: SUBSCRIPTION, subscriptionId: "sub_123")
   |     +-- SlotOfAppointment (startsAt: Mon 10:00, endsAt: Mon 10:30, completionStatus: SCHEDULED)
@@ -388,7 +389,7 @@ Collaborators are additional consultants who participate in class or webinar del
 
 1. Plan owner searches for consultant by name/email
 2. Sets `role` (CO_INSTRUCTOR, TEACHING_ASSISTANT, GUEST_LECTURER, CONTENT_CREATOR)
-3. Sets `revenueSharePercentage` (0-90%, validated: total shares cannot exceed 90%, owner keeps min 10%)
+3. Sets `revenueSharePercentage` (0-90%, validated: total shares cannot exceed 90%, owner keeps min 10%). The percentage is the API surface only; `pctToBps()` converts it to `revenueShareBps` at the database boundary, so the 90% cap is enforced as 9000 bps.
 4. Invitation created with status: PENDING
 5. Invitee receives Novu notification
 6. Invitee responds via `InvitationsPanel` component: ACCEPT or DECLINE
@@ -433,7 +434,7 @@ Each party gets their own `ConsultantEarnings` record with `role = OWNER` or `CO
 See `docs/booking/08-cancellation-flow.md` for full details.
 
 **For recurring events:**
-- `Subscription.requestStatus` -> `CANCELLED` with `cancellationReason`, `cancellationNotes`, `cancelledAt`, `cancelledBy`
+- `Subscription.status` -> `CANCELLED` with `cancellationReason`, `cancellationNotes`, `cancelledAt`, `cancelledBy`
 - `Class.status` -> `CANCELLED`
 - All future `SlotOfAppointment` records -> `completionStatus: CANCELLED`
 - Completed sessions remain marked as `COMPLETED`
@@ -459,7 +460,7 @@ Recurring events depend on these automated jobs:
 | Job | Schedule | Purpose | Source |
 |-----|----------|---------|--------|
 | `auto-complete-appointments` | Hourly | Mark past sessions COMPLETED/UNVERIFIED | `scripts/appointments/auto-complete-appointments.ts` |
-| `tentative-slots` | Daily | Clean up stale tentative slots (> 7 days) | `app/api/cleanup/tentative-slots/` |
+| `tentative-slots` | Every 2 hours | Clean up stale tentative slots (> 24 hours, `TENTATIVE_EXPIRATION_HOURS = 24`) | `app/api/cleanup/tentative-slots/` |
 | `expire-stale-requests` | Daily | Mark PENDING requests as EXPIRED (> 30 days) | `app/api/cleanup/` |
 | `release-earnings` | Hourly | PENDING -> READY when hold expires | `jobs/earnings/release-earnings.ts` |
 | `create-payout-batch` | Weekly Mon | Collect READY earnings into batches | `jobs/payouts/create-payout-batch.ts` |
@@ -480,14 +481,14 @@ All cron jobs are triggered via GitHub Actions workflows in `.github/workflows/`
 | **Participant count** | Always 1:1 | 1:many (up to `maxParticipants`) |
 | **Appointments** | 1 Appointment per session, each has N slots | 1 Appointment per session (shared by all participants via M2M user relation on slots) |
 | **Slot sharing** | Slots connected to consultant + 1 consultee | New enrollees are linked to ALL existing slots of ALL appointments (`handleClassCheckout` line 1510-1524) |
-| **Collaborators** | Not supported | `ClassCollaborator[]` with revenue shares |
-| **Free trial** | Yes (`TrialSession` model) | No |
+| **Collaborators** | Not supported | `Collaborator[]` (`collaboratorType: CLASS`) with `revenueShareBps` shares |
+| **Trial** | Yes (`TrialSession` model) | No |
 | **Recording** | No | Optional |
 | **Certificate** | No | Optional |
-| **Waitlist** | No | Yes (`Waitlist` model, status: WAITING -> NOTIFIED -> BOOKED/EXPIRED) |
+| **Capacity** | No (1:1) | Yes (per-instance `maxParticipants`; full means sold out) |
 | **Curriculum model** | `SubscriptionContent` (session-by-session) | `ClassContent` (ordered, with `hoursAllotted`) |
-| **Scheduling field** | `callsPerWeek` | `meetingsPerWeek` |
-| **Request model** | `Subscription.requestStatus` (PENDING -> APPROVED -> SCHEDULED) | `Class.status` (SCHEDULED -> IN_PROGRESS -> COMPLETED) |
+| **Scheduling field** | `sessionsPerWeek` | `sessionsPerWeek` |
+| **Request model** | `Subscription.status` (PENDING -> APPROVED -> SCHEDULED) | `Class.status` (SCHEDULED -> IN_PROGRESS -> COMPLETED) |
 | **Hold period** | 168h (7 days) | 24h |
 
 ---
@@ -503,7 +504,7 @@ All cron jobs are triggered via GitHub Actions workflows in `.github/workflows/`
 | Checkout and payment integration | `docs/booking/10-checkout-payment-integration.md` |
 | Cancellation flow | `docs/booking/08-cancellation-flow.md` |
 | Trial sessions (subscription-only) | `docs/booking/09-trial-sessions.md` |
-| Waitlist system (class/webinar-only) | `docs/booking/11-waitlist-system.md` |
+| Event capacity (class/webinar-only) | `docs/booking/02-event-types-and-validation.md` |
 | Payout architecture | `docs/payments/payouts/01-architecture.md` |
 | Earnings lifecycle | `docs/payments/payouts/02-earnings-lifecycle.md` |
 | Revenue distribution models | `docs/finances/02-revenue-distribution.md` |

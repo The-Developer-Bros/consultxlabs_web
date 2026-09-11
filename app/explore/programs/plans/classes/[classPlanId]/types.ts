@@ -5,21 +5,21 @@ import type {
   SlotOfAppointment as PrismaSlotOfAppointment,
 } from "@prisma/client";
 import type { ICollaboratorInfo } from "../../types";
+import type { ConsultantPublicScalars } from "@/lib/data/consultant-public";
 
-export type TClassSessionWithSchedule = PrismaClass & {
+type TClassSessionWithSchedule = PrismaClass & {
   appointments: (PrismaAppointment & {
     slotsOfAppointment: (PrismaSlotOfAppointment & {
       user: { id: string }[];
     })[];
   })[];
-  waitlist?: Array<{ userId: string; position: number | null; status: string }>;
 };
 
 export type TClassPlanDetailsData = Omit<
   Prisma.ClassPlanGetPayload<{
     include: {
       consultantProfile: {
-        include: {
+        select: ConsultantPublicScalars & {
           user: { select: { id: true; name: true; email: true; image: true } };
           domain: true;
           subDomains: true;
@@ -28,10 +28,13 @@ export type TClassPlanDetailsData = Omit<
       };
       topics: true;
       classContents: true;
+      faqs: true;
     };
   }>,
-  "classes"
+  "classes" | "price"
 > & {
+  // price is number at runtime via the extended client (#780)
+  price: number;
   classes: TClassSessionWithSchedule[];
   type: "class";
   imageUrl: string;

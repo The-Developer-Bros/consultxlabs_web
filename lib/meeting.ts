@@ -1,9 +1,5 @@
-import {
-  createDbMeetingSession,
-  findDbMeetingSessionBySlot,
-} from "@/actions/stream/meetings/meeting.action";
-import type { Call } from "@stream-io/video-react-sdk";
-import { StreamVideoClient } from "@stream-io/video-react-sdk";
+import { provisionAppointmentMeeting } from "@/actions/stream/meetings/meeting.action";
+import { userFacingError } from "@/lib/errors/classification/client-failure";
 import type { AppointmentsType } from "@prisma/client";
 
 /**
@@ -20,14 +16,22 @@ export interface MeetingSlot {
 }
 
 /**
- * Minimal appointment interface for meeting operations.
- * This defines only what getOrCreateAppointmentMeeting actually uses.
- * TAppointment satisfies this interface, as do custom-built objects.
+ * Minimal appointment interface the join surfaces pass around.
+ *
+ * #1270 — nothing on it reaches Stream any more. The room's title, its
+ * organization tag and the `consultantUserId` the meeting UI derives host-ness
+ * from are all resolved server-side from the slot's own rows, because a value
+ * the browser supplies is a value the browser can choose. What remains is what
+ * the CALLERS use it for: picking a slot to join and naming the appointment in
+ * a failure report.
  */
 export interface MeetingAppointment {
   id: string;
   appointmentType: AppointmentsType;
   slotsOfAppointment: MeetingSlot[];
+  organizationId?: string | null;
+  consultantUserId?: string | null;
+  consulteeUserId?: string | null;
   consultation?: {
     requestedBy?: { user?: { name?: string | null } | null } | null;
     consultationPlan?: { title?: string | null } | null;
@@ -45,143 +49,47 @@ export interface MeetingAppointment {
 }
 
 /**
- * Creates a new meeting (This function might need less usage now)
- * @param client The Stream Video client
- * @param options Meeting options
- * @returns The meeting ID (Stream Call ID)
- */
-export const createMeeting = async (
-  client: StreamVideoClient,
-  options: {
-    title: string;
-    dateTime?: Date;
-    description?: string;
-    link?: string;
-  },
-) => {
-  if (!client) {
-    throw new Error("Stream client not initialized");
-  }
-
-  try {
-    const id = crypto.randomUUID();
-    const call: Call = client.call("default", id);
-
-    if (!call) {
-      throw new Error("Failed to create call");
-    }
-
-    const startsAt =
-      options.dateTime?.toISOString() ?? new Date(Date.now()).toISOString();
-    const description = options.description ?? "Instant Meeting";
-
-    await call.getOrCreate({
-      data: {
-        starts_at: startsAt,
-        custom: {
-          title: options.title,
-          description: description,
-          link: options.link,
-        },
-      },
-    });
-
-    return id;
-  } catch (error) {
-    console.error("Error creating meeting:", error);
-    throw error;
-  }
-};
-
-/**
- * Gets an existing meeting session ID from the DB or creates a new Stream call
- * and corresponding DB session if one doesn't exist for the appointment slot.
- * Uses server actions for DB operations.
- * @param client The Stream Video client
- * @param appointment The appointment details (any object satisfying MeetingAppointment)
- * @param slot The specific slot of the appointment (any object satisfying MeetingSlot)
- * @returns The Stream Call ID for the meeting
+ * Resolves the Stream call id for a session's slot, creating the call if this
+ * is the first time anyone has asked for it.
+ *
+ * #1270 — this used to BE the creation: it took the browser's own
+ * `StreamVideoClient`, built a `Call` handle and ran `getOrCreate` from the
+ * dashboard. Three consequences followed, and all three are gone now that the
+ * write happens in `provisionAppointmentMeeting`:
+ *
+ *   - whoever pressed Join first became the call's `created_by`, which for half
+ *     of all sessions is the consultee;
+ *   - every field of the call's `custom` data was authored by a browser,
+ *     including the one the meeting UI reads to decide who may end the call;
+ *   - `getOrCreate` applies the call type's device settings, so minting a room
+ *     opened the camera and microphone on the DASHBOARD. #1271 released them
+ *     afterwards; there is now nothing to release, because no `Call` handle is
+ *     constructed here at all.
+ *
+ * What is left is one round trip and the toast boundary. Refusals come back as
+ * data rather than as a thrown error, because Next replaces an uncaught
+ * server-action error with an opaque digest — so they are re-thrown here, on
+ * the client, where the classifier shows the message verbatim.
+ *
+ * @param slot Any row of the session; the anchor row is resolved server-side.
+ * @returns The Stream Call ID for the meeting.
  */
 export const getOrCreateAppointmentMeeting = async (
-  client: StreamVideoClient,
-  appointment: MeetingAppointment,
   slot: MeetingSlot,
 ): Promise<string> => {
-  if (!client) {
-    throw new Error("Stream client not initialized");
-  }
-  if (!appointment || !slot) {
-    throw new Error("Appointment or Slot data is missing.");
+  if (!slot) {
+    throw new Error("Slot data is missing.");
   }
 
-  try {
-    // 1. Try to find an existing meeting session via server action
-    const existingMeetingSession = await findDbMeetingSessionBySlot(slot.id);
+  const result = await provisionAppointmentMeeting({
+    id: slot.id,
+    startsAt: slot.startsAt,
+    endsAt: slot.endsAt,
+    isTentative: slot.isTentative,
+    appointmentId: slot.appointmentId,
+  });
 
-    let streamCallId: string;
+  if (!result.ok) throw userFacingError(result.refusal);
 
-    if (existingMeetingSession) {
-      // 2a. Found existing session, use its Stream Call ID
-      streamCallId = existingMeetingSession.streamCallId;
-    } else {
-      // 2b. No existing session found, create a new one.
-      // Use a deterministic call ID derived from the slot ID so concurrent
-      // callers produce the same Stream call. Stream's getOrCreate is
-      // idempotent for the same call ID, preventing orphaned calls.
-      streamCallId = `slot-${slot.id}`;
-
-      // 3. Create the Stream call
-      const call: Call = client.call("default", streamCallId);
-      const startsAt = slot.startsAt
-        ? new Date(slot.startsAt).toISOString()
-        : new Date().toISOString();
-
-      // Determine title and description based on appointment type
-      let title = `Meeting for Appointment ${appointment.id}`;
-      let description = `${appointment.appointmentType} Meeting`;
-
-      if (appointment.consultation?.requestedBy?.user?.name) {
-        title = `${appointment.appointmentType} with ${appointment.consultation.requestedBy.user.name}`;
-      } else if (appointment.subscription?.requestedBy?.user?.name) {
-        title = `${appointment.appointmentType} with ${appointment.subscription.requestedBy.user.name}`;
-      } else if (appointment.webinar?.webinarPlan?.title) {
-        title = `Webinar: ${appointment.webinar.webinarPlan.title}`;
-        description = `Webinar Session for ${appointment.webinar.webinarPlan.title}`;
-      } else if (appointment.class?.classPlan?.title) {
-        title = `Class: ${appointment.class.classPlan.title}`;
-        description = `Class Session for ${appointment.class.classPlan.title}`;
-      }
-
-      await call.getOrCreate({
-        data: {
-          starts_at: startsAt,
-          custom: {
-            title: title,
-            description: description,
-            appointmentId: appointment.id,
-            slotId: slot.id,
-            appointmentType: appointment.appointmentType,
-          },
-        },
-      });
-
-      // 4. Create the corresponding record in the database via server action
-      await createDbMeetingSession(slot, streamCallId);
-    }
-
-    // 5. Return the Stream Call ID (either existing or newly created)
-    return streamCallId;
-  } catch (error) {
-    console.error(
-      `Error in getOrCreateAppointmentMeeting for slot ${slot.id}:`,
-      error,
-    );
-    // Wrap the original error
-    if (error instanceof Error) {
-      throw new Error(`Failed to get/create meeting session: ${error.message}`);
-    }
-    throw new Error(
-      "An unknown error occurred while managing the appointment meeting session.",
-    );
-  }
+  return result.streamCallId;
 };

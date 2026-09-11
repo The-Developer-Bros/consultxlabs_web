@@ -1,0 +1,27 @@
+# Organisation payouts and TDS
+
+When a booking settles for an organisation that hosts consultants (a `canHost` org, or an `EXPERT` membership whose `payoutRecipient` is `ORGANIZATION`), the organisation's share accrues as an `OrganizationEarnings` row and is released to it through the same payout machinery — batched, withheld, and posted to the ledger — as a consultant's own payout, with its own statutory records.
+
+## Batching: `createOrgPayoutBatch`
+
+`createOrgPayoutBatch` (`lib/payments/payouts/org-payout-service.ts`) is the one entry point both the OWNER-triggered route and the periodic cron share. It claims every `READY` `OrganizationEarnings` row for the organisation with a null `orgPayoutId` inside the requested period, by creating a placeholder `OrganizationPayout` at `PENDING` and then stamping each claimed row's `orgPayoutId` in a single conditional `updateMany`, so two concurrent batch attempts cannot both claim the same earnings row. It sums `orgSharePaise − refundedAmountPaise` across the claimed rows to compute the gross, rejecting the batch outright if that net is zero or negative — refunds having eaten the whole pool — or if the claimed rows span mixed currencies.
+
+`netPayoutPaise` is the amount that actually reaches the gateway, after TDS is withheld from the gross; `amountPaise` on the resulting `OrganizationPayout` records the gross figure the organisation is owed before that withholding. The claimed earnings move from `READY` to the intermediate `BATCHED` status at this point, not `PAID`, because no cash has left yet; a batch that fails before the gateway moves money releases its `BATCHED` rows back to `READY` so a later batch attempt can claim them again.
+
+## The `ORG_PAYOUT` posting and its reversal mirror
+
+On `PROCESSING → COMPLETED`, `markOrgPayoutCompleted` posts the settlement — `idempotencyKey = orgpayout:<payoutId>`, `kind = ORG_PAYOUT` — inside the same transaction that flips the payout's status, so a rolled-back status transition can never leave a half-posted ledger. The posting debits `ORG_PAYABLE` for the full gross amount (net payout plus withheld TDS), because the organisation's obligation is discharged whether the cash reached the organisation or the tax authority, and credits `CASH` for the net figure and `TDS_PAYABLE` for the withheld amount. The consultant-side `PAYOUT` posting is the structural mirror of this shape.
+
+A post-completion reversal — a bank reversal that arrives after the payout already shows `COMPLETED` — is handled by `markOrgPayoutReversed`, which claims the row from `COMPLETED` (not only `PROCESSING`), flips it to a dedicated `REVERSED` status rather than collapsing it into `FAILED`, posts the exact inverse `ORG_PAYOUT` journal entry keyed `orgpayout-reversal:<id>`, re-opens the linked earnings back to `READY`, and writes the audit entry, all in one transaction. `markConsultantPayoutReversed` mirrors this for the consultant rail. The reversal's idempotency key is deliberately distinct from the original posting's key, which is why a reversal row can never be mistaken for, or mask, a missing original posting during reconciliation.
+
+## TDS on the organisation rail
+
+`computeTdsForPayout` (`lib/compliance/tds.ts`) defaults the withholding section to 194-O, because the platform is the e-commerce operator for an organisation payout exactly as it is for a consultant payout; an override on `tdsSection` pivots to 194J or 194C for the rare direct-engagement case, and a Section 197 lower-rate certificate applies its own rate ahead of either default. `TDSRecord` is written for the organisation rail at the moment the payout reaches `COMPLETED`, never earlier, using the same shape a consultant payout's record uses, so the quarterly filing draft covers every deduction the platform actually made rather than one it merely computed and might not have withheld had the payout failed. `consultantProfileId` and `organizationId` on `TDSRecord` are each nullable, and a database constraint enforces that exactly one is set on any given row; a second constraint prevents a row from citing the payout of the rail it does not belong to.
+
+## RazorpayX idempotency
+
+Every payout submission to RazorpayX carries an idempotency key in the `X-Payout-Idempotency` header, mandatory since March 2025. `generateIdempotencyKey` derives it deterministically as `payout_<payoutId>` and nothing else — no timestamp, no random suffix, no attempt counter — because determinism is the only property that makes a retried request land on the same gateway-side slot instead of submitting a second payout for the same earnings. RazorpayX bounds the header to 4–36 characters of letters, digits, hyphens, underscores, and spaces; an organisation payout's natural key (`payout_<uuid>`, 43 characters) and a consultant payout's (`payout_<consultantProfileId>_<batchId>`, 72 characters) both overshoot that limit, so `boundPayoutIdempotencyKey` folds either onto a 34-character digest of itself purely at the point the header is written. The persisted `idempotencyKey` column is left untouched by that fold, because it also serves as the row's own unique constraint and as the Stripe transfer key, neither of which is bounded the way the RazorpayX header is.
+
+## Sources
+
+`docs/enterprise/10-money-and-ledger/07-payout-pipeline.md`, `docs/enterprise/10-money-and-ledger/13-ledger-integrity.md`, `docs/payments/gateways/razorpay/03-payout-flow.md`.

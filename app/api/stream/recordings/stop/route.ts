@@ -5,6 +5,7 @@
  * Stops recording for a video call. Only consultants can stop recordings.
  */
 
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { RecordingService } from "@/lib/stream/recording-service";
@@ -25,8 +26,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Only consultants can stop recordings
-    if (session.user.role !== "CONSULTANT") {
+    // Capability, not UserRole (#org-appts): anyone who OWNS a consultantProfile
+    // (incl. an org EXPERT whose marketplace identity is CONSULTEE) may control
+    // their own recordings — the per-appointment ownership check below is the
+    // real authz. ADMIN/STAFF are handled by that check too.
+    if (!session.user.consultantProfileId) {
       return NextResponse.json(
         { error: "Only consultants can stop recordings" },
         { status: 403 },
@@ -57,6 +61,26 @@ export async function POST(req: NextRequest) {
                 class: {
                   include: {
                     classPlan: {
+                      select: {
+                        consultantProfileId: true,
+                      },
+                    },
+                  },
+                },
+                // #1134 P1-6 — mirror the start route: without these the owner
+                // of a 1:1 cannot stop a recording they were able to start.
+                consultation: {
+                  include: {
+                    consultationPlan: {
+                      select: {
+                        consultantProfileId: true,
+                      },
+                    },
+                  },
+                },
+                subscription: {
+                  include: {
+                    subscriptionPlan: {
                       select: {
                         consultantProfileId: true,
                       },
@@ -151,6 +175,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "stream" } });
     return NextResponse.json(
       { error: "Failed to stop recording" },
       { status: 500 },

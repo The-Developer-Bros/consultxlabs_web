@@ -1,6 +1,12 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState } from "react";
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useDebouncedCallback } from "use-debounce";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -15,20 +21,17 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  ResponsiveTable,
+  type ResponsiveColumn,
+} from "@/components/ui/responsive-table";
+import { DashboardHeader } from "@/components/dashboard/PageScaffold";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  ResponsiveModal,
+  ResponsiveModalContent,
+  ResponsiveModalDescription,
+  ResponsiveModalHeader,
+  ResponsiveModalTitle,
+} from "@/components/ui/responsive-modal";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -52,6 +55,21 @@ import { useToast } from "@/hooks/use-toast";
 import { FeedbackStatus } from "@prisma/client";
 import type { Feedback, FeedbackCounts } from "@/types/feedback";
 
+interface FeedbackListResponse {
+  feedbacks: Feedback[];
+  counts: FeedbackCounts;
+  pagination: { totalPages: number };
+}
+
+const EMPTY_COUNTS: FeedbackCounts = {
+  total: 0,
+  pending: 0,
+  acknowledged: 0,
+  inProgress: 0,
+  resolved: 0,
+  closed: 0,
+};
+
 const STATUS_OPTIONS: { value: FeedbackStatus | "all"; label: string }[] = [
   { value: "all", label: "All Status" },
   { value: "PENDING", label: "Pending" },
@@ -72,9 +90,9 @@ const getStatusColor = (status: FeedbackStatus) => {
     case "RESOLVED":
       return "bg-green-100 text-green-700 border-green-200";
     case "CLOSED":
-      return "bg-zinc-100 text-zinc-600 border-zinc-200";
+      return "bg-muted text-muted-foreground border-border";
     default:
-      return "bg-zinc-100 text-zinc-600 border-zinc-200";
+      return "bg-muted text-muted-foreground border-border";
   }
 };
 
@@ -90,7 +108,7 @@ const getStatusIcon = (status: FeedbackStatus) => {
     case "CLOSED":
       return <CheckCircle2 className="h-4 w-4 text-green-500" />;
     default:
-      return <AlertCircle className="h-4 w-4 text-zinc-500" />;
+      return <AlertCircle className="h-4 w-4 text-muted-foreground" />;
   }
 };
 
@@ -122,25 +140,15 @@ export function FeedbackPage({
   description = "Manage and respond to user feedback across the platform",
 }: FeedbackPageProps) {
   const { toast } = useToast();
-  const [feedbacks, setFeedbacks] = useState<Feedback[]>([]);
-  const [counts, setCounts] = useState<FeedbackCounts>({
-    total: 0,
-    pending: 0,
-    acknowledged: 0,
-    inProgress: 0,
-    resolved: 0,
-    closed: 0,
-  });
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
+
   const [statusFilter, setStatusFilter] = useState("all");
   const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
 
   // Detail view state
   const [selectedFeedback, setSelectedFeedback] = useState<Feedback | null>(
     null,
   );
-  const [updatingStatus, setUpdatingStatus] = useState(false);
 
   // Debounced search
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -156,9 +164,15 @@ export function FeedbackPage({
     debouncedSetSearch(value);
   };
 
-  const fetchFeedbacks = useCallback(async () => {
-    setLoading(true);
-    try {
+  const { data, isPending, isFetching, isError, refetch } = useQuery({
+    queryKey: [
+      "admin-feedbacks",
+      apiEndpoint,
+      page,
+      statusFilter,
+      debouncedSearch,
+    ],
+    queryFn: async (): Promise<FeedbackListResponse> => {
       const params = new URLSearchParams({
         page: page.toString(),
         limit: "20",
@@ -168,85 +182,199 @@ export function FeedbackPage({
 
       const response = await fetch(`${apiEndpoint}?${params}`);
       if (!response.ok) throw new Error("Failed to fetch feedbacks");
+      return response.json();
+    },
+    placeholderData: keepPreviousData,
+  });
 
-      const data = await response.json();
-      setFeedbacks(data.feedbacks);
-      setCounts(data.counts);
-      setTotalPages(data.pagination.totalPages);
-    } catch (error) {
-      console.error("Error fetching feedbacks:", error);
-      toast({
-        title: "Error",
-        description: "Failed to load feedbacks",
-        variant: "destructive",
-      });
-    } finally {
-      setLoading(false);
-    }
-  }, [page, statusFilter, debouncedSearch, toast, apiEndpoint]);
+  const feedbacks = data?.feedbacks ?? [];
+  const counts = data?.counts ?? EMPTY_COUNTS;
+  const totalPages = data?.pagination.totalPages ?? 1;
 
-  useEffect(() => {
-    fetchFeedbacks();
-  }, [fetchFeedbacks]);
-
-  const handleUpdateStatus = async (
-    feedbackId: string,
-    newStatus: FeedbackStatus,
-  ) => {
-    setUpdatingStatus(true);
-    try {
+  const updateStatus = useMutation({
+    mutationFn: async ({
+      feedbackId,
+      newStatus,
+    }: {
+      feedbackId: string;
+      newStatus: FeedbackStatus;
+    }) => {
       const response = await fetch(`${apiEndpoint}/${feedbackId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: newStatus }),
       });
-
       if (!response.ok) throw new Error("Failed to update status");
-
+      return { feedbackId, newStatus };
+    },
+    onSuccess: ({ feedbackId, newStatus }) => {
       toast({ title: "Success", description: "Status updated successfully" });
-      fetchFeedbacks();
-      if (selectedFeedback?.id === feedbackId) {
-        setSelectedFeedback({ ...selectedFeedback, status: newStatus });
-      }
-    } catch (error) {
-      console.error("Error updating status:", error);
+      queryClient.invalidateQueries({ queryKey: ["admin-feedbacks"] });
+      // Keep the open detail modal in sync without waiting for the refetch.
+      setSelectedFeedback((current) =>
+        current?.id === feedbackId
+          ? { ...current, status: newStatus }
+          : current,
+      );
+    },
+    onError: () => {
       toast({
         title: "Error",
         description: "Failed to update status",
         variant: "destructive",
       });
-    } finally {
-      setUpdatingStatus(false);
-    }
-  };
+    },
+  });
+
+  const handleUpdateStatus = (feedbackId: string, newStatus: FeedbackStatus) =>
+    updateStatus.mutate({ feedbackId, newStatus });
+
+  const renderRowActions = (feedback: Feedback) => (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+        <Button variant="ghost" size="icon" className="h-8 w-8">
+          <MoreHorizontal className="h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem
+          onClick={(e) => {
+            e.stopPropagation();
+            setSelectedFeedback(feedback);
+          }}
+        >
+          View Details
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={(e) => {
+            e.stopPropagation();
+            handleUpdateStatus(feedback.id, "ACKNOWLEDGED");
+          }}
+        >
+          Mark Acknowledged
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={(e) => {
+            e.stopPropagation();
+            handleUpdateStatus(feedback.id, "RESOLVED");
+          }}
+        >
+          Mark Resolved
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={(e) => {
+            e.stopPropagation();
+            handleUpdateStatus(feedback.id, "CLOSED");
+          }}
+        >
+          Close
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+
+  const columns: ResponsiveColumn<Feedback>[] = [
+    {
+      key: "id",
+      header: "ID",
+      className: "font-mono text-xs text-muted-foreground",
+      headClassName: "w-24",
+      cell: (feedback) => feedback.id.slice(0, 8).toUpperCase(),
+    },
+    {
+      key: "title",
+      header: "Title",
+      primary: true,
+      cell: (feedback) => (
+        <div className="flex items-center gap-2">
+          {getStatusIcon(feedback.status)}
+          <span className="font-medium truncate max-w-[200px]">
+            {feedback.title}
+          </span>
+        </div>
+      ),
+    },
+    {
+      key: "user",
+      header: "User",
+      cell: (feedback) => (
+        <div className="flex items-center gap-2">
+          <Avatar className="h-7 w-7">
+            <AvatarImage src={feedback.user.image || ""} />
+            <AvatarFallback className="text-xs">
+              {feedback.user.name?.charAt(0) || "U"}
+            </AvatarFallback>
+          </Avatar>
+          <span className="text-sm">{feedback.user.name || "Unknown"}</span>
+        </div>
+      ),
+    },
+    {
+      key: "rating",
+      header: "Rating",
+      cell: (feedback) =>
+        feedback.rating ? (
+          <div className="flex items-center gap-1">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Star
+                key={i}
+                className={`h-3.5 w-3.5 ${
+                  i < feedback.rating!
+                    ? "text-amber-500 fill-amber-500"
+                    : "text-muted-foreground/40"
+                }`}
+              />
+            ))}
+          </div>
+        ) : (
+          <span className="text-muted-foreground/70 text-sm">-</span>
+        ),
+    },
+    {
+      key: "status",
+      header: "Status",
+      cell: (feedback) => (
+        <Badge variant="outline" className={getStatusColor(feedback.status)}>
+          {feedback.status.replace("_", " ")}
+        </Badge>
+      ),
+    },
+    {
+      key: "submitted",
+      header: "Submitted",
+      className: "text-muted-foreground text-sm",
+      cell: (feedback) => formatDate(feedback.createdAt),
+    },
+  ];
 
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-zinc-900 dark:text-zinc-100">
-            {title}
-          </h1>
-          <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">
-            {description}
-          </p>
-        </div>
-        <Button onClick={fetchFeedbacks} variant="outline" size="sm">
-          <RefreshCw
-            className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`}
-          />
-          Refresh
-        </Button>
-      </div>
+      <DashboardHeader
+        title={title}
+        subtitle={description}
+        actions={
+          <Button
+            onClick={() => refetch()}
+            variant="outline"
+            size="sm"
+            disabled={isFetching}
+          >
+            <RefreshCw
+              className={`h-4 w-4 mr-2 ${isFetching ? "animate-spin" : ""}`}
+            />
+            Refresh
+          </Button>
+        }
+      />
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <Card className="border-0 shadow-sm">
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-zinc-500 uppercase tracking-wide">
+                <p className="text-xs text-muted-foreground uppercase tracking-wide">
                   Pending
                 </p>
                 <p className="text-2xl font-bold text-amber-600">
@@ -261,7 +389,7 @@ export function FeedbackPage({
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-zinc-500 uppercase tracking-wide">
+                <p className="text-xs text-muted-foreground uppercase tracking-wide">
                   Acknowledged
                 </p>
                 <p className="text-2xl font-bold text-blue-600">
@@ -276,7 +404,7 @@ export function FeedbackPage({
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-zinc-500 uppercase tracking-wide">
+                <p className="text-xs text-muted-foreground uppercase tracking-wide">
                   In Progress
                 </p>
                 <p className="text-2xl font-bold text-purple-600">
@@ -291,7 +419,7 @@ export function FeedbackPage({
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-zinc-500 uppercase tracking-wide">
+                <p className="text-xs text-muted-foreground uppercase tracking-wide">
                   Resolved
                 </p>
                 <p className="text-2xl font-bold text-green-600">
@@ -306,14 +434,14 @@ export function FeedbackPage({
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-zinc-500 uppercase tracking-wide">
+                <p className="text-xs text-muted-foreground uppercase tracking-wide">
                   Total
                 </p>
-                <p className="text-2xl font-bold text-zinc-900 dark:text-zinc-100">
+                <p className="text-2xl font-bold text-foreground">
                   {counts.total}
                 </p>
               </div>
-              <MessageSquare className="h-8 w-8 text-zinc-200" />
+              <MessageSquare className="h-8 w-8 text-muted-foreground/40" />
             </div>
           </CardContent>
         </Card>
@@ -323,8 +451,8 @@ export function FeedbackPage({
       <Card className="border-0 shadow-sm">
         <CardContent className="p-4">
           <div className="flex flex-col sm:flex-row gap-4">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
+            <div className="relative min-w-0 flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground/70" />
               <Input
                 placeholder="Search by title, description, or user..."
                 value={localSearchValue}
@@ -332,7 +460,13 @@ export function FeedbackPage({
                 className="pl-10"
               />
             </div>
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
+            <Select
+              value={statusFilter}
+              onValueChange={(v) => {
+                setStatusFilter(v);
+                setPage(1);
+              }}
+            >
               <SelectTrigger className="w-full sm:w-48">
                 <SelectValue placeholder="Filter by status" />
               </SelectTrigger>
@@ -350,143 +484,41 @@ export function FeedbackPage({
 
       {/* Feedback Table */}
       <Card className="border-0 shadow-sm">
-        <CardContent className="p-0">
-          {loading ? (
-            <div className="flex items-center justify-center py-12">
-              <Loader2 className="h-8 w-8 animate-spin text-zinc-400" />
+        <CardContent className="p-0 sm:p-6">
+          {isError && !data ? (
+            <div className="flex flex-col items-center justify-center py-12 gap-3 text-center">
+              <div className="flex items-center gap-2 text-destructive">
+                <AlertCircle className="h-5 w-5" />
+                <span>Failed to load feedback.</span>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                onClick={() => refetch()}
+              >
+                <RefreshCw className="h-4 w-4" />
+                Retry
+              </Button>
             </div>
-          ) : feedbacks.length === 0 ? (
-            <div className="text-center py-12">
-              <MessageSquare className="h-12 w-12 text-zinc-300 mx-auto mb-4" />
-              <p className="text-zinc-500">No feedback found</p>
+          ) : isPending ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground/70" />
             </div>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-24">ID</TableHead>
-                  <TableHead>Title</TableHead>
-                  <TableHead>User</TableHead>
-                  <TableHead>Rating</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Submitted</TableHead>
-                  <TableHead className="w-12"></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {feedbacks.map((feedback) => (
-                  <TableRow
-                    key={feedback.id}
-                    className="cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800/50"
-                    onClick={() => setSelectedFeedback(feedback)}
-                  >
-                    <TableCell className="font-mono text-xs text-zinc-500">
-                      {feedback.id.slice(0, 8).toUpperCase()}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        {getStatusIcon(feedback.status)}
-                        <span className="font-medium truncate max-w-[200px]">
-                          {feedback.title}
-                        </span>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <Avatar className="h-7 w-7">
-                          <AvatarImage src={feedback.user.image || ""} />
-                          <AvatarFallback className="text-xs">
-                            {feedback.user.name?.charAt(0) || "U"}
-                          </AvatarFallback>
-                        </Avatar>
-                        <span className="text-sm">
-                          {feedback.user.name || "Unknown"}
-                        </span>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      {feedback.rating ? (
-                        <div className="flex items-center gap-1">
-                          {Array.from({ length: 5 }).map((_, i) => (
-                            <Star
-                              key={i}
-                              className={`h-3.5 w-3.5 ${
-                                i < feedback.rating!
-                                  ? "text-amber-500 fill-amber-500"
-                                  : "text-zinc-300"
-                              }`}
-                            />
-                          ))}
-                        </div>
-                      ) : (
-                        <span className="text-zinc-400 text-sm">-</span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        variant="outline"
-                        className={getStatusColor(feedback.status)}
-                      >
-                        {feedback.status.replace("_", " ")}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-zinc-500 text-sm">
-                      {formatDate(feedback.createdAt)}
-                    </TableCell>
-                    <TableCell>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger
-                          asChild
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8"
-                          >
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedFeedback(feedback);
-                            }}
-                          >
-                            View Details
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleUpdateStatus(feedback.id, "ACKNOWLEDGED");
-                            }}
-                          >
-                            Mark Acknowledged
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleUpdateStatus(feedback.id, "RESOLVED");
-                            }}
-                          >
-                            Mark Resolved
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleUpdateStatus(feedback.id, "CLOSED");
-                            }}
-                          >
-                            Close
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+            <ResponsiveTable<Feedback>
+              columns={columns}
+              rows={feedbacks}
+              getRowId={(f) => f.id}
+              onRowClick={(f) => setSelectedFeedback(f)}
+              rowActions={renderRowActions}
+              empty={
+                <div className="text-center py-12">
+                  <MessageSquare className="h-12 w-12 text-muted-foreground/40 mx-auto mb-4" />
+                  <p className="text-muted-foreground">No feedback found</p>
+                </div>
+              }
+            />
           )}
         </CardContent>
       </Card>
@@ -502,7 +534,7 @@ export function FeedbackPage({
           >
             Previous
           </Button>
-          <span className="text-sm text-zinc-500">
+          <span className="text-sm text-muted-foreground">
             Page {page} of {totalPages}
           </span>
           <Button
@@ -517,26 +549,26 @@ export function FeedbackPage({
       )}
 
       {/* Detail Dialog */}
-      <Dialog
+      <ResponsiveModal
         open={!!selectedFeedback}
         onOpenChange={(open) => !open && setSelectedFeedback(null)}
       >
-        <DialogContent className="max-w-lg">
+        <ResponsiveModalContent className="sm:max-w-lg">
           {selectedFeedback && (
             <>
-              <DialogHeader>
-                <DialogTitle className="flex items-center gap-2">
+              <ResponsiveModalHeader>
+                <ResponsiveModalTitle className="flex items-center gap-2">
                   {getStatusIcon(selectedFeedback.status)}
                   {selectedFeedback.title}
-                </DialogTitle>
-                <DialogDescription>
+                </ResponsiveModalTitle>
+                <ResponsiveModalDescription>
                   Submitted {formatDate(selectedFeedback.createdAt)}
-                </DialogDescription>
-              </DialogHeader>
+                </ResponsiveModalDescription>
+              </ResponsiveModalHeader>
 
               <div className="space-y-4">
                 {/* User Info */}
-                <div className="flex items-center gap-3 p-3 rounded-lg bg-zinc-50 dark:bg-zinc-800/50">
+                <div className="flex items-center gap-3 p-3 rounded-lg bg-muted">
                   <Avatar>
                     <AvatarImage src={selectedFeedback.user.image || ""} />
                     <AvatarFallback>
@@ -547,7 +579,7 @@ export function FeedbackPage({
                     <p className="font-medium">
                       {selectedFeedback.user.name || "Unknown"}
                     </p>
-                    <div className="flex items-center gap-3 text-sm text-zinc-500">
+                    <div className="flex items-center gap-3 text-sm text-muted-foreground">
                       {selectedFeedback.user.email && (
                         <span className="flex items-center gap-1">
                           <Mail className="h-3 w-3" />
@@ -561,7 +593,7 @@ export function FeedbackPage({
                 {/* Rating */}
                 {selectedFeedback.rating && (
                   <div>
-                    <p className="text-xs text-zinc-500 uppercase tracking-wide mb-1">
+                    <p className="text-xs text-muted-foreground uppercase tracking-wide mb-1">
                       Rating
                     </p>
                     <div className="flex items-center gap-1">
@@ -571,11 +603,11 @@ export function FeedbackPage({
                           className={`h-5 w-5 ${
                             i < selectedFeedback.rating!
                               ? "text-amber-500 fill-amber-500"
-                              : "text-zinc-300"
+                              : "text-muted-foreground/40"
                           }`}
                         />
                       ))}
-                      <span className="ml-2 text-sm text-zinc-600">
+                      <span className="ml-2 text-sm text-muted-foreground">
                         {selectedFeedback.rating} / 5
                       </span>
                     </div>
@@ -584,17 +616,17 @@ export function FeedbackPage({
 
                 {/* Description */}
                 <div>
-                  <p className="text-xs text-zinc-500 uppercase tracking-wide mb-1">
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide mb-1">
                     Description
                   </p>
-                  <p className="text-sm text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap">
+                  <p className="text-sm text-foreground whitespace-pre-wrap">
                     {selectedFeedback.description}
                   </p>
                 </div>
 
                 {/* Status Update */}
                 <div>
-                  <p className="text-xs text-zinc-500 uppercase tracking-wide mb-2">
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide mb-2">
                     Update Status
                   </p>
                   <Select
@@ -605,7 +637,7 @@ export function FeedbackPage({
                         value as FeedbackStatus,
                       )
                     }
-                    disabled={updatingStatus}
+                    disabled={updateStatus.isPending}
                   >
                     <SelectTrigger>
                       <SelectValue />
@@ -622,8 +654,8 @@ export function FeedbackPage({
               </div>
             </>
           )}
-        </DialogContent>
-      </Dialog>
+        </ResponsiveModalContent>
+      </ResponsiveModal>
     </div>
   );
 }

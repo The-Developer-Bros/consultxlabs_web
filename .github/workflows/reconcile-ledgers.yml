@@ -1,0 +1,64 @@
+name: Reconcile Ledgers
+
+on:
+  schedule:
+    # Run nightly at 03:45 UTC. The 03:00 UTC slot already hosts
+    # sso-cert-expiry-alert and mark-expired-recordings; pushing 45 min
+    # later puts us cleanly after their (~1-2 min) workloads and 15 min
+    # before the monthly invoice-rollup window at 04:00 UTC on day 1.
+    # The job is read-only so the cost of overlapping with writers is
+    # bounded, but staying off the cluster keeps the Supabase connection
+    # pooler from spiking. The broader hourly :00 + :15 pile-ups are
+    # tracked under a follow-up cron-schedule-audit issue.
+    - cron: "45 3 * * *"
+  workflow_dispatch: # Allow manual triggering from the Actions UI.
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  reconcile-ledgers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      # #1066 — jobs run as bare Node processes, so Sentry.init only sees
+      # what the step env carries. Without the DSN the runner initialises
+      # a disabled client and every captureException is a no-op again.
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # #476 cron locks load lib/redis at import — every job entry needs these
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Run ledger reconciliation
+        id: reconcile
+        run: npx --yes tsx@4.23.1 jobs/reconcile/reconcile-ledgers.ts
+
+      - name: Notify on discrepancies
+        if: failure()
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          # Fallback sink — Slack has never been provisioned, so this is
+          # what actually pages today. See 07-required-secrets.md.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "reconcile-ledgers"

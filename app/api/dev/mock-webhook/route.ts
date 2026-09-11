@@ -25,7 +25,7 @@ import prisma from "@/lib/prisma";
 import { handlePaymentSuccess } from "@/lib/payments/webhooks/handlers";
 import { refundEarnings } from "@/lib/payments/payouts/earnings-service";
 import { handlePayoutWebhook } from "@/lib/payments/payouts/payout-service";
-import { PaymentGateway, PaymentStatus, EarningStatus } from "@prisma/client";
+import { PaymentGateway, EarningStatus } from "@prisma/client";
 
 // ============================================
 // Types
@@ -52,12 +52,27 @@ interface MockWebhookResponse {
 // Development Check
 // ============================================
 
+/**
+ * This route reaches `handlePaymentSuccess`, `refundEarnings` and
+ * `handlePayoutWebhook` with NO signature and NO authentication. The gate is
+ * therefore the only thing standing between the open internet and the money
+ * pipeline.
+ *
+ * It used to also admit `ALLOW_MOCK_WEBHOOKS === "true"`, which meant a single
+ * environment variable — one dashboard toggle, one copied .env line — turned a
+ * production deployment into an unauthenticated "confirm any payment" endpoint.
+ * That disjunct is gone. The gate is now build-time posture only: a production
+ * build cannot be opened up by configuration.
+ *
+ * The `VERCEL_ENV === "preview"` disjunct went the same way, for the same
+ * reason: it was a second runtime toggle contradicting the sentence above, and
+ * on a preview built against the one shared Supabase project it would have
+ * meant an unauthenticated "confirm any payment" endpoint over real rows. It
+ * was never load-bearing here — this app deploys on Netlify, which sets no
+ * `VERCEL_ENV`, so the branch had been dead since it was written.
+ */
 function isDevelopment(): boolean {
-  return (
-    process.env.NODE_ENV === "development" ||
-    process.env.VERCEL_ENV === "preview" ||
-    process.env.ALLOW_MOCK_WEBHOOKS === "true"
-  );
+  return process.env.NODE_ENV === "development";
 }
 
 // ============================================
@@ -119,13 +134,16 @@ async function handleMockPaymentCaptured(
     };
   }
 
-  // Update payment status to SUCCEEDED if not already
-  if (payment.paymentStatus !== PaymentStatus.SUCCEEDED) {
-    await prisma.payment.update({
-      where: { id: payment.id },
-      data: { paymentStatus: PaymentStatus.SUCCEEDED },
-    });
-  }
+  // ADR 21 — deliberately NOT flipping paymentStatus here.
+  //
+  // This used to set SUCCEEDED before calling handlePaymentSuccess below, which
+  // meant the pipeline always hit its already-SUCCEEDED early-return and did
+  // nothing: no appointment confirmation, no earnings, no journal entry. The
+  // mock webhook looked like it worked while exercising none of the code it
+  // exists to exercise — and since the only non-seed payments in the database
+  // came through this route, that made it a poor proxy for the real flow.
+  //
+  // The pipeline owns the status transition. Leave the row alone.
 
   // Extract consultant profile ID from the appointment's plan
   const getConsultantProfileId = () => {
@@ -144,7 +162,10 @@ async function handleMockPaymentCaptured(
   const metadata: Record<string, string> = {
     appointmentId: payment.appointmentId || "",
     appointmentType: payment.appointment?.appointmentType || "CONSULTATION",
-    consulteeId: payment.userId || "",
+    // #1439 — the schema's key is `userId`; under `consulteeId` every replay
+    // failed validation and took the manual-recovery branch instead of
+    // confirming the booking.
+    userId: payment.userId || "",
     consultantId: getConsultantProfileId(),
   };
 
@@ -237,7 +258,7 @@ async function handleMockPayoutProcessed(
   }
 
   // Find payout by ID or providerPayoutId
-  const payout = await prisma.payout.findFirst({
+  const payout = await prisma.consultantPayout.findFirst({
     where: {
       OR: [{ id: payoutId }, { providerPayoutId: payoutId }],
     },
@@ -256,7 +277,7 @@ async function handleMockPayoutProcessed(
 
   // Update the payout with the mock provider ID if not set
   if (!payout.providerPayoutId) {
-    await prisma.payout.update({
+    await prisma.consultantPayout.update({
       where: { id: payout.id },
       data: { providerPayoutId },
     });
@@ -290,7 +311,7 @@ async function handleMockPayoutRejected(
     };
   }
 
-  const payout = await prisma.payout.findFirst({
+  const payout = await prisma.consultantPayout.findFirst({
     where: {
       OR: [{ id: payoutId }, { providerPayoutId: payoutId }],
     },
@@ -308,7 +329,7 @@ async function handleMockPayoutRejected(
 
   // Update the payout with the mock provider ID if not set
   if (!payout.providerPayoutId) {
-    await prisma.payout.update({
+    await prisma.consultantPayout.update({
       where: { id: payout.id },
       data: { providerPayoutId },
     });

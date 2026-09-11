@@ -7,7 +7,7 @@
  * Represents a JSON value from Prisma's Json type.
  * Used for fields like `evidence` and `metadata` that store arbitrary JSON.
  */
-export type JsonValue =
+type JsonValue =
   | string
   | number
   | boolean
@@ -18,7 +18,8 @@ export type JsonValue =
 export interface Dispute {
   id: string;
   disputeId: string;
-  amount: number;
+  /** Paise. Was declared as `amount`, which the API never returned. */
+  amountPaise: number;
   currency: string;
   status: string;
   reason: string | null;
@@ -35,6 +36,12 @@ export interface DisputeListResponse {
   disputes: Dispute[];
   total: number;
   urgentDisputes: number;
+  // #997 secondary findings — dashboard-wide counts (unfiltered by the
+  // current search/status/gateway), like `urgentDisputes` above.
+  stats: {
+    underReviewCount: number;
+    wonCount: number;
+  };
   page: number;
   limit: number;
   totalPages: number;
@@ -43,7 +50,8 @@ export interface DisputeListResponse {
 export interface DisputeDetails {
   id: string;
   disputeId: string;
-  amount: number;
+  /** Paise. Was declared as `amount`, which the API never returned. */
+  amountPaise: number;
   currency: string;
   status: string;
   reason: string | null;

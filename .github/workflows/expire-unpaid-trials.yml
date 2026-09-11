@@ -1,0 +1,63 @@
+name: Expire Unpaid Trials
+
+on:
+  schedule:
+    # Run hourly. The payment window is 24h (clamped to the session start), so
+    # hourly granularity is ample — the slot is never held more than an hour
+    # past its deadline.
+    #
+    # Minute 40 is one of the few start-minutes not already taken by a recurring
+    # job; simultaneous starts stampede the Supavisor pool (#932), which is what
+    # scripts/ci/check-workflow-hygiene.ts guards against.
+    - cron: "40 * * * *"
+  workflow_dispatch: # Allow manual triggering
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  expire-unpaid-trials:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      # #1066 — jobs run as bare Node processes, so Sentry.init only sees
+      # what the step env carries. Without the DSN the runner initialises
+      # a disabled client and every captureException is a no-op again.
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
+      # Database connection (required for Prisma)
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # #476 cron locks load lib/redis at import — every job entry needs these
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Expire unpaid trials
+        run: npx --yes tsx@4.23.1 jobs/trials/expire-unpaid-trials.ts
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          # Fallback sink — Slack has never been provisioned, so this is
+          # what actually pages today. See 07-required-secrets.md.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "expire-unpaid-trials"

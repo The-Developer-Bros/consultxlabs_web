@@ -15,10 +15,10 @@ CFO-level business documentation covering revenue strategy, pricing, metrics, an
 | 03  | [Pricing Calculator](./03-pricing-calculator.md)         | Minimum pricing thresholds, tier calculations              |
 | 04  | [Profitability Analysis](./04-profitability-analysis.md) | Per-transaction profitability, break-even analysis         |
 | 05  | [SaaS Metrics](./05-saas-metrics-monthly.md)             | MRR, ARR, churn, LTV:CAC, monthly tracking framework       |
-| 06  | [SaaS Expenditures](./06-saas-expenditures.md)           | Infrastructure costs, SaaS spend, burn rate                |
-| 07  | [Tax Compliance (India)](./07-tax-compliance-india.md)   | GST, TDS, Section 44AD, entity structure                   |
-| 08  | [Marketplace Obligations](./08-tax-compliance-marketplace-obligations.md) | E-commerce operator, TCS, cross-border, PF/ESI/Gratuity  |
-| 09  | [Tax Essentials — Simplified](./09-tax-essentials-simplified.md) | Beginner-friendly GST and TDS guide for technical founders |
+| 06  | [Tax Compliance (India)](./06-tax-compliance-india.md)   | GST, TDS, Section 44AD, entity structure                   |
+| 07  | [Marketplace Obligations](./07-tax-compliance-marketplace-obligations.md) | E-commerce operator, TCS, cross-border, PF/ESI/Gratuity  |
+| 08  | [Tax Essentials — Simplified](./08-tax-essentials-simplified.md) | Beginner-friendly GST and TDS guide for technical founders |
+| 09  | [Pricing Strategy](./09-pricing-strategy.md)             | Competitive pricing analysis and commission tier model      |
 
 ## Private Documents
 

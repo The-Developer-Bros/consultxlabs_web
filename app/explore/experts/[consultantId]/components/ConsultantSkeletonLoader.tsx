@@ -3,9 +3,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 export const ConsultantSkeletonLoader: React.FC = () => {
   return (
-    <div className="bg-zinc-50 min-h-screen">
+    <div className="bg-muted min-h-screen">
       {/* Back Navigation Skeleton */}
-      <div className="bg-white border-b border-zinc-200">
+      <div className="bg-card border-b border-border">
         <div className="w-full px-4 md:px-8 lg:px-12 py-4">
           <Skeleton className="h-5 w-32" />
         </div>
@@ -56,10 +56,10 @@ export const ConsultantSkeletonLoader: React.FC = () => {
 
           {/* Right Column (Sidebar - Pricing) */}
           <div className="w-full xl:w-[450px] 2xl:w-[500px] flex-shrink-0">
-            <div className="bg-white rounded-2xl p-6 shadow-sm border border-zinc-100 space-y-6">
+            <div className="bg-card rounded-2xl p-6 shadow-sm border border-border space-y-6">
               {/* Tabs */}
-              <div className="flex bg-zinc-100 p-1 rounded-xl">
-                <Skeleton className="h-10 w-1/2 rounded-lg bg-white shadow-sm" />
+              <div className="flex bg-muted p-1 rounded-xl">
+                <Skeleton className="h-10 w-1/2 rounded-lg bg-card shadow-sm" />
                 <Skeleton className="h-10 w-1/2 rounded-lg bg-transparent" />
               </div>
 

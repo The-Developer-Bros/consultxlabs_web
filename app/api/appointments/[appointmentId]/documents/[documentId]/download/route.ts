@@ -1,9 +1,12 @@
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { supabaseAdmin } from "@/lib/supabase";
 import { Prisma } from "@prisma/client";
+import { isBookingTerminal } from "@/lib/appointments/terminal-status";
 
 import { getSession } from "@/lib/auth-server";
+
 export async function GET(
   request: NextRequest,
   {
@@ -89,9 +92,15 @@ export async function GET(
       ];
     }
 
-    // First verify user has access to the appointment
+    // First verify user has access to the appointment. Only consultation/
+    // subscription bookings are reachable via the auth filter above, so those
+    // are the statuses we need for the terminal check (DOC-1).
     const appointment = await prisma.appointment.findFirst({
       where: appointmentWhereClause,
+      include: {
+        consultation: { select: { status: true } },
+        subscription: { select: { status: true } },
+      },
     });
 
     if (!appointment) {
@@ -104,6 +113,21 @@ export async function GET(
           code: "NOT_FOUND",
         },
         { status: 404 },
+      );
+    }
+
+    // DOC-1 (#694) — block byte streaming once the parent booking is terminal;
+    // identity-only authorization previously kept files downloadable after a
+    // cancel/refund.
+    if (isBookingTerminal(appointment)) {
+      return NextResponse.json(
+        {
+          error: "Document unavailable",
+          message:
+            "This appointment has been cancelled or closed, so its documents are no longer available for download.",
+          code: "APPOINTMENT_TERMINAL",
+        },
+        { status: 403 },
       );
     }
 
@@ -133,6 +157,7 @@ export async function GET(
       console.error(
         "Supabase admin client not configured. Set SUPABASE_SERVICE_ROLE_KEY to enable document downloads.",
       );
+      Sentry.captureException(new Error("Supabase admin client not configured"), { tags: { subsystem: "appointments" } });
       return NextResponse.json(
         {
           error: "Storage configuration error",
@@ -150,6 +175,7 @@ export async function GET(
 
     if (downloadError || !fileData) {
       console.error("Supabase download error:", downloadError);
+      Sentry.captureException(downloadError instanceof Error ? downloadError : new Error(String(downloadError)), { tags: { subsystem: "appointments" } });
       return NextResponse.json(
         {
           error: "Download failed",
@@ -180,6 +206,7 @@ export async function GET(
     return response;
   } catch (error) {
     console.error("Document download error:", error);
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "appointments" } });
     return NextResponse.json(
       {
         error: "Server error",

@@ -121,22 +121,3 @@ export const stripeCheckoutSessionExpiredEventSchema =
       object: checkoutSessionSchema,
     }),
   });
-
-export type StripePaymentIntentSucceededEvent = z.infer<
-  typeof stripePaymentIntentSucceededEventSchema
->;
-export type StripePaymentIntentFailedEvent = z.infer<
-  typeof stripePaymentIntentFailedEventSchema
->;
-export type StripeInvoicePaidEvent = z.infer<
-  typeof stripeInvoicePaidEventSchema
->;
-export type StripeSubscriptionCreatedEvent = z.infer<
-  typeof stripeSubscriptionCreatedEventSchema
->;
-export type StripeCheckoutSessionCompletedEvent = z.infer<
-  typeof stripeCheckoutSessionCompletedEventSchema
->;
-export type StripeCheckoutSessionExpiredEvent = z.infer<
-  typeof stripeCheckoutSessionExpiredEventSchema
->;

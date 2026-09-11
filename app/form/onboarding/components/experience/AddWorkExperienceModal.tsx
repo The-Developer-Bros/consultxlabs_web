@@ -15,7 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { CompanyLogo, lookupCompanyDomain } from "@/components/ui/company-logo";
-import { WorkExperienceSchema } from "@/schemas/user";
+import { LONG_FORM_TEXT_MAX, WorkExperienceSchema } from "@/schemas/user";
 import { WorkExperience } from "./WorkExperienceSection";
 
 interface AddWorkExperienceModalProps {
@@ -171,19 +171,21 @@ export function AddWorkExperienceModal({
                 />
               </div>
               {autoDetectedDomain && !manualDomainMode && (
-                <p className="text-xs text-emerald-600">
+                <p className="text-xs text-muted-foreground">
                   Logo detected automatically
                 </p>
               )}
-              {!autoDetectedDomain && !manualDomainMode && formData.company.length > 0 && (
-                <button
-                  type="button"
-                  className="text-xs text-primary hover:underline"
-                  onClick={() => setManualDomainMode(true)}
-                >
-                  Add company website to show logo
-                </button>
-              )}
+              {!autoDetectedDomain &&
+                !manualDomainMode &&
+                formData.company.length > 0 && (
+                  <button
+                    type="button"
+                    className="text-xs text-primary hover:underline"
+                    onClick={() => setManualDomainMode(true)}
+                  >
+                    Add company website to show logo
+                  </button>
+                )}
             </div>
 
             {manualDomainMode && (
@@ -215,7 +217,7 @@ export function AddWorkExperienceModal({
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="startDate">Start Date *</Label>
                 <Input
@@ -269,7 +271,12 @@ export function AddWorkExperienceModal({
                 }
                 placeholder="Describe your responsibilities and achievements..."
                 rows={4}
+                maxLength={LONG_FORM_TEXT_MAX}
               />
+              <p className="text-xs text-muted-foreground text-right">
+                {formData.description?.length || 0}/{LONG_FORM_TEXT_MAX}{" "}
+                characters
+              </p>
             </div>
           </div>
 

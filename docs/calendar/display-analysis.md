@@ -142,7 +142,7 @@ const callDate = new Date(
 
 ```typescript
 const totalWeeks = Math.ceil(durationInMonths * 4.33); // Uses PLAN duration
-const maxTotalCalls = callsPerWeek * totalWeeks; // Not subscription instance duration
+const maxTotalCalls = sessionsPerWeek * totalWeeks; // Not subscription instance duration
 ```
 
 **Impact**: Massively over-allocates consultant's time
@@ -316,7 +316,7 @@ for (let callIndex = 0; callIndex < callsThisWeek; callIndex++) {
 ```typescript
 // BEFORE (Lines 207-211):
 const totalWeeks = Math.ceil(durationInMonths * 4.33); // Uses PLAN duration
-const maxTotalCalls = callsPerWeek * totalWeeks;
+const maxTotalCalls = sessionsPerWeek * totalWeeks;
 
 // AFTER:
 // Calculate actual weeks in THIS subscription instance
@@ -324,7 +324,7 @@ const subscriptionDuration = endDate.getTime() - startDate.getTime();
 const subscriptionWeeks = Math.ceil(
   subscriptionDuration / (7 * 24 * 60 * 60 * 1000),
 );
-const maxTotalCalls = callsPerWeek * subscriptionWeeks;
+const maxTotalCalls = sessionsPerWeek * subscriptionWeeks;
 
 // Example: 9-day subscription = 2 weeks × 2 calls/week = 4 slots max
 ```

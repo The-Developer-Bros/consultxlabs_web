@@ -57,55 +57,44 @@ export const FEATURES = [
   },
 ];
 
-export const STATS = [
-  { value: 10000, suffix: "+", label: "Active Users" },
-  { value: 500, suffix: "+", label: "Expert Mentors" },
-  { value: 50000, suffix: "+", label: "Sessions Completed" },
-  { value: 4.9, suffix: "", label: "Average Rating" },
-];
-
+// #1490 — the hardcoded "150+ experts" line under each category is gone. The
+// card now renders a real per-domain consultant count, looked up by name from
+// the landing loader, and renders no line at all where that count is zero.
 export const CATEGORIES = [
   {
     icon: Code,
     name: "Technology",
-    count: "150+ experts",
     color: "bg-zinc-900",
   },
   {
     icon: Briefcase,
     name: "Business",
-    count: "120+ experts",
     color: "bg-zinc-800",
   },
-  { icon: Palette, name: "Design", count: "80+ experts", color: "bg-zinc-700" },
+  { icon: Palette, name: "Design", color: "bg-zinc-700" },
   {
     icon: TrendingUp,
     name: "Marketing",
-    count: "90+ experts",
     color: "bg-zinc-800",
   },
   {
     icon: HeartHandshake,
     name: "Career Coach",
-    count: "60+ experts",
     color: "bg-zinc-900",
   },
   {
     icon: GraduationCap,
     name: "Education",
-    count: "70+ experts",
     color: "bg-zinc-700",
   },
   {
     icon: Lightbulb,
     name: "Startups",
-    count: "50+ experts",
     color: "bg-zinc-800",
   },
   {
     icon: Globe,
     name: "Languages",
-    count: "40+ experts",
     color: "bg-zinc-900",
   },
 ];
@@ -263,9 +252,9 @@ export const PLATFORM_FEATURES = [
   },
   {
     icon: ListChecks,
-    title: "Smart Waitlist",
+    title: "Live Seat Counts",
     description:
-      "Automatic queue management for sold-out webinars and classes. Get notified when spots open up.",
+      "Every webinar and class shows exactly how many seats are left, and hosts can open more at any time.",
   },
 ];
 
@@ -288,7 +277,10 @@ export const TRUST_BADGES = [
   {
     icon: Award,
     label: "Quality Assured",
-    description: "4.9★ average session rating",
+    // #1485 — was "4.9★ average session rating", a number with nothing behind
+    // it. What replaces it is a property of the review system itself, so it
+    // stays true at every scale.
+    description: "Ratings come only from verified session participants",
   },
 ];
 
@@ -356,4 +348,31 @@ export const COMPANY_LOGOS = [
   "Netflix",
   "Stripe",
   "Airbnb",
+];
+
+export const ENTERPRISE_FEATURES = [
+  {
+    icon: Users,
+    title: "Team training",
+    description:
+      "Book vetted experts for a whole team, with one plan covering every seat instead of individual expensing.",
+  },
+  {
+    icon: Briefcase,
+    title: "Sponsored sessions",
+    description:
+      "Your organisation pays; your people book. Set a budget or a per-seat allowance and let them choose their own experts.",
+  },
+  {
+    icon: FileCheck,
+    title: "Invoicing built for procurement",
+    description:
+      "Purchase orders, GST-compliant invoices, and Net-60 terms — not a corporate card and a pile of receipts.",
+  },
+  {
+    icon: Shield,
+    title: "Run your own expert network",
+    description:
+      "Agencies and institutions can host their experts on Familiarise and take a share of every booking.",
+  },
 ];

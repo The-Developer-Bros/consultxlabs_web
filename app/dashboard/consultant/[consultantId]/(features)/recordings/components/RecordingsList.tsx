@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
   Loader2,
   Video,
@@ -11,10 +12,13 @@ import {
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
-import { RecordingCard, RecordingData } from "./RecordingCard";
+import { RecordingCard } from "./RecordingCard";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/dashboard/DataCard";
+import { createConsultantQueries } from "@/lib/dashboard-queries";
 
 interface RecordingsListProps {
   consultantId: string;
@@ -23,17 +27,12 @@ interface RecordingsListProps {
 
 export function RecordingsList({ consultantId, type }: RecordingsListProps) {
   const { toast } = useToast();
-  const [recordings, setRecordings] = useState<RecordingData[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
 
   // Search + pagination state
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [total, setTotal] = useState(0);
   const limit = 12;
 
   // Debounce search input
@@ -50,46 +49,27 @@ export function RecordingsList({ consultantId, type }: RecordingsListProps) {
     setPage(1);
   }, [type]);
 
-  const fetchRecordings = useCallback(async () => {
-    try {
-      setIsLoading(true);
-      setError(null);
+  const {
+    data,
+    isPending,
+    isError,
+    error,
+    refetch,
+  } = useQuery({
+    ...createConsultantQueries(consultantId).recordings({
+      type,
+      page,
+      limit,
+      search: debouncedSearch,
+    }),
+    // Keep the previous page on screen while the next one loads so
+    // pagination and search don't flash the whole grid to a skeleton.
+    placeholderData: keepPreviousData,
+  });
 
-      const params = new URLSearchParams();
-      if (type) {
-        params.set("type", type);
-      }
-      params.set("page", page.toString());
-      params.set("limit", limit.toString());
-      if (debouncedSearch) {
-        params.set("search", debouncedSearch);
-      }
-
-      const response = await fetch(
-        `/api/consultants/${consultantId}/recordings?${params.toString()}`,
-      );
-
-      if (!response.ok) {
-        throw new Error("Failed to fetch recordings");
-      }
-
-      const data = await response.json();
-      setRecordings(data.recordings);
-      setTotalPages(data.totalPages ?? 1);
-      setTotal(data.total ?? 0);
-    } catch (err) {
-      console.error("Error fetching recordings:", err);
-      setError(
-        err instanceof Error ? err.message : "Failed to load recordings",
-      );
-    } finally {
-      setIsLoading(false);
-    }
-  }, [consultantId, type, page, debouncedSearch]);
-
-  useEffect(() => {
-    fetchRecordings();
-  }, [fetchRecordings]);
+  const recordings = data?.recordings ?? [];
+  const totalPages = data?.totalPages ?? 1;
+  const total = data?.total ?? 0;
 
   const handleSync = async () => {
     setIsSyncing(true);
@@ -108,7 +88,7 @@ export function RecordingsList({ consultantId, type }: RecordingsListProps) {
           title: "Synced",
           description: `${data.synced} recording(s) synced from Stream.`,
         });
-        await fetchRecordings();
+        await refetch();
       } else {
         toast({
           title: "Up to date",
@@ -142,7 +122,7 @@ export function RecordingsList({ consultantId, type }: RecordingsListProps) {
     }
 
     // Refresh recordings list after successful transfer
-    await fetchRecordings();
+    await refetch();
 
     toast({
       title: "Success",
@@ -150,27 +130,34 @@ export function RecordingsList({ consultantId, type }: RecordingsListProps) {
     });
   };
 
-  if (isLoading) {
+  if (isPending) {
     return (
-      <div className="flex items-center justify-center py-12">
-        <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {[1, 2, 3].map((i) => (
+          <div key={i} className="space-y-3">
+            <Skeleton className="h-10 w-full rounded-lg" />
+            <Skeleton className="aspect-video w-full rounded-lg" />
+            <Skeleton className="h-9 w-full rounded-lg" />
+          </div>
+        ))}
       </div>
     );
   }
 
-  if (error) {
+  if (isError) {
     return (
-      <div className="flex flex-col items-center justify-center py-12 text-center">
-        <AlertCircle className="w-12 h-12 text-muted-foreground mb-4" />
-        <p className="text-lg font-medium">Failed to load recordings</p>
-        <p className="text-sm text-muted-foreground mt-1">{error}</p>
-        <button
-          onClick={fetchRecordings}
-          className="mt-4 text-sm text-primary hover:underline"
-        >
-          Try again
-        </button>
-      </div>
+      <EmptyState
+        icon={AlertCircle}
+        title="Failed to load recordings"
+        description={
+          error instanceof Error ? error.message : "Please try again."
+        }
+        action={
+          <Button variant="outline" onClick={() => refetch()}>
+            Try again
+          </Button>
+        }
+      />
     );
   }
 
@@ -317,5 +304,3 @@ export function RecordingsList({ consultantId, type }: RecordingsListProps) {
     </div>
   );
 }
-
-export default RecordingsList;

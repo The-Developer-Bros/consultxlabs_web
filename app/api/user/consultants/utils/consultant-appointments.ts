@@ -45,13 +45,13 @@ export async function checkActiveAppointments(
     prisma.consultation.count({
       where: {
         consultationPlan: { consultantProfileId: consultantId },
-        requestStatus: { in: [...activeStatuses] },
+        status: { in: [...activeStatuses] },
       },
     }),
     prisma.subscription.count({
       where: {
         subscriptionPlan: { consultantProfileId: consultantId },
-        requestStatus: { in: [...activeStatuses] },
+        status: { in: [...activeStatuses] },
       },
     }),
     prisma.webinar.count({

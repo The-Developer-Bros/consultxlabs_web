@@ -1,0 +1,67 @@
+name: Purge Deleted Documents
+
+on:
+  schedule:
+    # Daily 03:34 UTC — off the 03:00/03:20/03:40 recording pile-up
+    # (hygiene CI enforces minute staggering across the fleet).
+    - cron: "34 3 * * *"
+  workflow_dispatch: # Allow manual triggering
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  purge-deleted-documents:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    env:
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      # The purge deletes bytes from the private `documents` bucket via the
+      # admin client (lib/supabase.ts) — without these the storage leg of
+      # every candidate silently no-ops and rows never reach deletion.
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      # #1270 — the URL alone is not enough. `lib/supabase.ts` builds the
+      # public client before the admin one and throws at module scope when
+      # the anon key is unset, so this job also died during import.
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        # --ignore-scripts is safe here: the only lifecycle script the tree
+        # relies on is prisma generate, run explicitly two steps below.
+        run: npm ci --ignore-scripts
+
+      - name: Generate Prisma client
+        # Local binaries only — no npx, so no on-demand package installs
+        # (Sonar S6505/S8543) and no supply-chain surprise mid-cron.
+        run: ./node_modules/.bin/prisma generate
+
+      - name: Purge deleted documents
+        run: ./node_modules/.bin/tsx jobs/cleanup/purge-deleted-documents.ts
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "purge-deleted-documents"

@@ -93,8 +93,6 @@ export const AccountLinkedEmail = ({
   );
 };
 
-export default AccountLinkedEmail;
-
 // Styles
 const main = {
   backgroundColor: "#f5f5f5",

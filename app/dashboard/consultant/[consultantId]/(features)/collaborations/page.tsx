@@ -3,7 +3,7 @@
 import {
   DashboardHeader,
   DashboardContent,
-} from "@/components/dashboard/DashboardShell";
+} from "@/components/dashboard/PageScaffold";
 import { InvitationsPanel } from "@/components/collaborators/InvitationsPanel";
 
 export default function CollaborationsPage() {

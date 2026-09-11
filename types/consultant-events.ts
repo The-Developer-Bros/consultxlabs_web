@@ -9,7 +9,7 @@ import { TAppointment } from "@/types/appointment";
 
 // Activity type for recent client activities
 // Matches the API response from /api/dashboard/consultant/[consultantId]/route.ts
-export interface TConsultantActivity {
+interface TConsultantActivity {
   id: string;
   type: string;
   description: string;
@@ -22,7 +22,7 @@ export interface TConsultantActivity {
 }
 
 // Approval type for pending consultation/subscription requests
-export interface TConsultantApproval {
+interface TConsultantApproval {
   id: string;
   name: string;
   type: string;
@@ -61,14 +61,8 @@ export interface TConsultantDashboardResponse {
   appointments: TAppointment[];
   activities: TConsultantActivity[];
   approvals: TConsultantApproval[];
+  /** Total pending requests — `approvals` is a capped preview, so don't count it. */
+  pendingRequestsCount: number;
   performanceSnapshot: TPerformanceSnapshot;
   financialSummary: TFinancialSummary;
-}
-
-// API wrapper response
-export interface TConsultantDashboardApiResponse {
-  data: TConsultantDashboardResponse;
-  success: boolean;
-  error?: string;
-  message?: string;
 }

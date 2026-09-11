@@ -2,22 +2,33 @@
 
 import { useCallback, useRef } from "react";
 import { motion } from "framer-motion";
-import { Search } from "lucide-react";
+import { Search, Zap, Building2, Users } from "lucide-react";
 import type { IConsultantCardData } from "@/types/consultant";
 import { useCurrency } from "@/hooks/useCurrency";
 import SectionHeader from "@/app/explore/components/SectionHeader";
 import FilterChips from "@/app/explore/components/FilterChips";
+import FacetRail from "@/app/explore/components/FacetRail";
 import {
   useConsultants,
   useExpertsFilters,
   useInfiniteScroll,
   useExpertFilterChips,
 } from "./hooks";
-import type { IExpertsMetaData } from "./utils";
+import type { IExpertsMetaData, AffiliationType } from "./utils";
 import { FilterPanel } from "./components/FilterPanel";
 import { SearchBar, type SortOption } from "./components/SearchBar";
 import StaticTopRows from "./components/StaticTopRows";
 import ExpertResults from "./components/ExpertResults";
+
+const AFFILIATION_TABS: {
+  value: AffiliationType;
+  label: string;
+  icon: React.ElementType;
+}[] = [
+  { value: null, label: "All Experts", icon: Users },
+  { value: "independent", label: "Independent", icon: Zap },
+  { value: "agency", label: "Agency / Org", icon: Building2 },
+];
 
 interface ExpertsInteractiveContentProps {
   metadata: IExpertsMetaData | null;
@@ -93,28 +104,48 @@ export default function ExpertsInteractiveContent({
         />
 
         {/* Browse All Experts */}
-        <div ref={browseSectionRef} id="all-experts">
+        {/* The nav's "Top rated" deep-links here with ?sort=rating, so the
+            anchor needs the same fixed-navbar offset as #domains. */}
+        <div
+          ref={browseSectionRef}
+          id="all-experts"
+          className="scroll-mt-[calc(var(--header-height,5rem)+1rem)]"
+        >
           <SectionHeader
             title="Browse Familiarise Experts"
             icon={<Search className="w-5 h-5 text-white" />}
           />
 
-          {/* Filters */}
+          {/* Affiliation type toggle: All | Independent | Agency/Org */}
           <motion.div
-            className="mb-8"
+            className="mb-6"
             initial={{ opacity: 0, y: 20 }}
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true }}
-            transition={{ duration: 0.5, delay: 0.1 }}
+            transition={{ duration: 0.5, delay: 0.05 }}
           >
-            <FilterPanel
-              metadata={metadata}
-              filters={filters}
-              updateFilters={updateFilters}
-            />
+            <div className="inline-flex items-center gap-1 p-1 bg-muted rounded-xl border border-border">
+              {AFFILIATION_TABS.map(({ value, label, icon: Icon }) => {
+                const isActive = filters.affiliationType === value;
+                return (
+                  <button
+                    key={String(value)}
+                    onClick={() => updateFilters({ affiliationType: value })}
+                    className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                      isActive
+                        ? "bg-card text-foreground shadow-sm border border-border"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <Icon className="w-4 h-4" />
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
           </motion.div>
 
-          {/* Search Bar */}
+          {/* Search banner */}
           <motion.div
             className="mb-6"
             initial={{ opacity: 0, y: 20 }}
@@ -137,35 +168,54 @@ export default function ExpertsInteractiveContent({
                 </p>
               </div>
             </div>
-            <SearchBar
-              onSearch={(term) => updateFilters({ search: term })}
-              onSort={(option) => updateFilters({ sort: option })}
-              sortBy={filters.sort}
-              initialSearch={filters.search}
-            />
           </motion.div>
 
-          {/* Active Filter Chips */}
-          {chips.length > 0 && (
-            <div className="mb-6">
-              <FilterChips
-                filters={chips}
-                onRemove={removeChip}
-                onClearAll={clearAll}
+          {/* Filters move into a sticky rail (mobile: Sheet drawer) so the
+              results keep the full column instead of starting below a
+              three-row filter grid. */}
+          <div className="grid grid-cols-1 gap-8 lg:grid-cols-[280px_1fr]">
+            <FacetRail activeCount={chips.length} onClearAll={clearAll}>
+              <FilterPanel
+                metadata={metadata}
+                filters={filters}
+                updateFilters={updateFilters}
+              />
+            </FacetRail>
+
+            <div className="min-w-0">
+              <div className="mb-6">
+                <SearchBar
+                  onSearch={(term) => updateFilters({ search: term })}
+                  onSort={(option) => updateFilters({ sort: option })}
+                  sortBy={filters.sort}
+                  initialSearch={filters.search}
+                />
+              </div>
+
+              {chips.length > 0 && (
+                <div className="mb-6">
+                  <FilterChips
+                    filters={chips}
+                    onRemove={removeChip}
+                    onClearAll={clearAll}
+                  />
+                </div>
+              )}
+
+              {/* Kept as a full-width vertical stack, not a grid: ConsultantCard
+                  is a two-column card (profile + plan tabs) that collapses
+                  badly inside a narrow grid cell. */}
+              <ExpertResults
+                consultants={consultants}
+                metadata={metadata}
+                isLoading={isLoading}
+                isRefetching={isRefetching}
+                isLoadingMore={isLoadingMore}
+                groupByDomainId={filters.domain}
+                sentinelRef={sentinelRef}
               />
             </div>
-          )}
-
-          {/* Results */}
-          <ExpertResults
-            consultants={consultants}
-            metadata={metadata}
-            isLoading={isLoading}
-            isRefetching={isRefetching}
-            isLoadingMore={isLoadingMore}
-            groupByDomainId={filters.domain}
-            sentinelRef={sentinelRef}
-          />
+          </div>
         </div>
       </div>
     </section>

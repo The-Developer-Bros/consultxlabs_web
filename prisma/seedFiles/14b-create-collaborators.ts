@@ -66,13 +66,14 @@ export async function createCollaborators() {
     for (const collab of selectedCollabs) {
       try {
         const status = faker.helpers.arrayElement(statuses);
-        await prisma.webinarCollaborator.create({
+        await prisma.collaborator.create({
           data: {
             consultantProfileId: collab.id,
+            collaboratorType: "WEBINAR",
             webinarPlanId: plan.id,
             role: faker.helpers.arrayElement(webinarRoles),
-            revenueSharePercentage: faker.helpers.arrayElement([
-              10, 15, 20, 25, 30,
+            revenueShareBps: faker.helpers.arrayElement([
+              1000, 1500, 2000, 2500, 3000,
             ]),
             status,
             invitedById: plan.consultantProfileId!,
@@ -102,13 +103,14 @@ export async function createCollaborators() {
     for (const collab of selectedCollabs) {
       try {
         const status = faker.helpers.arrayElement(statuses);
-        await prisma.classCollaborator.create({
+        await prisma.collaborator.create({
           data: {
             consultantProfileId: collab.id,
+            collaboratorType: "CLASS",
             classPlanId: plan.id,
             role: faker.helpers.arrayElement(classRoles),
-            revenueSharePercentage: faker.helpers.arrayElement([
-              10, 15, 20, 25, 30,
+            revenueShareBps: faker.helpers.arrayElement([
+              1000, 1500, 2000, 2500, 3000,
             ]),
             status,
             invitedById: plan.consultantProfileId!,

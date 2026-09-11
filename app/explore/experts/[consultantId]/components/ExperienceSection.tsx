@@ -49,16 +49,16 @@ function formatYearRange(
 
 function WorkExperienceCard({ experience }: { experience: WorkExperience }) {
   return (
-    <div className="flex gap-4 pb-4 last:pb-0 border-b last:border-b-0 border-zinc-100">
+    <div className="flex gap-4 pb-4 last:pb-0 border-b last:border-b-0 border-border">
       <CompanyLogo
         companyName={experience.company}
         companyDomain={experience.companyDomain ?? undefined}
         size={48}
       />
       <div className="flex-1 min-w-0">
-        <h4 className="font-semibold text-zinc-900">{experience.title}</h4>
-        <p className="text-zinc-600">{experience.company}</p>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-sm text-zinc-500">
+        <h4 className="font-semibold text-foreground">{experience.title}</h4>
+        <p className="text-muted-foreground">{experience.company}</p>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-sm text-muted-foreground">
           <span className="flex items-center gap-1">
             <Calendar className="w-3.5 h-3.5" />
             {formatDateRange(
@@ -75,7 +75,7 @@ function WorkExperienceCard({ experience }: { experience: WorkExperience }) {
           )}
         </div>
         {experience.description && (
-          <p className="mt-2 text-sm text-zinc-600 line-clamp-3">
+          <p className="mt-2 text-sm text-muted-foreground line-clamp-3">
             {experience.description}
           </p>
         )}
@@ -86,19 +86,19 @@ function WorkExperienceCard({ experience }: { experience: WorkExperience }) {
 
 function EducationCard({ education }: { education: Education }) {
   return (
-    <div className="flex gap-4 pb-4 last:pb-0 border-b last:border-b-0 border-zinc-100">
+    <div className="flex gap-4 pb-4 last:pb-0 border-b last:border-b-0 border-border">
       <InstitutionLogo
         institutionName={education.institution}
         institutionDomain={education.institutionDomain ?? undefined}
         size={48}
       />
       <div className="flex-1 min-w-0">
-        <h4 className="font-semibold text-zinc-900">{education.degree}</h4>
-        <p className="text-zinc-600">{education.institution}</p>
+        <h4 className="font-semibold text-foreground">{education.degree}</h4>
+        <p className="text-muted-foreground">{education.institution}</p>
         {education.fieldOfStudy && (
-          <p className="text-sm text-zinc-500">{education.fieldOfStudy}</p>
+          <p className="text-sm text-muted-foreground">{education.fieldOfStudy}</p>
         )}
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-sm text-zinc-500">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-sm text-muted-foreground">
           <span className="flex items-center gap-1">
             <Calendar className="w-3.5 h-3.5" />
             {formatYearRange(education.startYear, education.endYear)}
@@ -106,7 +106,7 @@ function EducationCard({ education }: { education: Education }) {
           {education.grade && <span>Grade: {education.grade}</span>}
         </div>
         {education.activities && (
-          <p className="mt-2 text-sm text-zinc-600 line-clamp-2">
+          <p className="mt-2 text-sm text-muted-foreground line-clamp-2">
             {education.activities}
           </p>
         )}
@@ -124,10 +124,10 @@ function CertificationBadge({
     <div className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-100">
       <Award className="w-4 h-4 text-amber-600 flex-shrink-0" />
       <div className="min-w-0">
-        <p className="text-sm font-medium text-zinc-900 truncate">
+        <p className="text-sm font-medium text-foreground truncate">
           {certification.name}
         </p>
-        <p className="text-xs text-zinc-500 truncate">
+        <p className="text-xs text-muted-foreground truncate">
           {certification.issuingOrganization}
         </p>
       </div>
@@ -150,13 +150,13 @@ export function ExperienceSection({
   }
 
   return (
-    <div className="bg-white rounded-2xl border border-zinc-200 p-6 md:p-8 space-y-8">
+    <div className="bg-card rounded-2xl border border-border p-6 md:p-8 space-y-8">
       {/* Work Experience */}
       {workExperiences.length > 0 && (
         <div>
           <div className="flex items-center gap-2 mb-4">
-            <Briefcase className="w-5 h-5 text-zinc-600" />
-            <h3 className="text-lg font-semibold text-zinc-900">Experience</h3>
+            <Briefcase className="w-5 h-5 text-muted-foreground" />
+            <h3 className="text-lg font-semibold text-foreground">Experience</h3>
             <Badge variant="secondary" className="ml-auto">
               {workExperiences.length}
             </Badge>
@@ -183,8 +183,8 @@ export function ExperienceSection({
       {education.length > 0 && (
         <div>
           <div className="flex items-center gap-2 mb-4">
-            <GraduationCap className="w-5 h-5 text-zinc-600" />
-            <h3 className="text-lg font-semibold text-zinc-900">Education</h3>
+            <GraduationCap className="w-5 h-5 text-muted-foreground" />
+            <h3 className="text-lg font-semibold text-foreground">Education</h3>
             <Badge variant="secondary" className="ml-auto">
               {education.length}
             </Badge>
@@ -203,8 +203,8 @@ export function ExperienceSection({
       {certifications.length > 0 && (
         <div>
           <div className="flex items-center gap-2 mb-4">
-            <Award className="w-5 h-5 text-zinc-600" />
-            <h3 className="text-lg font-semibold text-zinc-900">
+            <Award className="w-5 h-5 text-muted-foreground" />
+            <h3 className="text-lg font-semibold text-foreground">
               Certifications
             </h3>
             <Badge variant="secondary" className="ml-auto">

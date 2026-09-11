@@ -6,7 +6,13 @@
     },
     "supabase": {
       "command": "npx",
-      "args": ["-y", "@supabase/mcp-server-supabase@latest"],
+      "args": [
+        "-y",
+        "-p", "@modelcontextprotocol/sdk",
+        "-p", "zod",
+        "-p", "@supabase/mcp-server-supabase@0.8.1",
+        "mcp-server-supabase"
+      ],
       "env": {
         "SUPABASE_ACCESS_TOKEN": "<SUPABASE_ACCESS_TOKEN>"
       }
@@ -54,6 +60,10 @@
     "betterstack": {
       "type": "http",
       "url": "https://mcp.betterstack.com"
+    },
+    "sentry": {
+      "type": "http",
+      "url": "https://mcp.sentry.dev/mcp"
     }
   }
 }

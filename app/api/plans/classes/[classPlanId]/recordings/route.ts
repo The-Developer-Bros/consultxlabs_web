@@ -8,8 +8,9 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { RecordingService } from "@/lib/stream/recording-service";
-import { RecordingTransferService } from "@/lib/stream/recording-transfer-service";
+import { getBestRecordingUrl } from "@/lib/stream/recording-storage";
 import prisma from "@/lib/prisma";
+import { isPrivileged } from "@/lib/auth-helpers";
 
 import { getSession } from "@/lib/auth-server";
 type RouteParams = {
@@ -47,14 +48,19 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
     }
 
     // Check access permissions
+    // Capability, not UserRole (#org-appts): an org EXPERT whose top-level role is CONSULTEE still owns recordings they delivered.
     let hasAccess = false;
 
-    if (session.user.role === "CONSULTANT") {
-      // Consultant must own the plan, or be an accepted collaborator
+    if (isPrivileged(session.user.role)) {
+      hasAccess = true;
+    }
+
+    // Provider path: owns the plan, or is an accepted collaborator.
+    if (!hasAccess && session.user.consultantProfileId) {
       hasAccess =
         classPlan.consultantProfileId === session.user.consultantProfileId;
-      if (!hasAccess && session.user.consultantProfileId) {
-        const collab = await prisma.classCollaborator.findFirst({
+      if (!hasAccess) {
+        const collab = await prisma.collaborator.findFirst({
           where: {
             classPlanId,
             consultantProfileId: session.user.consultantProfileId,
@@ -63,8 +69,10 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
         });
         hasAccess = !!collab;
       }
-    } else if (session.user.role === "CONSULTEE") {
-      // Consultee must have purchased a class from this plan
+    }
+
+    // Attendee path: must have purchased a class from this plan.
+    if (!hasAccess) {
       const enrollment = await prisma.payment.findFirst({
         where: {
           userId: session.user.id,
@@ -77,8 +85,6 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
         },
       });
       hasAccess = !!enrollment;
-    } else if (session.user.role === "ADMIN" || session.user.role === "STAFF") {
-      hasAccess = true;
     }
 
     if (!hasAccess) {
@@ -100,7 +106,7 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
       recordedAt: recording.recordedAt,
       status: recording.status,
       storageType: recording.storageType,
-      playbackUrl: await RecordingTransferService.getBestRecordingUrl(recording),
+      playbackUrl: await getBestRecordingUrl(recording),
       thumbnailUrl: recording.thumbnailUrl,
       resolution: recording.resolution,
       previewClipUrl: recording.previewClipUrl,

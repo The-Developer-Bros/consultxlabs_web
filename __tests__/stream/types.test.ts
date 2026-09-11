@@ -9,6 +9,7 @@ import type {
   StreamChannelType,
   EventChannelType,
 } from "../../types/stream-chat";
+import { getDmChannelId } from "@/lib/stream-utils";
 
 describe("Stream Chat Types", () => {
   describe("StreamChatUser", () => {
@@ -102,20 +103,29 @@ describe("Stream Chat Types", () => {
   });
 
   describe("Channel ID generation", () => {
+    // #1134 P0-3 — this used to declare a LOCAL `generateDMChannelId` that
+    // sorted with `localeCompare` and assert against that, never touching
+    // production code. So it passed while the app used code-unit ordering, and
+    // it would have gone on passing straight through the collation regression it
+    // reads like a guard against. It calls the real function now.
+    //
+    // Collation-independence itself is pinned by
+    // __tests__/security/dm-channel-org-precedence.test.ts, which is what the
+    // comment in lib/stream-utils.ts points at.
     it("should generate consistent DM channel IDs", () => {
-      // Test the channel ID generation pattern used in the app
-      const generateDMChannelId = (user1: string, user2: string): string => {
-        return [user1, user2].sort((a, b) => a.localeCompare(b)).join("-");
-      };
-
-      // Same users, different order should produce same ID
-      expect(generateDMChannelId("alice", "bob")).toBe("alice-bob");
-      expect(generateDMChannelId("bob", "alice")).toBe("alice-bob");
+      // Same users, either argument order, same id.
+      expect(getDmChannelId("alice", "bob")).toBe("dm-alice-bob");
+      expect(getDmChannelId("bob", "alice")).toBe("dm-alice-bob");
 
       // IDs with different prefixes
-      expect(generateDMChannelId("user-z", "user-a")).toBe("user-a-user-z");
+      expect(getDmChannelId("user-z", "user-a")).toBe("dm-user-a-user-z");
     });
 
+    // NOTE: the two blocks below are the same decoy shape — they assert against
+    // locally-declared lambdas rather than production code. Left as-is only
+    // because neither `getChannelId` (private to event-channel.action.ts) nor
+    // the type-inference logic has an exported equivalent to call. Anything
+    // relying on them for regression cover should not.
     it("should generate event channel IDs", () => {
       const generateEventChannelId = (
         eventType: EventChannelType,
@@ -164,7 +174,7 @@ describe("Stream Chat Types", () => {
           ADMIN: "admin",
           CONSULTANT: "user",
           CONSULTEE: "user",
-          STAFF: "user",
+          STAFF: "admin",
         };
         return mapping[role] || "user";
       };
@@ -172,7 +182,7 @@ describe("Stream Chat Types", () => {
       expect(mapRoleToStream("ADMIN")).toBe("admin");
       expect(mapRoleToStream("CONSULTANT")).toBe("user");
       expect(mapRoleToStream("CONSULTEE")).toBe("user");
-      expect(mapRoleToStream("STAFF")).toBe("user");
+      expect(mapRoleToStream("STAFF")).toBe("admin");
     });
   });
 });

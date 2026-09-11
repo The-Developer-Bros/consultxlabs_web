@@ -1,0 +1,68 @@
+name: Release PENDING_TRUST Earnings
+
+# Hourly walk that promotes OrganizationEarnings rows out of PENDING_TRUST
+# (the invoice-fraud guard from #687) once the sponsoring org has either been
+# admin-verified to ACTIVE or paid at least one OrganizationInvoice. After
+# promotion the existing release-earnings cron picks them up and flips
+# PENDING → READY when holdUntil lapses.
+#
+# Slot choice: :30. The :00 slot already has 5 simultaneous jobs per #709's
+# collision map (release-earnings, sync-payment-earnings, alert-dispute-deadlines,
+# auto-complete-appointments, cleanup-invalid-appointments). The :30 slot only
+# has waitlist-reminders + cleanup-stale-pending-consultations — neither in the
+# earnings/payment family — so this addition keeps the pooler load spread.
+
+on:
+  schedule:
+    - cron: "42 * * * *"
+  workflow_dispatch: # Allow manual triggering
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  release-pending-trust-earnings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      # #1066 — jobs run as bare Node processes, so Sentry.init only sees
+      # what the step env carries. Without the DSN the runner initialises
+      # a disabled client and every captureException is a no-op again.
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
+      # Database connection (required for Prisma)
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      # #476 — fail-closed cron lock: without these the job refuses to run.
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Run release pending-trust earnings job
+        run: npx --yes tsx@4.23.1 jobs/cleanup/release-pending-trust-earnings.ts
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          # Fallback sink — Slack has never been provisioned, so this is
+          # what actually pages today. See 07-required-secrets.md.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "release-pending-trust-earnings"

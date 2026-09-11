@@ -42,8 +42,20 @@ export interface VolumeConfig {
     webinar: number;
     class: number;
   };
+  // Phase 6b: authored-but-not-live group sessions (WebinarStatus/ClassStatus
+  // DRAFT). Deliberately small — a draft is a work-in-progress, not a state a
+  // catalog accumulates.
+  draftSessions: { webinar: number; class: number };
+  // Phase 6c: reschedule proposals. `resolved` rows land on appointments that
+  // already carry an open one, which is what exercises the nullable-unique
+  // openForAppointmentId without colliding.
+  rescheduleProposals: {
+    openConsultation: number;
+    counteredSubscription: number;
+    resolved: number;
+  };
   // Phase 7: Engagement
-  newsletters: number;
+  waitlistSubscribers: number;
   reviewsPercentage: number; // % of consultants that get reviews
   // Phase 8: Payments
   discountCodes: number;
@@ -52,8 +64,6 @@ export interface VolumeConfig {
   feedbacks: number;
   supportTickets: number;
   responsesPerTicket: { min: number; max: number };
-  // Phase 10: Waitlists
-  waitlistEntries: number;
   // Phase 11: Documents & Meetings
   appointmentDocuments: number;
   meetingSessions: number;
@@ -66,6 +76,16 @@ export interface VolumeConfig {
   earningsPercentage: number; // % of payments that generate earnings
   payoutsPercentage: number; // % of earnings that get paid out
   invoicesPercentage: number; // % of payments that get invoices
+  // Phase 15: Enterprise Organizations
+  organizations: {
+    buyer: number;
+    seatPack: number;
+    invoiced: number;
+    provider: number;
+    hybrid: number;
+  };
+  membersPerOrg: { min: number; max: number };
+  plansPerOrg: { min: number; max: number };
 }
 
 /**
@@ -93,14 +113,19 @@ const VOLUMES: Record<SeedMode, VolumeConfig> = {
       webinar: 75,
       class: 75,
     },
-    newsletters: 50,
+    draftSessions: { webinar: 3, class: 2 },
+    rescheduleProposals: {
+      openConsultation: 4,
+      counteredSubscription: 2,
+      resolved: 3,
+    },
+    waitlistSubscribers: 50,
     reviewsPercentage: 60,
     discountCodes: 5,
     payments: 100,
     feedbacks: 35,
     supportTickets: 20,
     responsesPerTicket: { min: 1, max: 3 },
-    waitlistEntries: 35,
     appointmentDocuments: 60,
     meetingSessions: 75,
     recordingsPerSession: 0.5,
@@ -110,6 +135,15 @@ const VOLUMES: Record<SeedMode, VolumeConfig> = {
     earningsPercentage: 70,
     payoutsPercentage: 50,
     invoicesPercentage: 80,
+    organizations: {
+      buyer: 2,
+      seatPack: 1,
+      invoiced: 1,
+      provider: 2,
+      hybrid: 1,
+    },
+    membersPerOrg: { min: 3, max: 6 },
+    plansPerOrg: { min: 1, max: 2 },
   },
 
   medium: {
@@ -133,14 +167,19 @@ const VOLUMES: Record<SeedMode, VolumeConfig> = {
       webinar: 200,
       class: 200,
     },
-    newsletters: 150,
+    draftSessions: { webinar: 6, class: 4 },
+    rescheduleProposals: {
+      openConsultation: 12,
+      counteredSubscription: 5,
+      resolved: 8,
+    },
+    waitlistSubscribers: 150,
     reviewsPercentage: 75,
     discountCodes: 15,
     payments: 500,
     feedbacks: 150,
     supportTickets: 80,
     responsesPerTicket: { min: 1, max: 5 },
-    waitlistEntries: 100,
     appointmentDocuments: 250,
     meetingSessions: 350,
     recordingsPerSession: 0.6,
@@ -150,6 +189,15 @@ const VOLUMES: Record<SeedMode, VolumeConfig> = {
     earningsPercentage: 75,
     payoutsPercentage: 60,
     invoicesPercentage: 85,
+    organizations: {
+      buyer: 4,
+      seatPack: 2,
+      invoiced: 2,
+      provider: 2,
+      hybrid: 1,
+    },
+    membersPerOrg: { min: 4, max: 8 },
+    plansPerOrg: { min: 1, max: 3 },
   },
 
   large: {
@@ -173,14 +221,19 @@ const VOLUMES: Record<SeedMode, VolumeConfig> = {
       webinar: 500,
       class: 500,
     },
-    newsletters: 400,
+    draftSessions: { webinar: 12, class: 8 },
+    rescheduleProposals: {
+      openConsultation: 30,
+      counteredSubscription: 12,
+      resolved: 20,
+    },
+    waitlistSubscribers: 400,
     reviewsPercentage: 85,
     discountCodes: 30,
     payments: 1200,
     feedbacks: 400,
     supportTickets: 200,
     responsesPerTicket: { min: 1, max: 7 },
-    waitlistEntries: 300,
     appointmentDocuments: 600,
     meetingSessions: 800,
     recordingsPerSession: 0.7,
@@ -190,6 +243,15 @@ const VOLUMES: Record<SeedMode, VolumeConfig> = {
     earningsPercentage: 80,
     payoutsPercentage: 65,
     invoicesPercentage: 90,
+    organizations: {
+      buyer: 8,
+      seatPack: 4,
+      invoiced: 3,
+      provider: 2,
+      hybrid: 1,
+    },
+    membersPerOrg: { min: 5, max: 10 },
+    plansPerOrg: { min: 2, max: 4 },
   },
 };
 
@@ -272,8 +334,26 @@ export function printConfigSummary(): void {
   console.log(`    - Subscription: ${volumes.appointments.subscription}`);
   console.log(`    - Webinar: ${volumes.appointments.webinar}`);
   console.log(`    - Class: ${volumes.appointments.class}`);
+  console.log(
+    `    - Drafts: ${volumes.draftSessions.webinar} webinar, ${volumes.draftSessions.class} class`,
+  );
+  const proposals = volumes.rescheduleProposals;
+  console.log(
+    `  Reschedule proposals: ${proposals.openConsultation} open, ${proposals.counteredSubscription} countered, ${proposals.resolved} resolved`,
+  );
   console.log(`  Payments: ${volumes.payments}`);
   console.log(`  Topics: ${volumes.topics}`);
+  const orgs = volumes.organizations;
+  console.log(
+    `  Organizations: ${orgs.buyer + orgs.seatPack + orgs.invoiced + orgs.provider + orgs.hybrid} total`,
+  );
+  // Counter keys (buyer / seatPack / invoiced / provider) are kept as-is
+  // to avoid cascading the rename into the shared Volumes type; only the
+  // human-readable log labels are refreshed to the Arch-4 vocabulary.
+  console.log(
+    `    - SPONSOR: PERSONAL: ${orgs.buyer}, WALLET: ${orgs.seatPack}, INVOICE: ${orgs.invoiced}`,
+  );
+  console.log(`    - HOST: ${orgs.provider}, HYBRID: ${orgs.hybrid}`);
   console.log("=".repeat(60));
 }
 

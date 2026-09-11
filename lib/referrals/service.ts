@@ -1,59 +1,56 @@
-import prisma from "@/lib/prisma";
+import prisma, { type Tx } from "@/lib/prisma";
+import { withSerializableRetry } from "@/lib/db/serializable-retry";
 import { Prisma as PrismaNamespace } from "@prisma/client";
-import type {
-  ReferralCode,
-  Referral,
-  ReferralCredit,
-  Prisma,
-} from "@prisma/client";
+import type { ReferralCode, Referral, ReferralCredit } from "@prisma/client";
+import { sumPaise } from "@/lib/payments/utils/money";
 import {
   QUALIFICATION_WINDOW_DAYS,
-  CREDIT_EXPIRY_MONTHS,
+  CREDIT_EXPIRY_DAYS,
+  ANNUAL_REWARD_CAP_PAISE,
+  CONSULTANT_WAIVER_SESSIONS,
 } from "./constants";
 
+// #780 — bare model types still say bigint; the extended client returns number
+export type ReferralCodeRow = Omit<
+  ReferralCode,
+  "referrerReward" | "refereeReward" | "totalEarned"
+> & {
+  referrerReward: number | null;
+  refereeReward: number | null;
+  totalEarned: number;
+};
+export type ReferralRow = Omit<
+  Referral,
+  "referrerRewardAmount" | "refereeRewardAmount"
+> & {
+  referrerRewardAmount: number | null;
+  refereeRewardAmount: number | null;
+};
+export type ReferralCreditRow = Omit<
+  ReferralCredit,
+  "amount" | "usedAmount" | "remainingAmount"
+> & {
+  amount: number;
+  usedAmount: number;
+  remainingAmount: number;
+};
+
 // Re-export so existing server-side consumers can still import from service
-export { QUALIFICATION_WINDOW_DAYS, CREDIT_EXPIRY_MONTHS };
+export { QUALIFICATION_WINDOW_DAYS, CREDIT_EXPIRY_DAYS };
 
 // Constants
-const DEFAULT_REFERRER_REWARD = 50000; // ₹500 in paise
-const DEFAULT_REFEREE_REWARD = 20000; // ₹200 in paise
-const SERIALIZABLE_MAX_RETRIES = 3;
-
-/**
- * Retries a function that may fail due to Prisma serialization conflicts (P2034).
- * Applies exponential backoff between retries.
- */
-async function withSerializableRetry<T>(
-  fn: () => Promise<T>,
-  maxRetries = SERIALIZABLE_MAX_RETRIES,
-): Promise<T> {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (error) {
-      const isSerializationFailure =
-        error instanceof PrismaNamespace.PrismaClientKnownRequestError &&
-        error.code === "P2034";
-
-      if (!isSerializationFailure || attempt === maxRetries) {
-        throw error;
-      }
-
-      const backoffMs = 50 * 2 ** attempt; // 50ms, 100ms, 200ms
-      await new Promise((resolve) => setTimeout(resolve, backoffMs));
-    }
-  }
-
-  // Unreachable, but satisfies TypeScript
-  throw new Error("withSerializableRetry: exhausted retries");
-}
+// #880 conservative launch: ₹300 each (the referrer reward ramps to ₹500 once
+// unit economics are validated). Role-weighting and the consultant commission
+// waiver arrive in later phases; these are the flat launch baselines.
+const DEFAULT_REFERRER_REWARD = 30000; // ₹300 in paise
+const DEFAULT_REFEREE_REWARD = 30000; // ₹300 in paise
 
 /**
  * Creates or returns an existing referral code for a user.
  */
 export async function createReferralCode(
   userId: string,
-): Promise<ReferralCode> {
+): Promise<ReferralCodeRow> {
   const existing = await prisma.referralCode.findUnique({
     where: { userId },
   });
@@ -162,8 +159,8 @@ export async function generateUniqueCode(
  */
 export async function validateReferralCode(
   code: string,
-  db: Prisma.TransactionClient | typeof prisma = prisma,
-): Promise<ReferralCode | null> {
+  db: Tx | typeof prisma = prisma,
+): Promise<ReferralCodeRow | null> {
   return db.referralCode.findFirst({
     where: {
       OR: [{ code: code.toUpperCase() }, { customCode: code.toUpperCase() }],
@@ -183,7 +180,7 @@ export async function validateReferralCode(
 export async function applyReferralCode(
   newUserId: string,
   code: string,
-): Promise<Referral | null> {
+): Promise<ReferralRow | null> {
   return withSerializableRetry(() =>
     prisma.$transaction(
       async (tx) => {
@@ -257,81 +254,194 @@ export async function processQualifyingAction(
 
         if (!referral || referral.status !== "SIGNED_UP") return;
 
-        // Check if within qualification window
-        const daysSinceSignup = Math.floor(
-          (Date.now() - referral.signedUpAt.getTime()) / (1000 * 60 * 60 * 24),
-        );
+        // #880 — program controls (single-row config). A paused program grants
+        // nothing and leaves the referral SIGNED_UP so it can still qualify once
+        // the program resumes. The monthly budget window rolls over lazily.
+        const period = new Date().toISOString().slice(0, 7); // YYYY-MM
+        const config = await tx.referralProgramConfig.upsert({
+          where: { id: "singleton" },
+          create: { id: "singleton", currentPeriod: period },
+          update: {},
+        });
+        if (!config.isActive) return;
+        const spentThisMonth =
+          config.currentPeriod === period ? config.currentMonthSpentPaise : 0;
+        const budgetRemaining =
+          config.monthlyBudgetPaise === null
+            ? Number.POSITIVE_INFINITY
+            : Math.max(0, config.monthlyBudgetPaise - spentThisMonth);
+        if (budgetRemaining <= 0) return; // month's budget exhausted → defer
 
-        if (daysSinceSignup > QUALIFICATION_WINDOW_DAYS) {
-          await tx.referral.update({
-            where: { id: referral.id },
+        // REF-3 (#692) — claim the reward atomically: status still SIGNED_UP AND
+        // within the qualification window, both asserted in the WHERE. Folding the
+        // window into the guarded write (rather than an app-side Date.now() check
+        // separate from the status guard) makes reward-vs-expire a single decision
+        // against the committed row, closing the gap where a stale read or the
+        // expireStaleReferrals cron disagrees with the app-computed window.
+        const windowCutoff = new Date(
+          Date.now() - QUALIFICATION_WINDOW_DAYS * 24 * 60 * 60 * 1000,
+        );
+        const updated = await tx.referral.updateMany({
+          where: {
+            id: referral.id,
+            status: "SIGNED_UP",
+            signedUpAt: { gte: windowCutoff },
+          },
+          data: {
+            status: "REWARDED",
+            qualifiedAt: new Date(),
+            qualifyingAction: action,
+            // #896 — the *RewardPaidAt timestamps are set below, each only when a
+            // credit row is actually created for that side. The referrer grant can
+            // clamp to 0 (annual cap / monthly budget) and the referee grant is
+            // skipped entirely for CONSULTANT referees, so an unconditional "paid"
+            // stamp here would claim a payment that never happened.
+          },
+        });
+
+        // No reward claimed → either a concurrent call already processed it, or
+        // it's past the window. Expire it iff it's still an un-rewarded SIGNED_UP
+        // past the cutoff (the status guard makes this a no-op against a REWARDED row).
+        if (updated.count === 0) {
+          await tx.referral.updateMany({
+            where: {
+              id: referral.id,
+              status: "SIGNED_UP",
+              signedUpAt: { lt: windowCutoff },
+            },
             data: { status: "EXPIRED" },
           });
           return;
         }
 
-        // Conditional update: only succeeds if status is still SIGNED_UP.
-        // This prevents concurrent calls from both creating rewards.
-        const updated = await tx.referral.updateMany({
-          where: { id: referral.id, status: "SIGNED_UP" },
-          data: {
-            status: "REWARDED",
-            qualifiedAt: new Date(),
-            qualifyingAction: action,
-            referrerRewardPaidAt: new Date(),
-            // FIX #437: Both bonuses awarded together on first paid booking
-            refereeRewardPaidAt: new Date(),
-          },
-        });
+        // Running program spend for this qualification (referrer + referee),
+        // used to honor the monthly budget cap and auto-pause on exhaustion.
+        let spentNow = 0;
 
-        // If no rows updated, another concurrent call already processed this
-        if (updated.count === 0) return;
+        // #896 — only stamp *RewardPaidAt for a side that actually got a credit.
+        let referrerCredited = false;
+        let refereeCredited = false;
 
-        // Give referrer their bonus
-        const referrerReward = referral.referrerRewardAmount;
-        if (referrerReward && referrerReward > 0) {
-          const expiresAt = new Date();
-          expiresAt.setMonth(expiresAt.getMonth() + CREDIT_EXPIRY_MONTHS);
-
-          await tx.referralCredit.create({
-            data: {
+        // Give referrer their bonus. The amount comes from the program config
+        // (the conservative-launch ramp, ₹300 → ₹500), clamped by the annual
+        // per-referrer cap and the remaining monthly budget.
+        const rampedReferrerReward =
+          config.referrerRewardPaise > 0
+            ? config.referrerRewardPaise
+            : (referral.referrerRewardAmount ?? 0);
+        if (rampedReferrerReward > 0) {
+          // #880 — bound a referrer's referral earnings to ANNUAL_REWARD_CAP
+          // over a trailing year; clamp (or skip) the grant if it would exceed.
+          const yearCutoff = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000);
+          const priorCredits = await tx.referralCredit.findMany({
+            where: {
               userId: referral.referralCode.userId,
-              amount: referrerReward,
-              currency: "INR",
               source: "REFERRAL_BONUS",
-              referralId: referral.id,
-              remainingAmount: referrerReward,
-              expiresAt,
+              createdAt: { gte: yearCutoff },
             },
+            select: { amount: true },
           });
+          const earnedThisYear = priorCredits.reduce(
+            (sum, c) => sum + Number(c.amount),
+            0,
+          );
+          const grant = Math.min(
+            rampedReferrerReward,
+            Math.max(0, ANNUAL_REWARD_CAP_PAISE - earnedThisYear),
+            budgetRemaining - spentNow,
+          );
 
-          // Update referral code stats
-          await tx.referralCode.update({
-            where: { id: referral.referralCodeId },
+          if (grant > 0) {
+            const expiresAt = new Date();
+            expiresAt.setDate(expiresAt.getDate() + CREDIT_EXPIRY_DAYS);
+
+            await tx.referralCredit.create({
+              data: {
+                userId: referral.referralCode.userId,
+                amount: grant,
+                currency: "INR",
+                source: "REFERRAL_BONUS",
+                referralId: referral.id,
+                remainingAmount: grant,
+                expiresAt,
+              },
+            });
+
+            // Update referral code stats
+            await tx.referralCode.update({
+              where: { id: referral.referralCodeId },
+              data: {
+                successfulReferrals: { increment: 1 },
+                totalEarned: { increment: grant },
+              },
+            });
+            spentNow += grant;
+            referrerCredited = true;
+          }
+        }
+
+        // FIX #437: Give referee their bonus (deferred from signup), but only
+        // for consultee referees. #880 — a consultant referee's instrument is a
+        // commission waiver on their first sessions (applied in earnings-service),
+        // not a booking credit a seller can't use, so skip the credit for them.
+        const refereeUser = await tx.user.findUnique({
+          where: { id: referral.referredUserId },
+          select: { role: true },
+        });
+        const refereeReward = referral.refereeRewardAmount;
+        if (
+          refereeUser?.role !== "CONSULTANT" &&
+          refereeReward &&
+          refereeReward > 0
+        ) {
+          const grant = Math.min(refereeReward, budgetRemaining - spentNow);
+          if (grant > 0) {
+            const expiresAt = new Date();
+            expiresAt.setDate(expiresAt.getDate() + CREDIT_EXPIRY_DAYS);
+
+            await tx.referralCredit.create({
+              data: {
+                userId: referral.referredUserId,
+                amount: grant,
+                currency: "INR",
+                source: "REFEREE_BONUS",
+                referralId: referral.id,
+                remainingAmount: grant,
+                expiresAt,
+              },
+            });
+            spentNow += grant;
+            refereeCredited = true;
+          }
+        }
+
+        // #896 — stamp paid-at per side, each only when its credit landed. A
+        // clamped/skipped grant leaves the timestamp null so the row never
+        // claims a payment that didn't happen.
+        if (referrerCredited || refereeCredited) {
+          await tx.referral.update({
+            where: { id: referral.id },
             data: {
-              successfulReferrals: { increment: 1 },
-              totalEarned: { increment: referrerReward },
+              ...(referrerCredited ? { referrerRewardPaidAt: new Date() } : {}),
+              ...(refereeCredited ? { refereeRewardPaidAt: new Date() } : {}),
             },
           });
         }
 
-        // FIX #437: Give referee their bonus (deferred from signup)
-        // Previously given immediately in applyReferralCode, now deferred to
-        // first paid booking to prevent fake account farming.
-        const refereeReward = referral.refereeRewardAmount;
-        if (refereeReward && refereeReward > 0) {
-          const expiresAt = new Date();
-          expiresAt.setMonth(expiresAt.getMonth() + CREDIT_EXPIRY_MONTHS);
-
-          await tx.referralCredit.create({
+        // #880 — persist the budget window (lazy monthly rollover) and the
+        // spend, auto-pausing the program when the monthly budget is exhausted
+        // so later qualifications defer until an admin reviews.
+        if (config.monthlyBudgetPaise !== null || config.currentPeriod !== period) {
+          const newSpent = spentThisMonth + spentNow;
+          await tx.referralProgramConfig.update({
+            where: { id: config.id },
             data: {
-              userId: referral.referredUserId,
-              amount: refereeReward,
-              currency: "INR",
-              source: "REFEREE_BONUS",
-              referralId: referral.id,
-              remainingAmount: refereeReward,
-              expiresAt,
+              currentPeriod: period,
+              currentMonthSpentPaise: newSpent,
+              ...(config.monthlyBudgetPaise !== null &&
+              newSpent >= config.monthlyBudgetPaise
+                ? { isActive: false }
+                : {}),
             },
           });
         }
@@ -349,10 +459,10 @@ export async function processQualifyingAction(
  */
 export async function getUserCredits(
   userId: string,
-  db: Prisma.TransactionClient | typeof prisma = prisma,
+  db: Tx | typeof prisma = prisma,
 ): Promise<{
   totalAvailable: number;
-  credits: ReferralCredit[];
+  credits: ReferralCreditRow[];
 }> {
   const credits = await db.referralCredit.findMany({
     where: {
@@ -378,7 +488,7 @@ export async function getUserCredits(
 export async function applyCreditsToPayment(
   userId: string,
   paymentAmount: number,
-  tx: Prisma.TransactionClient,
+  tx: Tx,
   paymentId?: string,
 ): Promise<{ creditsUsed: number; remainingToPay: number }> {
   const { credits } = await getUserCredits(userId, tx);
@@ -404,12 +514,27 @@ export async function applyCreditsToPayment(
 
     // Create ledger entry for accurate per-payment tracking and reversal
     if (paymentId) {
-      await tx.referralCreditUsage.create({
+      const usage = await tx.referralCreditUsage.create({
         data: {
           creditId: credit.id,
           paymentId,
           amount: useAmount,
           originalAmount: useAmount,
+        },
+      });
+
+      // Enterprise (Arch 4-Modified): every credit consumption writes a
+      // matching PaymentLeg so the per-payment leg invariant
+      // (`docs/enterprise/10-money-and-ledger/09-payment-legs.md`) holds for any flow that
+      // mixes referral credits with card / wallet / invoice. `sourceRef`
+      // points at the ReferralCreditUsage row so refund + reversal can
+      // join the credit ledger without scanning by paymentId+credit.
+      await tx.paymentLeg.create({
+        data: {
+          paymentId,
+          source: "REFERRAL_CREDIT",
+          amountPaise: useAmount,
+          sourceRef: usage.id,
         },
       });
     }
@@ -435,13 +560,15 @@ export async function applyCreditsToPayment(
  */
 export async function reverseCreditsForPayment(
   paymentId: string,
-  tx: Prisma.TransactionClient,
+  tx: Tx,
   refundAmount?: number,
   originalPaymentAmount?: number,
 ): Promise<number> {
-  // Find all usage records for this payment from the ledger
+  // Find all usage records for this payment from the ledger. Carry the credit's
+  // expiry so we don't restore onto a credit that has since lapsed (REF-2).
   const usageRecords = await tx.referralCreditUsage.findMany({
     where: { paymentId },
+    include: { credit: { select: { expiresAt: true } } },
   });
 
   if (usageRecords.length === 0) return 0;
@@ -462,15 +589,33 @@ export async function reverseCreditsForPayment(
   if (isPartialRefund) {
     const aggregate = await tx.refund.aggregate({
       where: { paymentId, status: "SUCCEEDED" },
-      _sum: { amount: true },
+      _sum: { amountPaise: true },
     });
-    cumulativeRefunded = aggregate._sum.amount ?? refundAmount ?? 0;
+    // #780 — aggregates bypass the result extension and still return bigint
+    const refundedSum = aggregate._sum?.amountPaise;
+    cumulativeRefunded =
+      refundedSum == null ? (refundAmount ?? 0) : sumPaise(refundedSum);
   }
 
   let totalRestored = 0;
+  let skippedExpired = 0;
+  const now = new Date();
 
   for (const usage of usageRecords) {
     if (usage.amount <= 0) continue;
+
+    // REF-2 (#692) — never resurrect an expired credit. If the credit lapsed
+    // after it was applied, restoring remainingAmount onto it just leaves dead
+    // balance (getUserCredits filters expiry; the expiry cron re-zeroes it).
+    // Skip + log; the usage row stays so the credit reads as still consumed.
+    // (Issuing fresh credit on refund-of-expired is a product decision, not done here.)
+    // `credit` is a required FK relation that the findMany above always includes,
+    // so it is never null here — no optional chain needed.
+    const creditExpiresAt = usage.credit.expiresAt;
+    if (creditExpiresAt && creditExpiresAt.getTime() < now.getTime()) {
+      skippedExpired += usage.amount;
+      continue;
+    }
 
     let restoreAmount: number;
 
@@ -526,6 +671,13 @@ export async function reverseCreditsForPayment(
       `🔄 Restored ${totalRestored} referral credits for ${isPartialRefund ? "partially " : ""}refunded payment ${paymentId}`,
     );
   }
+  if (skippedExpired > 0) {
+    // REF-2 — visibility: credit value (in paise) not returned because the
+    // underlying credit had already expired.
+    console.log(
+      `⏭️  Skipped restoring ${skippedExpired} paise of expired referral credit for refunded payment ${paymentId}`,
+    );
+  }
 
   return totalRestored;
 }
@@ -536,7 +688,7 @@ export async function reverseCreditsForPayment(
 export async function setCustomCode(
   userId: string,
   customCode: string,
-): Promise<ReferralCode | null> {
+): Promise<ReferralCodeRow | null> {
   const referralCode = await prisma.referralCode.findUnique({
     where: { userId },
   });
@@ -566,7 +718,7 @@ export async function setCustomCode(
  */
 export async function getReferralCode(
   userId: string,
-): Promise<ReferralCode | null> {
+): Promise<ReferralCodeRow | null> {
   return prisma.referralCode.findUnique({
     where: { userId },
   });
@@ -578,7 +730,7 @@ export async function getReferralCode(
 export async function getUserReferrals(
   userId: string,
 ): Promise<
-  (Referral & { referredUser: { name: string; image: string | null } })[]
+  (ReferralRow & { referredUser: { name: string; image: string | null } })[]
 > {
   const referralCode = await prisma.referralCode.findUnique({
     where: { userId },
@@ -603,7 +755,7 @@ export async function getUserReferrals(
  */
 export async function getCreditHistory(
   userId: string,
-): Promise<ReferralCredit[]> {
+): Promise<ReferralCreditRow[]> {
   return prisma.referralCredit.findMany({
     where: { userId },
     orderBy: { createdAt: "desc" },
@@ -643,6 +795,70 @@ export async function expireStaleCredits(): Promise<number> {
   });
 
   return result.count;
+}
+
+/**
+ * #880 — proactively roll the monthly referral-budget window. A cron may call
+ * this; the qualification path also rolls it over lazily. Does NOT re-activate
+ * an auto-paused program — re-enabling is an explicit admin action.
+ */
+export async function resetReferralBudgetMonthly(): Promise<void> {
+  const period = new Date().toISOString().slice(0, 7);
+  await prisma.referralProgramConfig.updateMany({
+    where: { currentPeriod: { not: period } },
+    data: { currentPeriod: period, currentMonthSpentPaise: 0 },
+  });
+}
+
+/**
+ * #880 — is this consultant eligible for the referral commission waiver on the
+ * session being settled? True when they are the referee of a live referral AND
+ * this is within their first CONSULTANT_WAIVER_SESSIONS settled (paid) sessions.
+ * The caller passes the same `tx` as the earnings write so the session count is
+ * consistent; org-hosted settlements are excluded by the caller.
+ */
+export async function isConsultantReferralWaiverActive(
+  tx: Tx,
+  consultantProfileId: string,
+): Promise<boolean> {
+  const profile = await tx.consultantProfile.findUnique({
+    where: { id: consultantProfileId },
+    select: { userId: true },
+  });
+  if (!profile) return false;
+
+  // #896 — a still-SIGNED_UP referral only grants the waiver while it's inside
+  // the qualification window; past it the row is stale (the expire cron just
+  // hasn't run yet) and must not waive. REWARDED rows already qualified, so
+  // they carry no window check.
+  const windowCutoff = new Date(
+    Date.now() - QUALIFICATION_WINDOW_DAYS * 24 * 60 * 60 * 1000,
+  );
+  const referral = await tx.referral.findFirst({
+    where: {
+      referredUserId: profile.userId,
+      OR: [
+        { status: "REWARDED" },
+        { status: "SIGNED_UP", signedUpAt: { gte: windowCutoff } },
+      ],
+    },
+    select: { id: true },
+  });
+  if (!referral) return false;
+
+  // Count excludes the row being created (idempotency guarantees this payment
+  // has none yet), so 0/1/2 prior sessions ⇒ waive, 3+ ⇒ full commission.
+  // #896 — exclude org-hosted settlements (the waiver only applies to non-org
+  // sessions, so a HYBRID consultant must not burn quota on org sessions) and
+  // REFUNDED earnings (a refunded session must not consume a waiver slot).
+  const priorSessions = await tx.consultantEarnings.count({
+    where: {
+      consultantProfileId,
+      status: { not: "REFUNDED" },
+      payment: { organizationEarnings: { none: {} } },
+    },
+  });
+  return priorSessions < CONSULTANT_WAIVER_SESSIONS;
 }
 
 /**
@@ -724,7 +940,7 @@ export async function processConsultantBookingReferral(
   const collaboratorUserIds: string[] = [];
 
   if (webinarPlanId) {
-    const collabs = await prisma.webinarCollaborator.findMany({
+    const collabs = await prisma.collaborator.findMany({
       where: { webinarPlanId, status: "ACCEPTED" },
       select: { consultantProfile: { select: { userId: true } } },
     });
@@ -732,7 +948,7 @@ export async function processConsultantBookingReferral(
   }
 
   if (classPlanId) {
-    const collabs = await prisma.classCollaborator.findMany({
+    const collabs = await prisma.collaborator.findMany({
       where: { classPlanId, status: "ACCEPTED" },
       select: { consultantProfile: { select: { userId: true } } },
     });

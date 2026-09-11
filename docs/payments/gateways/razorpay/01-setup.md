@@ -112,14 +112,16 @@ Dashboard > Settings > Webhooks > Add New Webhook
 
 **Events to select**:
 
-| Category           | Events                                                                                                          |
-| ------------------ | --------------------------------------------------------------------------------------------------------------- |
-| Payment            | `payment.captured`, `order.paid`, `payment.failed`                                                              |
-| Refund             | `refund.created`, `refund.processed`, `refund.failed`                                                           |
-| Dispute            | `payment.dispute.created`, `payment.dispute.won`, `payment.dispute.lost`, `payment.dispute.closed`              |
-| Payout (RazorpayX) | `payout.processed`, `payout.reversed`, `payout.rejected`, `payout.queued`, `payout.pending`, `payout.cancelled` |
+| Category           | Events                                                                                                                                                                |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Payment            | `payment.captured`, `order.paid`, `payment.failed`                                                                                                                    |
+| Refund             | `refund.created`, `refund.processed`, `refund.failed`                                                                                                                 |
+| Dispute            | `payment.dispute.created`, `payment.dispute.under_review`, `payment.dispute.action_required`, `payment.dispute.won`, `payment.dispute.lost`, `payment.dispute.closed` |
+| Payout (RazorpayX) | `payout.processed`, `payout.failed`, `payout.reversed`, `payout.rejected`, `payout.queued`, `payout.pending`, `payout.cancelled`                                      |
 
-Copy the webhook secret after creation and store it in the appropriate environment variable.
+This list is the same one the go-live checklist requires, and it is the exact set the dispatcher in `app/api/webhooks/razorpay-dispatch.ts` handles. Omitting `payout.failed` is the expensive mistake, because it is the terminal event that tells the platform a bank refused the transfer; without it the earnings stay batched against a payout that will never arrive.
+
+Copy the webhook secret after creation and store it in the appropriate environment variable. Each mode has its own webhook secret, so the value generated in test mode will reject every live delivery and vice versa. Rotating the secret later is a two-sided change and must follow the grace-window procedure in [05-go-live-checklist.md](./05-go-live-checklist.md), because a hard cutover loses the events signed during the gap and Razorpay disables a webhook that has been failing for 24 hours.
 
 ### Test Mode vs Live Mode
 
@@ -214,3 +216,4 @@ Set the ngrok URL as your webhook endpoint in the Razorpay dashboard.
 - [02-architecture-and-flow.md](./02-architecture-and-flow.md) — Payment flow and revenue split
 - [03-payout-flow.md](./03-payout-flow.md) — RazorpayX payout system
 - [04-kyc-and-onboarding.md](./04-kyc-and-onboarding.md) — KYC requirements
+- [05-go-live-checklist.md](./05-go-live-checklist.md) — What must be true before the first live rupee

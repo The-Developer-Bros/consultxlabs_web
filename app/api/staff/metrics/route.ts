@@ -3,6 +3,7 @@
  * Limited analytics metrics for staff members (excludes revenue data)
  */
 
+import * as Sentry from "@sentry/nextjs";
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 
@@ -11,7 +12,6 @@ export async function GET() {
   try {
     const auth = await requirePrivilegedAuth();
     if (auth.error) return auth.error;
-    const session = auth.session;
 
     const now = new Date();
     const startOfToday = new Date(now.setHours(0, 0, 0, 0));
@@ -144,6 +144,7 @@ export async function GET() {
       },
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "staff" } });
     console.error("Error fetching staff analytics:", error);
     return NextResponse.json(
       { error: "Failed to fetch analytics" },

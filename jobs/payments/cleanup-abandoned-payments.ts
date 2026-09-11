@@ -16,6 +16,8 @@ import {
 
 import fs from "fs";
 import { abortIfMaintenance } from "../../lib/maintenance-cron";
+import * as Sentry from "@sentry/nextjs";
+import { runJob } from "../../lib/observability/job-sentry";
 
 /**
  * Output results to GitHub Actions using environment files
@@ -56,6 +58,7 @@ function outputToGitHubActions(
  */
 async function main(): Promise<void> {
   await abortIfMaintenance("cleanup-abandoned-payments");
+  Sentry.logger.info("job:cleanup-abandoned-payments started");
   const startTime = Date.now();
   console.log(`🚀 Starting cleanup job at ${new Date().toISOString()}`);
 
@@ -88,34 +91,22 @@ async function main(): Promise<void> {
     outputToGitHubActions(paymentResult, consultationResult, overallSuccess);
 
     if (overallSuccess) {
+      Sentry.logger.info("job:cleanup-abandoned-payments finished", {
+        cleanedCount: paymentResult.cleanedCount,
+        errorCount: paymentResult.errorCount,
+        totalProcessed: paymentResult.totalProcessed,
+        consultationCleanedCount: consultationResult.cleanedCount,
+        consultationErrorCount: consultationResult.errorCount,
+      });
       console.log("🎉 Cleanup job completed successfully");
-      process.exit(0);
     } else {
       console.error("❌ Cleanup job completed with errors");
-      process.exit(1);
+      process.exitCode = 1;
     }
-  } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : "Unknown error";
-    console.error("💥 Cleanup job failed:", errorMessage);
-
-    if (process.env.GITHUB_ACTIONS) {
-      const outputFile = process.env.GITHUB_OUTPUT;
-      if (outputFile) {
-        fs.appendFileSync(outputFile, "success=false\n");
-      }
-      console.log(`::error::Cleanup job failed: ${errorMessage}`);
-    }
-
-    process.exit(1);
   } finally {
     await disconnectDatabase();
   }
 }
 
 // Run the cleanup job
-main().catch((error) => {
-  console.error("\n❌ Cleanup job failed:");
-  console.error(error);
-  process.exit(1);
-});
+runJob("cleanup-abandoned-payments", main);

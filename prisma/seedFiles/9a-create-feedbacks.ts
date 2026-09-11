@@ -56,7 +56,7 @@ const FEEDBACK_TEMPLATES: Record<
       "Add multiple timezone support",
       "Enable recurring appointment booking",
       "Add payment plan options",
-      "Implement waitlist notifications",
+      "Show seats remaining on event cards",
       "Add consultant comparison feature",
       "Enable session notes sharing",
     ],

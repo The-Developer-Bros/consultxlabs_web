@@ -99,7 +99,11 @@ const config: Config = {
   // moduleNameMapper: {},
 
   // An array of regexp pattern strings, matched against all module paths before considered 'visible' to the module loader
-  // modulePathIgnorePatterns: [],
+  // Why: pairs with `testPathIgnorePatterns` to keep Jest's haste map from
+  // indexing the agent-worktree copies under `.claude/worktrees/`. Without
+  // this, jest warns "files share their name; please delete one of them"
+  // on every run even though the duplicate tests are skipped.
+  modulePathIgnorePatterns: ["/\\.claude/worktrees/"],
 
   // Activates notifications for test results
   // notify: false,
@@ -168,7 +172,23 @@ const config: Config = {
   // ],
 
   // An array of regexp pattern strings that are matched against all test paths, matched tests are skipped
-  testPathIgnorePatterns: ["/node_modules/", "/__mocks__/", "/setup\\.ts$"],
+  // Why: `.claude/worktrees/` holds short-lived agent-spawned working copies
+  // (gitignored). Their stale, unfinished test files would otherwise be crawled
+  // by Jest's default matcher and run against the canonical `node_modules`,
+  // producing duplicate failures unrelated to the live tree.
+  //
+  // `__tests__/fixtures/` houses shared test fixtures that export helpers
+  // but contain no `describe()` blocks themselves — Jest's default pattern
+  // would try to run them as tests and emit "your test suite must contain
+  // at least one test" failures. Excluding the dir keeps them as plain
+  // modules other test files import.
+  testPathIgnorePatterns: [
+    "/node_modules/",
+    "/__mocks__/",
+    "/setup\\.ts$",
+    "/\\.claude/worktrees/",
+    "/__tests__/fixtures/",
+  ],
 
   // The regexp pattern or array of patterns that Jest uses to detect test files
   // testRegex: [],

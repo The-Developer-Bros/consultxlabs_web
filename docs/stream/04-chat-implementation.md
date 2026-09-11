@@ -61,72 +61,129 @@ Consistent channel ID naming ensures predictable behavior and prevents duplicate
 
 ### Direct Messages
 
-**Format**: `{userId1}-{userId2}` (alphabetically sorted)
+Direct-message ids are derived, never stored. The pair of user ids is put into a
+fixed order and the channel id is built from it, so both participants compute the
+same id independently and the conversation is found rather than recreated.
 
-**Implementation**:
+**Format**: `dm-{idA}-{idB}` for a personal conversation, where `idA` and `idB`
+are the two user ids in **code-unit** order. An organization-scoped conversation
+uses `dmo-{orgDigest}-{pairDigest}` instead, and a personal pair whose ids are
+too long for Stream's 64-character ceiling falls back to a hashed `dmh-` form.
+
+**Implementation**: always call the helper. Do not re-derive the id inline.
 
 ```typescript
-// Alphabetically sort user IDs using localeCompare
-const channelId = [currentUserId, targetUserId]
-  .sort((a, b) => a.localeCompare(b))
-  .join("-");
+import { getDmChannelId } from "@/lib/stream-utils";
+
+const channelId = getDmChannelId(currentUserId, targetUserId, organizationId);
 ```
+
+> **Never sort these ids with `localeCompare`.** It orders by ICU collation,
+> which is case-insensitive at the primary level and depends on the runtime's
+> ICU build and default locale, so the same pair of ids produces different
+> channel ids in different environments. This is not hypothetical: commit
+> `01162093` changed a plain `.sort()` to `.sort((a, b) => a.localeCompare(b))`
+> and silently re-keyed most mixed-case pairs, orphaning their history behind a
+> new empty channel. Better Auth ids are mixed-case and cuids are lowercase, so
+> the two orderings genuinely disagree here. Both variants were still live in
+> production months later. The helper uses `a < b ? [a, b] : [b, a]`, which is
+> code-unit ordering and is stable everywhere.
 
 **Example**:
 
 - User A: `user_abc123`
 - User B: `user_xyz789`
-- Channel ID: `user_abc123-user_xyz789`
+- Channel ID: `dm-user_abc123-user_xyz789` — the `dm-` prefix is part of the id.
+  It was missing from this example, which matters because `isDMChannel`,
+  `getChannelTypeFromId` and `MANAGED_CHANNEL_PREFIXES` all key off it.
 
-**Why Alphabetical Sorting?**
+**Why order the ids at all?**
 
-- Prevents duplicate channels for same conversation
-- Ensures same channel ID regardless of who initiates
-- Enables consistent channel lookup
+- The same pair yields the same id regardless of who initiates, so the
+  conversation is found rather than recreated.
+- Neither participant needs to store or look up the id; both derive it.
 
-### Consultations
+Ordering is **code-unit**, per the warning above — not "alphabetical", which is
+what this section used to say and is exactly the loose reading that led someone
+to reach for `localeCompare`.
 
-**Format**: `consultation-{consultationId}`
+**A self-pair is refused, not ordered.** `getDmChannelId` throws when the two
+ids are equal. `createChannel` de-duplicates its member array through a `Set`,
+so `dm-<a>-<a>` would otherwise become a one-member channel: no counterparty for
+`channelUtils` to name, so the header renders the raw id, and nobody to reply.
 
-**Example**: `consultation-clr4h8x0j0000ab1cdcdef123`
+**Never open a DM by asking Stream for a computed id.** `channel.watch()` posts
+to the same query endpoint `channel.create()` does, so watching an id that does
+not exist *creates* it — as `created_by`, with no members, invisible to the
+sidebar's `{ members: { $in: [me] } }` filter on the next reload. Go through
+`POST /api/stream/channels/open`, which checks eligibility and creates the
+channel with both members.
 
-**Data**:
+### Consultations and subscriptions — no channel of their own
+
+**There is no `consultation-<id>` or `subscription-<id>` channel.** Both reuse
+the pair's DM above.
+
+This section used to document two separate formats with their own member lists.
+They never worked. `createConsultationChannel` minted a DM and always had; the
+`consultation-` id existed only in this document and in a reconciler blocklist.
+Worse, `syncUserEventChannels` built its expected set from webinars, classes and
+DMs while treating both prefixes as MANAGED — so any channel that *did* carry
+one was classified stale and the buyer was removed from it on their very next
+dashboard load. #1134 P0-7 deleted the concept rather than repairing it: the
+pair already has a thread, and removing the second one removed a contradiction
+rather than a feature.
+
+`CONSULTATION_PREFIX` and `SUBSCRIPTION_PREFIX` remain exported from
+`lib/stream-channel-ids.ts` so `getChannelTypeFromId` can still resolve rows
+created before the change. They are deliberately absent from
+`MANAGED_CHANNEL_PREFIXES`, so surviving channels are left alone rather than
+swept.
+
+**What a pair actually gets**: one `messaging` channel per funding context.
 
 ```typescript
 {
   channelType: "messaging",
-  channelId: `consultation-${consultationId}`,
+  channelId: getDmChannelId(consultantId, consulteeId, organizationId),
   members: [consultantId, consulteeId],
   createdById: consultantId,
-  additionalData: { consultation_id: consultationId }
+  additionalData: {
+    dm_consultant_user_id: consultantId,
+    dm_consultee_user_id: consulteeId,
+  },
+  organizationId,
 }
 ```
 
-### Subscriptions
+Ten consultations and three subscriptions between the same two people in the
+same context are one conversation. A personal booking and an org-funded one are
+two, because ADR 19 splits dashboards by org-ness and a single thread cannot
+live in both.
 
-**Format**: `subscription-{subscriptionId}`
+`dm_consultant_user_id` is what decides moderation: `createChannel` grants
+`channel_moderator` to that user. A DM created without it — the peer path — gets
+no moderator at all, deliberately, so a consultee cannot mute or remove the
+consultant (#981).
 
-**Example**: `subscription-clr4h8x0j0000ab1cdcdef456`
+### Who may open one
 
-**Data**:
+A DM requires that the two people have transacted. `canDirectMessage`
+(`lib/stream/dm-eligibility.ts`) is the only implementation of that rule:
 
-```typescript
-{
-  channelType: "messaging",
-  channelId: `subscription-${subscriptionId}`,
-  members: [consultantId, consulteeId],
-  createdById: consultantId,
-  additionalData: { subscription_id: subscriptionId }
-}
-```
+- a `Consultation` or `Subscription` in `APPROVED`,
+  `APPROVED_PENDING_PAYMENT`, `SCHEDULED` or `COMPLETED`, in either direction;
+- or a shared, non-deleted `SlotOfAppointment`.
+
+Permanent once established — a lapsed subscription still leaves the thread
+open. `DM_ELIGIBLE_STATUSES` is shared by the gate, the two search routes, and
+`getDmPairsForUser`. **Those must move together**: the reconciler removes users
+from any managed DM channel absent from the expected set it builds from that
+constant, so narrowing it evicts people from live conversations.
 
 ### Webinars
 
-**Format**: `webinar-{webinarId}`
-
-**Example**: `webinar-clr4h8x0j0000ab1cdcdef789`
-
-**Data**:
+**Format**: `webinar-{webinarId}` · **Stream type**: `team`
 
 ```typescript
 {
@@ -139,26 +196,30 @@ const channelId = [currentUserId, targetUserId]
 }
 ```
 
+Members come from `appointment.slotsOfAppointment[].user`, deduplicated — a
+webinar's registrants are connected to every one of its slots, so the same id
+appears once per slot. The host is added separately and is always a member.
+
 ### Classes
 
-**Format**: `class-{classId}`
+**Format**: `class-{classId}` · **Stream type**: `team`
 
-**Example**: `class-clr4h8x0j0000ab1cdcdef012`
+Identical in shape; the roster walks `class.appointments[].slotsOfAppointment[].user`.
 
-**Data**:
+### Collaborators
 
-```typescript
-{
-  channelType: "team",
-  channelId: `class-${classId}`,
-  channelName: classData.classPlan.title,
-  members: [consultantUserId, ...participantIds],
-  createdById: consultantUserId,
-  additionalData: { class_id: classId }
-}
-```
+**Format**: `collab-{webinar|class}-{planId}` · **Stream type**: `messaging`
 
----
+Host plus `ACCEPTED` collaborators, reconciled two-way against the collaborator
+list on every accept.
+
+### Event channel lifecycle
+
+`jobs/stream/expire-event-channels.ts` freezes a webinar or class channel 7 days
+after its last session ends (readable, not writable) and hard-deletes it at the
+org's `streamRecordingRetentionDays`, default 90. DM channels are deliberately
+excluded: the pair's thread outlives any single booking.
+
 
 ## Creating Channels
 
@@ -241,11 +302,12 @@ export async function createChannel({
 export async function createDirectMessageChannel(
   currentUserId: string,
   targetUserId: string,
+  // Context this conversation belongs to. Omitted or null means personal, and
+  // the channel then carries no org tag. Every caller must pass the same value
+  // the reconciler will later derive, or the two compute different ids.
+  organizationId?: string | null,
 ) {
-  // Create a unique channel ID for the DM using alphabetical sorting
-  const channelId = [currentUserId, targetUserId]
-    .sort((a, b) => a.localeCompare(b))
-    .join("-");
+  const channelId = getDmChannelId(currentUserId, targetUserId, organizationId);
 
   return createChannel({
     channelType: "messaging",
@@ -268,7 +330,6 @@ export async function createWebinarChannel(webinarId: string) {
           consultantProfile: { include: { user: true } },
         },
       },
-      waitlist: { include: { user: true } },
       appointment: {
         include: {
           slotsOfAppointment: { include: { user: true } },
@@ -286,24 +347,16 @@ export async function createWebinarChannel(webinarId: string) {
     throw new Error("Consultant not found for webinar");
   }
 
-  // Get participant IDs from waitlist
-  const waitlistParticipantIds = webinar.waitlist.map((entry) => entry.userId);
-
-  // Get participant IDs from appointments
+  // Members are everyone connected to the webinar's session slots.
   const appointmentParticipantIds =
     webinar.appointment?.slotsOfAppointment?.flatMap((slot) =>
       slot.user.map((user) => user.id),
     ) || [];
 
-  // Combine both sets and remove duplicates
-  const allParticipantIds = Array.from(
-    new Set([...waitlistParticipantIds, ...appointmentParticipantIds]),
-  );
+  const allParticipantIds = Array.from(new Set(appointmentParticipantIds));
 
   console.log(
-    `Webinar ${webinarId} participants: ${waitlistParticipantIds.length} ` +
-      `from waitlist, ${appointmentParticipantIds.length} from appointments, ` +
-      `${allParticipantIds.length} total unique`,
+    `Webinar ${webinarId} participants: ${allParticipantIds.length} unique`,
   );
 
   return createChannel({
@@ -405,7 +458,7 @@ sequenceDiagram
     SA->>DB: Query webinar with participants
     DB-->>SA: Webinar data + participants
 
-    Note over SA: Collect participant IDs<br/>from waitlist & appointments
+    Note over SA: Collect participant IDs<br/>from the event's session slots
     Note over SA: Deduplicate IDs
 
     SA->>Stream: channel.create({<br/>type: "team",<br/>id: "webinar-{id}",<br/>members: [...]<br/>})
@@ -435,7 +488,7 @@ sequenceDiagram
 
 1. **Client Request**: Client calls server action with entity ID
 2. **Database Query**: Fetch entity data with all participants
-3. **Member Collection**: Gather IDs from waitlist and appointments
+3. **Member Collection**: Gather IDs from the event's session slots
 4. **Deduplication**: Remove duplicate participant IDs
 5. **Channel Creation**: Atomically create channel with members
 6. **Error Handling**: If users don't exist, upsert and retry
@@ -588,7 +641,22 @@ await channel.addMembers(members); // Separate operation
 
 ### 3. Consistent ID Formatting
 
-**Good**:
+**Good** — one helper owns the derivation, so every call site agrees:
+
+```typescript
+import { getDmChannelId } from "@/lib/stream-utils";
+
+const channelId = getDmChannelId(userId1, userId2, organizationId);
+```
+
+**Bad** — unsorted, so the two participants compute different ids:
+
+```typescript
+const channelId = `${userId1}-${userId2}`;
+```
+
+**Also bad, and harder to spot** — sorted, but by a locale-dependent
+comparator, so the same pair yields different ids on different machines:
 
 ```typescript
 const channelId = [userId1, userId2]
@@ -596,11 +664,8 @@ const channelId = [userId1, userId2]
   .join("-");
 ```
 
-**Bad**:
-
-```typescript
-const channelId = `${userId1}-${userId2}`; // Not sorted!
-```
+This second form looks correct and has already shipped once. See the note under
+[Direct Messages](#direct-messages) for what it cost.
 
 ### 4. Proper Error Handling
 

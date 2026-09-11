@@ -98,9 +98,9 @@ export function getRecurringEvents(events: EventWithType[]): EventWithType[] {
 export function getEventStatus(event: EventWithType): string {
   switch (event.type) {
     case "Consultation":
-      return event.requestStatus || "Unknown";
+      return event.status || "Unknown";
     case "Subscription":
-      return event.requestStatus || "Unknown";
+      return event.status || "Unknown";
     case "Webinar":
       return event.status || "Unknown";
     case "Class":

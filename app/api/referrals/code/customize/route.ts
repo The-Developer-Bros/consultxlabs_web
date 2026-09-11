@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-server";
 import { setCustomCode } from "@/lib/referrals/service";
@@ -33,6 +34,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ data: result });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "referrals" } });
     console.error("Error setting custom code:", error);
     return NextResponse.json(
       { error: "Failed to set custom code" },

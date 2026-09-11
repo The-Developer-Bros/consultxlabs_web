@@ -58,9 +58,9 @@ export default function MaintenancePage() {
 
         {/* Icon */}
         <div className="mb-6 flex justify-center">
-          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-gray-100">
+          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted">
             <svg
-              className="h-8 w-8 text-gray-600"
+              className="h-8 w-8 text-muted-foreground"
               fill="none"
               viewBox="0 0 24 24"
               strokeWidth={1.5}
@@ -76,17 +76,17 @@ export default function MaintenancePage() {
         </div>
 
         {/* Messaging */}
-        <h1 className="mb-3 text-2xl font-semibold tracking-tight text-gray-900">
+        <h1 className="mb-3 text-fluid-3xl font-semibold tracking-tight text-foreground">
           We&apos;re improving things
         </h1>
-        <p className="mb-6 text-gray-600">
+        <p className="mb-6 text-muted-foreground">
           {reason ||
             "Familiarise is undergoing scheduled maintenance. We'll be back shortly with a better experience."}
         </p>
 
         {/* ETA */}
         {eta && (
-          <div className="mb-8 rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-gray-700 shadow-sm">
+          <div className="mb-8 rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground shadow-sm">
             <span className="font-medium">Estimated return:</span>{" "}
             {formatEta(eta)}
           </div>
@@ -94,12 +94,12 @@ export default function MaintenancePage() {
 
         {/* Progress indicator */}
         <div className="mb-8 flex justify-center gap-1.5">
-          <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400 [animation-delay:0ms]" />
-          <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400 [animation-delay:150ms]" />
-          <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400 [animation-delay:300ms]" />
+          <div className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground/70 [animation-delay:0ms]" />
+          <div className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground/70 [animation-delay:150ms]" />
+          <div className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground/70 [animation-delay:300ms]" />
         </div>
 
-        <p className="text-xs text-gray-400">
+        <p className="text-xs text-muted-foreground/70">
           This page auto-refreshes every 30 seconds
         </p>
       </div>

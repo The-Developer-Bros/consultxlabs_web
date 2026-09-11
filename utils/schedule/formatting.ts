@@ -11,6 +11,7 @@ import {
   sortSlotsByTime,
 } from "@/utils/dateTimeUtils";
 import { dateToMinuteUtc } from "@/utils/slotAllocation/slotTimeUtils";
+import { resolveOvernightStatus } from "@/utils/schedule/overnight";
 import { isValidTimeRange } from "@/utils/timeSlotValidation";
 import { DayOfWeek } from "@prisma/client";
 import type { CustomSlot, SlotsType, WeeklySlot } from "./types";
@@ -21,16 +22,16 @@ import type { CustomSlot, SlotsType, WeeklySlot } from "./types";
 export interface WeeklySlotApiFormat {
   dayOfWeekforStartTimeInUTC: string;
   dayOfWeekforEndTimeInUTC: string;
-  slotStartTimeInUTC: string;
-  slotEndTimeInUTC: string;
+  startsAt: string;
+  endsAt: string;
 }
 
 /**
  * API format for custom (date-specific) slots
  */
 export interface CustomSlotApiFormat {
-  slotStartTimeInUTC: string;
-  slotEndTimeInUTC: string;
+  startsAt: string;
+  endsAt: string;
 }
 
 /**
@@ -51,26 +52,19 @@ const getNextDayOfWeek = (dayOfWeek: string): string => {
 };
 
 /**
- * Shift a day of the week by an offset (positive or negative).
- */
-const shiftDayOfWeek = (dayOfWeek: string, offset: number): string => {
-  const days = [
-    "MONDAY",
-    "TUESDAY",
-    "WEDNESDAY",
-    "THURSDAY",
-    "FRIDAY",
-    "SATURDAY",
-    "SUNDAY",
-  ];
-  const idx = days.indexOf(dayOfWeek);
-  return days[(((idx + offset) % 7) + 7) % 7];
-};
-
-/**
  * Formats slots for API submission (dashboard save path).
  * Converts local times to UTC and handles overnight slot detection.
  * Overnight slots produce a single record with startDay !== endDay.
+ *
+ * THROWS on a formatting failure, deliberately. This used to carry three nested
+ * catches that degraded instead: a per-slot one dropped the offending slot from
+ * the payload, and an outer one returned `[]` for the whole schedule. The result
+ * is a PUT body (SettingsTab.tsx), so degrading here does not mean "render less"
+ * — it means SAVE less. A single throwing slot silently vanished from the
+ * consultant's availability, and the outer catch wiped it entirely; SettingsTab
+ * then refetched and displayed the wiped state as "what was actually saved". An
+ * availability save has to be all-or-nothing, and the caller already has a
+ * try/catch with a destructive toast to fail into. (#1125)
  *
  * @param slots - The slots to format (keyed by day or date)
  * @param isWeekly - Whether these are weekly recurring slots
@@ -82,148 +76,60 @@ export function formatSlotsForApi(
   isWeekly: boolean,
   timezone: string = "UTC",
 ): (WeeklySlotApiFormat | CustomSlotApiFormat)[] {
-  try {
-    return Object.entries(slots)
-      .filter(([key, daySlots]) => {
-        // Ensure we have valid key and slots array
-        return key && Array.isArray(daySlots) && daySlots.length > 0;
-      })
-      .flatMap(([key, daySlots]) => {
-        // Sort slots chronologically before processing
-        const sortedSlots = sortSlotsByTime(daySlots);
+  return Object.entries(slots)
+    .filter(([key, daySlots]) => {
+      // Ensure we have valid key and slots array
+      return key && Array.isArray(daySlots) && daySlots.length > 0;
+    })
+    .flatMap(([key, daySlots]) => {
+      // Sort slots chronologically before processing
+      const sortedSlots = sortSlotsByTime(daySlots);
 
-        const validSlots = sortedSlots.filter((slot) => {
-          // Comprehensive slot validation
-          return (
-            slot &&
-            typeof slot === "object" &&
-            slot.isValid === true &&
-            slot.startTime &&
-            slot.endTime &&
-            typeof slot.startTime === "string" &&
-            typeof slot.endTime === "string" &&
-            isValidTimeRange(slot.startTime, slot.endTime)
-          );
-        });
-
-        if (isWeekly) {
-          // flatMap because formatWeeklySlot returns an array (may be empty on error)
-          return validSlots.flatMap((slot) => {
-            try {
-              return formatWeeklySlot(slot, key, timezone);
-            } catch (error) {
-              console.error("Error formatting weekly slot for API:", error, {
-                key,
-                slot,
-              });
-              return [];
-            }
-          });
-        } else {
-          return validSlots
-            .map((slot) => {
-              try {
-                return formatCustomSlot(slot, key, timezone);
-              } catch (error) {
-                console.error("Error formatting custom slot for API:", error, {
-                  key,
-                  slot,
-                });
-                return null;
-              }
-            })
-            .filter(Boolean) as CustomSlotApiFormat[];
-        }
+      const validSlots = sortedSlots.filter((slot) => {
+        // Comprehensive slot validation
+        return (
+          slot &&
+          typeof slot === "object" &&
+          slot.isValid === true &&
+          slot.startTime &&
+          slot.endTime &&
+          typeof slot.startTime === "string" &&
+          typeof slot.endTime === "string" &&
+          isValidTimeRange(slot.startTime, slot.endTime)
+        );
       });
-  } catch (error) {
-    console.error("Error in formatSlotsForApi:", error, { slots, isWeekly });
-    return [];
-  }
+
+      if (isWeekly) {
+        // flatMap because formatWeeklySlot returns an array
+        return validSlots.flatMap((slot) =>
+          formatWeeklySlot(slot, key, timezone),
+        );
+      }
+      return validSlots.map((slot) => formatCustomSlot(slot, key, timezone));
+    });
 }
 
 /**
  * Formats a single weekly slot for API submission.
- * Overnight slots produce a single record with startDay !== endDay.
  *
- * Handles timezone edge cases where a slot that is overnight in local time
- * may be same-day in UTC (e.g., IST 23:00→02:00 = UTC 17:30→20:30),
- * and vice versa.
+ * A thin adapter over `weeklySlotForSave`: the two save paths (this one, and
+ * the onboarding server action) build exactly the same row and differ only in
+ * the envelope they hand to their caller. `dayOfWeekforStartTimeInUTC` keeps
+ * its historical name because the PUT body's Zod schema and the settings form
+ * still speak it, but it carries `startDay` — the consultant's LOCAL day.
  */
 function formatWeeklySlot(
   slot: { startTime: string; endTime: string; isOvernightUTC?: boolean },
   dayKey: string,
   timezone: string,
 ): WeeklySlotApiFormat[] {
-  const dayOfWeek = dayKey.toUpperCase();
-  const validDays = [
-    "MONDAY",
-    "TUESDAY",
-    "WEDNESDAY",
-    "THURSDAY",
-    "FRIDAY",
-    "SATURDAY",
-    "SUNDAY",
-  ];
-
-  if (!validDays.includes(dayOfWeek)) {
-    throw new Error(`Invalid day of week: ${dayOfWeek}`);
-  }
-
-  const baseDate = "1970-01-01";
-  const nextDate = "1970-01-02";
-  // Slot is overnight if local times cross midnight OR if it was overnight in
-  // UTC but appears same-day after timezone conversion (isOvernightUTC flag).
-  const overnight =
-    isOvernight(slot.startTime, slot.endTime) || !!slot.isOvernightUTC;
-
-  const startUTC = convertTimezoneToUtc(slot.startTime, baseDate, timezone);
-  if (!startUTC) return [];
-
-  const endUTC = overnight
-    ? slot.endTime === "00:00"
-      ? convertTimezoneToUtc("00:00", nextDate, timezone)
-      : convertTimezoneToUtc(slot.endTime, nextDate, timezone)
-    : convertTimezoneToUtc(slot.endTime, baseDate, timezone);
-  if (!endUTC) return [];
-
-  // Extract UTC minutes — these are always correct regardless of epoch dates
-  const startMin = dateToMinuteUtc(new Date(startUTC));
-  const endMin = dateToMinuteUtc(new Date(endUTC));
-
-  // Determine the actual UTC start day.
-  // For isOvernightUTC slots the day key IS the DB's UTC startDay — use it directly.
-  // For other slots, compute day offset from the timezone conversion.
-  let actualStartDay: string;
-  if (slot.isOvernightUTC) {
-    actualStartDay = dayOfWeek;
-  } else {
-    const baseDateMs = new Date(baseDate + "T00:00:00Z").getTime();
-    const startDayOffset = Math.floor(
-      (new Date(startUTC).getTime() - baseDateMs) / 86400000,
-    );
-    actualStartDay = shiftDayOfWeek(dayOfWeek, startDayOffset);
-  }
-
-  // Determine if actually overnight in UTC from the minutes
-  const isOvernightInUtc = startMin >= endMin;
-
-  if (isOvernightInUtc) {
-    return [
-      {
-        dayOfWeekforStartTimeInUTC: actualStartDay,
-        dayOfWeekforEndTimeInUTC: getNextDayOfWeek(actualStartDay),
-        slotStartTimeInUTC: startUTC,
-        slotEndTimeInUTC: endUTC,
-      },
-    ];
-  }
-
+  const row = weeklySlotForSave(slot, dayKey, timezone);
   return [
     {
-      dayOfWeekforStartTimeInUTC: actualStartDay,
-      dayOfWeekforEndTimeInUTC: actualStartDay,
-      slotStartTimeInUTC: startUTC,
-      slotEndTimeInUTC: endUTC,
+      dayOfWeekforStartTimeInUTC: row.startDay,
+      dayOfWeekforEndTimeInUTC: row.endDay,
+      startsAt: row.startsAtUtc,
+      endsAt: row.endsAtUtc,
     },
   ];
 }
@@ -236,7 +142,7 @@ function formatCustomSlot(
   slot: { startTime: string; endTime: string },
   dateKey: string,
   timezone: string,
-): CustomSlotApiFormat | null {
+): CustomSlotApiFormat {
   const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
   if (!dateRegex.test(dateKey)) {
     throw new Error(`Invalid date format: ${dateKey}`);
@@ -257,14 +163,114 @@ function formatCustomSlot(
     slot.startTime, // startTimeStr for overnight detection
   );
 
-  // If conversion failed, return null to filter out this slot
+  // Throws rather than returning null, which the caller then filtered away.
+  // `convertTimezoneToUtcWithOvernight` returns "" for both an unparseable time
+  // and a caught conversion error, so a null here was indistinguishable from
+  // "this slot is fine but omitted" — and it was omitted from a SAVE payload.
+  // Dropping a boundary the consultant typed is not a degradation we get to
+  // make on their behalf. (#1125)
   if (!startTimeUtc || !endTimeUtc) {
-    return null;
+    throw new Error(
+      `Could not convert slot ${slot.startTime}-${slot.endTime} on ${dateKey} to UTC in ${timezone}`,
+    );
   }
 
   return {
-    slotStartTimeInUTC: startTimeUtc,
-    slotEndTimeInUTC: endTimeUtc,
+    startsAt: startTimeUtc,
+    endsAt: endTimeUtc,
+  };
+}
+
+/** A save-ready weekly row, plus the UTC instants the PUT body speaks in. */
+export type WeeklySlotForSave = WeeklySlot & {
+  startsAtUtc: string;
+  endsAtUtc: string;
+};
+
+/**
+ * Builds the one canonical weekly row from a local HH:MM slot and the day key
+ * the consultant typed it under.
+ *
+ * #1343 — there were two builders and they disagreed about what `startDay`
+ * means. This one shifted the day forward or back by the UTC day the converted
+ * instant landed on, storing the UTC day; `buildWeeklySlotsForSave` stored the
+ * local day; the validator, the allocator and the settings loader all read the
+ * local day. For a consultant in IST every row starting before 05:30 local
+ * therefore walked back one weekday on every save — Monday 01:00 was saved as
+ * Sunday, reloaded into Sunday's form row, and saved again as Saturday. The
+ * day key IS the day the consultant meant, so it is stored verbatim and the
+ * UTC weekday is derived per occurrence from the row's frozen offset
+ * (`utils/schedule/weekly-projection.ts`).
+ *
+ * `endDay` still records whether the row crosses midnight IN UTC, because that
+ * is what `validateWeeklySlotTimeOrder` and the overlap SQL require of the
+ * stored pair: an IST 23:00→02:00 slot is same-day in UTC (17:30→20:30) and is
+ * stored as one same-day row.
+ *
+ * THROWS on a conversion failure rather than dropping the slot — see
+ * `formatSlotsForApi`'s contract note (#1125); both save paths feed a payload,
+ * so degrading here means saving less than the consultant typed.
+ */
+export function weeklySlotForSave(
+  slot: { startTime: string; endTime: string; isOvernightUTC?: boolean },
+  dayKey: string,
+  timezone: string,
+): WeeklySlotForSave {
+  const dayOfWeek = dayKey.toUpperCase();
+  const validDays: string[] = Object.values(DayOfWeek);
+  if (!validDays.includes(dayOfWeek)) {
+    throw new Error(`Invalid day of week: ${dayOfWeek}`);
+  }
+  const startDay = dayOfWeek as DayOfWeek;
+
+  const baseDate = "1970-01-01";
+  const nextDate = "1970-01-02";
+  // #503 item 2 — canonical resolver replaces the inline OR of two rules.
+  const { isOvernight: overnight } = resolveOvernightStatus({
+    startTime: slot.startTime,
+    endTime: slot.endTime,
+    isOvernightUTC: slot.isOvernightUTC,
+  });
+
+  // convertTimezoneToUtc returns "" for both an unparseable time and a caught
+  // conversion error (an unusable timezone reaches it that way), so an empty
+  // string can never be distinguished from a slot legitimately omitted. (#1125)
+  const startsAtUtc = convertTimezoneToUtc(slot.startTime, baseDate, timezone);
+  if (!startsAtUtc) {
+    throw new Error(
+      `Could not convert weekly slot start ${slot.startTime} on ${dayOfWeek} to UTC in ${timezone}`,
+    );
+  }
+
+  const endsAtUtc = convertTimezoneToUtc(
+    slot.endTime,
+    overnight ? nextDate : baseDate,
+    timezone,
+  );
+  if (!endsAtUtc) {
+    throw new Error(
+      `Could not convert weekly slot end ${slot.endTime} on ${dayOfWeek} to UTC in ${timezone}`,
+    );
+  }
+
+  // UTC minutes are correct regardless of which epoch date carried them.
+  const startTimeUtc = dateToMinuteUtc(new Date(startsAtUtc));
+  const endTimeUtc = dateToMinuteUtc(new Date(endsAtUtc));
+
+  const crossesMidnightUtc = resolveOvernightStatus({
+    startTimeUtc,
+    endTimeUtc,
+  }).isOvernight;
+
+  return {
+    startDay,
+    endDay: crossesMidnightUtc
+      ? (getNextDayOfWeek(startDay) as DayOfWeek)
+      : startDay,
+    startTimeUtc,
+    endTimeUtc,
+    startsAtUtc,
+    endsAtUtc,
   };
 }
 
@@ -278,53 +284,15 @@ export function buildWeeklySlotsForSave(
   slots: SlotsType,
   timezone: string,
 ): WeeklySlot[] {
-  const baseDate = "1970-01-01";
-  const nextDate = "1970-01-02";
-
-  return Object.entries(slots).flatMap(([day, daySlots]) => {
-    return sortSlotsByTime(daySlots)
+  return Object.entries(slots).flatMap(([day, daySlots]) =>
+    sortSlotsByTime(daySlots)
       .filter((s) => s.startTime && s.endTime && s.isValid)
-      .flatMap((slot): WeeklySlot[] => {
-        const overnight = isOvernight(slot.startTime, slot.endTime);
-        const startUTC = convertTimezoneToUtc(
-          slot.startTime,
-          baseDate,
-          timezone,
-        );
-        const endUTC = convertTimezoneToUtc(
-          slot.endTime,
-          overnight ? nextDate : baseDate,
-          timezone,
-        );
-        if (!startUTC || !endUTC) return [];
-
-        const startMinutes = dateToMinuteUtc(new Date(startUTC));
-        const endMinutes = dateToMinuteUtc(new Date(endUTC));
-        const startDay = day.toUpperCase() as DayOfWeek;
-
-        if (overnight) {
-          const endDay = getNextDayOfWeek(startDay) as DayOfWeek;
-          // Single overnight record with startDay !== endDay
-          return [
-            {
-              startDay,
-              endDay,
-              startTimeUtc: startMinutes,
-              endTimeUtc: endMinutes,
-            },
-          ];
-        }
-
-        return [
-          {
-            startDay,
-            endDay: startDay,
-            startTimeUtc: startMinutes,
-            endTimeUtc: endMinutes,
-          },
-        ];
-      });
-  });
+      .map((slot) => {
+        const { startDay, endDay, startTimeUtc, endTimeUtc } =
+          weeklySlotForSave(slot, day, timezone);
+        return { startDay, endDay, startTimeUtc, endTimeUtc };
+      }),
+  );
 }
 
 /**

@@ -47,24 +47,24 @@ const StaffReviewForm: React.FC<Props> = ({
       <div className="space-y-6">
         <div className="space-y-2">
           <div className="flex items-center justify-between border-b pb-2">
-            <h3 className="font-semibold text-lg">Personal Information</h3>
+            <h3 className="font-semibold text-fluid-lg">Personal Information</h3>
             {renderEditButton(0, "Personal Information")}
           </div>
-          <div className="grid grid-cols-2 gap-2 text-sm">
+          <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
             <p className="text-muted-foreground">Name:</p>
-            <p>{formData.name}</p>
+            <p className="min-w-0 break-words">{formData.name}</p>
             <p className="text-muted-foreground">Email:</p>
-            <p>{formData.email}</p>
+            <p className="min-w-0 break-words">{formData.email}</p>
             {formData.phone && (
               <>
                 <p className="text-muted-foreground">Phone:</p>
-                <p>{formData.phone}</p>
+                <p className="min-w-0 break-words">{formData.phone}</p>
               </>
             )}
             {formData.address && (
               <>
                 <p className="text-muted-foreground">Address:</p>
-                <p>{formData.address}</p>
+                <p className="min-w-0 break-words">{formData.address}</p>
               </>
             )}
           </div>
@@ -72,24 +72,30 @@ const StaffReviewForm: React.FC<Props> = ({
 
         <div className="space-y-2">
           <div className="flex items-center justify-between border-b pb-2">
-            <h3 className="font-semibold text-lg">Staff Profile</h3>
+            <h3 className="font-semibold text-fluid-lg">Staff Profile</h3>
             {renderEditButton(1, "Staff Profile")}
           </div>
-          <div className="grid grid-cols-2 gap-2 text-sm">
+          <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
             <p className="text-muted-foreground">Department:</p>
-            <p>{formData.department}</p>
+            <p className="min-w-0 break-words">{formData.department}</p>
             <p className="text-muted-foreground">Position:</p>
-            <p>{formData.position}</p>
+            <p className="min-w-0 break-words">{formData.position}</p>
           </div>
         </div>
 
         <div className="space-y-2">
-          <h3 className="font-semibold text-lg border-b pb-2">Agreements</h3>
-          <div className="grid grid-cols-2 gap-2 text-sm">
+          <h3 className="font-semibold text-fluid-lg border-b pb-2">
+            Agreements
+          </h3>
+          <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
             <p className="text-muted-foreground">Terms of Service:</p>
-            <p>{formData.termsAccepted ? "Accepted" : "Not accepted"}</p>
+            <p className="min-w-0 break-words">
+              {formData.termsAccepted ? "Accepted" : "Not accepted"}
+            </p>
             <p className="text-muted-foreground">Privacy Policy:</p>
-            <p>{formData.privacyAccepted ? "Accepted" : "Not accepted"}</p>
+            <p className="min-w-0 break-words">
+              {formData.privacyAccepted ? "Accepted" : "Not accepted"}
+            </p>
           </div>
         </div>
       </div>

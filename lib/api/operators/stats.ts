@@ -6,7 +6,7 @@
  * `app/api/staff/stats/route.ts` to give a single source of truth and
  * eliminate drift between the two dashboards' numbers.
  *
- * Future work (see `docs/enterprise/00-canonical-design.md` follow-ups):
+ * Future work (see `docs/enterprise/00-foundations/01-overview.md` follow-ups):
  * extract similar shared functions for payments listing, invoice listing,
  * verification queue, etc. The pattern is:
  *   1. Put the query/aggregation in `lib/api/operators/<resource>.ts`.
@@ -16,6 +16,7 @@
 
 import prisma from "@/lib/prisma";
 import { PaymentStatus, SupportTicketStatus } from "@prisma/client";
+import { sumPaise } from "@/lib/payments/utils/money";
 
 export type OperatorDashboardStats = {
   totalPayments: number;
@@ -56,7 +57,7 @@ function fetchRecentRefunds() {
     orderBy: { createdAt: "desc" },
     select: {
       id: true,
-      amount: true,
+      amountPaise: true,
       currency: true,
       status: true,
       paymentGateway: true,
@@ -109,7 +110,7 @@ export async function getOperatorDashboardStats(): Promise<OperatorDashboardStat
       _sum: { amount: true },
       where: { paymentStatus: PaymentStatus.PENDING },
     }),
-    prisma.refund.aggregate({ _sum: { amount: true } }),
+    prisma.refund.aggregate({ _sum: { amountPaise: true } }),
     prisma.payment.groupBy({
       by: ["paymentGateway"],
       _count: true,
@@ -126,12 +127,12 @@ export async function getOperatorDashboardStats(): Promise<OperatorDashboardStat
 
   return {
     totalPayments,
-    totalPaymentsValue: paymentsAggregation._sum.amount ?? 0,
+    totalPaymentsValue: sumPaise(paymentsAggregation._sum.amount),
     pendingPayments,
-    pendingPaymentsValue: pendingPaymentsAggregation._sum.amount ?? 0,
+    pendingPaymentsValue: sumPaise(pendingPaymentsAggregation._sum.amount),
     expiredPayments,
     totalRefunds,
-    totalRefundsValue: refundsAggregation._sum.amount ?? 0,
+    totalRefundsValue: sumPaise(refundsAggregation._sum?.amountPaise),
     activeDisputes,
     totalDisputes,
     recentPayments,
@@ -150,8 +151,10 @@ export async function getOperatorDashboardStats(): Promise<OperatorDashboardStat
 // (pending reviews) rather than payments. Keeping the staff variant
 // separate avoids forcing one giant union type on either caller.
 
-export type StaffDashboardRecentTicket = {
+type StaffDashboardRecentTicket = {
   id: string;
+  /** #705 — the reference staff and the user name the ticket by. */
+  referenceNumber: string | null;
   subject: string;
   user: string;
   userImage: string | null;
@@ -203,6 +206,7 @@ export async function getStaffDashboardStats(): Promise<StaffDashboardStats> {
     prisma.consultantReview.count({
       where: {
         createdAt: { gte: weekStart },
+        deletedAt: null,
       },
     }),
     prisma.supportTicket.count({
@@ -241,6 +245,7 @@ export async function getStaffDashboardStats(): Promise<StaffDashboardStats> {
     resolvedToday,
     recentTickets: recentTickets.map((ticket) => ({
       id: ticket.id,
+      referenceNumber: ticket.referenceNumber,
       subject: ticket.title,
       user: ticket.user.name || ticket.user.email || "Unknown",
       userImage: ticket.user.image,

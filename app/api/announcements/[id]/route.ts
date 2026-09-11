@@ -1,7 +1,12 @@
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
+import { revalidateTag } from "next/cache";
 import prisma from "@/lib/prisma";
+import { hasBackofficePermission } from "@/lib/auth/backoffice-permissions";
+import type { UserRole } from "@prisma/client";
 
 import { getSession } from "@/lib/auth-server";
+import { ANNOUNCEMENTS_TAG } from "@/lib/cache-tags";
 interface RouteParams {
   params: Promise<{ id: string }>;
 }
@@ -21,7 +26,13 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       );
     }
 
-    if (!["STAFF", "ADMIN"].includes(session.user.role)) {
+    // Announcements fan out to every user (`notifyGeneralAnnouncement`), so
+    // BACKOFFICE_PERMISSIONS makes them ADMIN-only. The nav already hid the
+    // surface from staff; the route accepted the call regardless.
+    if (!hasBackofficePermission(
+      session.user.role as UserRole,
+      "announcements.manage",
+    )) {
       return NextResponse.json(
         { success: false, error: "Forbidden" },
         { status: 403 },
@@ -79,11 +90,18 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       },
     });
 
+    // Invalidate the cached banner read so the edit shows immediately.
+    revalidateTag(ANNOUNCEMENTS_TAG);
+
     return NextResponse.json({
       success: true,
       data: announcement,
     });
   } catch (error) {
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "notifications" } },
+    );
     console.error("Update announcement error:", error);
     return NextResponse.json(
       { success: false, error: "Failed to update announcement" },
@@ -107,7 +125,13 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       );
     }
 
-    if (!["STAFF", "ADMIN"].includes(session.user.role)) {
+    // Announcements fan out to every user (`notifyGeneralAnnouncement`), so
+    // BACKOFFICE_PERMISSIONS makes them ADMIN-only. The nav already hid the
+    // surface from staff; the route accepted the call regardless.
+    if (!hasBackofficePermission(
+      session.user.role as UserRole,
+      "announcements.manage",
+    )) {
       return NextResponse.json(
         { success: false, error: "Forbidden" },
         { status: 403 },
@@ -131,11 +155,18 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       where: { id },
     });
 
+    // Invalidate the cached banner read so the removal shows immediately.
+    revalidateTag(ANNOUNCEMENTS_TAG);
+
     return NextResponse.json({
       success: true,
       message: "Announcement deleted successfully",
     });
   } catch (error) {
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "notifications" } },
+    );
     console.error("Delete announcement error:", error);
     return NextResponse.json(
       { success: false, error: "Failed to delete announcement" },

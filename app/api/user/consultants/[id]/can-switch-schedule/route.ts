@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/nextjs";
 import prisma from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 import { checkActiveAppointments } from "../../utils/consultant-appointments";
@@ -52,6 +53,7 @@ export async function GET(
       currentScheduleType: consultant.scheduleType,
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "user" } });
     console.error("Error checking schedule switch eligibility:", error);
     return NextResponse.json(
       { error: "Internal server error" },

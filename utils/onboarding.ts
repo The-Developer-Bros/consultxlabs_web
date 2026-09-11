@@ -8,6 +8,7 @@ import {
   AchievementType,
 } from "@prisma/client";
 import { experienceValidation } from "@/schemas/shared";
+import { DateOfBirthSchema } from "@/lib/compliance/age";
 import {
   WeeklySlotSchema,
   CustomSlotSchema,
@@ -19,6 +20,7 @@ import {
   EducationSchema,
   CertificationSchema,
   CareerStageEnum,
+  LONG_FORM_TEXT_MAX,
 } from "@/schemas/user";
 
 // ============================================================================
@@ -37,12 +39,18 @@ export const SlotCustomCreateInputSchema = CustomSlotSchema;
 export const AchievementCreateInputSchema = z.object({
   id: z.string().optional(),
   title: z.string().min(1, "Achievement title is required"),
-  description: z.string().optional(),
+  // Capped like the other pasteable free-text fields — see the note on
+  // LONG_FORM_TEXT_MAX in schemas/user.ts.
+  description: z
+    .string()
+    .max(
+      LONG_FORM_TEXT_MAX,
+      `Description must be ${LONG_FORM_TEXT_MAX} characters or less`,
+    )
+    .optional(),
   url: z.string().url().or(z.literal("")).optional(),
   imageUrl: z.string().url().or(z.literal("")).optional(),
-  achievementType: z
-    .nativeEnum(AchievementType)
-    .default(AchievementType.OTHER),
+  achievementType: z.nativeEnum(AchievementType).default(AchievementType.OTHER),
 });
 
 // Scalar consultant fields — picked from the single source of truth
@@ -103,8 +111,8 @@ const prismaRelationsSchema = z.object({
 // SERVER INPUT SCHEMAS (Prisma-shaped, used by server processing)
 // ============================================================================
 
-export const BaseConsultantProfileCreateInputSchema = consultantScalarFields
-  .merge(prismaRelationsSchema);
+export const BaseConsultantProfileCreateInputSchema =
+  consultantScalarFields.merge(prismaRelationsSchema);
 
 export const ConsultantProfileCreateObjectSchema = z.object({
   create: BaseConsultantProfileCreateInputSchema,
@@ -140,7 +148,7 @@ export const OnboardingBaseSchema = z.object({
   timezone: z.string().optional(),
   onlineStatus: z.boolean().optional().default(false),
   onboardingCompleted: z.boolean().optional().default(false),
-  dateOfBirth: z.coerce.date().optional().nullable(),
+  dateOfBirth: DateOfBirthSchema,
   gender: z.nativeEnum(Gender).optional().nullable(),
   city: z.string().optional(),
   country: z.string().optional(),
@@ -179,6 +187,15 @@ export const OnboardingDataSchema = z.discriminatedUnion("role", [
     staffProfile: z.undefined().optional(),
     adminProfile: AdminProfileCreateObjectSchema.optional(),
   }),
+  OnboardingBaseSchema.extend({
+    role: z.literal(UserRole.ORG_WORKSPACE),
+    consultantProfile: z.undefined().optional(),
+    consulteeProfile: z.undefined().optional(),
+    staffProfile: z.undefined().optional(),
+    // ORG_WORKSPACE onboarding no longer collects org fields — the user is
+    // marked onboarded as ORG_WORKSPACE and redirected to
+    // /dashboard/organization/create where the full wizard runs.
+  }),
 ]);
 
 // ============================================================================
@@ -208,7 +225,7 @@ export const FrontendOnboardingBaseSchema = z.object({
   onlineStatus: z.boolean().default(false),
   onboardingCompleted: z.boolean().default(false),
   role: z.nativeEnum(UserRole),
-  dateOfBirth: z.coerce.date().optional().nullable(),
+  dateOfBirth: DateOfBirthSchema,
   gender: z.nativeEnum(Gender).optional().nullable(),
   city: z.string().optional(),
   country: z.string().optional(),
@@ -228,7 +245,7 @@ export const PersonalInfoAndRoleFormSchema = z.object({
   role: z.nativeEnum(UserRole),
   onlineStatus: z.boolean().optional(),
   onboardingCompleted: z.boolean().optional(),
-  dateOfBirth: z.coerce.date().optional().nullable(),
+  dateOfBirth: DateOfBirthSchema,
   gender: z.nativeEnum(Gender).optional().nullable(),
   city: z.string().optional(),
   country: z.string().optional(),
@@ -237,15 +254,22 @@ export const PersonalInfoAndRoleFormSchema = z.object({
 });
 
 // Consultant form: scalar fields from source + frontend relational fields + stricter description
-export const ConsultantProfileFormSchema = consultantScalarFields
-  .extend({
-    description: z.string().min(1, "Description is required"),
-    domain: domainRefSchema,
-    subDomains: z.array(subDomainRefSchema).optional(),
-    tags: z.array(tagRefSchema).optional(),
-    weeklySlots: z.array(WeeklySlotSchema).optional(),
-    customSlots: z.array(CustomSlotSchema).optional(),
-  });
+export const ConsultantProfileFormSchema = consultantScalarFields.extend({
+  // Re-stated to add the required-ness, so the cap inherited from
+  // ConsultantProfileSchema has to be re-stated with it.
+  description: z
+    .string()
+    .min(1, "Description is required")
+    .max(
+      LONG_FORM_TEXT_MAX,
+      `Description must be ${LONG_FORM_TEXT_MAX} characters or less`,
+    ),
+  domain: domainRefSchema,
+  subDomains: z.array(subDomainRefSchema).optional(),
+  tags: z.array(tagRefSchema).optional(),
+  weeklySlots: z.array(WeeklySlotSchema).optional(),
+  customSlots: z.array(CustomSlotSchema).optional(),
+});
 
 // Consultee form: derived from base with stricter validation
 export const ConsulteeProfileFormSchema = ConsulteeProfileSchema.extend({
@@ -303,7 +327,14 @@ const consultantFormFields = sharedFormFields.extend({
   role: z.literal(UserRole.CONSULTANT),
   // Consultant profile fields (from single source)
   ...consultantScalarFields.shape,
-  description: z.string().optional(),
+  // Loosened to optional for progressive step state; the cap still applies.
+  description: z
+    .string()
+    .max(
+      LONG_FORM_TEXT_MAX,
+      `Description must be ${LONG_FORM_TEXT_MAX} characters or less`,
+    )
+    .optional(),
   experience: experienceValidation.optional(),
   scheduleType: z.nativeEnum(ScheduleType).optional(),
   // Frontend-shaped relations
@@ -362,6 +393,13 @@ const adminFormFields = sharedFormFields.extend({
   adminNotes: z.string().optional(),
 });
 
+// ORG_WORKSPACE onboarding collects only personal info + agreement. The full
+// organization-creation wizard lives at /dashboard/organization/create and
+// runs after onboarding completes.
+const orgWorkspaceFormFields = sharedFormFields.extend({
+  role: z.literal("ORG_WORKSPACE" as const),
+});
+
 // Combined mega-schema: discriminated union on role to prevent
 // z.union from matching the wrong schema and stripping role-specific fields
 export const OnboardingFormDataSchema = z.discriminatedUnion("role", [
@@ -369,6 +407,7 @@ export const OnboardingFormDataSchema = z.discriminatedUnion("role", [
   consulteeFormFields,
   staffFormFields,
   adminFormFields,
+  orgWorkspaceFormFields,
 ]);
 
 // ============================================================================
@@ -388,18 +427,14 @@ export type StaffProfileCreateData = z.infer<
 export type AdminProfileCreateData = z.infer<
   typeof BaseAdminProfileCreateInputSchema
 >;
-export type FrontendConsultantProfile = z.infer<
+type FrontendConsultantProfile = z.infer<
   typeof FrontendConsultantProfileSchema
 >;
-export type FrontendConsulteeProfile = z.infer<
-  typeof FrontendConsulteeProfileSchema
->;
-export type FrontendStaffProfile = z.infer<typeof FrontendStaffProfileSchema>;
-export type FrontendAdminProfile = z.infer<typeof FrontendAdminProfileSchema>;
-export type FrontendOnboardingBase = z.infer<
-  typeof FrontendOnboardingBaseSchema
->;
-export type FrontendOnboardingData = FrontendOnboardingBase & {
+type FrontendConsulteeProfile = z.infer<typeof FrontendConsulteeProfileSchema>;
+type FrontendStaffProfile = z.infer<typeof FrontendStaffProfileSchema>;
+type FrontendAdminProfile = z.infer<typeof FrontendAdminProfileSchema>;
+type FrontendOnboardingBase = z.infer<typeof FrontendOnboardingBaseSchema>;
+type FrontendOnboardingData = FrontendOnboardingBase & {
   consultantProfile?: FrontendConsultantProfile;
   consulteeProfile?: FrontendConsulteeProfile;
   staffProfile?: FrontendStaffProfile;
@@ -416,7 +451,8 @@ export type OnboardingFormData = Omit<
 > &
   Partial<Omit<z.infer<typeof consulteeFormFields>, "role">> &
   Partial<Omit<z.infer<typeof staffFormFields>, "role">> &
-  Partial<Omit<z.infer<typeof adminFormFields>, "role">> & {
+  Partial<Omit<z.infer<typeof adminFormFields>, "role">> &
+  Partial<Omit<z.infer<typeof orgWorkspaceFormFields>, "role">> & {
     role: UserRole;
   };
 
@@ -599,6 +635,15 @@ export function transformOnboardingFormToServerData(
         },
       };
 
+    case UserRole.ORG_WORKSPACE:
+      return {
+        ...base,
+        role: formData.role,
+        consultantProfile: undefined,
+        consulteeProfile: undefined,
+        staffProfile: undefined,
+      } as OnboardingData;
+
     default:
       throw new Error(`Invalid role: ${formData.role}`);
   }
@@ -616,6 +661,9 @@ export function transformFrontendToServerData(
     onlineStatus: frontendData.onlineStatus,
     onboardingCompleted: frontendData.onboardingCompleted,
     role: frontendData.role,
+    // #1132 — carried through every role branch: the age gate is only a gate
+    // if the value it validated is the one that reaches the database.
+    dateOfBirth: frontendData.dateOfBirth,
   };
 
   switch (frontendData.role) {
@@ -706,6 +754,15 @@ export function transformFrontendToServerData(
         staffProfile: undefined,
       };
 
+    case UserRole.ORG_WORKSPACE:
+      return {
+        ...base,
+        role: frontendData.role,
+        consultantProfile: undefined,
+        consulteeProfile: undefined,
+        staffProfile: undefined,
+      } as OnboardingData;
+
     default:
       throw new Error(`Invalid role: ${frontendData.role}`);
   }
@@ -717,9 +774,7 @@ export function transformFrontendToServerData(
 
 export function validateOnboardingData(
   data: unknown,
-):
-  | { success: true; data: OnboardingData }
-  | { success: false; error: string } {
+): { success: true; data: OnboardingData } | { success: false; error: string } {
   const validationResult = OnboardingDataSchema.safeParse(data);
 
   if (!validationResult.success) {

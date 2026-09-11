@@ -14,6 +14,13 @@ import {
 } from "../../scripts/payouts/handle-stuck-payouts";
 import fs from "fs";
 import { abortIfMaintenance } from "../../lib/maintenance-cron";
+import {
+  recordSystemEvent,
+  recordSystemError,
+} from "../../lib/enterprise/system-events";
+import { CronLockHeldError } from "../../lib/cron/with-cron-lock";
+import * as Sentry from "@sentry/nextjs";
+import { runJob } from "../../lib/observability/job-sentry";
 
 /**
  * Output results to GitHub Actions
@@ -35,7 +42,11 @@ function outputToGitHubActions(result: StuckPayoutsResult): void {
     fs.appendFileSync(outputFile, outputs + "\n");
   }
 
-  if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+  // #677 PM-1 — match the canonical name the underlying script reads
+  if (
+    !process.env.RAZORPAY_KEY_ID ||
+    !(process.env.RAZORPAY_SECRET ?? process.env.RAZORPAY_KEY_SECRET)
+  ) {
     console.log(
       `::warning::Razorpay credentials not configured — Razorpay records were skipped`,
     );
@@ -59,6 +70,7 @@ function outputToGitHubActions(result: StuckPayoutsResult): void {
  */
 async function main(): Promise<void> {
   await abortIfMaintenance("handle-stuck-payouts");
+  Sentry.logger.info("job:handle-stuck-payouts started");
   console.log("🔄 Starting stuck payouts handler job...");
   console.log(`Timestamp: ${new Date().toISOString()}`);
 
@@ -80,15 +92,48 @@ async function main(): Promise<void> {
 
     outputToGitHubActions(result);
 
+    Sentry.logger.info("job:handle-stuck-payouts finished", {
+      totalProcessed: result.totalProcessed,
+      reconciledCount: result.reconciledCount,
+      retriedCount: result.retriedCount,
+      failedCount: result.failedCount,
+      skippedCount: result.skippedCount,
+    });
+
+    // #776 §K — stuck/failed payouts mean a consultant isn't getting paid;
+    // page on it rather than leaving it in CI logs.
+    if (result.failedCount > 0 || !result.success) {
+      await recordSystemEvent({
+        category: "PAYOUT",
+        severity: "ERROR",
+        message: `Stuck-payout handler: ${result.failedCount} permanently failed, success=${result.success}`,
+        context: {
+          totalProcessed: result.totalProcessed,
+          failedCount: result.failedCount,
+          retriedCount: result.retriedCount,
+          errors: result.errors,
+        },
+      });
+    }
+
     if (!result.success) {
-      process.exit(1);
+      process.exitCode = 1;
     }
   } catch (error) {
-    console.error("❌ Fatal error in stuck payouts handler:", error);
-    process.exit(1);
+    // #776 §K — a crashed handler means a consultant isn't getting paid, so it
+    // goes to the telemetry sink as well. Everything generic (capture, job tag,
+    // step annotation, exit code, lock-held skip) is runJob's. (#1066)
+    if (!(error instanceof CronLockHeldError)) {
+      await recordSystemError({
+        category: "PAYOUT",
+        summary: "Stuck-payout handler crashed",
+        err: error,
+      });
+    }
+    throw error;
   } finally {
     await disconnectDatabase();
   }
 }
 
-main();
+runJob("handle-stuck-payouts", main);

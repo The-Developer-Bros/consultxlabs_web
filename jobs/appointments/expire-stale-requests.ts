@@ -14,6 +14,8 @@ import {
 } from "../../scripts/appointments/expire-stale-requests";
 import fs from "fs";
 import { abortIfMaintenance } from "../../lib/maintenance-cron";
+import * as Sentry from "@sentry/nextjs";
+import { runJob } from "../../lib/observability/job-sentry";
 
 /**
  * Output results to GitHub Actions
@@ -54,6 +56,7 @@ function outputToGitHubActions(result: ExpireStaleRequestsResult): void {
  */
 async function main(): Promise<void> {
   await abortIfMaintenance("expire-stale-requests");
+  Sentry.logger.info("job:expire-stale-requests started");
   console.log("🕐 Starting stale request expiration job...");
   console.log(`Timestamp: ${new Date().toISOString()}`);
 
@@ -73,15 +76,18 @@ async function main(): Promise<void> {
 
     outputToGitHubActions(result);
 
+    Sentry.logger.info("job:expire-stale-requests finished", {
+      consultationsExpired: result.consultationsExpired,
+      subscriptionsExpired: result.subscriptionsExpired,
+      paymentPendingExpired: result.paymentPendingExpired,
+    });
+
     if (!result.success) {
-      process.exit(1);
+      process.exitCode = 1;
     }
-  } catch (error) {
-    console.error("❌ Fatal error in stale request expiration:", error);
-    process.exit(1);
   } finally {
     await disconnectDatabase();
   }
 }
 
-main();
+runJob("expire-stale-requests", main);

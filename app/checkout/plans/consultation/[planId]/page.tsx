@@ -8,6 +8,7 @@ import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { useMaintenanceGuard } from "@/hooks/useMaintenanceGuard";
 import { useToast } from "@/hooks/use-toast";
+import { CheckoutPlanSkeleton } from "@/app/checkout/CheckoutSkeletons";
 import { fetchReviews } from "@/lib/user";
 import {
   CheckoutInput,
@@ -15,28 +16,44 @@ import {
   checkoutResponseSchema,
   consultationSearchParamsSchema,
   createCheckoutData,
+  type SupportedCheckoutGateway,
 } from "@/schemas/checkout";
 import {
   MINIMUM_BOOKING_LEAD_TIME_MS,
   MINIMUM_BOOKING_LEAD_TIME_MINUTES,
 } from "@/lib/payments/constants";
 import type { AppliedDiscount } from "@/types/checkout";
+import { OrgPayerSelector } from "@/app/checkout/components/OrgPayerSelector";
+import { FxEstimateNote } from "@/app/checkout/components/FxEstimateNote";
+import {
+  BillingStateSelect,
+  useBillingState,
+} from "@/app/checkout/components/BillingStateSelect";
+import { useSession } from "@/lib/auth-client";
 import {
   ConsultantProfile,
   ConsultantReview,
   ConsultationPlan,
-  PaymentGateway,
 } from "@prisma/client";
 import { CreditCard as CreditCardIcon } from "lucide-react";
 import { CompanyLogo } from "@/components/ui/company-logo";
 import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import RazorpayCheckout from "../../../components/RazorpayCheckout";
 import StripeCheckout from "../../../components/StripeCheckout";
+import { createHandleApiError, paymentGateways } from "../../utils";
 import { calculatePricing, formatPercentage } from "../../math";
 import { useCurrency } from "@/hooks/useCurrency";
 import { useCheckoutTaxContext } from "../../useCheckoutTaxContext";
+import {
+  mintClientIdempotencyKey,
+  busyRetryToast,
+  fetchCheckoutWithBusyRetry,
+  reportPaymentsError,
+} from "@/app/checkout/plans/utils";
 
-type ConsultationPlanWithConsultant = ConsultationPlan & {
+// price arrives as number: extended client + JSON serialization (#780)
+type ConsultationPlanWithConsultant = Omit<ConsultationPlan, "price"> & {
+  price: number;
   consultantProfile: ConsultantProfile & {
     user: {
       id: string;
@@ -61,6 +78,23 @@ type PageProps = {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 };
 
+// #1414 — lifted out of handleCheckout, which SonarCloud measured at
+// cognitive complexity 17 against a ceiling of 15. This branch reads which of
+// the three gatewayless confirmations happened; it needs nothing from the
+// component's scope.
+function gatewaylessConfirmationText(data: {
+  isZeroAmountPayment?: boolean;
+  isMockPayment?: boolean;
+}): string {
+  if (data.isZeroAmountPayment) {
+    return "Payment completed via referral credits. Your consultation has been confirmed.";
+  }
+  if (data.isMockPayment) {
+    return "Mock payment processed. Your consultation has been confirmed. Check your dashboard for details.";
+  }
+  return "Your consultation has been confirmed. Check your dashboard for details.";
+}
+
 export default function ConsultationCheckoutPage({
   params,
   searchParams,
@@ -72,11 +106,15 @@ export default function ConsultationCheckoutPage({
   const { formatPrice, currency } = useCurrency();
   const checkoutTaxContext = useCheckoutTaxContext();
   const [eventData, setEventData] = useState<ConsultationResponse | null>(null);
-  const [_slotData, setSlotData] = useState<Record<string, unknown> | null>(null);
+  const [_slotData, setSlotData] = useState<Record<string, unknown> | null>(
+    null,
+  );
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [_reviews, setReviews] = useState<ConsultantReview[]>([]);
   const [isCheckoutProcessing, setIsCheckoutProcessing] = useState(false);
+  // #828 — useState's lazy initializer runs once per mount.
+  const [idempotencyKey] = useState(mintClientIdempotencyKey);
   const isProcessingRef = useRef(false);
   const [processingGateway, setProcessingGateway] = useState<string | null>(
     null,
@@ -87,6 +125,22 @@ export default function ConsultationCheckoutPage({
   const [isApplyingDiscount, setIsApplyingDiscount] = useState(false);
   const [discountError, setDiscountError] = useState<string | null>(null);
   const [useReferralCredits, setUseReferralCredits] = useState(false);
+  // #1365 — GST place of supply. Blank is the statutory s.12(2)(b) default, so
+  // this never blocks checkout.
+  const billingState = useBillingState(checkoutTaxContext.billingStateCode);
+  const [selectedOrganizationId, setSelectedOrganizationId] = useState<
+    string | null
+  >(null);
+  const { data: session } = useSession();
+  const selectedOrgFundingSource = useMemo(() => {
+    if (!selectedOrganizationId) return null;
+    const memberships = session?.user?.organizationMemberships ?? [];
+    return (
+      memberships.find((m) => m.organizationId === selectedOrganizationId)
+        ?.fundingSource ?? null
+    );
+  }, [selectedOrganizationId, session?.user?.organizationMemberships]);
+  const isLicenseCovered = selectedOrgFundingSource === "LICENSE";
   const [availableCredits, setAvailableCredits] = useState(0);
   const [isLoadingCredits, setIsLoadingCredits] = useState(true);
 
@@ -98,7 +152,8 @@ export default function ConsultationCheckoutPage({
 
   // Validate search params once with Zod — single source of truth for all checkout flows
   const validatedSearchParams = useMemo((): ConsultationSearchParams | null => {
-    const result = consultationSearchParamsSchema.safeParse(resolvedSearchParams);
+    const result =
+      consultationSearchParamsSchema.safeParse(resolvedSearchParams);
     return result.success ? result.data : null;
   }, [resolvedSearchParams]);
 
@@ -159,6 +214,7 @@ export default function ConsultationCheckoutPage({
           );
         }
       } catch (error) {
+        reportPaymentsError(error);
         console.error("Error fetching referral credits:", error);
       } finally {
         setIsLoadingCredits(false);
@@ -210,66 +266,39 @@ export default function ConsultationCheckoutPage({
     }
   }, [resolvedSearchParams, toast]);
 
-  // Common error handling logic
-  const handleApiError = useCallback((errorData: { error?: string; errorType?: string }) => {
-    const errorMessage = errorData.error || "Operation failed";
-    const errorType = errorData.errorType || "UNKNOWN_ERROR";
-
-    const errorMessages = {
-      PAYMENT_CONFIG_ERROR: {
-        title: "Payment System Error",
-        description: "Payment system unavailable. Please contact support.",
-      },
-      PAYMENT_PROCESSING_ERROR: {
-        title: "Payment Error",
-        description: "Payment processing error. Please try again later.",
-      },
-      DATABASE_ERROR: {
-        title: "System Error",
-        description: "System error. Please try again.",
-      },
-      NOT_FOUND_ERROR: {
-        title: "Not Found",
-        description: errorMessage,
-      },
-      AVAILABILITY_ERROR: {
-        title: "Booking Unavailable",
-        description: errorMessage,
-      },
-      UNKNOWN_ERROR: {
-        title: "Operation Failed",
-        description: errorMessage,
-      },
-    };
-
-    const error =
-      errorMessages[errorType as keyof typeof errorMessages] ||
-      errorMessages.UNKNOWN_ERROR;
-
-    toast({
-      title: error.title,
-      description: error.description,
-      variant: "destructive",
-    });
-  }, [toast]);
+  // Shared error map covers slot-conflict types (AVAILABILITY, LOCK_CONTENTION)
+  // so a slot taken mid-checkout shows a clear "pick another time" toast.
+  // Matches subscription/class/webinar pages (de-dupes the old inline map).
+  const handleApiError = useMemo(() => createHandleApiError(toast), [toast]);
 
   // Common API request logic
-  const makeCheckoutRequest = useCallback(async (
-    checkoutData: CheckoutInput,
-    _gateway: string,
-    isMockPayment: boolean = false,
-  ) => {
-    return fetch("/api/checkout", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ ...checkoutData, isMockPayment }),
-    });
-  }, []);
+  const makeCheckoutRequest = useCallback(
+    async (
+      checkoutData: CheckoutInput,
+      _gateway: string,
+      isMockPayment: boolean = false,
+    ) => {
+      return fetch("/api/checkout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          ...checkoutData,
+          isMockPayment,
+          // #828 — stable per-mount; the server dedupes retries on this key.
+          clientIdempotencyKey: idempotencyKey,
+        }),
+      });
+    },
+    [idempotencyKey],
+  );
 
   const handleCheckout = useCallback(
-    async (gateway: PaymentGateway, isMockPayment: boolean = false) => {
+    async (
+      gateway: SupportedCheckoutGateway,
+      isMockPayment: boolean = false,
+    ) => {
       // Block checkout during maintenance mode
       if (isMaintenanceBlocked) {
         toast({
@@ -295,7 +324,7 @@ export default function ConsultationCheckoutPage({
         // Use pre-validated search params (validated once via useMemo)
         if (!validatedSearchParams) {
           throw new Error(
-            "Please select a time slot from the consultant's availability page before proceeding to checkout.",
+            "Pick a time on the expert's profile — under the plan you want — before checking out.",
           );
         }
 
@@ -303,22 +332,28 @@ export default function ConsultationCheckoutPage({
         const checkoutData = createCheckoutData({
           appointmentType: "CONSULTATION",
           planId: resolvedParams.planId,
-          paymentGateway: gateway as PaymentGateway,
-          slotStartTimeInUTC: validatedSearchParams.slotStartTimeInUTC,
-          slotEndTimeInUTC: validatedSearchParams.slotEndTimeInUTC,
-          slotOfAvailabilityWeeklyId: validatedSearchParams.slotOfAvailabilityWeeklyId,
-          slotOfAvailabilityCustomId: validatedSearchParams.slotOfAvailabilityCustomId,
+          paymentGateway: gateway,
+          startsAt: validatedSearchParams.startsAt,
+          endsAt: validatedSearchParams.endsAt,
+          slotOfAvailabilityWeeklyId:
+            validatedSearchParams.slotOfAvailabilityWeeklyId,
+          slotOfAvailabilityCustomId:
+            validatedSearchParams.slotOfAvailabilityCustomId,
           discountCode: appliedDiscount?.code,
           displayCurrency: currency,
           notes: validatedSearchParams.notes,
-          useReferralCredits,
+          useReferralCredits: selectedOrganizationId
+            ? false
+            : useReferralCredits,
+          organizationId: selectedOrganizationId ?? undefined,
+          ...billingState.bodyField,
         });
 
         // Make single API call - backend decides dev vs prod flow
-        const response = await makeCheckoutRequest(
-          checkoutData,
-          gateway,
-          isMockPayment,
+        // B5 — structured BUSY 409s auto-retry once (idempotency key dedupe-safe).
+        const response = await fetchCheckoutWithBusyRetry(
+          () => makeCheckoutRequest(checkoutData, gateway, isMockPayment),
+          (waitSeconds) => toast(busyRetryToast(waitSeconds)),
         );
 
         if (!response.ok) {
@@ -335,17 +370,23 @@ export default function ConsultationCheckoutPage({
           throw new Error("Invalid response format from server");
         }
 
+        // Handle application-level errors returned with HTTP 200 (e.g. expired contract, credit limit)
+        if (!data.success) {
+          handleApiError({ error: data.error, errorType: data.errorType });
+          return;
+        }
+
         // handleCheckout is only invoked by the dev-only Mock Pay button (isMockPayment=true).
         // Real payments go through StripeCheckout/RazorpayCheckout components.
         // FIX #520: Also handle zero-amount payments (credits covered full cost)
-        if (data.skipPayment || data.isMockPayment || data.isZeroAmountPayment) {
+        if (
+          data.skipPayment ||
+          data.isMockPayment ||
+          data.isZeroAmountPayment
+        ) {
           toast({
             title: "✅ Consultation Booked Successfully!",
-            description: data.isZeroAmountPayment
-              ? "Payment completed via referral credits. Your consultation has been confirmed."
-              : data.isMockPayment
-                ? "Mock payment processed. Your consultation has been confirmed. Check your dashboard for details."
-                : "Your consultation has been confirmed. Check your dashboard for details.",
+            description: gatewaylessConfirmationText(data),
             variant: "default",
           });
 
@@ -356,6 +397,7 @@ export default function ConsultationCheckoutPage({
       } catch (error) {
         // Only fires for unexpected errors (network failure, JSON parse error, etc.)
         // API errors are handled above with handleApiError() + return
+        reportPaymentsError(error);
         toast({
           title: "Checkout Failed",
           description:
@@ -377,6 +419,8 @@ export default function ConsultationCheckoutPage({
       maintenanceBlockReason,
       appliedDiscount,
       useReferralCredits,
+      selectedOrganizationId,
+      billingState.bodyField,
       validatedSearchParams,
       currency,
       handleApiError,
@@ -391,14 +435,17 @@ export default function ConsultationCheckoutPage({
         // Use pre-validated search params
         if (!validatedSearchParams) {
           throw new Error(
-            "Please select a time slot from the consultant's availability page before proceeding to checkout.",
+            "Pick a time on the expert's profile — under the plan you want — before checking out.",
           );
         }
 
         // Staleness check: verify the selected slot hasn't passed or is too soon
-        const slotStart = new Date(validatedSearchParams.slotStartTimeInUTC);
+        const slotStart = new Date(validatedSearchParams.startsAt);
         const now = new Date();
-        if (slotStart.getTime() < now.getTime() + MINIMUM_BOOKING_LEAD_TIME_MS) {
+        if (
+          slotStart.getTime() <
+          now.getTime() + MINIMUM_BOOKING_LEAD_TIME_MS
+        ) {
           throw new Error(
             "The selected time slot is no longer available. It has either passed or starts too soon. Please go back and select a new slot.",
           );
@@ -423,6 +470,7 @@ export default function ConsultationCheckoutPage({
         const reviewsData = await fetchReviews(data.data.consultantProfile.id);
         setReviews(reviewsData);
       } catch (error) {
+        reportPaymentsError(error);
         console.error("[Checkout] Error fetching event data:", error);
         setError(
           error instanceof Error
@@ -463,6 +511,7 @@ export default function ConsultationCheckoutPage({
       discountAmount,
       creditsApplied: useReferralCredits ? availableCredits : 0,
       isInternational: checkoutTaxContext.isInternational,
+      exportZeroRated: checkoutTaxContext.exportZeroRated,
     });
   }, [
     eventData?.data?.price,
@@ -470,14 +519,21 @@ export default function ConsultationCheckoutPage({
     useReferralCredits,
     availableCredits,
     checkoutTaxContext.isInternational,
+    checkoutTaxContext.exportZeroRated,
   ]);
 
   // Periodic staleness check: warn user if their slot is about to expire
   useEffect(() => {
     if (!validatedSearchParams) return;
 
+    // Once per crossing, not once per minute. The interval re-fired the same
+    // destructive toast every 60s for as long as the tab stayed open, which
+    // buried the payment form under a stack of red banners at exactly the
+    // moment the buyer was being told to hurry.
+    let warned = false;
+
     const checkStaleness = () => {
-      const slotStart = new Date(validatedSearchParams.slotStartTimeInUTC);
+      const slotStart = new Date(validatedSearchParams.startsAt);
       const now = new Date();
       const minutesUntilSlot =
         (slotStart.getTime() - now.getTime()) / (60 * 1000);
@@ -486,7 +542,11 @@ export default function ConsultationCheckoutPage({
         setError(
           "This time slot has passed. Please go back and select a new available slot.",
         );
-      } else if (minutesUntilSlot <= MINIMUM_BOOKING_LEAD_TIME_MINUTES) {
+      } else if (
+        minutesUntilSlot <= MINIMUM_BOOKING_LEAD_TIME_MINUTES &&
+        !warned
+      ) {
+        warned = true;
         toast({
           title: "Slot starting soon",
           description: `Your selected slot starts in ${Math.ceil(minutesUntilSlot)} minute${Math.ceil(minutesUntilSlot) === 1 ? "" : "s"}. Please complete checkout quickly or select a later slot.`,
@@ -501,23 +561,19 @@ export default function ConsultationCheckoutPage({
   }, [validatedSearchParams, toast]);
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-screen bg-zinc-50">
-        <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-zinc-900"></div>
-      </div>
-    );
+    return <CheckoutPlanSkeleton />;
   }
 
   if (error) {
     return (
-      <div className="col-span-full flex items-center justify-center min-h-screen bg-zinc-50">
+      <div className="col-span-full flex items-center justify-center min-h-screen bg-muted">
         <div
-          className="bg-zinc-900 border border-zinc-800 text-white p-8 max-w-md w-full mx-4 text-center rounded-xl shadow-xl"
+          className="bg-foreground border border-border text-background p-8 max-w-md w-full mx-4 text-center rounded-xl shadow-xl"
           role="alert"
         >
-          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-zinc-800">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-background/10">
             <svg
-              className="h-6 w-6 text-zinc-400"
+              className="h-6 w-6 text-background/70"
               fill="none"
               viewBox="0 0 24 24"
               strokeWidth={1.5}
@@ -531,10 +587,10 @@ export default function ConsultationCheckoutPage({
             </svg>
           </div>
           <p className="font-semibold text-lg mb-2">Unable to load checkout</p>
-          <p className="text-zinc-400 text-sm">{error}</p>
+          <p className="text-background/70 text-sm">{error}</p>
           <button
             onClick={() => window.history.back()}
-            className="mt-5 inline-flex items-center rounded-lg bg-white px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-zinc-100 transition-colors"
+            className="mt-5 inline-flex items-center rounded-lg bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors"
           >
             Go back
           </button>
@@ -548,10 +604,10 @@ export default function ConsultationCheckoutPage({
 
   return (
     <>
-      <div className="flex flex-col gap-6 border-r border-zinc-300 bg-gradient-to-br from-zinc-200 via-zinc-100 to-gray-200 p-8">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <Avatar className="w-12 h-12 border">
+      <div className="flex flex-col gap-6 border-r border-border bg-gradient-to-br from-muted via-background to-muted p-6 sm:p-8">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-4 min-w-0">
+            <Avatar className="w-12 h-12 border shrink-0">
               <AvatarImage
                 src={userDetails?.image || "/placeholder-user.jpg"}
                 alt={userDetails?.name || "Consultant"}
@@ -560,11 +616,11 @@ export default function ConsultationCheckoutPage({
                 {userDetails?.name ? userDetails.name.charAt(0) : "C"}
               </AvatarFallback>
             </Avatar>
-            <div>
-              <div className="font-semibold">
+            <div className="min-w-0">
+              <div className="font-semibold truncate">
                 {userDetails?.name || "Consultant Name"}
               </div>
-              <div className="text-sm text-muted-foreground">
+              <div className="text-sm text-muted-foreground truncate">
                 {consultantDetails?.headline || "Consultant"}
               </div>
               {userDetails?.workExperiences &&
@@ -576,21 +632,21 @@ export default function ConsultationCheckoutPage({
                         companyName={exp.company}
                         companyDomain={exp.companyDomain ?? undefined}
                         size={20}
-                        className="border-zinc-200"
+                        className="border-border"
                       />
                     ))}
                   </div>
                 )}
             </div>
           </div>
-          <div className="text-right">
+          <div className="text-right min-w-0">
             <div className="font-semibold">Consultation</div>
-            <div className="text-sm text-muted-foreground">
+            <div className="text-sm text-muted-foreground truncate">
               {eventData?.data?.title || "One-on-One Session"}
             </div>
           </div>
         </div>
-        <Separator className="bg-zinc-200" />
+        <Separator className="bg-border" />
         <div className="grid gap-2">
           <div className="font-semibold">Consultation Details</div>
           <div className="grid gap-2">
@@ -598,14 +654,15 @@ export default function ConsultationCheckoutPage({
               <div className="text-muted-foreground">Date</div>
               <div>
                 {validatedSearchParams
-                  ? new Date(
-                      validatedSearchParams.slotStartTimeInUTC,
-                    ).toLocaleDateString(undefined, {
-                      weekday: "long",
-                      year: "numeric",
-                      month: "long",
-                      day: "numeric",
-                    })
+                  ? new Date(validatedSearchParams.startsAt).toLocaleDateString(
+                      undefined,
+                      {
+                        weekday: "long",
+                        year: "numeric",
+                        month: "long",
+                        day: "numeric",
+                      },
+                    )
                   : "—"}
               </div>
             </div>
@@ -614,9 +671,9 @@ export default function ConsultationCheckoutPage({
               <div>
                 {validatedSearchParams
                   ? `${new Date(
-                      validatedSearchParams.slotStartTimeInUTC,
+                      validatedSearchParams.startsAt,
                     ).toLocaleTimeString()} - ${new Date(
-                      validatedSearchParams.slotEndTimeInUTC,
+                      validatedSearchParams.endsAt,
                     ).toLocaleTimeString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`
                   : "—"}
               </div>
@@ -643,7 +700,23 @@ export default function ConsultationCheckoutPage({
             </div>
           </div>
         </div>
-        <Separator className="bg-zinc-200" />
+        <Separator className="bg-border" />
+        <OrgPayerSelector
+          selectedOrganizationId={selectedOrganizationId}
+          planType="CONSULTATION"
+          planId={resolvedParams.planId}
+          onSelect={(id) => {
+            setSelectedOrganizationId(id);
+            // Disable referral credits when org is selected
+            if (id) setUseReferralCredits(false);
+          }}
+        />
+        <Separator className="bg-border" />
+        <BillingStateSelect
+          value={billingState.value}
+          onChange={billingState.onChange}
+        />
+        <Separator className="bg-border" />
         <div className="grid gap-4">
           <div className="font-semibold">Discount Codes</div>
           <div className="flex items-center gap-2">
@@ -698,7 +771,7 @@ export default function ConsultationCheckoutPage({
             </div>
           )}
         </div>
-        <Separator className="bg-zinc-200" />
+        <Separator className="bg-border" />
         <div className="grid gap-4">
           <div className="font-semibold">Referral Credits</div>
           {isLoadingCredits ? (
@@ -706,12 +779,12 @@ export default function ConsultationCheckoutPage({
               Loading credits...
             </div>
           ) : availableCredits > 0 ? (
-            <div className="flex items-center justify-between bg-blue-50 p-3 rounded-lg border border-blue-200">
-              <div>
-                <div className="font-medium text-blue-700">
+            <div className="flex items-center justify-between gap-3 bg-muted p-3 rounded-lg border border-border">
+              <div className="min-w-0">
+                <div className="font-medium text-foreground">
                   {formatPrice(availableCredits)} available
                 </div>
-                <div className="text-sm text-blue-600">
+                <div className="text-sm text-muted-foreground">
                   Apply to this purchase
                 </div>
               </div>
@@ -727,10 +800,10 @@ export default function ConsultationCheckoutPage({
           )}
         </div>
       </div>
-      <div className="flex flex-col gap-8 p-8 bg-white">
-        <Card className="border-zinc-200 shadow-sm">
+      <div className="flex flex-col gap-8 p-6 sm:p-8 bg-card">
+        <Card className="border-border shadow-sm">
           <CardHeader>
-            <CardTitle className="text-zinc-900">
+            <CardTitle className="text-foreground">
               Consultation Pricing
             </CardTitle>
           </CardHeader>
@@ -754,7 +827,7 @@ export default function ConsultationCheckoutPage({
                 </div>
               </div>
             </div>
-            <Separator className="bg-zinc-200" />
+            <Separator className="bg-border" />
             <div className="grid gap-2">
               <div className="flex items-center justify-between">
                 <div>Subtotal</div>
@@ -775,16 +848,32 @@ export default function ConsultationCheckoutPage({
                 </div>
               )}
               {pricing.creditsApplied > 0 && (
-                <div className="flex items-center justify-between text-blue-600">
+                <div className="flex items-center justify-between text-foreground">
                   <div>Referral Credits</div>
                   <div>-{formatPrice(pricing.creditsApplied)}</div>
                 </div>
               )}
-              <Separator className="bg-zinc-200" />
+              <Separator className="bg-border" />
               <div className="flex items-center justify-between font-semibold">
                 <div>Total</div>
-                <div>{formatPrice(pricing.total)}</div>
+                <div>
+                  {isLicenseCovered
+                    ? formatPrice(0)
+                    : formatPrice(pricing.total)}
+                </div>
               </div>
+              {!isLicenseCovered && (
+                <FxEstimateNote
+                  totalPaise={pricing.total}
+                  organizationId={selectedOrganizationId}
+                />
+              )}
+              {isLicenseCovered && (
+                <p className="text-xs text-emerald-600">
+                  Session value {formatPrice(pricing.total)} — covered by
+                  enterprise license
+                </p>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -795,53 +884,49 @@ export default function ConsultationCheckoutPage({
               Select your preferred payment method
             </div>
           </div>
-          {[
-            {
-              name: "Stripe",
-              description: "Card payments (international)",
-              gateway: "STRIPE" as const,
-              isActive: true,
-            },
-            {
-              name: "Razorpay",
-              description: "UPI, cards & bank transfer",
-              gateway: "RAZORPAY" as const,
-              isActive: true,
-            },
-          ].map((gateway) => (
-            <Card key={gateway.name} className="border-zinc-200">
+          {paymentGateways.map((gateway) => (
+            <Card key={gateway.name} className="border-border">
               <CardHeader>
-                <CardTitle className="text-zinc-900">{gateway.name}</CardTitle>
+                <CardTitle className="text-foreground">
+                  {gateway.name}
+                </CardTitle>
               </CardHeader>
               <CardContent className="grid gap-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-4">
-                    <CreditCardIcon className="w-8 h-8 text-zinc-600" />
-                    <div>
-                      <div className="font-semibold text-zinc-900">
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div className="flex items-center gap-4 min-w-0">
+                    <CreditCardIcon className="w-8 h-8 text-muted-foreground shrink-0" />
+                    <div className="min-w-0">
+                      <div className="font-semibold text-foreground">
                         Credit/Debit Card
                       </div>
-                      <div className="text-sm text-zinc-500">
+                      <div className="text-sm text-muted-foreground/70">
                         {gateway.description}
                       </div>
                     </div>
                   </div>
                   {gateway.isActive ? (
                     <div className="flex gap-2">
-                      {validatedSearchParams && gateway.gateway === "RAZORPAY" ? (
+                      {validatedSearchParams &&
+                      gateway.gateway === "RAZORPAY" ? (
                         <RazorpayCheckout
                           checkoutData={createCheckoutData({
                             appointmentType: "CONSULTATION",
                             planId: resolvedParams.planId,
                             paymentGateway: "RAZORPAY",
-                            slotStartTimeInUTC: validatedSearchParams.slotStartTimeInUTC,
-                            slotEndTimeInUTC: validatedSearchParams.slotEndTimeInUTC,
-                            slotOfAvailabilityWeeklyId: validatedSearchParams.slotOfAvailabilityWeeklyId,
-                            slotOfAvailabilityCustomId: validatedSearchParams.slotOfAvailabilityCustomId,
+                            startsAt: validatedSearchParams.startsAt,
+                            endsAt: validatedSearchParams.endsAt,
+                            slotOfAvailabilityWeeklyId:
+                              validatedSearchParams.slotOfAvailabilityWeeklyId,
+                            slotOfAvailabilityCustomId:
+                              validatedSearchParams.slotOfAvailabilityCustomId,
                             discountCode: appliedDiscount?.code,
                             displayCurrency: currency,
                             notes: validatedSearchParams.notes,
-                            useReferralCredits,
+                            useReferralCredits: selectedOrganizationId
+                              ? false
+                              : useReferralCredits,
+                            organizationId: selectedOrganizationId ?? undefined,
+                            ...billingState.bodyField,
                           })}
                           onPaymentSuccess={(response: {
                             razorpay_payment_id?: string;
@@ -854,32 +939,46 @@ export default function ConsultationCheckoutPage({
                             window.location.href = "/dashboard";
                           }}
                           disabled={isMaintenanceBlocked}
-                          onPaymentError={(error: { description?: string; code?: string; reason?: string; message?: string }) => {
-                            toast({
-                              title: "Payment Failed",
-                              description:
-                                error.description ||
-                                "Something went wrong while processing your payment. Please try again.",
-                              variant: "destructive",
-                            });
-                          }}
+                          onPaymentError={(error: {
+                            description?: string;
+                            code?: string;
+                            reason?: string;
+                            message?: string;
+                          }) =>
+                            handleApiError({
+                              error:
+                                error.description ??
+                                error.message ??
+                                error.reason,
+                              errorType: error.code,
+                            })
+                          }
                         />
-                      ) : validatedSearchParams && gateway.gateway === "STRIPE" ? (
+                      ) : validatedSearchParams &&
+                        gateway.gateway === "STRIPE" ? (
                         <StripeCheckout
                           checkoutData={createCheckoutData({
                             appointmentType: "CONSULTATION",
                             planId: resolvedParams.planId,
                             paymentGateway: "STRIPE",
-                            slotStartTimeInUTC: validatedSearchParams.slotStartTimeInUTC,
-                            slotEndTimeInUTC: validatedSearchParams.slotEndTimeInUTC,
-                            slotOfAvailabilityWeeklyId: validatedSearchParams.slotOfAvailabilityWeeklyId,
-                            slotOfAvailabilityCustomId: validatedSearchParams.slotOfAvailabilityCustomId,
+                            startsAt: validatedSearchParams.startsAt,
+                            endsAt: validatedSearchParams.endsAt,
+                            slotOfAvailabilityWeeklyId:
+                              validatedSearchParams.slotOfAvailabilityWeeklyId,
+                            slotOfAvailabilityCustomId:
+                              validatedSearchParams.slotOfAvailabilityCustomId,
                             discountCode: appliedDiscount?.code,
                             displayCurrency: currency,
                             notes: validatedSearchParams.notes,
-                            useReferralCredits,
+                            useReferralCredits: selectedOrganizationId
+                              ? false
+                              : useReferralCredits,
+                            organizationId: selectedOrganizationId ?? undefined,
+                            ...billingState.bodyField,
                           })}
-                          onPaymentSuccess={(response: { message?: string }) => {
+                          onPaymentSuccess={(response: {
+                            message?: string;
+                          }) => {
                             toast({
                               title: "Payment Successful",
                               description:
@@ -889,16 +988,16 @@ export default function ConsultationCheckoutPage({
                             window.location.href = "/dashboard";
                           }}
                           disabled={isMaintenanceBlocked}
-                          onPaymentError={(error: { message?: string; description?: string }) => {
-                            toast({
-                              title: "Payment Failed",
-                              description:
-                                error.message ||
-                                error.description ||
-                                "Something went wrong while processing your payment. Please try again.",
-                              variant: "destructive",
-                            });
-                          }}
+                          onPaymentError={(error: {
+                            message?: string;
+                            description?: string;
+                            errorType?: string;
+                          }) =>
+                            handleApiError({
+                              error: error.message ?? error.description,
+                              errorType: error.errorType,
+                            })
+                          }
                         />
                       ) : null}
                       {/* Mock Payment Button - development only */}
@@ -906,7 +1005,9 @@ export default function ConsultationCheckoutPage({
                         <Button
                           variant="secondary"
                           onClick={() => handleCheckout(gateway.gateway, true)}
-                          disabled={isCheckoutProcessing || isMaintenanceBlocked}
+                          disabled={
+                            isCheckoutProcessing || isMaintenanceBlocked
+                          }
                         >
                           {isCheckoutProcessing &&
                           processingGateway === `${gateway.gateway}-mock` ? (

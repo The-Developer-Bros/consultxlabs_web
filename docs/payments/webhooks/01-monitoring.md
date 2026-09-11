@@ -1,5 +1,7 @@
 # Webhook Monitoring & Success Notifications Guide
 
+> **Moved (org/B2B side):** The organization-side documentation for inbound payment webhooks (including the org-relevant monitoring and archival jobs) now lives in [`docs/enterprise/10-money-and-ledger/12-payment-webhooks.md`](../../enterprise/10-money-and-ledger/12-payment-webhooks.md). This file keeps the consumer-marketplace (B2C) and gateway-generic details only.
+
 ## Overview
 
 This guide covers how to monitor webhook activity, track success notifications, and troubleshoot payment gateway integrations.
@@ -111,8 +113,10 @@ npm run dev
 
 ```sql
 -- Check recent consultation bookings
-SELECT id, requestStatus, createdAt, updatedAt
-FROM Consultation
+-- NOTE: the DB column is still `requestStatus` — the Prisma field renamed
+-- to `status` via @map, the column did not.
+SELECT id, "requestStatus", "createdAt", "updatedAt"
+FROM "Consultation"
 ORDER BY createdAt DESC
 LIMIT 10;
 
@@ -241,6 +245,14 @@ SKIP_PAYMENT=true # Remove for production
 - ✅ Monitor payment success rates
 - ✅ Track booking status updates
 - ✅ Review logs regularly
+
+### Method 5: The deferral warning
+
+A Razorpay webhook can be valid and still be unprocessable on arrival, most commonly a `refund.created` that overtakes the `payment.captured` which would have created the Payment row. The handler answers those with a `DeferSignal`, the dispatcher deliberately leaves the row `processed=false, error=null`, and `sweep-stuck-webhook-events` re-drives it until the awaited row lands or the seven-day give-up cap fires.
+
+The problem with that design was that a deferred row is indistinguishable from a row whose handler crashed before recording anything, so an event that would never become processable stayed silent for a week. The dispatcher now increments `WebhookEvent.deferCount` every time it defers, and the sweeper raises a single Sentry warning per run listing every event that has deferred five or more times or has been unprocessed for over an hour. If you see `sweep-stuck-webhook-events: N webhook event(s) still unprocessed` in Sentry, the attached context names each event id, its provider, its type and its defer count.
+
+A high `deferCount` on a refund means the handler could not resolve the payment the refund names, and there are two quite different reasons for that. Check the local capture state first: look the `pay_…` id up against `Payment.gatewayPaymentId` and the order id against `Payment.paymentIntent`, and if neither finds a row then the payment really was never captured on our side and the event is a reconciliation question rather than a webhook one. If a row does exist, the failure is in the lookup rather than in the data, which on a pre-`gatewayPaymentId` row means the dispatcher's `payments.fetch` translation is failing — check the Razorpay credentials the function is running with and the gateway's availability, because an authentication or network failure there produces exactly the same silent, repeating deferral as a genuinely missing capture.
 
 ## Success Indicators
 

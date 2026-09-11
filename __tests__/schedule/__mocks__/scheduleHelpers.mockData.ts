@@ -4,7 +4,7 @@ export const mockEvents: EventWithType[] = [
   {
     id: "subscription-1",
     type: "Subscription",
-    requestStatus: "REJECTED",
+    status: "REJECTED",
     subscriptionPlan: {
       id: "plan-1",
       title: "Basic Subscription",
@@ -124,7 +124,7 @@ export const mockEvents: EventWithType[] = [
   {
     id: "consultation-1",
     type: "Consultation",
-    requestStatus: "REJECTED",
+    status: "REJECTED",
     consultationPlan: {
       id: "plan-3",
       title: "Extended Consultation",
@@ -188,7 +188,7 @@ export const pastEvent: EventWithType = {
     priceCurrency: "INR", // Added
     certificateProvided: false, // Added
     durationInMonths: 1, // Added
-    callsPerWeek: 1, // Added
+    sessionsPerWeek: 1, // Added
     videoMeetings: 1, // Added
     emailSupport: "GENERAL", // Added
     maxParticipants: 1, // Added
@@ -220,7 +220,6 @@ export const pastEvent: EventWithType = {
   ],
   createdAt: new Date(),
   updatedAt: new Date(),
-  waitlist: [], // Added required waitlist
   // Add other required top-level Class fields from EventWithType if known
   startDate: null, // Added
   endDate: null, // Added
@@ -233,7 +232,7 @@ export const pastEvent: EventWithType = {
 export const eventWithoutSlots: EventWithType = {
   id: "no-slots-event",
   type: "Consultation",
-  requestStatus: "PENDING",
+  status: "PENDING",
   consultationPlan: {
     id: "plan-noslot",
     title: "No Slot Plan",

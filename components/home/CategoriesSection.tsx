@@ -11,9 +11,13 @@ import { CATEGORIES } from "./data";
 
 function CategoryCard({
   category,
+  consultantCount,
   index,
 }: {
-  category: { icon: LucideIcon; name: string; count: string; color: string };
+  category: { icon: LucideIcon; name: string; color: string };
+  /** Verified consultants in the domain of this name, or 0 when there is no
+   *  such domain yet. Zero renders no line rather than "0 experts" (#1490). */
+  consultantCount: number;
   index: number;
 }) {
   const Icon = category.icon;
@@ -26,18 +30,26 @@ function CategoryCard({
       viewport={{ once: true }}
     >
       <Link href={`/explore/experts?category=${category.name.toLowerCase()}`}>
-        <Card className="group cursor-pointer border border-zinc-200 bg-white hover:border-zinc-400 transition-all duration-300 hover:-translate-y-1 hover:shadow-lg">
+        <Card className="group cursor-pointer border border-border bg-card hover:border-foreground/40 transition-all duration-300 hover:-translate-y-1 hover:shadow-elevation-2">
           <CardContent className="p-6 flex items-center gap-4">
             <div
               className={`w-12 h-12 rounded-xl ${category.color} flex items-center justify-center group-hover:scale-110 transition-transform`}
             >
               <Icon className="w-6 h-6 text-white" />
             </div>
-            <div>
-              <h4 className="font-semibold text-zinc-900">{category.name}</h4>
-              <p className="text-sm text-zinc-500">{category.count}</p>
+            <div className="min-w-0">
+              <h4 className="font-semibold text-foreground truncate">
+                {category.name}
+              </h4>
+              {consultantCount > 0 && (
+                <p className="text-sm text-muted-foreground truncate">
+                  {consultantCount === 1
+                    ? "1 expert"
+                    : `${consultantCount} experts`}
+                </p>
+              )}
             </div>
-            <ChevronRight className="w-5 h-5 text-zinc-400 ml-auto group-hover:translate-x-1 transition-transform" />
+            <ChevronRight className="w-5 h-5 text-muted-foreground ml-auto group-hover:translate-x-1 transition-transform shrink-0" />
           </CardContent>
         </Card>
       </Link>
@@ -45,7 +57,12 @@ function CategoryCard({
   );
 }
 
-export function CategoriesSection() {
+export function CategoriesSection({
+  consultantsByDomain,
+}: {
+  /** Verified consultant counts keyed by lowercased domain name (#1490). */
+  consultantsByDomain: Record<string, number>;
+}) {
   return (
     <section className="py-20 md:py-32 bg-gradient-to-b from-white to-zinc-50 relative overflow-hidden">
       <div className="absolute inset-0 grid-pattern-dark opacity-30" />
@@ -60,14 +77,14 @@ export function CategoriesSection() {
         >
           <Badge
             variant="secondary"
-            className="mb-4 bg-zinc-100 text-zinc-700 hover:bg-zinc-100 border-0"
+            className="mb-4 bg-secondary text-secondary-foreground hover:bg-secondary border-0"
           >
             Categories
           </Badge>
-          <h2 className="text-3xl md:text-4xl lg:text-5xl font-bold text-zinc-900 mb-4">
-            Browse by <span className="text-zinc-500">expertise</span>
+          <h2 className="text-fluid-4xl font-bold text-foreground mb-4 tracking-tight">
+            Browse by <span className="text-muted-foreground">expertise</span>
           </h2>
-          <p className="text-lg text-zinc-600 max-w-2xl mx-auto">
+          <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
             Find experts in your field and start learning from the best
           </p>
         </motion.div>
@@ -77,6 +94,9 @@ export function CategoriesSection() {
             <CategoryCard
               key={category.name}
               category={category}
+              consultantCount={
+                consultantsByDomain[category.name.toLowerCase()] ?? 0
+              }
               index={index}
             />
           ))}
@@ -93,7 +113,7 @@ export function CategoriesSection() {
             <Button
               variant="outline"
               size="lg"
-              className="border-zinc-300 hover:bg-zinc-100"
+              className="border-border hover:bg-muted"
             >
               View All Categories
               <ChevronRight className="ml-2 w-4 h-4" />

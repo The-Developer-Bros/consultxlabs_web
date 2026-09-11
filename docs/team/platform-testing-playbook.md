@@ -54,8 +54,6 @@ graph TB
     subgraph "Payments"
         A --> I[Razorpay - India UPI/Cards]
         A --> J[Stripe - International]
-        A --> K[Lemon Squeezy - SaaS Billing]
-        A --> L[Xflow - Regional]
     end
 
     subgraph "Communications"
@@ -115,7 +113,7 @@ graph LR
 | **Duration** | Single session | Monthly (1-12 months) | Single event | 4-16 weeks |
 | **Participants** | 2 (consultant + consultee) | 2 | Up to 100+ | Up to N (configurable) |
 | **Pricing** | Per session | Monthly subscription | Per attendee | Per enrollment |
-| **Free Trial** | No | Yes (30 or 60 min) | No | No |
+| **Trial** | No | Yes (30 or 60 min) | No | No |
 | **Collaborators** | No | No | Yes (co-hosts, moderators) | Yes (co-instructors, TAs) |
 | **Recording** | Optional | Optional | Optional | Optional |
 | **Materials** | Yes | Yes + curriculum | Yes | Yes + curriculum |
@@ -317,7 +315,7 @@ graph TD
 **Subscription:**
 1. Go to Planner → Create Subscription
 2. Fill in: title, monthly price, calls per week, session duration
-3. Enable free trial (30 min or 60 min) — this lets consultees try before paying
+3. Enable a trial (30 min or 60 min) — this lets consultees try the service first (free or paid, per the plan's trial price)
 4. Set plan duration (1 month, 3 months, etc.)
 5. Add subscription content/curriculum
 6. Save
@@ -538,14 +536,14 @@ graph TD
 
 ### Trial Sessions
 
-**What:** Free trial sessions for subscription plans. Limited to one trial per consultant-consultee pair.
+**What:** Trial sessions for subscription plans (free or paid via trialPriceInPaise). Limited to one trial per consultant-consultee pair.
 
 **Where:** `/dashboard/consultant/[id]/trials`
 
 **Who:** Consultant
 
 **How to test:**
-1. Enable free trial on a subscription plan (30 or 60 minutes)
+1. Enable a trial on a subscription plan (30 or 60 minutes)
 2. From a consultee account, request a trial
 3. From consultant account, go to Trials → approve the trial
 4. Conduct the trial session
@@ -817,8 +815,6 @@ graph TD
 |---------|--------|----------------|-----------|
 | **Razorpay** | India | UPI, debit/credit cards, netbanking, wallets | Indian consultees paying in INR |
 | **Stripe** | International | Credit/debit cards, ACH, SEPA | Non-Indian consultees |
-| **Lemon Squeezy** | Global | Cards, PayPal | SaaS-style billing (future) |
-| **Xflow** | Regional | Regional methods | Region-specific payments (future) |
 
 ### Payment States
 
@@ -1135,7 +1131,7 @@ graph TD
 
 ```mermaid
 graph TD
-    A[Consultant enables free trial<br/>on subscription plan] --> B[Consultee requests trial]
+    A[Consultant enables a trial<br/>on subscription plan] --> B[Consultee requests trial]
     B --> C[Consultant approves trial<br/>Status: SCHEDULED]
     C --> D[Trial session conducted<br/>30 or 60 minutes]
     D --> E[Status: COMPLETED]
@@ -1186,7 +1182,7 @@ Use these checklists to systematically test every feature. Check off each item a
 - [ ] Leave a review after session
 - [ ] Upload a document for review
 - [ ] Subscribe to a subscription plan
-- [ ] Request a free trial session
+- [ ] Request a trial session
 - [ ] Register for a webinar
 - [ ] Enroll in a class
 - [ ] Join a waitlist for a full event
@@ -1341,7 +1337,7 @@ erDiagram
 | **Earnings** | PENDING → HELD → READY → PAID / REFUNDED | Consultant money lifecycle |
 | **Payout** | PENDING → APPROVED → PROCESSING → COMPLETED / FAILED | Money transfer to bank |
 | **Request** | PENDING → APPROVED → SCHEDULED → COMPLETED / REJECTED / CANCELLED / EXPIRED | Booking request lifecycle |
-| **Trial** | PENDING → SCHEDULED → COMPLETED → CONVERTED / CANCELLED / REJECTED | Free trial lifecycle |
+| **Trial** | PENDING → SCHEDULED → COMPLETED → CONVERTED / CANCELLED / REJECTED | Trial lifecycle |
 | **Waitlist** | WAITING → NOTIFIED → BOOKED / EXPIRED / CANCELLED / SKIPPED | Queue management |
 | **Document Review** | PENDING → IN_REVIEW → APPROVED / REJECTED / NEEDS_REVISION | Document review workflow |
 | **Recording** | RECORDING → PROCESSING → READY → TRANSFERRING → AVAILABLE / FAILED / EXPIRED | Recording storage lifecycle |

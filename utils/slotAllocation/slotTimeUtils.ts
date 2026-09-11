@@ -11,7 +11,13 @@
  * the new Int-based representation.
  */
 
+import { reportSentryError } from "@/lib/observability/report";
 import { DayOfWeek, Prisma } from "@prisma/client";
+import {
+  isNextDayOfWeek,
+  resolveOvernightStatus,
+} from "@/utils/schedule/overnight";
+import { utcStartDayIndex } from "@/utils/schedule/weekly-projection";
 
 /** 24 hours expressed in milliseconds */
 export const TWENTY_FOUR_HOURS_IN_MS = 24 * 60 * 60 * 1000;
@@ -91,18 +97,9 @@ const DAY_ORDER: DayOfWeek[] = [
   DayOfWeek.SATURDAY,
 ];
 
-/**
- * Check if endDay is the next day of the week after startDay.
- */
-export function isNextDayOfWeek(
-  startDay: DayOfWeek,
-  endDay: DayOfWeek,
-): boolean {
-  const startIdx = DAY_ORDER.indexOf(startDay);
-  const endIdx = DAY_ORDER.indexOf(endDay);
-  if (startIdx === -1 || endIdx === -1) return false;
-  return (startIdx + 1) % 7 === endIdx;
-}
+// #503 item 2 — canonical impl lives in utils/schedule/overnight.ts;
+// re-exported here for existing callers.
+export { isNextDayOfWeek };
 
 /**
  * Validate time ordering for weekly slots, accounting for overnight (cross-midnight) slots.
@@ -274,7 +271,7 @@ export function slotsOverlap(
   // Same-day slots produce 1 range; overnight slots produce 2 ranges.
   const toRanges = (s: typeof a): Array<[number, number, number]> => {
     const startIdx = DAY_ORDER.indexOf(s.startDay);
-    if (s.startDay === s.endDay) {
+    if (!resolveOvernightStatus(s).isOvernight) {
       return [[startIdx, s.startTimeUtc, s.endTimeUtc]];
     }
     // Overnight: startDay startTimeUtc→1440, endDay 0→endTimeUtc
@@ -303,15 +300,30 @@ export function slotsOverlap(
  * Returns the offset such that: localTime = utcTime + offsetMinutes.
  * e.g. "Asia/Kolkata" → 330, "America/New_York" (EST) → -300.
  * Returns 0 on invalid or unrecognised timezone strings.
+ *
+ * #503 item 1 — Intl longOffset replaces the old toLocaleString
+ * string-parsing heuristic, which drifted around DST transitions. The
+ * offset token ("GMT-05:00") is machine-formatted, exact at the given
+ * instant even on transition boundaries (date-fns-tz's getTimezoneOffset
+ * was rejected: it resolves at calendar-day granularity near transitions).
+ * `at` pins the instant so DST-boundary behaviour is testable; the
+ * 0-on-invalid and ±840 clamp contracts are preserved for callers.
  */
-export function getTimezoneOffsetMinutes(timezone: string): number {
+export function getTimezoneOffsetMinutes(
+  timezone: string,
+  at: Date = new Date(),
+): number {
   try {
-    const date = new Date();
-    const utcStr = date.toLocaleString("en-US", { timeZone: "UTC" });
-    const tzStr = date.toLocaleString("en-US", { timeZone: timezone });
-    const offset = Math.round(
-      (new Date(tzStr).getTime() - new Date(utcStr).getTime()) / 60000,
-    );
+    const token = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      timeZoneName: "longOffset",
+    })
+      .formatToParts(at)
+      .find((p) => p.type === "timeZoneName")?.value;
+    const m = token ? /^GMT(?:([+-])(\d{2}):(\d{2}))?$/.exec(token) : null;
+    if (!m || !m[1]) return 0; // unparseable, or plain "GMT" (UTC)
+    const sign = m[1] === "-" ? -1 : 1;
+    const offset = sign * (Number(m[2]) * 60 + Number(m[3]));
     // Clamp to valid UTC offset range (UTC-14 to UTC+14 = -840 to +840 minutes)
     if (offset < -840 || offset > 840) {
       console.warn(
@@ -320,7 +332,18 @@ export function getTimezoneOffsetMinutes(timezone: string): number {
       return 0;
     }
     return offset;
-  } catch {
+  } catch (error) {
+    // An unresolvable IANA zone falling back to 0 is a modelled answer
+    // (documented contract above), not a fault. Safe to report here: every
+    // caller in the codebase invokes this once per request (timezone
+    // resolution), never per slot candidate in a scan loop, so this can't
+    // fan out into per-candidate volume.
+    reportSentryError(error, {
+      subsystem: "scheduling",
+      op: "slot-validation",
+      expected: true,
+      extra: { timezone },
+    });
     return 0;
   }
 }
@@ -348,18 +371,22 @@ export function isMinuteWithinWeeklySlot(
   availEndTimeUtc: number,
   utcOffsetMinutes: number,
 ): boolean {
-  const availDay = DAY_OF_WEEK_TO_INDEX[availStartDay];
-  if (availDay === undefined) return false;
-
   const candidateEndMinutes = candidateMinutes + slotDurationMinutes;
-  const isOvernight = availEndTimeUtc <= availStartTimeUtc;
+  const { isOvernight } = resolveOvernightStatus({
+    startTimeUtc: availStartTimeUtc,
+    endTimeUtc: availEndTimeUtc,
+  });
 
-  // availDay is the LOCAL day-of-week. The UTC day of the slot's start may
-  // differ when the consultant's midnight isn't aligned with UTC midnight.
-  // Formula: utcStartDay = (availDay - floor((startTimeUtc + offset) / 1440)) mod 7
-  const localStartMinutes = availStartTimeUtc + (utcOffsetMinutes ?? 0);
-  const dayAdjust = Math.floor(localStartMinutes / 1440);
-  const utcStartDay = (((availDay - dayAdjust) % 7) + 7) % 7;
+  // availStartDay is the consultant's LOCAL day; the UTC day the row starts on
+  // differs whenever their midnight is not UTC midnight. #1342 — that
+  // derivation now lives in the one module the grid generator also uses, so
+  // the validator and the grid cannot drift apart again.
+  const utcStartDay = utcStartDayIndex({
+    startDay: availStartDay as DayOfWeek,
+    startTimeUtc: availStartTimeUtc,
+    utcOffsetMinutes,
+  });
+  if (utcStartDay === -1) return false;
 
   if (!isOvernight) {
     return (

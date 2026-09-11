@@ -3,7 +3,7 @@
 import { memo, type RefObject } from "react";
 import { motion } from "framer-motion";
 import { Search } from "lucide-react";
-import type { Program } from "../utils";
+import type { Program } from "@/lib/explore/programs";
 import ProgramCard from "./ProgramCard";
 
 interface ProgramResultsProps {
@@ -11,6 +11,8 @@ interface ProgramResultsProps {
   isLoading: boolean;
   viewMode: "grid" | "list";
   sentinelRef: RefObject<HTMLDivElement>;
+  /** #664 — viewer's ACTIVE org memberships as { orgId: orgName }. */
+  viewerOrgs?: Record<string, string>;
 }
 
 function EmptyState() {
@@ -21,13 +23,13 @@ function EmptyState() {
       animate={{ opacity: 1, scale: 1 }}
       transition={{ duration: 0.3 }}
     >
-      <div className="w-20 h-20 mx-auto mb-6 rounded-full bg-zinc-100 flex items-center justify-center">
-        <Search className="w-10 h-10 text-zinc-400" />
+      <div className="w-20 h-20 mx-auto mb-6 rounded-full bg-muted flex items-center justify-center">
+        <Search className="w-10 h-10 text-muted-foreground/70" />
       </div>
-      <h3 className="text-xl font-semibold text-zinc-900 mb-2">
+      <h3 className="text-xl font-semibold text-foreground mb-2">
         No programs found
       </h3>
-      <p className="text-zinc-500 max-w-md mx-auto">
+      <p className="text-muted-foreground max-w-md mx-auto">
         Try adjusting your filters or search terms to discover more programs
       </p>
     </motion.div>
@@ -44,6 +46,7 @@ function ProgramResultsImpl({
   isLoading,
   viewMode,
   sentinelRef,
+  viewerOrgs,
 }: ProgramResultsProps) {
   return (
     <>
@@ -60,7 +63,7 @@ function ProgramResultsImpl({
                 delay: Math.min(index * 0.05, 0.6),
               }}
             >
-              <ProgramCard program={item} variant="grid" />
+              <ProgramCard program={item} variant="grid" viewerOrgs={viewerOrgs} />
             </motion.div>
           ))}
         </div>
@@ -77,7 +80,7 @@ function ProgramResultsImpl({
                 delay: Math.min(index * 0.05, 0.6),
               }}
             >
-              <ProgramCard program={item} variant="list" />
+              <ProgramCard program={item} variant="list" viewerOrgs={viewerOrgs} />
             </motion.div>
           ))}
         </div>
@@ -91,8 +94,8 @@ function ProgramResultsImpl({
       {isLoading && (
         <div className="flex items-center justify-center py-12">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 border-3 border-zinc-200 border-t-zinc-900 rounded-full animate-spin" />
-            <span className="text-zinc-500">Loading programs...</span>
+            <div className="w-8 h-8 border-3 border-muted border-t-primary rounded-full animate-spin" />
+            <span className="text-muted-foreground">Loading programs...</span>
           </div>
         </div>
       )}

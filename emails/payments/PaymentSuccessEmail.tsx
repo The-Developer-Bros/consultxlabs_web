@@ -8,6 +8,7 @@ import { Link } from "@react-email/link";
 import { Preview } from "@react-email/preview";
 import { Section } from "@react-email/section";
 import { Text } from "@react-email/text";
+import { formatCurrencyAmount } from "@/utils/formatting";
 import * as React from "react";
 import { getAppUrl } from "@/lib/url";
 
@@ -66,7 +67,7 @@ export const PaymentSuccessEmail = ({
                   <tr>
                     <td style={detailLabel}>Amount Paid:</td>
                     <td style={detailValue}>
-                      {currency} {amount}
+                      {formatCurrencyAmount(amount, currency)}
                     </td>
                   </tr>
                   <tr>
@@ -150,8 +151,6 @@ export const PaymentSuccessEmail = ({
     </Html>
   );
 };
-
-export default PaymentSuccessEmail;
 
 // Styles
 const main = {

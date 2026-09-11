@@ -3,8 +3,15 @@ name: Release Earnings from Hold
 on:
   schedule:
     # Run hourly
-    - cron: "0 * * * *"
+    - cron: "17 * * * *"
   workflow_dispatch: # Allow manual triggering
+
+# #776 — never let two release runs overlap. Queue a new run behind an in-flight
+# one (do NOT cancel — a mid-flight money job must finish) so the find-then-claim
+# can't double-process. Belt to the in-code atomic claim's suspenders.
+concurrency:
+  group: release-earnings
+  cancel-in-progress: false
 
 jobs:
   release-earnings:
@@ -12,9 +19,17 @@ jobs:
     timeout-minutes: 10
 
     env:
+      # #1066 — jobs run as bare Node processes, so Sentry.init only sees
+      # what the step env carries. Without the DSN the runner initialises
+      # a disabled client and every captureException is a no-op again.
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
       # Database connection (required for Prisma)
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      # #476 — fail-closed cron lock: without these the job refuses to run.
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
 
     steps:
       - name: Checkout code
@@ -33,10 +48,13 @@ jobs:
         run: npx prisma generate
 
       - name: Run release earnings job
-        run: npx tsx jobs/earnings/release-earnings.ts
+        run: npx --yes tsx@4.23.1 jobs/earnings/release-earnings.ts
 
       - name: Notify on failure
         if: failure()
-        run: |
-          echo "Release earnings job failed"
-          # Add notification logic here (Slack, email, etc.)
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          # Fallback sink — Slack has never been provisioned, so this is
+          # what actually pages today. See 07-required-secrets.md.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "release-earnings"

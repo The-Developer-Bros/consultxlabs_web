@@ -3,11 +3,15 @@ import { z } from "zod";
 export const RequestForApprovalSchema = z
   .object({
     consultantProfileId: z.string().min(1, "Consultant profile ID is required"),
-    slotStartTimeInUTC: z.string().min(1, "Slot start time is required"),
-    slotEndTimeInUTC: z.string().min(1, "Slot end time is required"),
+    startsAt: z.string().min(1, "Slot start time is required"),
+    endsAt: z.string().min(1, "Slot end time is required"),
     consultationPlanId: z.string().min(1, "Consultation plan ID is required"),
     slotOfAvailabilityWeeklyId: z.string().optional(),
     slotOfAvailabilityCustomId: z.string().optional(),
+    // #1166 ORG-9 — an org member may request a sponsored booking; validated
+    // against an ACTIVE membership of a canSponsor org in the route. min(1)
+    // because "" would skip that check and then be written as the FK.
+    organizationId: z.string().min(1).optional(),
   })
   .refine(
     (data) =>
@@ -27,25 +31,23 @@ export const RequestForApprovalSchema = z
   )
   .refine(
     (data) => {
-      const start = new Date(data.slotStartTimeInUTC);
-      const end = new Date(data.slotEndTimeInUTC);
+      const start = new Date(data.startsAt);
+      const end = new Date(data.endsAt);
       return !isNaN(start.getTime()) && !isNaN(end.getTime());
     },
     {
       message: "Invalid date format",
-      path: ["slotStartTimeInUTC"],
+      path: ["startsAt"],
     },
   )
   .refine(
     (data) => {
-      const start = new Date(data.slotStartTimeInUTC);
-      const end = new Date(data.slotEndTimeInUTC);
+      const start = new Date(data.startsAt);
+      const end = new Date(data.endsAt);
       return start < end;
     },
     {
       message: "Start time must be before end time",
-      path: ["slotStartTimeInUTC"],
+      path: ["startsAt"],
     },
   );
-
-export type RequestForApprovalInput = z.infer<typeof RequestForApprovalSchema>;

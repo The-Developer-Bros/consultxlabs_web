@@ -23,24 +23,24 @@ import { PAGE_META, PRICING_DATA } from "../constants";
 export default function PricingPage() {
   return (
     <section className="w-full">
-      <div className="container mx-auto px-4 md:px-6 py-8">
+      <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Hero Section */}
         <div className="text-center mb-12">
-          <h1 className="text-4xl md:text-5xl font-bold mb-4">
+          <h1 className="text-fluid-4xl md:text-fluid-5xl font-bold tracking-tight mb-4">
             {PAGE_META.pricing.title}
           </h1>
-          <p className="text-xl text-muted-foreground max-w-3xl mx-auto">
+          <p className="text-fluid-lg text-muted-foreground max-w-3xl mx-auto">
             {PAGE_META.pricing.description}
           </p>
         </div>
 
         <div className="max-w-4xl mx-auto space-y-8">
           {/* Pricing Model Overview */}
-          <Card>
+          <Card className="shadow-elevation-1">
             <CardHeader>
               <div className="flex items-center gap-2">
-                <DollarSign className="h-6 w-6" />
-                <CardTitle className="text-2xl">
+                <DollarSign className="h-6 w-6 text-foreground" />
+                <CardTitle className="text-fluid-2xl">
                   How Our Pricing Works
                 </CardTitle>
               </div>
@@ -67,9 +67,11 @@ export default function PricingPage() {
           </Card>
 
           {/* Platform Commission */}
-          <Card>
+          <Card className="shadow-elevation-1">
             <CardHeader>
-              <CardTitle className="text-2xl">Platform Commission</CardTitle>
+              <CardTitle className="text-fluid-2xl">
+                Platform Commission
+              </CardTitle>
               <CardDescription>
                 Our commission structure enables us to maintain and improve the
                 platform
@@ -85,7 +87,7 @@ export default function PricingPage() {
                   <li key={index}>{benefit}</li>
                 ))}
               </ul>
-              <div className="bg-blue-50 dark:bg-blue-950 p-4 rounded-lg mt-4">
+              <div className="bg-muted border border-border p-4 rounded-lg mt-4">
                 <p className="text-sm">
                   <strong>Note:</strong> The commission is automatically
                   included in the prices shown to students. Consultants receive
@@ -96,9 +98,9 @@ export default function PricingPage() {
           </Card>
 
           {/* Service Categories */}
-          <Card>
+          <Card className="shadow-elevation-1">
             <CardHeader>
-              <CardTitle className="text-2xl">Service Categories</CardTitle>
+              <CardTitle className="text-fluid-2xl">Service Categories</CardTitle>
               <CardDescription>
                 Explore the different types of services available on our
                 platform
@@ -107,9 +109,9 @@ export default function PricingPage() {
             <CardContent>
               <div className="grid gap-6">
                 {/* Consultations */}
-                <div className="flex gap-4 p-4 border rounded-lg">
+                <div className="flex gap-4 p-4 border border-border rounded-lg">
                   <div className="flex-shrink-0">
-                    <Users className="h-8 w-8 text-blue-600" />
+                    <Users className="h-8 w-8 text-foreground" />
                   </div>
                   <div className="flex-grow">
                     <h3 className="font-semibold text-lg mb-2 flex items-center gap-2">
@@ -129,9 +131,9 @@ export default function PricingPage() {
                 </div>
 
                 {/* Classes */}
-                <div className="flex gap-4 p-4 border rounded-lg">
+                <div className="flex gap-4 p-4 border border-border rounded-lg">
                   <div className="flex-shrink-0">
-                    <Calendar className="h-8 w-8 text-green-600" />
+                    <Calendar className="h-8 w-8 text-foreground" />
                   </div>
                   <div className="flex-grow">
                     <h3 className="font-semibold text-lg mb-2 flex items-center gap-2">
@@ -152,9 +154,9 @@ export default function PricingPage() {
                 </div>
 
                 {/* Webinars */}
-                <div className="flex gap-4 p-4 border rounded-lg">
+                <div className="flex gap-4 p-4 border border-border rounded-lg">
                   <div className="flex-shrink-0">
-                    <Video className="h-8 w-8 text-purple-600" />
+                    <Video className="h-8 w-8 text-foreground" />
                   </div>
                   <div className="flex-grow">
                     <h3 className="font-semibold text-lg mb-2 flex items-center gap-2">
@@ -174,9 +176,9 @@ export default function PricingPage() {
                 </div>
 
                 {/* Subscriptions */}
-                <div className="flex gap-4 p-4 border rounded-lg">
+                <div className="flex gap-4 p-4 border border-border rounded-lg">
                   <div className="flex-shrink-0">
-                    <Repeat className="h-8 w-8 text-orange-600" />
+                    <Repeat className="h-8 w-8 text-foreground" />
                   </div>
                   <div className="flex-grow">
                     <h3 className="font-semibold text-lg mb-2 flex items-center gap-2">
@@ -200,9 +202,11 @@ export default function PricingPage() {
           </Card>
 
           {/* Payment Information */}
-          <Card>
+          <Card className="shadow-elevation-1">
             <CardHeader>
-              <CardTitle className="text-2xl">Payment Information</CardTitle>
+              <CardTitle className="text-fluid-2xl">
+                Payment Information
+              </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div>
@@ -241,9 +245,9 @@ export default function PricingPage() {
           </Card>
 
           {/* FAQ Section */}
-          <Card>
+          <Card className="shadow-elevation-1">
             <CardHeader>
-              <CardTitle className="text-2xl">
+              <CardTitle className="text-fluid-2xl">
                 Frequently Asked Questions
               </CardTitle>
             </CardHeader>
@@ -260,7 +264,7 @@ export default function PricingPage() {
                           Please refer to our{" "}
                           <Link
                             href="/refund"
-                            className="text-blue-600 hover:underline"
+                            className="font-medium text-foreground underline underline-offset-4 hover:no-underline"
                           >
                             Cancellation & Refund Policy
                           </Link>{" "}
@@ -275,9 +279,9 @@ export default function PricingPage() {
           </Card>
 
           {/* CTA Section */}
-          <Card className="bg-gradient-to-r from-blue-50 to-purple-50 dark:from-blue-950 dark:to-purple-950 border-0">
+          <Card className="bg-secondary border-border shadow-elevation-2">
             <CardContent className="text-center py-8">
-              <h3 className="text-2xl font-bold mb-4">
+              <h3 className="text-fluid-2xl font-bold tracking-tight mb-4">
                 Ready to Start Learning?
               </h3>
               <p className="text-muted-foreground mb-6 max-w-2xl mx-auto">

@@ -76,5 +76,3 @@ export function useMeetingRecording(
 
   return data;
 }
-
-export default useMeetingRecording;

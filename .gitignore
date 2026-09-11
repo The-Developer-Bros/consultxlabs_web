@@ -45,7 +45,7 @@ migrations/
 
 # Screenshots and feedback (large binaries / local notes)
 highlight-reel-screenshots/
-feedback/
+/feedback/
 
 # dependencies
 /node_modules
@@ -92,3 +92,23 @@ node-payment-main/
 # Local Netlify folder
 .netlify
 *.png
+
+# scratch dir for agent/test scripts — never commit
+/temp/
+
+# Sentry Config File
+.env.sentry-build-plugin
+
+# Agent + scratch artefacts that live in the working tree but are not the app.
+# `.claude/worktrees/` in particular holds OTHER agents' checkouts — committing
+# it drags their in-flight branches into this one. These were swept in once by a
+# `git add -A`; ignoring them means the next one cannot repeat it.
+.claude/worktrees/
+screens/
+prompts/
+
+# Pre-images written by scripts/stream/*.ts before they mutate the live Stream
+# app. These are snapshots of production configuration (role grants, channel
+# rosters) and rollback material for an operator's machine — not source.
+.stream-backups/
+opencode.json

@@ -108,7 +108,7 @@ STREAM_SYNC_SECRET=""
 DATABASE_URL=""
 DIRECT_URL=""
 
-# NextAuth
+# Better Auth
 NEXTAUTH_SECRET=""
 NEXTAUTH_URL=""
 
@@ -206,15 +206,15 @@ familiarise_web@0.2.0 /path/to/project
 
 ### Import Stream CSS
 
-Add Stream's default styles to your root layout:
+Stream CSS is imported inside `providers/StreamProvider.tsx`, co-located with the provider that renders Stream UI components:
 
 ```typescript
-// app/layout.tsx
-import "@stream-io/video-react-sdk/dist/css/styles.css";
+// providers/StreamProvider.tsx
 import "stream-chat-react/dist/css/v2/index.css";
+import "@stream-io/video-react-sdk/dist/css/styles.css";
 ```
 
-⚠️ **Important:** Import CSS **before** your custom styles to allow overrides.
+⚠️ **Important:** Import CSS **before** your custom styles to allow overrides. Do not import in `app/layout.tsx` — the CSS is scoped to the provider that owns the Stream UI.
 
 ---
 
@@ -375,7 +375,7 @@ Follow these steps to integrate Stream SDK into your Next.js application:
 
 - [ ] **Step 1:** Environment variables added to `.env.local`
 - [ ] **Step 2:** All 4 Stream packages installed
-- [ ] **Step 3:** CSS styles imported in root layout
+- [ ] **Step 3:** CSS styles imported in `providers/StreamProvider.tsx`
 - [ ] **Step 4:** Token providers created (server actions)
 - [ ] **Step 5:** StreamProvider component created
 - [ ] **Step 6:** App wrapped with StreamProvider
@@ -476,14 +476,16 @@ This provider manages both chat and video client connections. See the actual imp
 
 ```typescript
 import StreamProvider from "@/providers/StreamProvider";
-import { getServerSession } from "next-auth";
+import { headers } from "next/headers";
+
+import { auth } from "@/lib/auth";
 
 export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const session = await getServerSession();
+  const session = await auth.api.getSession({ headers: await headers() });
 
   return (
     <html lang="en">

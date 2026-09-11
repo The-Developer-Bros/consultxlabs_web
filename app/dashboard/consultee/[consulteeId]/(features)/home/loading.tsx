@@ -1,5 +1,5 @@
-import { ConsulteeDashboardSkeleton } from "@/components/ui/dashboard-skeleton";
+import { HomeSkeleton } from "@/components/dashboard/DashboardSkeletons";
 
 export default function HomeLoading() {
-  return <ConsulteeDashboardSkeleton />;
+  return <HomeSkeleton />;
 }

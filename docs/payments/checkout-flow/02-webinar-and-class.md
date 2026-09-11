@@ -21,7 +21,7 @@ Webinars are **group live sessions** with one presenter and multiple participant
 - **One-to-Many Model:** Single appointment shared by all participants
 - **Pre-scheduled:** Webinar time fixed when created by consultant
 - **Capacity Limited:** maxParticipants enforced
-- **Waitlist Supported:** Users can join waitlist when full (dev mode only)
+- **Sold Out When Full:** Registration closes; the host reopens it by raising capacity
 - **No Slot Selection:** User registers for pre-determined time
 
 **Example:**
@@ -136,7 +136,6 @@ const webinar = await tx.webinar.findUnique({
   where: { id: data.eventId },
   include: {
     webinarPlan: true,
-    waitlist: true,
     appointment: {
       include: {
         slotsOfAppointment: true,
@@ -157,7 +156,6 @@ const plan = webinar.webinarPlan;
 - Webinar details and schedule
 - Associated WebinarPlan (for pricing, capacity)
 - Existing Appointment with all registered participants
-- Waitlist entries
 
 #### Step 2: Count Current Participants
 
@@ -180,42 +178,24 @@ const currentParticipants =
 // System would incorrectly show as full
 ```
 
-#### Step 3: Check Capacity and Waitlist
+#### Step 3: Check Capacity
 
 ```typescript
-if (currentParticipants >= plan.maxParticipants) {
-  if (skipPayment) {
-    // Only in mock/development mode
-    // Add to waitlist
-    await tx.waitlist.create({
-      data: {
-        userId,
-        webinarId: webinar.id,
-      },
-    });
+const capacity = getWebinarCapacity({
+  webinar,
+  plan,
+  excludeUserIds: consultantUserId ? [consultantUserId] : [],
+});
 
-    throw new Error("Webinar is full. Added to waitlist.");
-  } else {
-    throw new Error("Webinar is full");
-  }
+if (capacity.isFull) {
+  throw new Error("Webinar is full");
 }
 ```
 
-**Waitlist Behavior:**
-
-| Mode                                 | Capacity Full | Action                       |
-| ------------------------------------ | ------------- | ---------------------------- |
-| **Production** (`skipPayment=false`) | Yes           | Error: "Webinar is full"     |
-| **Development** (`skipPayment=true`) | Yes           | Add to waitlist, throw error |
-| **Production**                       | No            | Continue to payment          |
-| **Development**                      | No            | Continue (skip payment)      |
-
-**Why Waitlist Only in Dev Mode?**
-
-- Production flow requires payment upfront
-- Waitlist users can't pay until spot opens
-- Would need separate "Join Waitlist" API endpoint for production
-- Current implementation is incomplete
+Capacity is the instance's `maxParticipants` when it sets one and the plan's
+otherwise; `lib/events/capacity.ts` is the only place that decides. A full
+event is sold out — there is no queue, and the host reopens registration by
+raising the number.
 
 #### Step 4: Get or Create Appointment
 
@@ -346,16 +326,13 @@ sequenceDiagram
     FE->>API: POST /api/checkout<br/>{ eventId: "webinar_abc" }
 
     API->>CO: handleWebinarCheckout()
-    CO->>DB: Get Webinar with<br/>appointment + slots + waitlist
+    CO->>DB: Get Webinar with<br/>appointment + slots
     DB-->>CO: Webinar {<br/>  appointment: {<br/>    slotsOfAppointment: [15 slots]<br/>  },<br/>  maxParticipants: 50<br/>}
 
     CO->>CO: Count participants<br/>currentParticipants = 15
 
     alt Webinar Full (participants >= 50)
         alt skipPayment mode (dev)
-            CO->>DB: Create Waitlist record
-            CO-->>API: Error: "Added to waitlist"
-            API-->>FE: Show waitlist confirmation
         else Production
             CO-->>API: Error: "Webinar is full"
             API-->>FE: Show full message
@@ -486,7 +463,7 @@ if (existingSlot) {
 
 ⚠️ **No Duplicate Check** - same user can register multiple times
 
-⚠️ **Incomplete Waitlist** - only works in dev mode, no promotion logic
+✅ **Sold-out state** - no queue; the host controls capacity per instance
 
 ---
 
@@ -542,7 +519,7 @@ ClassPlan {
   id: "plan_class_123",
   title: "Python Bootcamp",
   durationInMonths: 3,
-  callsPerWeek: 1,
+  sessionsPerWeek: 1,
   maxParticipants: 20,
   price: 50000,  // $500
 }
@@ -615,7 +592,6 @@ const classInstance = await tx.class.findUnique({
   where: { id: data.eventId },
   include: {
     classPlan: true,
-    waitlist: true,
     appointments: {
       include: {
         slotsOfAppointment: {
@@ -688,25 +664,21 @@ Total slots = 6
 Unique students = Set { student1, student2 }.size = 2  ← Correct count
 ```
 
-#### Step 3: Check Capacity and Waitlist
+#### Step 3: Check Capacity
 
 ```typescript
-if (currentParticipants >= plan.maxParticipants) {
-  if (skipPayment) {
-    await tx.waitlist.create({
-      data: {
-        userId,
-        classId: classInstance.id,
-      },
-    });
-    throw new Error("Class is full. Added to waitlist.");
-  } else {
-    throw new Error("Class is full");
-  }
+const capacity = getClassCapacity({
+  classInstance,
+  plan,
+  excludeUserIds: ownerUserId ? [ownerUserId] : [],
+});
+
+if (capacity.isFull) {
+  throw new Error("Class is full");
 }
 ```
 
-**Same waitlist behavior as Webinar** - only works in dev mode.
+Same rule as the webinar: instance capacity wins, sold out means sold out.
 
 #### Step 4: Check Duplicate Enrollment
 
@@ -1000,12 +972,12 @@ Class (10 weeks, 20 students):
 
 #### 3. Capacity Management
 
-| Event Type       | Capacity Type     | Capacity Check                       | Enforced At     | Waitlist Support |
-| ---------------- | ----------------- | ------------------------------------ | --------------- | ---------------- |
-| **Consultation** | Slot-based        | No overlap with confirmed bookings   | Slot level      | ❌ No            |
-| **Subscription** | Slot-based        | No overlap for any session           | First slot only | ❌ No            |
-| **Webinar**      | Participant-based | Total participants < maxParticipants | Event level     | ⚠️ Dev only      |
-| **Class**        | Participant-based | Unique users < maxParticipants       | Event level     | ⚠️ Dev only      |
+| Event Type       | Capacity Type     | Capacity Check                       | Enforced At     | When Full |
+| ---------------- | ----------------- | ------------------------------------ | --------------- | --------- |
+| **Consultation** | Slot-based        | No overlap with confirmed bookings   | Slot level      | Slot unavailable |
+| **Subscription** | Slot-based        | No overlap for any session           | First slot only | Slot unavailable |
+| **Webinar**      | Participant-based | Participants < effective capacity    | Event level     | Sold out  |
+| **Class**        | Participant-based | Unique users < effective capacity    | Event level     | Sold out  |
 
 #### 4. Race Condition Protection
 
@@ -1076,7 +1048,7 @@ UPDATE SlotOfAppointment SET isTentative = false WHERE id = slotId
   appointmentType: "CONSULTATION" | "SUBSCRIPTION" | "WEBINAR" | "CLASS",
   planId: "...",
   eventId: "..." (for webinar/class),
-  slotStartTimeInUTC: "..." (for consultation/subscription),
+  startsAt: "..." (for consultation/subscription),
   ...all necessary data to recreate appointment
 }
 ```

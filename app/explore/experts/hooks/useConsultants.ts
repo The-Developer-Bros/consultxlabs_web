@@ -37,6 +37,7 @@ export function useConsultants(filters: IExpertFilters) {
     minRating,
     companies,
     language,
+    affiliationType,
   } = filters;
 
   const getKey = useCallback(
@@ -46,16 +47,19 @@ export function useConsultants(filters: IExpertFilters) {
         limit: CONSULTANTS_PER_PAGE.toString(),
         ...(selectedDomain && { domain: selectedDomain }),
         ...(selectedSubdomain && { subdomain: selectedSubdomain }),
-        ...(selectedTags.length && { tags: selectedTags.join(",") }),
         ...(experienceYears > 0 && { experience: experienceYears.toString() }),
         ...(searchTerm && { search: searchTerm }),
         sort: sortBy,
         ...(minPrice !== undefined && { minPrice: String(minPrice) }),
         ...(maxPrice !== undefined && { maxPrice: String(maxPrice) }),
         ...(minRating !== undefined && { minRating: String(minRating) }),
-        ...(companies.length > 0 && { companies: companies.join(",") }),
         ...(language && { language }),
+        ...(affiliationType && { affiliationType }),
       });
+      // Repeated params (not comma-joined) so a literal comma in a tag/company
+      // name can't corrupt the filter — must match the API's getAll() read.
+      for (const tag of selectedTags) params.append("tags", tag);
+      for (const company of companies) params.append("companies", company);
 
       return `/api/user/consultants?${params}`;
     },
@@ -71,6 +75,7 @@ export function useConsultants(filters: IExpertFilters) {
       minRating,
       companies,
       language,
+      affiliationType,
     ],
   );
 
@@ -97,6 +102,7 @@ export function useConsultants(filters: IExpertFilters) {
       minRating,
       companies,
       language,
+      affiliationType,
     ],
     queryFn: ({ pageParam = 0 }) => fetchConsultantsData(getKey(pageParam)),
     getNextPageParam: (lastPage, pages) => {

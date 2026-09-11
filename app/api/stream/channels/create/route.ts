@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import {
   createWebinarChannel,
@@ -115,13 +116,17 @@ export async function POST(req: NextRequest) {
         channelName,
       });
 
-      result = await createChannel({
+      // #B2 Stream.io org tagging — generic admin-created custom channels
+    // are not bound to an org event; pass `null` explicitly so the new
+    // param is unambiguous (vs. forgotten).
+    result = await createChannel({
         channelType: channelType as "messaging" | "team",
         channelId,
         channelName,
         members: members || [createdById],
         createdById,
         additionalData: { custom: true },
+        organizationId: null,
       });
     }
 
@@ -133,6 +138,7 @@ export async function POST(req: NextRequest) {
         : "Custom channel created successfully",
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "stream" } });
     streamLogger.error("Channel creation API error", error);
     return NextResponse.json(
       {

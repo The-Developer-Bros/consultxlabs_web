@@ -90,7 +90,7 @@ export function UpcomingEventsSection({ reviews }: UpcomingEventsSectionProps) {
               >
                 Reviews
               </Badge>
-              <h2 className="text-3xl md:text-4xl font-bold text-white mb-4">
+              <h2 className="text-fluid-3xl font-bold text-white mb-4 tracking-tight">
                 What our users say
               </h2>
             </motion.div>
@@ -154,7 +154,7 @@ export function UpcomingEventsSection({ reviews }: UpcomingEventsSectionProps) {
               >
                 Coming Soon
               </Badge>
-              <h2 className="text-3xl md:text-4xl font-bold text-white mb-4">
+              <h2 className="text-fluid-3xl font-bold text-white mb-4 tracking-tight">
                 Upcoming events
               </h2>
             </motion.div>

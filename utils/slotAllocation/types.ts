@@ -5,8 +5,6 @@
  * consistency and reduce duplication.
  */
 
-import { Prisma } from "@prisma/client";
-
 /**
  * Allocation modes supported by the system
  */
@@ -39,20 +37,72 @@ export interface AllocationRequest {
   eventId: string;
   mode: AllocationMode;
   slots?: string[]; // ISO date strings for manual allocation
-}
-
-/**
- * Constraints for auto-allocation algorithm
- */
-export interface AllocationConstraints {
-  schedulingPeriodStartsAt: Date;
-  schedulingPeriodEndsAt: Date;
-  slotsRequired: number;
-  sessionDurationInHours: number;
-  callsPerWeek?: number; // For subscriptions/classes
-  slotsPerCall?: number; // Calculated from sessionDurationInHours
-  mustBeConsecutive?: boolean; // True for consultations/webinars
-  mustBeSameDay?: boolean; // True for consultations
+  // #837 — client-supplied dedupe key (Idempotency-Key header). A double-submit
+  // carrying the same key returns the first batch instead of allocating twice.
+  idempotencyKey?: string;
+  // Multi-tab guard — when true, reject (409) if the event already has
+  // confirmed slots instead of replacing them. Auto and manual take different
+  // Redis lock keys (#860), so a cross-mode race from two tabs otherwise ends
+  // in the manual path silently deleting the winner's allocation.
+  initialAllocation?: boolean;
+  /**
+   * #1012 — reschedule stale-tab guard. When set, the current tentative slot
+   * count must match exactly; otherwise another tab already completed (or
+   * mutated) the reschedule and this submit would delete+recreate confirmed
+   * slots. Fresh allocations omit the field.
+   */
+  expectedTentativeSlotCount?: number;
+  /**
+   * Manual mode only. When true the Redis lock is taken consultant-WIDE rather
+   * than sharded by the target day.
+   *
+   * #860 shards the manual key so allocations on different days for one
+   * consultant run in parallel, with #440's GiST constraint backstopping
+   * overlap. But GiST only prevents time OVERLAP — per-day and per-week caps
+   * are validated by COUNTING, so two sharded allocations can each read the
+   * same count and both add, taking a 4-session week to 5. Callers that place
+   * times a human did not pick per-day (auto-confirm) must set this.
+   */
+  wideLock?: boolean;
+  /**
+   * Consultant's explicit acceptance of times outside their own published
+   * availability. Routes must only set this for the consultant or a privileged
+   * caller — a consultee cannot wave away the consultant's schedule.
+   */
+  override?: boolean;
+  /**
+   * #1206 — place every session that FITS instead of refusing the whole
+   * allocation when the window cannot hold them all. Off by default: a partial
+   * schedule is the consultant's explicit decision, taken after the shortfall
+   * has been shown to them. Only recurring events (subscription, class) can be
+   * partial — a consultation or webinar is one session, so it either fits or
+   * it does not.
+   */
+  allowPartial?: boolean;
+  /**
+   * #1206 — place ONLY the sessions an earlier partial allocation left
+   * unplaced, treating every confirmed appointment as fixed. Off by default
+   * because the ordinary auto path is a re-plan: it deletes what exists and
+   * lays the whole schedule out again. That is right for a reschedule and
+   * catastrophic for an event whose earlier sessions are already booked and
+   * paid. Honoured only for a recurring event that already has confirmed
+   * sessions and no reschedule in flight; every other shape falls through to
+   * today's behaviour unchanged.
+   */
+  topUp?: boolean;
+  /**
+   * #1340 — the reschedule proposal this allocation IS the confirmation of.
+   *
+   * Placing replacement times supersedes every OTHER open proposal on the same
+   * released slots, so the allocator closes those as DECLINED. The confirming
+   * caller's own proposal used to be in that set: it was DECLINED inside the
+   * allocator's transaction, and the caller's following
+   * `PENDING_REVIEW → AUTO_ACCEPTED/ACCEPTED` CAS then matched zero rows. The
+   * booking had moved while its audit trail read "declined", auto-confirm
+   * reported `autoConfirmed: false`, and the explicit accept answered 409 with
+   * no MOVED notification. Set only by the two confirmation callers.
+   */
+  excludeRescheduleRequestId?: string;
 }
 
 /**
@@ -94,6 +144,12 @@ export type AllocationErrorCode =
   | "NOT_FOUND" // event/consultant missing — 400
   | "INVALID_MODE" // unknown allocation mode — 400
   | "LOCK_CONTENTION" // Redis lock busy — 409
+  | "ILLEGAL_TRANSITION" // event left the approvable state mid-allocation (#836) — 409
+  | "PROGRAM_CAP_EXHAUSTED" // org's per-cycle overage ceiling vetoed it — 402
+  | "NO_AVAILABILITY" // consultant has no published availability — 400
+  | "PERIOD_ENDED" // scheduling period is in the past — 400
+  | "SLOT_SHORTAGE" // not enough free slots in the window — 400
+  | "COLLABORATOR_UNAVAILABLE" // AE-2 (#784) — a co-host is already committed — 409
   | "UNKNOWN_ERROR"; // infra / unexpected — 500
 
 /**
@@ -106,6 +162,31 @@ export interface AllocationResult {
   errorCode?: AllocationErrorCode;
   httpStatus?: number;
   warnings?: string[];
+  // AE-4 — appointment ids whose tentative slots were freed during a partial
+  // reschedule, so callers (calendar refresh, notifications) know what to drop.
+  deletedAppointmentIds?: string[];
+  /**
+   * #1206 — fewer sessions than the plan requires were placed, at the
+   * consultant's explicit request. Derived at read time from confirmed
+   * sessions vs the plan's total; nothing is persisted.
+   */
+  partial?: boolean;
+  placedSessions?: number;
+  requiredSessions?: number;
+  unplacedSessions?: number;
+  /**
+   * #1206 — a top-up run that wrote nothing: either the plan is already fully
+   * scheduled or the consultant's availability still has no room. Success, not
+   * a failure, and the one signal the notification suppressor reads — the
+   * hourly sweep re-attempts every incomplete event, so a notice on a run that
+   * changed nothing would page the consultee every hour forever.
+   */
+  noChange?: boolean;
+  /**
+   * #1206 — on a SLOT_SHORTAGE refusal: how many whole sessions the search
+   * COULD have placed. Zero means offering a partial allocation is pointless.
+   */
+  placeableSessions?: number;
 }
 
 /**
@@ -158,16 +239,11 @@ export interface EventConfig {
   durationInMonths?: number;
   durationInHours?: number; // For consultations/webinars (total duration)
   sessionDurationInHours?: number; // For subscriptions/classes (per session)
-  callsPerWeek?: number; // For subscriptions/classes
+  sessionsPerWeek?: number; // For subscriptions/classes
   totalSessions?: number; // Authoritative session count from subscription plan
   schedulingPeriodStartsAt?: Date; // For subscriptions/classes
   schedulingPeriodEndsAt?: Date; // For subscriptions/classes
+  // Timezone defining the limit day/week buckets (ADR B9). Subscription/Class
+  // column; consultations/webinars fall back to the helper default.
+  schedulingTimezone?: string;
 }
-
-/**
- * Prisma transaction client type
- */
-export type PrismaTransaction = Omit<
-  Prisma.TransactionClient,
-  "$connect" | "$disconnect" | "$on" | "$transaction" | "$use"
->;

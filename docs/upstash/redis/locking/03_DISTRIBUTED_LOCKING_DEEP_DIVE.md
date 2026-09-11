@@ -480,9 +480,13 @@ async function withLockExtension(operation: () => Promise<void>) {
 | Lock Type      | Key Pattern                              | Use Case              | TTL |
 | -------------- | ---------------------------------------- | --------------------- | --- |
 | Slot Booking   | `slot-booking:{consultantId}:{slotTime}` | 1:1 consultations     | 60s |
-| Event Checkout | `event-checkout:{type}:{eventId}`        | Webinars, Classes     | 60s |
+| Event Checkout | `event-checkout:{type}:{eventId}`        | Webinars, Classes     | Per-type via `CHECKOUT_LOCK_TTL_MS` (#832): CONSULTATION 60s / SUBSCRIPTION 120s / WEBINAR 120s / CLASS 300s |
+| Auto-Allocate  | `auto-allocate:{consultantProfileId}`    | Auto-allocation (consultant-level; NOT narrowed per slot — #860) | 150s |
 | Approval       | `consultation-approval:{consultationId}` | Request approval      | 60s |
 | Subscription   | `subscription-approval:{subscriptionId}` | Subscription approval | 60s |
+| Payout Batch   | `lock:payout_batch_creation`             | Consultant payout batch cron | 2min |
+| Payout Process | `lock:payout_processing`                 | Consultant payout disbursement | 5min |
+| Org Payout Batch | `org:{orgId}:payout-batch`             | Per-org payout batch creation | 60s |
 
 ### Code Flow
 
@@ -755,7 +759,7 @@ export const options = {
 export default function () {
   const payload = JSON.stringify({
     appointmentType: "CONSULTATION",
-    slotStartTimeInUTC: "2025-01-15T10:00:00Z",
+    startsAt: "2025-01-15T10:00:00Z",
     // ... other fields
   });
 

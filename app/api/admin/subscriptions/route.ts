@@ -3,6 +3,7 @@
  * View and manage platform subscriptions
  */
 
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
@@ -16,7 +17,6 @@ export async function GET(req: NextRequest) {
   try {
     const auth = await requirePrivilegedAuth();
     if (auth.error) return auth.error;
-    const session = auth.session;
 
     // Parse query parameters
     const { searchParams } = new URL(req.url);
@@ -24,6 +24,8 @@ export async function GET(req: NextRequest) {
     const search = searchParams.get("search");
     const limit = parseInt(searchParams.get("limit") || "20");
     const offset = parseInt(searchParams.get("offset") || "0");
+    // #674 comment 7 — optional org-scope filter on Payment.organizationId.
+    const orgId = searchParams.get("orgId");
 
     const now = new Date();
     const soonThreshold = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // 7 days from now
@@ -69,6 +71,10 @@ export async function GET(req: NextRequest) {
           },
         },
       ];
+    }
+
+    if (orgId) {
+      where.organizationId = orgId;
     }
 
     // Base where clause for all subscription queries (without status filter)
@@ -173,7 +179,7 @@ export async function GET(req: NextRequest) {
           subscription?.subscriptionPlan?.consultantProfile?.user?.name,
         startDate: subscription?.schedulingPeriodStartsAt,
         endDate: subscription?.schedulingPeriodEndsAt,
-        subscriptionStatus: subscription?.requestStatus,
+        subscriptionStatus: subscription?.status,
         status: isActive
           ? isExpiringSoon
             ? "expiring_soon"
@@ -199,6 +205,7 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "admin" } });
     console.error("Error fetching subscriptions:", error);
     return NextResponse.json(
       { error: "Failed to fetch subscriptions" },

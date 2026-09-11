@@ -40,7 +40,7 @@ export async function createConsultantReviews(
                 consultationPlan: {
                   consultantProfile: { id: consultant.consultantProfile.id },
                 },
-                requestStatus: "APPROVED",
+                status: "APPROVED",
               },
             },
             {
@@ -48,7 +48,7 @@ export async function createConsultantReviews(
                 subscriptionPlan: {
                   consultantProfile: { id: consultant.consultantProfile.id },
                 },
-                requestStatus: "APPROVED",
+                status: "APPROVED",
               },
             },
             {

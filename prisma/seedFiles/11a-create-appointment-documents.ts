@@ -235,7 +235,7 @@ export async function createAppointmentDocuments(): Promise<void> {
           reviewStatus: status,
           reviewNotes,
           reviewedAt,
-          reviewedBy,
+          reviewedById: reviewedBy, // A8 — FK scalar (#676)
           appointmentId: appointment.id,
           uploadedAt: faker.date.recent({ days: 30 }),
         },

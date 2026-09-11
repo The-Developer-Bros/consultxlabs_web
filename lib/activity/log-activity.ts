@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/nextjs";
 import prisma from "@/lib/prisma";
 import { ActivityType, Prisma } from "@prisma/client";
 import type { ActivityActor } from "@/types/activity";
@@ -53,6 +54,7 @@ export async function logActivity({
     });
   } catch (error) {
     // Non-fatal — activity logging should not break main flows
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "activity" } });
     console.warn("Failed to log activity:", error);
     return null;
   }
@@ -108,7 +110,7 @@ export async function logConsultationCancelled(
   consultationId: string,
   actor: ActivityActor,
   planTitle: string,
-  cancelledBy: "consultant" | "consultee",
+  cancelledBy: "consultant" | "consultee" | "system",
 ) {
   return logActivity({
     activityType: "CONSULTATION_CANCELLED",
@@ -172,7 +174,7 @@ export async function logSubscriptionCancelled(
   subscriptionId: string,
   actor: ActivityActor,
   planTitle: string,
-  cancelledBy: "consultant" | "consultee",
+  cancelledBy: "consultant" | "consultee" | "system",
 ) {
   return logActivity({
     activityType: "SUBSCRIPTION_CANCELLED",
@@ -239,7 +241,7 @@ export async function logTrialRequested(
 ) {
   return logActivity({
     activityType: "TRIAL_REQUESTED",
-    description: `${actor.name} requested a free trial: ${planTitle}`,
+    description: `${actor.name} requested a trial: ${planTitle}`,
     actorId: actor.id,
     actorName: actor.name,
     actorImage: actor.image,

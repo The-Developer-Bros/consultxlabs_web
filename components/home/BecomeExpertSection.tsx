@@ -32,15 +32,15 @@ export function BecomeExpertSection() {
         >
           <Badge
             variant="secondary"
-            className="mb-4 bg-zinc-900 text-white hover:bg-zinc-900"
+            className="mb-4 bg-primary text-primary-foreground hover:bg-primary"
           >
             Share Your Expertise
           </Badge>
-          <h2 className="text-3xl md:text-4xl lg:text-5xl font-bold text-zinc-900 mb-6">
+          <h2 className="text-fluid-4xl font-bold text-foreground mb-6 tracking-tight">
             Become an expert on{" "}
-            <span className="text-zinc-500">Familiarise</span>
+            <span className="text-muted-foreground">Familiarise</span>
           </h2>
-          <p className="text-lg text-zinc-600 mb-8 max-w-2xl mx-auto">
+          <p className="text-lg text-muted-foreground mb-8 max-w-2xl mx-auto">
             Join our network of professionals. Share your knowledge, build your
             personal brand, and earn while helping others grow.
           </p>
@@ -54,7 +54,7 @@ export function BecomeExpertSection() {
                 whileInView={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.4, delay: i * 0.1 }}
                 viewport={{ once: true }}
-                className="flex items-center justify-center gap-2 text-zinc-700"
+                className="flex items-center justify-center gap-2 text-foreground"
               >
                 <item.icon className="w-5 h-5" />
                 <span className="font-medium">{item.label}</span>
@@ -63,10 +63,10 @@ export function BecomeExpertSection() {
           </div>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-            <Link href="/form/onboarding">
+            <Link href="/become-an-expert">
               <Button
                 size="lg"
-                className="bg-zinc-900 hover:bg-zinc-800 text-white px-8 h-14 text-base rounded-xl shadow-xl shadow-zinc-400/30"
+                className="bg-primary hover:bg-primary/90 text-primary-foreground px-8 h-14 text-base rounded-xl shadow-elevation-3"
               >
                 Apply as Expert
                 <ArrowRight className="ml-2 w-5 h-5" />
@@ -75,7 +75,7 @@ export function BecomeExpertSection() {
             <Button
               size="lg"
               variant="outline"
-              className="px-8 h-14 text-base rounded-xl border-zinc-400 hover:bg-zinc-100"
+              className="px-8 h-14 text-base rounded-xl border-border hover:bg-muted"
             >
               Learn More
             </Button>

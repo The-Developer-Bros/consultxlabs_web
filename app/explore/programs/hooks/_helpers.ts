@@ -7,9 +7,9 @@ import type {
   ClassInstance,
   ProgramFilters,
   TopicWithCount,
-} from "../utils";
+} from "@/lib/explore/programs";
 
-export interface WebinarWithAppointment {
+interface WebinarWithAppointment {
   appointment?: {
     slotsOfAppointment?: { user?: { id: string }[] }[];
   } | null;
@@ -27,7 +27,7 @@ export interface WebinarPlanApiItem {
   imageUrl?: string | null;
 }
 
-export type PlanApiItem = ClassPlanApiItem | WebinarPlanApiItem;
+type PlanApiItem = ClassPlanApiItem | WebinarPlanApiItem;
 
 export interface PlanApiResponse {
   data?: PlanApiItem[];
@@ -55,6 +55,8 @@ export function buildFilterParams(filters: ProgramFilters): string {
   if (filters.maxPrice !== undefined)
     params.set("maxPrice", String(filters.maxPrice));
   if (filters.search) params.set("search", filters.search);
+  if (filters.level && filters.level !== "all")
+    params.set("level", filters.level);
   const str = params.toString();
   return str ? `&${str}` : "";
 }

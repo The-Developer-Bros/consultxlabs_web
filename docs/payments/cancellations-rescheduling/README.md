@@ -10,7 +10,7 @@ Payment-side documentation for cancellation and rescheduling flows. Covers refun
 
 | #   | Document                                                       | Description                                                           |
 | --- | -------------------------------------------------------------- | --------------------------------------------------------------------- |
-| 01  | [Cancellation Payment Flow](./01-cancellation-payment-flow.md) | How cancellations trigger refunds, earnings cascade, waitlist payment |
+| 01  | [Cancellation Payment Flow](./01-cancellation-payment-flow.md) | How cancellations trigger refunds and the earnings cascade |
 | 02  | [Rescheduling Payment Flow](./02-rescheduling-payment-flow.md) | No-refund flow, payment reuse, earnings unchanged                     |
 
 ## Key Principle

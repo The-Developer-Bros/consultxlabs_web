@@ -12,7 +12,7 @@ export interface PricingOption {
   durationInMonths?: number; // For subscription plans
   totalHours?: number; // Total hours of service included
   totalSessions?: number; // Total number of sessions
-  callsPerWeek?: number; // Calls per week for subscriptions
+  sessionsPerWeek?: number; // Calls per week for subscriptions
   sessionDurationInHours?: number; // Duration of each session
   features?: string[];
 }

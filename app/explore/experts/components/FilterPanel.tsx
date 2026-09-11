@@ -11,7 +11,6 @@ import { Slider } from "@/components/ui/slider";
 import { memo, useState, useCallback, useRef, useEffect } from "react";
 import {
   X,
-  Filter,
   Layers,
   Tag as TagIcon,
   Clock,
@@ -200,35 +199,28 @@ function FilterPanelImpl({
       return company.toLowerCase().includes(companySearchTerm.toLowerCase());
     }) || [];
 
+  // Renders inside FacetRail (sticky column on desktop, Sheet on mobile), so
+  // this no longer draws its own card or header — the rail owns both — and the
+  // facets stack in one column instead of the old three-across grid.
   return (
-    <div className="bg-zinc-50 rounded-2xl p-6 border border-zinc-200">
-      <div className="flex items-center gap-2 mb-6">
-        <div className="w-10 h-10 rounded-xl bg-zinc-900 flex items-center justify-center">
-          <Filter className="w-5 h-5 text-white" />
-        </div>
-        <div>
-          <h3 className="font-semibold text-zinc-900">Filter Experts</h3>
-          <p className="text-sm text-zinc-500">Refine your search</p>
-        </div>
-      </div>
-
-      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+    <div>
+      <div className="grid gap-4 grid-cols-1">
         {/* Domain & Subdomain */}
-        <div className="bg-white rounded-xl p-4 border border-zinc-200">
+        <div className="pb-4 border-b border-border last:border-b-0">
           <div className="flex items-center gap-2 mb-4">
-            <Layers className="w-4 h-4 text-zinc-500" />
-            <span className="text-sm font-medium text-zinc-700">Category</span>
+            <Layers className="w-4 h-4 text-muted-foreground" />
+            <span className="text-sm font-medium text-muted-foreground">Category</span>
           </div>
           <div className="space-y-3">
             <div>
-              <label className="block mb-1.5 text-xs font-medium text-zinc-500 uppercase tracking-wide">
+              <label className="block mb-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wide">
                 Domain
               </label>
               <Select
                 value={selectedDomain || "all"}
                 onValueChange={handleDomainChange}
               >
-                <SelectTrigger className="w-full h-11 bg-zinc-100 border-zinc-300 rounded-lg focus:ring-zinc-900">
+                <SelectTrigger className="w-full h-11 bg-muted border-border rounded-lg focus:ring-ring">
                   <SelectValue placeholder="All Domains" />
                 </SelectTrigger>
                 <SelectContent>
@@ -242,7 +234,7 @@ function FilterPanelImpl({
               </Select>
             </div>
             <div>
-              <label className="block mb-1.5 text-xs font-medium text-zinc-500 uppercase tracking-wide">
+              <label className="block mb-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wide">
                 Subdomain
               </label>
               <Select
@@ -250,7 +242,7 @@ function FilterPanelImpl({
                 value={selectedSubdomain || "all"}
                 onValueChange={handleSubdomainChange}
               >
-                <SelectTrigger className="w-full h-11 bg-zinc-100 border-zinc-300 rounded-lg focus:ring-zinc-900 disabled:opacity-50">
+                <SelectTrigger className="w-full h-11 bg-muted border-border rounded-lg focus:ring-ring disabled:opacity-50">
                   <SelectValue
                     placeholder={
                       selectedDomain ? "All Subdomains" : "Select domain first"
@@ -275,20 +267,20 @@ function FilterPanelImpl({
         </div>
 
         {/* Tags */}
-        <div className="bg-white rounded-xl p-4 border border-zinc-200">
+        <div className="pb-4 border-b border-border last:border-b-0">
           <div className="flex items-center gap-2 mb-4">
-            <TagIcon className="w-4 h-4 text-zinc-500" />
-            <span className="text-sm font-medium text-zinc-700">
+            <TagIcon className="w-4 h-4 text-muted-foreground" />
+            <span className="text-sm font-medium text-muted-foreground">
               Skills & Tags
             </span>
           </div>
           <div>
-            <label className="block mb-1.5 text-xs font-medium text-zinc-500 uppercase tracking-wide">
+            <label className="block mb-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wide">
               Search Tags
             </label>
             <div className="relative" ref={tagDropdownRef}>
               <input
-                className="w-full h-11 px-4 bg-zinc-100 border border-zinc-300 text-zinc-900 text-sm rounded-lg focus:ring-2 focus:ring-zinc-900 focus:border-transparent transition-all disabled:opacity-50"
+                className="w-full h-11 px-4 bg-muted border border-border text-foreground text-sm rounded-lg focus:ring-2 focus:ring-ring focus:border-transparent transition-all disabled:opacity-50"
                 placeholder={
                   selectedDomain ? "Search skills..." : "Select domain first"
                 }
@@ -299,11 +291,11 @@ function FilterPanelImpl({
                 disabled={!selectedDomain}
               />
               {isDropdownOpen && filteredTags.length > 0 && (
-                <div className="absolute z-20 w-full mt-2 bg-white border border-zinc-200 rounded-xl shadow-xl max-h-48 overflow-auto">
+                <div className="absolute z-20 w-full mt-2 bg-popover border border-border rounded-xl shadow-xl max-h-48 overflow-auto">
                   {filteredTags.map((tag) => (
                     <button
                       key={tag.id}
-                      className="w-full px-4 py-2.5 text-left text-sm text-zinc-700 hover:bg-zinc-50 first:rounded-t-xl last:rounded-b-xl transition-colors"
+                      className="w-full px-4 py-2.5 text-left text-sm text-foreground hover:bg-muted first:rounded-t-xl last:rounded-b-xl transition-colors"
                       onClick={() => handleTagSelect(tag.name)}
                     >
                       {tag.name}
@@ -317,7 +309,7 @@ function FilterPanelImpl({
                 {selectedTags.map((tag) => (
                   <span
                     key={tag}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-zinc-900 text-white text-xs font-medium rounded-full"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-primary text-primary-foreground text-xs font-medium rounded-full"
                   >
                     {tag}
                     <button
@@ -334,17 +326,17 @@ function FilterPanelImpl({
         </div>
 
         {/* Experience & Rating (combined) */}
-        <div className="bg-white rounded-xl p-4 border border-zinc-200">
+        <div className="pb-4 border-b border-border last:border-b-0">
           <div className="flex items-center gap-2 mb-4">
-            <Clock className="w-4 h-4 text-zinc-500" />
-            <span className="text-sm font-medium text-zinc-700">
+            <Clock className="w-4 h-4 text-muted-foreground" />
+            <span className="text-sm font-medium text-muted-foreground">
               Experience & Rating
             </span>
           </div>
           <div className="space-y-4">
             {/* Experience slider */}
             <div>
-              <label className="block mb-1.5 text-xs font-medium text-zinc-500 uppercase tracking-wide">
+              <label className="block mb-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wide">
                 Minimum Years
               </label>
               <input
@@ -361,11 +353,11 @@ function FilterPanelImpl({
                     updateFilters({ experience: val });
                   }, 300);
                 }}
-                className="w-full h-2 bg-zinc-200 rounded-full appearance-none cursor-pointer accent-zinc-900"
+                className="w-full h-2 bg-muted rounded-full appearance-none cursor-pointer accent-primary"
               />
-              <div className="flex justify-between mt-1 text-xs text-zinc-500">
+              <div className="flex justify-between mt-1 text-xs text-muted-foreground">
                 <span>0 yrs</span>
-                <span className="font-semibold text-zinc-900">
+                <span className="font-semibold text-foreground">
                   {localExperience === 30 ? "30+" : localExperience} yrs
                 </span>
                 <span>30+</span>
@@ -373,7 +365,7 @@ function FilterPanelImpl({
             </div>
             {/* Rating buttons */}
             <div>
-              <label className="block mb-1.5 text-xs font-medium text-zinc-500 uppercase tracking-wide">
+              <label className="block mb-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wide">
                 Minimum Rating
               </label>
               <div className="flex flex-wrap gap-1.5">
@@ -387,8 +379,8 @@ function FilterPanelImpl({
                     }
                     className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                       minRating === rating
-                        ? "bg-zinc-900 text-white"
-                        : "bg-zinc-50 border border-zinc-200 text-zinc-700 hover:bg-zinc-100"
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted border border-border text-muted-foreground hover:bg-muted/80"
                     }`}
                   >
                     <Star className="w-3 h-3 fill-current" />
@@ -399,8 +391,8 @@ function FilterPanelImpl({
                   onClick={() => updateFilters({ minRating: undefined })}
                   className={`inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                     minRating === undefined
-                      ? "bg-zinc-900 text-white"
-                      : "bg-zinc-50 border border-zinc-200 text-zinc-700 hover:bg-zinc-100"
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted border border-border text-muted-foreground hover:bg-muted/80"
                   }`}
                 >
                   Any
@@ -411,15 +403,15 @@ function FilterPanelImpl({
         </div>
 
         {/* Price Range — dual-thumb slider */}
-        <div className="bg-white rounded-xl p-4 border border-zinc-200">
+        <div className="pb-4 border-b border-border last:border-b-0">
           <div className="flex items-center gap-2 mb-4">
-            <DollarSign className="w-4 h-4 text-zinc-500" />
-            <span className="text-sm font-medium text-zinc-700">
+            <DollarSign className="w-4 h-4 text-muted-foreground" />
+            <span className="text-sm font-medium text-muted-foreground">
               Price Range
             </span>
           </div>
           <div>
-            <div className="flex justify-between mb-3 text-sm font-medium text-zinc-700">
+            <div className="flex justify-between mb-3 text-sm font-medium text-muted-foreground">
               <span>{formatPrice(localRange[0])}</span>
               <span>
                 {localRange[1] === MAX_PRICE_PAISE
@@ -436,11 +428,11 @@ function FilterPanelImpl({
               onValueChange={handleSliderChange}
               className="my-2"
             />
-            <div className="flex justify-between mt-2 text-xs text-zinc-400">
+            <div className="flex justify-between mt-2 text-xs text-muted-foreground/70">
               <span>{formatPrice(0)}</span>
               <span>{formatPrice(MAX_PRICE_PAISE)}+</span>
             </div>
-            <p className="mt-3 text-[11px] text-zinc-400 leading-tight">
+            <p className="mt-3 text-[11px] text-muted-foreground/70 leading-tight">
               Prices shown in {currency}. Final price may vary based on your
               region and payment method.
             </p>
@@ -448,18 +440,18 @@ function FilterPanelImpl({
         </div>
 
         {/* Companies */}
-        <div className="bg-white rounded-xl p-4 border border-zinc-200">
+        <div className="pb-4 border-b border-border last:border-b-0">
           <div className="flex items-center gap-2 mb-4">
-            <Building2 className="w-4 h-4 text-zinc-500" />
-            <span className="text-sm font-medium text-zinc-700">Company</span>
+            <Building2 className="w-4 h-4 text-muted-foreground" />
+            <span className="text-sm font-medium text-muted-foreground">Company</span>
           </div>
           <div>
-            <label className="block mb-1.5 text-xs font-medium text-zinc-500 uppercase tracking-wide">
+            <label className="block mb-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wide">
               Search Companies
             </label>
             <div className="relative" ref={companyDropdownRef}>
               <input
-                className="w-full h-11 px-4 bg-zinc-100 border border-zinc-300 text-zinc-900 text-sm rounded-lg focus:ring-2 focus:ring-zinc-900 focus:border-transparent transition-all"
+                className="w-full h-11 px-4 bg-muted border border-border text-foreground text-sm rounded-lg focus:ring-2 focus:ring-ring focus:border-transparent transition-all"
                 placeholder="e.g. Google, Deloitte..."
                 type="text"
                 value={companySearchTerm}
@@ -467,11 +459,11 @@ function FilterPanelImpl({
                 onFocus={() => setIsCompanyDropdownOpen(true)}
               />
               {isCompanyDropdownOpen && filteredCompanies.length > 0 && (
-                <div className="absolute z-20 w-full mt-2 bg-white border border-zinc-200 rounded-xl shadow-xl max-h-48 overflow-auto">
+                <div className="absolute z-20 w-full mt-2 bg-popover border border-border rounded-xl shadow-xl max-h-48 overflow-auto">
                   {filteredCompanies.map((company) => (
                     <button
                       key={company}
-                      className="w-full px-4 py-2.5 text-left text-sm text-zinc-700 hover:bg-zinc-50 first:rounded-t-xl last:rounded-b-xl transition-colors"
+                      className="w-full px-4 py-2.5 text-left text-sm text-foreground hover:bg-muted first:rounded-t-xl last:rounded-b-xl transition-colors"
                       onClick={() => handleCompanySelect(company)}
                     >
                       {company}
@@ -485,7 +477,7 @@ function FilterPanelImpl({
                 {selectedCompanies.map((company) => (
                   <span
                     key={company}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-zinc-900 text-white text-xs font-medium rounded-full"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-primary text-primary-foreground text-xs font-medium rounded-full"
                   >
                     {company}
                     <button
@@ -502,20 +494,20 @@ function FilterPanelImpl({
         </div>
 
         {/* Language */}
-        <div className="bg-white rounded-xl p-4 border border-zinc-200">
+        <div className="pb-4 border-b border-border last:border-b-0">
           <div className="flex items-center gap-2 mb-4">
-            <Globe className="w-4 h-4 text-zinc-500" />
-            <span className="text-sm font-medium text-zinc-700">Language</span>
+            <Globe className="w-4 h-4 text-muted-foreground" />
+            <span className="text-sm font-medium text-muted-foreground">Language</span>
           </div>
           <div>
-            <label className="block mb-1.5 text-xs font-medium text-zinc-500 uppercase tracking-wide">
+            <label className="block mb-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wide">
               Expert Language
             </label>
             <Select
               value={language || "all"}
               onValueChange={handleLanguageChange}
             >
-              <SelectTrigger className="w-full h-11 bg-zinc-100 border-zinc-300 rounded-lg focus:ring-zinc-900">
+              <SelectTrigger className="w-full h-11 bg-muted border-border rounded-lg focus:ring-ring">
                 <SelectValue placeholder="Any Language" />
               </SelectTrigger>
               <SelectContent>

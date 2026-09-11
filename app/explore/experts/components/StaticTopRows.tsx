@@ -57,9 +57,14 @@ function StaticTopRowsImpl({
         <ExpertRow experts={newestExperts} badge="new" isLoading={false} />
       </div>
 
-      {/* Browse by Domain */}
+      {/* Browse by Domain. The nav's "Browse by domain" item deep-links to
+          #domains; scroll-mt clears the fixed navbar so the heading isn't
+          hidden under it on landing. */}
       {metadata?.consultantMetadata?.consultantsByDomain && (
-        <div className="mb-14">
+        <div
+          id="domains"
+          className="mb-14 scroll-mt-[calc(var(--header-height,5rem)+1rem)]"
+        >
           <SectionHeader
             title="Browse by Domain"
             icon={<Briefcase className="w-5 h-5 text-white" />}

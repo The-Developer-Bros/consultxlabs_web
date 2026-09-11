@@ -14,6 +14,8 @@ import {
 } from "../../scripts/disputes/reconcile-disputes";
 import fs from "fs";
 import { abortIfMaintenance } from "../../lib/maintenance-cron";
+import * as Sentry from "@sentry/nextjs";
+import { runJob } from "../../lib/observability/job-sentry";
 
 /**
  * Output results to GitHub Actions
@@ -28,6 +30,8 @@ function outputToGitHubActions(result: DisputeReconciliationResult): void {
       `reconciled_count=${result.reconciledCount}`,
       `urgent_count=${result.urgentCount}`,
       `razorpay_manual_review=${result.razorpayManualReviewCount}`,
+      // #1459 — a non-zero value here is the gateway fence, not a defect.
+      `skipped_fenced=${result.skippedFenced}`,
       `success=${result.success}`,
     ].join("\n");
 
@@ -52,6 +56,7 @@ function outputToGitHubActions(result: DisputeReconciliationResult): void {
  */
 async function main(): Promise<void> {
   await abortIfMaintenance("reconcile-disputes");
+  Sentry.logger.info("job:reconcile-disputes started");
   console.log("🔄 Starting dispute reconciliation job...");
   console.log(`Timestamp: ${new Date().toISOString()}`);
 
@@ -74,15 +79,19 @@ async function main(): Promise<void> {
 
     outputToGitHubActions(result);
 
+    Sentry.logger.info("job:reconcile-disputes finished", {
+      totalProcessed: result.totalProcessed,
+      reconciledCount: result.reconciledCount,
+      urgentCount: result.urgentCount,
+      razorpayManualReviewCount: result.razorpayManualReviewCount,
+    });
+
     if (!result.success) {
-      process.exit(1);
+      process.exitCode = 1;
     }
-  } catch (error) {
-    console.error("❌ Fatal error in dispute reconciliation:", error);
-    process.exit(1);
   } finally {
     await disconnectDatabase();
   }
 }
 
-main();
+runJob("reconcile-disputes", main);

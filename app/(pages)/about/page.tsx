@@ -14,13 +14,13 @@ import {
 export default function AboutPage() {
   return (
     <section className="w-full">
-      <div className="container mx-auto px-4 md:px-6 py-8">
+      <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Hero Section */}
         <div className="text-center mb-12">
-          <h1 className="text-4xl md:text-5xl font-bold mb-4">
+          <h1 className="text-fluid-4xl md:text-fluid-5xl font-bold tracking-tight mb-4">
             {PAGE_META.about.title}
           </h1>
-          <p className="text-xl text-muted-foreground max-w-3xl mx-auto">
+          <p className="text-fluid-lg text-muted-foreground max-w-3xl mx-auto">
             {PAGE_META.about.description}
           </p>
         </div>
@@ -28,11 +28,13 @@ export default function AboutPage() {
         {/* Main Content */}
         <div className="max-w-4xl mx-auto space-y-8">
           {/* Mission & Vision */}
-          <Card>
+          <Card className="shadow-elevation-1">
             <CardHeader>
               <div className="flex items-center gap-2">
-                <Target className="h-6 w-6" />
-                <CardTitle className="text-2xl">Our Mission & Vision</CardTitle>
+                <Target className="h-6 w-6 text-foreground" />
+                <CardTitle className="text-fluid-2xl">
+                  Our Mission & Vision
+                </CardTitle>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -49,11 +51,11 @@ export default function AboutPage() {
           </Card>
 
           {/* What We Offer */}
-          <Card>
+          <Card className="shadow-elevation-1">
             <CardHeader>
               <div className="flex items-center gap-2">
-                <BookOpen className="h-6 w-6" />
-                <CardTitle className="text-2xl">What We Offer</CardTitle>
+                <BookOpen className="h-6 w-6 text-foreground" />
+                <CardTitle className="text-fluid-2xl">What We Offer</CardTitle>
               </div>
             </CardHeader>
             <CardContent>
@@ -73,11 +75,11 @@ export default function AboutPage() {
           </Card>
 
           {/* How It Works */}
-          <Card>
+          <Card className="shadow-elevation-1">
             <CardHeader>
               <div className="flex items-center gap-2">
-                <Users className="h-6 w-6" />
-                <CardTitle className="text-2xl">How It Works</CardTitle>
+                <Users className="h-6 w-6 text-foreground" />
+                <CardTitle className="text-fluid-2xl">How It Works</CardTitle>
               </div>
             </CardHeader>
             <CardContent>
@@ -100,11 +102,11 @@ export default function AboutPage() {
           </Card>
 
           {/* Platform Benefits */}
-          <Card>
+          <Card className="shadow-elevation-1">
             <CardHeader>
               <div className="flex items-center gap-2">
-                <Award className="h-6 w-6" />
-                <CardTitle className="text-2xl">
+                <Award className="h-6 w-6 text-foreground" />
+                <CardTitle className="text-fluid-2xl">
                   Why Choose Familiarise
                 </CardTitle>
               </div>
@@ -127,9 +129,11 @@ export default function AboutPage() {
           </Card>
 
           {/* Company Information */}
-          <Card>
+          <Card className="shadow-elevation-1">
             <CardHeader>
-              <CardTitle className="text-2xl">Company Information</CardTitle>
+              <CardTitle className="text-fluid-2xl">
+                Company Information
+              </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
               <div>
@@ -141,17 +145,15 @@ export default function AboutPage() {
               <Separator />
               <div>
                 <p className="text-sm font-semibold text-muted-foreground">
-                  Registered Address
-                </p>
-                <p>{COMPANY_INFO.address}</p>
-              </div>
-              <Separator />
-              <div>
-                <p className="text-sm font-semibold text-muted-foreground">
                   Contact Email
                 </p>
-                <p className="text-blue-600">
-                  <a href={getMailtoLink()}>{COMPANY_INFO.email}</a>
+                <p>
+                  <a
+                    href={getMailtoLink()}
+                    className="font-medium text-foreground underline underline-offset-4 hover:no-underline"
+                  >
+                    {COMPANY_INFO.email}
+                  </a>
                 </p>
               </div>
               <Separator />
@@ -163,7 +165,7 @@ export default function AboutPage() {
                   For any questions or support, please{" "}
                   <a
                     href="/contactus"
-                    className="text-blue-600 hover:underline"
+                    className="font-medium text-foreground underline underline-offset-4 hover:no-underline"
                   >
                     contact us
                   </a>

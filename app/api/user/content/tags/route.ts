@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/nextjs";
 import prisma from "@/lib/prisma";
 import { apiError } from "@/lib/errors";
 import { validateTagName } from "@/utils/contentValidation";
@@ -38,6 +39,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(tags);
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "user" } });
     return apiError({ tag: "[Tags.GET]", error });
   }
 }

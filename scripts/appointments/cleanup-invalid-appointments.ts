@@ -19,8 +19,75 @@
  * Action: Marks invalid records as CANCELLED (preserves audit trail)
  */
 
-import { RequestStatus } from "@prisma/client";
+import { AppointmentStatus, SlotCompletionStatus } from "@prisma/client";
+import {
+  CANCELLABLE_FROM,
+  transitionConsultationRequest,
+  transitionSlotCompletion,
+  transitionSubscriptionRequest,
+} from "@/lib/booking/transitions";
+import { IllegalTransitionError } from "@/lib/enterprise/transitions";
 import prisma from "@/lib/prisma";
+import { withCronLock } from "@/lib/cron/with-cron-lock";
+
+/**
+ * #1319 — per request, in one transaction: CAS the request to CANCELLED
+ * first, then soft-cancel its slots. Cancelling every candidate's slots on the
+ * raw client before the CAS decided left a booking that had moved to a
+ * non-cancellable state with its status intact and its slots gone.
+ */
+async function cancelRequestsAndReleaseSlots(
+  kind: "consultation" | "subscription",
+  ids: string[],
+): Promise<{ cancelled: number; skipped: number; slotsCancelled: number }> {
+  const outcome = { cancelled: 0, skipped: 0, slotsCancelled: 0 };
+  for (const id of ids) {
+    // The counters are the caller's report of what is now true in the database,
+    // so they are only moved once the transaction has committed — incrementing
+    // them inside the callback would keep counting a rolled-back cancellation.
+    const committed = await prisma.$transaction(async (tx) => {
+      try {
+        if (kind === "consultation") {
+          await transitionConsultationRequest(tx, {
+            where: { id },
+            to: AppointmentStatus.CANCELLED,
+            fromIn: CANCELLABLE_FROM,
+          });
+        } else {
+          await transitionSubscriptionRequest(tx, {
+            where: { id },
+            to: AppointmentStatus.CANCELLED,
+            fromIn: CANCELLABLE_FROM,
+          });
+        }
+      } catch (error) {
+        if (!(error instanceof IllegalTransitionError)) throw error;
+        return { cancelled: false as const, slotsCancelled: 0 };
+      }
+      const slotsCancelled = await transitionSlotCompletion(tx, {
+        where: {
+          appointment:
+            kind === "consultation"
+              ? { consultation: { id } }
+              : { subscription: { id } },
+          deletedAt: null,
+        },
+        to: SlotCompletionStatus.CANCELLED,
+        data: { deletedAt: new Date() },
+        allowZero: true,
+      });
+      return { cancelled: true as const, slotsCancelled };
+    });
+
+    if (!committed.cancelled) {
+      outcome.skipped++;
+      continue;
+    }
+    outcome.cancelled++;
+    outcome.slotsCancelled += committed.slotsCancelled;
+  }
+  return outcome;
+}
 
 /**
  * Result structure for cleanup operations
@@ -36,10 +103,10 @@ export interface CleanupResult {
 }
 
 // Statuses that should not be cleaned up (already terminal)
-const TERMINAL_STATUSES: RequestStatus[] = [
-  RequestStatus.CANCELLED,
-  RequestStatus.REJECTED,
-  RequestStatus.EXPIRED,
+const TERMINAL_STATUSES: AppointmentStatus[] = [
+  AppointmentStatus.CANCELLED,
+  AppointmentStatus.REJECTED,
+  AppointmentStatus.EXPIRED,
 ];
 
 /**
@@ -82,7 +149,7 @@ export async function cleanupDuplicateConsultations(): Promise<{
   try {
     // Fetch all non-terminal consultations with their slot data
     const consultations = await prisma.consultation.findMany({
-      where: { requestStatus: { notIn: TERMINAL_STATUSES } },
+      where: { status: { notIn: TERMINAL_STATUSES } },
       select: {
         id: true,
         requestedById: true,
@@ -161,26 +228,19 @@ export async function cleanupDuplicateConsultations(): Promise<{
         `[AUDIT] About to cancel ${duplicateIds.length} duplicate consultations: ${duplicateIds.join(", ")}`,
       );
 
-      // First, release slots associated with these consultations
-      const slotsDeleted = await prisma.slotOfAppointment.deleteMany({
-        where: {
-          appointment: {
-            consultation: {
-              id: { in: duplicateIds },
-            },
-          },
-        },
-      });
-      console.log(
-        `🔓 Released ${slotsDeleted.count} slots from duplicate consultations`,
+      const outcome = await cancelRequestsAndReleaseSlots(
+        "consultation",
+        duplicateIds,
       );
-
-      // Then cancel the consultations
-      const result = await prisma.consultation.updateMany({
-        where: { id: { in: duplicateIds } },
-        data: { requestStatus: RequestStatus.CANCELLED },
-      });
-      cancelledCount = result.count;
+      cancelledCount = outcome.cancelled;
+      console.log(
+        `🔓 Cancelled ${outcome.slotsCancelled} slots from duplicate consultations`,
+      );
+      if (outcome.skipped > 0) {
+        console.log(
+          `⏭️ ${outcome.skipped} skipped — moved out of a cancellable state since the sweep read`,
+        );
+      }
       console.log(`✅ Cancelled ${cancelledCount} duplicate consultations`);
     }
   } catch (error) {
@@ -218,7 +278,7 @@ export async function cleanupDuplicateSubscriptions(): Promise<{
   try {
     // Fetch all non-terminal subscriptions
     const subscriptions = await prisma.subscription.findMany({
-      where: { requestStatus: { notIn: TERMINAL_STATUSES } },
+      where: { status: { notIn: TERMINAL_STATUSES } },
       select: {
         id: true,
         requestedById: true,
@@ -277,26 +337,19 @@ export async function cleanupDuplicateSubscriptions(): Promise<{
     if (duplicatesToCancel.size > 0) {
       const duplicateIds = Array.from(duplicatesToCancel);
 
-      // First, release slots associated with these subscriptions
-      const slotsDeleted = await prisma.slotOfAppointment.deleteMany({
-        where: {
-          appointment: {
-            subscription: {
-              id: { in: duplicateIds },
-            },
-          },
-        },
-      });
-      console.log(
-        `🔓 Released ${slotsDeleted.count} slots from duplicate subscriptions`,
+      const outcome = await cancelRequestsAndReleaseSlots(
+        "subscription",
+        duplicateIds,
       );
-
-      // Then cancel the subscriptions
-      const result = await prisma.subscription.updateMany({
-        where: { id: { in: duplicateIds } },
-        data: { requestStatus: RequestStatus.CANCELLED },
-      });
-      cancelledCount = result.count;
+      cancelledCount = outcome.cancelled;
+      console.log(
+        `🔓 Cancelled ${outcome.slotsCancelled} slots from duplicate subscriptions`,
+      );
+      if (outcome.skipped > 0) {
+        console.log(
+          `⏭️ ${outcome.skipped} skipped — moved out of a cancellable state since the sweep read`,
+        );
+      }
       console.log(`✅ Cancelled ${cancelledCount} duplicate subscriptions`);
     }
   } catch (error) {
@@ -330,7 +383,7 @@ export async function cleanupInvalidDurationConsultations(): Promise<{
   try {
     // Fetch consultations with their plan and slots
     const consultations = await prisma.consultation.findMany({
-      where: { requestStatus: { notIn: TERMINAL_STATUSES } },
+      where: { status: { notIn: TERMINAL_STATUSES } },
       include: {
         consultationPlan: { select: { durationInHours: true } },
         appointment: {
@@ -369,26 +422,19 @@ export async function cleanupInvalidDurationConsultations(): Promise<{
 
     // Batch cancel invalid consultations and release their slots
     if (invalidIds.length > 0) {
-      // First, release slots associated with these consultations
-      const slotsDeleted = await prisma.slotOfAppointment.deleteMany({
-        where: {
-          appointment: {
-            consultation: {
-              id: { in: invalidIds },
-            },
-          },
-        },
-      });
-      console.log(
-        `🔓 Released ${slotsDeleted.count} slots from invalid duration consultations`,
+      const outcome = await cancelRequestsAndReleaseSlots(
+        "consultation",
+        invalidIds,
       );
-
-      // Then cancel the consultations
-      const result = await prisma.consultation.updateMany({
-        where: { id: { in: invalidIds } },
-        data: { requestStatus: RequestStatus.CANCELLED },
-      });
-      cancelledCount = result.count;
+      cancelledCount = outcome.cancelled;
+      console.log(
+        `🔓 Cancelled ${outcome.slotsCancelled} slots from invalid duration consultations`,
+      );
+      if (outcome.skipped > 0) {
+        console.log(
+          `⏭️ ${outcome.skipped} skipped — moved out of a cancellable state since the sweep read`,
+        );
+      }
       console.log(
         `✅ Cancelled ${cancelledCount} invalid duration consultations`,
       );
@@ -426,7 +472,7 @@ export async function cleanupInvalidDurationSubscriptions(): Promise<{
   try {
     // Fetch subscriptions with their plans
     const subscriptions = await prisma.subscription.findMany({
-      where: { requestStatus: { notIn: TERMINAL_STATUSES } },
+      where: { status: { notIn: TERMINAL_STATUSES } },
       include: {
         subscriptionPlan: { select: { durationInMonths: true } },
       },
@@ -455,26 +501,19 @@ export async function cleanupInvalidDurationSubscriptions(): Promise<{
 
     // Batch cancel invalid subscriptions and release their slots
     if (invalidIds.length > 0) {
-      // First, release slots associated with these subscriptions
-      const slotsDeleted = await prisma.slotOfAppointment.deleteMany({
-        where: {
-          appointment: {
-            subscription: {
-              id: { in: invalidIds },
-            },
-          },
-        },
-      });
-      console.log(
-        `🔓 Released ${slotsDeleted.count} slots from invalid duration subscriptions`,
+      const outcome = await cancelRequestsAndReleaseSlots(
+        "subscription",
+        invalidIds,
       );
-
-      // Then cancel the subscriptions
-      const result = await prisma.subscription.updateMany({
-        where: { id: { in: invalidIds } },
-        data: { requestStatus: RequestStatus.CANCELLED },
-      });
-      cancelledCount = result.count;
+      cancelledCount = outcome.cancelled;
+      console.log(
+        `🔓 Cancelled ${outcome.slotsCancelled} slots from invalid duration subscriptions`,
+      );
+      if (outcome.skipped > 0) {
+        console.log(
+          `⏭️ ${outcome.skipped} skipped — moved out of a cancellable state since the sweep read`,
+        );
+      }
       console.log(
         `✅ Cancelled ${cancelledCount} invalid duration subscriptions`,
       );
@@ -505,7 +544,17 @@ export async function cleanupInvalidDurationSubscriptions(): Promise<{
  *
  * @returns Combined results from all cleanup operations
  */
+// #476 — locked at the core so every entry (GH Actions / HTTP) shares one
+// mutual exclusion; fail-open: repeat-safe side effects, lock is belt-and-braces.
 export async function runAllCleanupTasks(): Promise<CleanupResult> {
+  return withCronLock(
+    "cleanup-invalid-appointments",
+    { failMode: "open" },
+    () => runAllCleanupTasksUnlocked(),
+  );
+}
+
+async function runAllCleanupTasksUnlocked(): Promise<CleanupResult> {
   const startTime = Date.now();
   console.log(
     `\n🚀 Starting invalid appointment cleanup at ${new Date().toISOString()}\n`,

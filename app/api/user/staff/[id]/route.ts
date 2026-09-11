@@ -1,5 +1,34 @@
 import { NextRequest, NextResponse } from "next/server";
+import * as Sentry from "@sentry/nextjs";
 import prisma from "@/lib/prisma";
+import { requireApiAuth, requireAdminAuth } from "@/lib/auth-helpers";
+
+/**
+ * Self-or-admin gate for this staff profile.
+ *
+ * Every handler in this file previously ran with NO auth of any kind:
+ * `PUT` rewrote the linked User's email (an account-takeover primitive,
+ * since `emailVerified` is not reset) and `DELETE` removed the profile.
+ * The middleware only checks cookie presence, so nothing upstream was
+ * covering it either.
+ */
+async function requireSelfOrAdmin(staffProfileId: string) {
+  const auth = await requireApiAuth();
+  if (auth.error) return { error: auth.error };
+
+  const { role, staffProfileId: ownProfileId } = auth.session.user;
+  if (role === "ADMIN" || ownProfileId === staffProfileId) {
+    return { session: auth.session };
+  }
+  // Same 403 whether the profile is someone else's or absent — don't
+  // confirm that an id exists to a caller who may not read it.
+  return {
+    error: NextResponse.json(
+      { error: "Forbidden" },
+      { status: 403 },
+    ),
+  };
+}
 
 // GET /api/user/staff/{id} - Fetch a single staff member by profile ID
 export async function GET(
@@ -9,6 +38,9 @@ export async function GET(
   try {
     const resolvedParams = await params;
     const { id } = resolvedParams;
+
+    const auth = await requireSelfOrAdmin(id);
+    if (auth.error) return auth.error;
 
     const staffProfile = await prisma.staffProfile.findUnique({
       where: { id: id },
@@ -34,6 +66,7 @@ export async function GET(
     if (error instanceof Error) {
       console.error("Error: ", error.stack);
     }
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "staff" } });
     return NextResponse.json(
       {
         error:
@@ -54,6 +87,9 @@ export async function POST(
   try {
     const resolvedParams = await params;
     const { id } = resolvedParams;
+
+    const auth = await requireAdminAuth();
+    if (auth.error) return auth.error;
 
     const body = await req.json();
     const user = await prisma.user.findUnique({
@@ -81,6 +117,7 @@ export async function POST(
     return NextResponse.json(createdStaffProfile, { status: 201 });
   } catch (error) {
     console.error("Error creating staff profile:", error);
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "staff" } });
     return NextResponse.json(
       {
         error: "An unexpected error occurred while creating the staff profile",
@@ -99,6 +136,9 @@ export async function PATCH(
   try {
     const resolvedParams = await params;
     const { id } = resolvedParams;
+
+    const auth = await requireSelfOrAdmin(id);
+    if (auth.error) return auth.error;
 
     const body = await req.json();
 
@@ -127,6 +167,7 @@ export async function PATCH(
     return NextResponse.json(updatedStaffProfile, { status: 200 });
   } catch (error) {
     console.error("Error updating staff profile:", error);
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "staff" } });
     return NextResponse.json(
       {
         error: "An unexpected error occurred while updating the staff profile",
@@ -145,6 +186,9 @@ export async function PUT(
   try {
     const resolvedParams = await params;
     const { id } = resolvedParams;
+
+    const auth = await requireSelfOrAdmin(id);
+    if (auth.error) return auth.error;
 
     const body = await req.json();
 
@@ -257,6 +301,7 @@ export async function PUT(
     return NextResponse.json(freshStaffProfile, { status: 200 });
   } catch (error) {
     console.error("Error updating staff profile:", error);
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "staff" } });
     return NextResponse.json(
       {
         error: "An unexpected error occurred while updating the staff profile",
@@ -275,6 +320,9 @@ export async function DELETE(
   try {
     const resolvedParams = await params;
     const { id } = resolvedParams;
+
+    const auth = await requireAdminAuth();
+    if (auth.error) return auth.error;
 
     const existingStaffProfile = await prisma.staffProfile.findUnique({
       where: { id: id },
@@ -297,6 +345,7 @@ export async function DELETE(
     return NextResponse.json(deletedStaffProfile, { status: 200 });
   } catch (error) {
     console.error("Error deleting staff profile:", error);
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "staff" } });
     return NextResponse.json(
       {
         error: "An unexpected error occurred while deleting the staff profile",

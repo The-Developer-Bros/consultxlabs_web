@@ -46,7 +46,7 @@ This document explains why that decision was correct, what the trade-offs are, a
 | Auth               | BetterAuth                                | Authentication and session management                          |
 | Cache              | Upstash Redis                             | Distributed locks, maintenance state, rate limiting            |
 | Video & Chat       | Stream.io                                 | Real-time video calls, messaging, presence                     |
-| Payments           | Stripe + Razorpay + Lemon Squeezy + Xflow | Multi-gateway payment processing (4 gateways)                  |
+| Payments           | Stripe + Razorpay                         | Multi-gateway payment processing (2 gateways)                  |
 | Notifications      | Novu + Resend                             | Push notifications, transactional email                        |
 | Storage            | Supabase Storage                          | File uploads, image hosting                                    |
 | Hosting            | Vercel                                    | Edge network, serverless functions, CDN, automatic deployments |

@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { getSession } from "@/lib/auth-server";
@@ -88,6 +89,7 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "auth" } });
     console.error("Profile display image upload error:", error);
     return NextResponse.json(
       {
@@ -160,6 +162,7 @@ export async function DELETE(request: NextRequest) {
       message: "Profile display image deleted successfully",
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "auth" } });
     console.error("Profile display image delete error:", error);
     return NextResponse.json(
       {
@@ -207,6 +210,7 @@ export async function GET(request: NextRequest) {
       data: { profileDisplayImage: user.profileDisplayImage },
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "auth" } });
     console.error("Get profile display image error:", error);
     return NextResponse.json(
       {

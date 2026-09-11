@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import { validateReferralCode } from "@/lib/referrals/service";
 import prisma from "@/lib/prisma";
@@ -64,6 +65,7 @@ export async function GET(
       },
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "referrals" } });
     console.error("Error checking referral code:", error);
     return NextResponse.json(
       { error: "Failed to check referral code" },

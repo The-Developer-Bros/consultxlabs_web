@@ -1,8 +1,11 @@
 /**
  * Master Test Runner for Race Condition Test Suite
  *
- * This runner executes all 27 race condition tests and generates
- * comprehensive reports. Supports both sequential and parallel execution.
+ * This runner executes every race condition test under scenarios/ and
+ * generates comprehensive reports. Supports both sequential and parallel
+ * execution. Categories 01-06 are simulated (in-memory); 07-09 drive the
+ * real API and need a seeded DB + running server (see #837 and the chaos
+ * runbook, docs/enterprise/50-operations/07-chaos-test-runbook.md).
  *
  * Usage:
  *   npx tsx tests/typescript/race-conditions/master-runner.ts [mode]
@@ -333,12 +336,15 @@ async function main() {
   const report = generateMasterReport(categories, totalDuration, mode);
 
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const reportPath = path.join(
+  const reportsDir = path.join(
     process.cwd(),
     "tests/typescript/race-conditions/results/reports",
-    `master-report-${timestamp}.md`,
   );
+  const reportPath = path.join(reportsDir, `master-report-${timestamp}.md`);
 
+  // results/ is gitignored run output — a fresh checkout doesn't have it,
+  // and failing here after every scenario passed fails the whole run.
+  await fs.mkdir(reportsDir, { recursive: true });
   await fs.writeFile(reportPath, report, "utf-8");
 
   // Print final summary

@@ -14,8 +14,8 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const {
       consultantProfileId,
-      slotStartTimeInUTC,
-      slotEndTimeInUTC,
+      startsAt,
+      endsAt,
       consultationPlanId,
       slotOfAvailabilityWeeklyId,
       slotOfAvailabilityCustomId,
@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
     } = body;
 
     console.log(
-      `\n🧪 RACE CONDITION TEST: Simulating ${concurrentRequests} concurrent booking attempts for slot ${slotStartTimeInUTC}\n`,
+      `\n🧪 RACE CONDITION TEST: Simulating ${concurrentRequests} concurrent booking attempts for slot ${startsAt}\n`,
     );
 
     // Create multiple concurrent requests to the same slot
@@ -42,8 +42,8 @@ export async function POST(req: NextRequest) {
               },
               body: JSON.stringify({
                 consultantProfileId,
-                slotStartTimeInUTC,
-                slotEndTimeInUTC,
+                startsAt,
+                endsAt,
                 consultationPlanId,
                 slotOfAvailabilityWeeklyId,
                 slotOfAvailabilityCustomId,

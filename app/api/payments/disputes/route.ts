@@ -6,11 +6,15 @@
 
 import { listDisputes, submitDisputeEvidence } from "@/lib/payments";
 import prisma from "@/lib/prisma";
+import { hasBackofficePermission } from "@/lib/auth/backoffice-permissions";
+import { applyRateLimit, moneyOpsLimiter } from "@/lib/rate-limit";
+import { evidenceDeadlinePassed } from "@/lib/payments/dispute-status";
 import { Prisma } from "@prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { getSession } from "@/lib/auth-server";
+import * as Sentry from "@sentry/nextjs";
 // ============================================================================
 // Validation Schemas
 // ============================================================================
@@ -52,7 +56,15 @@ export async function GET(req: NextRequest) {
       where: { id: session.user.id },
     });
 
-    if (user?.role !== "ADMIN" && user?.role !== "STAFF") {
+    // Submitting evidence pushes an irreversible decision to the payment
+    // gateway, so it is `disputes.manage` (ADMIN) — not the `disputes.read`
+    // that staff hold. The dashboard already told staff this
+    // ("As a staff member… you cannot submit evidence") and hid the button;
+    // the route contradicted its own UI and accepted the call anyway.
+    if (
+      !user?.role ||
+      !hasBackofficePermission(user.role, "disputes.manage")
+    ) {
       return NextResponse.json(
         { error: "Forbidden - Admin access required" },
         { status: 403 },
@@ -102,7 +114,7 @@ export async function GET(req: NextRequest) {
         disputes: disputes.map((d) => ({
           id: d.id,
           disputeId: d.disputeId,
-          amount: d.amount,
+          amount: d.amountPaise,
           currency: d.currency,
           status: d.status,
           reason: d.reason,
@@ -122,6 +134,7 @@ export async function GET(req: NextRequest) {
     }
   } catch (error) {
     console.error("Disputes listing error:", error);
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "payments" } });
 
     return NextResponse.json(
       {
@@ -150,12 +163,27 @@ export async function POST(req: NextRequest) {
       where: { id: session.user.id },
     });
 
-    if (user?.role !== "ADMIN" && user?.role !== "STAFF") {
+    // Submitting evidence pushes an irreversible decision to the payment
+    // gateway, so it is `disputes.manage` (ADMIN) — not the `disputes.read`
+    // that staff hold. The dashboard already told staff this
+    // ("As a staff member… you cannot submit evidence") and hid the button;
+    // the route contradicted its own UI and accepted the call anyway.
+    if (
+      !user?.role ||
+      !hasBackofficePermission(user.role, "disputes.manage")
+    ) {
       return NextResponse.json(
         { error: "Forbidden - Admin access required" },
         { status: 403 },
       );
     }
+
+    // #677/PM-36 — evidence submission is an irreversible gateway push.
+    const limited = await applyRateLimit(
+      moneyOpsLimiter,
+      session.user.id,
+    );
+    if (limited) return limited;
 
     // Validate request
     const body = await req.json();
@@ -190,6 +218,28 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // #677/PM-37 — enforce the evidence deadline LOCALLY. Late submissions
+    // used to fail only inside Stripe, surfacing as an untyped 500 after the
+    // operator had already composed the packet. A typed 410 up front lets
+    // the dashboard say "deadline passed" instead of "something broke".
+    if (
+      evidenceDeadlinePassed({
+        status: dispute.status,
+        dueBy: dispute.dueBy,
+        nowMs: Date.now(),
+      })
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "The evidence deadline for this dispute has passed. Contact payment-gateway support to resolve it manually.",
+          code: "EVIDENCE_DEADLINE_PASSED",
+          dueBy: dispute.dueBy?.toISOString() ?? null,
+        },
+        { status: 410 },
+      );
+    }
+
     // Check gateway support
     if (dispute.paymentGateway !== "STRIPE") {
       return NextResponse.json(
@@ -217,6 +267,8 @@ export async function POST(req: NextRequest) {
       data: {
         status: disputeResult.status,
         evidence: disputeResult.evidence as Prisma.InputJsonValue,
+        // Stamped alongside the evidence itself so the two can never disagree.
+        evidenceSubmittedAt: new Date(),
       },
     });
 
@@ -242,6 +294,8 @@ export async function POST(req: NextRequest) {
         { status: 400 },
       );
     }
+
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "payments" } });
 
     return NextResponse.json(
       {

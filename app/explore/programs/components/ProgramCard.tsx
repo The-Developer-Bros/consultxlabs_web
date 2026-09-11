@@ -8,17 +8,22 @@ import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useCurrency } from "@/hooks/useCurrency";
 import { CompanyLogo } from "@/components/ui/company-logo";
-import { isClassProgram, Program } from "../utils";
+import { isClassProgram, Program } from "@/lib/explore/programs";
 
-export type ProgramCardVariant = "grid" | "list" | "carousel";
+type ProgramCardVariant = "grid" | "list" | "carousel";
 export type ProgramBadge = "featured" | "trending" | "new";
 
 interface ProgramCardProps {
   program: Program;
   variant?: ProgramCardVariant;
   badge?: ProgramBadge;
+  /** #664 — viewer's ACTIVE org memberships as { orgId: orgName }. */
+  viewerOrgs?: Record<string, string>;
 }
 
+// Curation state is a neutral taxonomy, not a status — colour is reserved for
+// destructive/success/warning/info here, so these read monochrome (filled for
+// the editorial pick, muted for the derived ones) and survive dark mode.
 const badgeConfig: Record<
   ProgramBadge,
   { label: string; icon: React.ReactNode; className: string }
@@ -26,17 +31,17 @@ const badgeConfig: Record<
   featured: {
     label: "Familiarise Pick",
     icon: <Sparkles className="w-3 h-3" />,
-    className: "bg-amber-500 text-white",
+    className: "bg-primary text-primary-foreground",
   },
   trending: {
     label: "Trending",
     icon: <Flame className="w-3 h-3" />,
-    className: "bg-rose-500 text-white",
+    className: "bg-background/90 text-foreground border border-border",
   },
   new: {
     label: "New",
     icon: <Sparkles className="w-3 h-3" />,
-    className: "bg-emerald-500 text-white",
+    className: "bg-background/90 text-foreground border border-border",
   },
 };
 
@@ -44,7 +49,9 @@ function TypeBadge({ type }: { type: "class" | "webinar" }) {
   return (
     <span
       className={`px-3 py-1 rounded-full text-xs font-medium ${
-        type === "class" ? "bg-zinc-900 text-white" : "bg-white text-zinc-900"
+        type === "class"
+          ? "bg-primary text-primary-foreground"
+          : "bg-card text-foreground"
       }`}
     >
       {type === "class" ? "Class" : "Webinar"}
@@ -125,7 +132,7 @@ function GridCard({
 
   return (
     <div
-      className="group bg-white rounded-2xl overflow-hidden border border-zinc-200 hover:border-zinc-300 hover:shadow-xl transition-all duration-300 cursor-pointer h-full flex flex-col"
+      className="group bg-card rounded-2xl overflow-hidden border border-border hover:border-border hover:shadow-xl transition-all duration-300 cursor-pointer h-full flex flex-col"
       onClick={handleClick}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -162,10 +169,10 @@ function GridCard({
       </div>
 
       <div className="p-5 flex-1 flex flex-col">
-        <h3 className="text-lg font-semibold text-zinc-900 mb-2 line-clamp-1 group-hover:text-zinc-700 transition-colors">
+        <h3 className="text-lg font-semibold text-foreground mb-2 line-clamp-1 group-hover:text-muted-foreground transition-colors">
           {program.title}
         </h3>
-        <p className="text-sm text-zinc-500 mb-4 line-clamp-2 flex-1">
+        <p className="text-sm text-muted-foreground mb-4 line-clamp-2 flex-1">
           {program.description}
         </p>
 
@@ -178,32 +185,32 @@ function GridCard({
                 companyName={exp.company}
                 companyDomain={exp.companyDomain ?? undefined}
                 size={20}
-                className="border-zinc-200"
+                className="border-border"
               />
             ))}
             {instructor && (
-              <span className="text-xs text-zinc-400 line-clamp-1">
+              <span className="text-xs text-muted-foreground/70 line-clamp-1">
                 {instructor.headline}
               </span>
             )}
           </div>
         )}
 
-        <div className="flex items-center justify-between pt-4 border-t border-zinc-100">
+        <div className="flex items-center justify-between pt-4 border-t border-border">
           <div className="flex items-center gap-2">
-            <div className="text-xl font-bold text-zinc-900">
+            <div className="text-xl font-bold text-foreground">
               {formatPrice(program.price)}
             </div>
             {rating !== null && rating > 0 && (
               <div className="flex items-center gap-0.5 ml-1">
                 <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
-                <span className="text-xs font-medium text-zinc-600">
+                <span className="text-xs font-medium text-muted-foreground">
                   {rating.toFixed(1)}
                 </span>
               </div>
             )}
           </div>
-          <div className="flex items-center gap-1 text-sm font-medium text-zinc-500 group-hover:text-zinc-900 transition-colors">
+          <div className="flex items-center gap-1 text-sm font-medium text-muted-foreground group-hover:text-foreground transition-colors">
             <span>View Details</span>
             <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
           </div>
@@ -216,7 +223,7 @@ function GridCard({
             width={12}
             height={12}
           />
-          <span className="text-[10px] text-zinc-400">on Familiarise</span>
+          <span className="text-[10px] text-muted-foreground/70">on Familiarise</span>
         </div>
       </div>
     </div>
@@ -246,7 +253,7 @@ function ListCard({
 
   return (
     <div
-      className="group bg-white rounded-2xl overflow-hidden border border-zinc-200 hover:border-zinc-300 hover:shadow-xl transition-all duration-300 cursor-pointer flex"
+      className="group bg-card rounded-2xl overflow-hidden border border-border hover:border-border hover:shadow-xl transition-all duration-300 cursor-pointer flex"
       onClick={handleClick}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -272,10 +279,10 @@ function ListCard({
         </div>
       </div>
 
-      <div className="p-6 flex-1 flex flex-col justify-between">
+      <div className="p-6 flex-1 flex flex-col justify-between min-w-0">
         <div>
           <div className="flex items-start justify-between gap-4 mb-2">
-            <h3 className="text-lg font-semibold text-zinc-900 group-hover:text-zinc-700 transition-colors">
+            <h3 className="text-lg font-semibold text-foreground group-hover:text-muted-foreground transition-colors">
               {program.title}
             </h3>
             {program.isRegistered && (
@@ -285,7 +292,7 @@ function ListCard({
               />
             )}
           </div>
-          <p className="text-sm text-zinc-500 line-clamp-2">
+          <p className="text-sm text-muted-foreground line-clamp-2">
             {program.description}
           </p>
           {/* Instructor info + company logos */}
@@ -297,11 +304,11 @@ function ListCard({
                   companyName={exp.company}
                   companyDomain={exp.companyDomain ?? undefined}
                   size={22}
-                  className="border-zinc-200"
+                  className="border-border"
                 />
               ))}
               {instructor && (
-                <span className="text-xs text-zinc-400 line-clamp-1">
+                <span className="text-xs text-muted-foreground/70 line-clamp-1">
                   {instructor.headline}
                 </span>
               )}
@@ -312,13 +319,13 @@ function ListCard({
         <div>
           <div className="flex items-center justify-between mt-4">
             <div className="flex items-center gap-2">
-              <div className="text-xl font-bold text-zinc-900">
+              <div className="text-xl font-bold text-foreground">
                 {formatPrice(program.price)}
               </div>
               {rating !== null && rating > 0 && (
                 <div className="flex items-center gap-0.5 ml-1">
                   <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
-                  <span className="text-xs font-medium text-zinc-600">
+                  <span className="text-xs font-medium text-muted-foreground">
                     {rating.toFixed(1)}
                   </span>
                 </div>
@@ -326,7 +333,7 @@ function ListCard({
             </div>
             <Button
               variant="outline"
-              className="rounded-xl border-zinc-300 hover:bg-zinc-50"
+              className="rounded-xl border-border hover:bg-muted"
               onClick={(e) => {
                 e.stopPropagation();
                 handleClick();
@@ -343,7 +350,7 @@ function ListCard({
               width={12}
               height={12}
             />
-            <span className="text-[10px] text-zinc-400">on Familiarise</span>
+            <span className="text-[10px] text-muted-foreground/70">on Familiarise</span>
           </div>
         </div>
       </div>
@@ -372,7 +379,7 @@ function CarouselCard({
 
   return (
     <div
-      className="group bg-white rounded-2xl overflow-hidden border border-zinc-200 hover:border-zinc-300 hover:shadow-xl transition-all duration-300 cursor-pointer flex-shrink-0 w-[320px] md:w-[360px]"
+      className="group bg-card rounded-2xl overflow-hidden border border-border hover:border-border hover:shadow-xl transition-all duration-300 cursor-pointer flex-shrink-0 w-[320px] md:w-[360px]"
       onClick={handleClick}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -403,15 +410,15 @@ function CarouselCard({
       </div>
 
       <div className="p-4">
-        <h3 className="text-base font-semibold text-zinc-900 mb-1 line-clamp-1 group-hover:text-zinc-700 transition-colors">
+        <h3 className="text-base font-semibold text-foreground mb-1 line-clamp-1 group-hover:text-muted-foreground transition-colors">
           {program.title}
         </h3>
-        <p className="text-sm text-zinc-500 line-clamp-1 mb-3">
+        <p className="text-sm text-muted-foreground line-clamp-1 mb-3">
           {program.description}
         </p>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="text-lg font-bold text-zinc-900">
+            <div className="text-lg font-bold text-foreground">
               {formatPrice(program.price)}
             </div>
             {workExperiences.length > 0 && (
@@ -422,13 +429,13 @@ function CarouselCard({
                     companyName={exp.company}
                     companyDomain={exp.companyDomain ?? undefined}
                     size={18}
-                    className="border-zinc-200"
+                    className="border-border"
                   />
                 ))}
               </div>
             )}
           </div>
-          <div className="flex items-center gap-1 text-sm font-medium text-zinc-500 group-hover:text-zinc-900 transition-colors">
+          <div className="flex items-center gap-1 text-sm font-medium text-muted-foreground group-hover:text-foreground transition-colors">
             <span>View</span>
             <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
           </div>
@@ -442,15 +449,34 @@ function ProgramCardImpl({
   program,
   variant = "grid",
   badge,
+  viewerOrgs,
 }: ProgramCardProps) {
-  switch (variant) {
-    case "list":
-      return <ListCard program={program} badge={badge} />;
-    case "carousel":
-      return <CarouselCard program={program} badge={badge} />;
-    default:
-      return <GridCard program={program} badge={badge} />;
-  }
+  const card = (() => {
+    switch (variant) {
+      case "list":
+        return <ListCard program={program} badge={badge} />;
+      case "carousel":
+        return <CarouselCard program={program} badge={badge} />;
+      default:
+        return <GridCard program={program} badge={badge} />;
+    }
+  })();
+
+  // #664 — badge a plan the viewer's org sponsors. Rendered as a chip above the
+  // card (no collision with the type/registration/extra badges on the image).
+  const orgName = program.organizationId
+    ? viewerOrgs?.[program.organizationId]
+    : undefined;
+  if (!orgName) return card;
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="inline-flex w-fit items-center gap-1 rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary">
+        Recommended by {orgName}
+      </span>
+      {card}
+    </div>
+  );
 }
 
 const ProgramCard = memo(ProgramCardImpl);

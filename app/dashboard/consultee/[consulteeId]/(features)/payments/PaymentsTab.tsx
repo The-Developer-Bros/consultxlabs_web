@@ -5,14 +5,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { motion } from "framer-motion";
 import { useCurrency } from "@/hooks/useCurrency";
 import { cn } from "@/utils/tailwind";
-import {
-  CreditCard,
-  Gift,
-  Download,
-  FileText,
-  Tag,
-  ArrowUpDown,
-} from "lucide-react";
+import { CreditCard, Gift, Tag, ArrowUpDown, Building2 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { useSession } from "@/lib/auth-client";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -27,6 +22,25 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  ResponsiveTable,
+  type ResponsiveColumn,
+} from "@/components/ui/responsive-table";
+import { DashboardHeader } from "@/components/dashboard/PageScaffold";
+import { StatusBadge } from "@/components/dashboard/StatusBadge";
+import {
+  paymentStatusBadge,
+  refundStatusBadge,
+  resolveSponsoringOrgName,
+} from "@/lib/labels/session-labels";
+
+interface RefundItem {
+  id: string;
+  amountPaise: number;
+  status: string;
+  reason: string | null;
+  createdAt: string;
+}
 
 interface PaymentItem {
   id: string;
@@ -39,30 +53,25 @@ interface PaymentItem {
   paymentGateway: string;
   appointmentType: string | null;
   planTitle: string;
+  organizationId: string | null;
   discount: {
     code: string;
     type: string;
     value: number;
   } | null;
+  refunds: RefundItem[];
+  refundedPaise: number;
+  /** Server-derived: REFUNDED | PARTIALLY_REFUNDED | PaymentStatus. */
+  displayStatus: string;
+  /** #1365 — the statutory tax invoice, when one was issued for this payment. */
+  consumerInvoice: {
+    id: string;
+    invoiceNumber: string;
+    issuedAt: string;
+  } | null;
   receiptUrl: string | null;
   expiresAt: string | null;
   createdAt: string;
-}
-
-interface InvoiceItem {
-  id: string;
-  paymentId: string | null;
-  invoiceNumber: string;
-  amount: number;
-  taxAmount: number | null;
-  status: string;
-  createdAt: string;
-  payment: {
-    id: string;
-    amount: number;
-    currency: string;
-    paymentStatus: string;
-  } | null;
 }
 
 interface CreditItem {
@@ -90,7 +99,6 @@ interface CreditUsageItem {
 
 interface PaymentsData {
   payments: PaymentItem[];
-  invoices: InvoiceItem[];
   credits: CreditItem[];
   creditUsages: CreditUsageItem[];
   creditSummary: {
@@ -111,8 +119,6 @@ function formatDate(date: string): string {
 const GATEWAY_LABELS: Record<string, string> = {
   STRIPE: "Stripe",
   RAZORPAY: "Razorpay",
-  LEMON_SQUEEZY: "Lemon Squeezy",
-  XFLOW: "Xflow",
 };
 
 function formatGateway(gateway: string): string {
@@ -151,18 +157,37 @@ function formatRelativeTime(date: Date): string {
 }
 
 /**
- * Derive UI display status: if PENDING but expiresAt is past, show EXPIRED
- * so the user doesn't see a misleading amber "PENDING" badge while the
- * cleanup cron hasn't run yet.
+ * Derive UI display status: start from the server's refund-aware
+ * `displayStatus` (REFUNDED / PARTIALLY_REFUNDED / PaymentStatus); if
+ * PENDING but expiresAt is past, show EXPIRED so the user doesn't see a
+ * misleading amber "PENDING" badge while the cleanup cron hasn't run yet.
  */
 function getDisplayStatus(payment: PaymentItem): string {
-  if (payment.status !== "PENDING") return payment.status;
+  const base = payment.displayStatus ?? payment.status;
+  if (base !== "PENDING") return base;
 
   const expiresAt = payment.expiresAt
     ? new Date(payment.expiresAt)
     : new Date(new Date(payment.createdAt).getTime() + 30 * 60 * 1000);
 
   return expiresAt <= new Date() ? "EXPIRED" : "PENDING";
+}
+
+/**
+ * Format an amount in ITS OWN currency (no cross-currency conversion) —
+ * used by the per-currency summary so a USD payment is never summed or
+ * displayed as INR.
+ */
+function formatAmountInCurrency(paise: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat(currency === "INR" ? "en-IN" : "en-US", {
+      style: "currency",
+      currency,
+      maximumFractionDigits: 2,
+    }).format(paise / 100);
+  } catch {
+    return `${currency} ${(paise / 100).toFixed(2)}`;
+  }
 }
 
 function getExpiryInfo(payment: PaymentItem): {
@@ -184,52 +209,64 @@ function getExpiryInfo(payment: PaymentItem): {
   };
 }
 
-const STATUS_STYLES: Record<string, string> = {
-  SUCCEEDED: "bg-emerald-50 text-emerald-700",
-  COMPLETED: "bg-emerald-50 text-emerald-700",
-  PENDING: "bg-amber-50 text-amber-700",
-  EXPIRED: "bg-zinc-100 text-zinc-500",
-  FAILED: "bg-red-50 text-red-700",
-  REFUNDED: "bg-blue-50 text-blue-700",
-  CANCELLED: "bg-zinc-100 text-zinc-600",
-  PAID: "bg-emerald-50 text-emerald-700",
-  UNPAID: "bg-amber-50 text-amber-700",
-};
-
-function StatusBadge({ status }: { status: string }) {
+/**
+ * #1365 — the buyer's own tax invoice for a payment. Defined at module scope
+ * rather than inside the tab so it is not re-created on every render (S6478).
+ * An empty cell means the booking was org-sponsored and is invoiced to the
+ * organization instead, which is the correct answer rather than a missing
+ * document.
+ */
+function renderInvoiceCell(payment: PaymentItem) {
+  if (!payment.consumerInvoice) {
+    return <span className="text-muted-foreground/70">&mdash;</span>;
+  }
   return (
-    <span
-      className={cn(
-        "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium",
-        STATUS_STYLES[status] || "bg-zinc-100 text-zinc-600",
-      )}
+    <a
+      href={`/api/payments/${payment.id}/invoice/pdf`}
+      className="whitespace-nowrap text-sm font-medium text-foreground underline underline-offset-4 hover:text-muted-foreground"
     >
-      {status}
-    </span>
+      {/* Explicit separator: JSX strips the newline between a text node and
+          the element after it, so the words would otherwise run together. */}
+      Download{" "}
+      <span className="text-xs text-muted-foreground">
+        {payment.consumerInvoice.invoiceNumber}
+      </span>
+    </a>
   );
 }
 
 export function PaymentsTab({ data }: { data: PaymentsData | undefined }) {
   const { formatPrice } = useCurrency();
 
-  // Build a map from paymentId → invoice for quick lookup
-  const invoiceByPaymentId = useMemo(() => {
-    if (!data) return new Map<string, InvoiceItem>();
-    const map = new Map<string, InvoiceItem>();
-    for (const inv of data.invoices) {
-      if (inv.paymentId) {
-        map.set(inv.paymentId, inv);
-      }
+  // #1396 — `formatPrice` assumes INR paise and applies the viewer's FX rate,
+  // so a payment already denominated in another currency was converted a second
+  // time and relabelled, while its refunds and the per-currency total right
+  // below were rendered unconverted. The three disagreed on the same row. This
+  // is the guard `PendingPaymentsWidget` already uses: only INR amounts go
+  // through the converter, everything else renders in its own currency.
+  const formatPaymentAmount = (paise: number, currency: string | null | undefined) =>
+    currency && currency.toUpperCase() !== "INR"
+      ? formatAmountInCurrency(paise, currency)
+      : formatPrice(paise);
+  const { data: session } = useSession();
+  // Resolve a payment's `organizationId` to a displayable org name for
+  // the "Sponsored · <Org>" badge — same convention as the appointments
+  // / home surfaces.
+  const orgMemberships = session?.user?.organizationMemberships ?? [];
+
+  // Net successful spend grouped per currency — a USD payment must never be
+  // summed into an INR total, and refunded amounts don't count as spend.
+  const totalsByCurrency = useMemo(() => {
+    const map = new Map<string, { total: number; count: number }>();
+    for (const p of data?.payments ?? []) {
+      if (p.status !== "SUCCEEDED") continue;
+      const currency = p.currency || "INR";
+      const entry = map.get(currency) ?? { total: 0, count: 0 };
+      entry.total += p.amount - (p.refundedPaise ?? 0);
+      entry.count += 1;
+      map.set(currency, entry);
     }
     return map;
-  }, [data]);
-
-  // TODO: currently sums all currencies as INR — add multi-currency support later
-  const totalSpent = useMemo(() => {
-    if (!data) return 0;
-    return data.payments
-      .filter((p) => p.status === "SUCCEEDED")
-      .reduce((sum, p) => sum + p.amount, 0);
   }, [data]);
 
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -254,6 +291,267 @@ export function PaymentsTab({ data }: { data: PaymentsData | undefined }) {
     return result;
   }, [data, statusFilter, typeFilter, sortDir]);
 
+  const paymentColumns: ResponsiveColumn<PaymentItem>[] = [
+    {
+      key: "plan",
+      header: "Plan",
+      primary: true,
+      cell: (payment) => (
+        <div className="max-w-[220px]">
+          <div className="truncate font-medium text-foreground">
+            {payment.planTitle}
+          </div>
+          {(() => {
+            const sponsoringOrgName = resolveSponsoringOrgName(
+              payment.organizationId,
+              orgMemberships,
+            );
+            return sponsoringOrgName ? (
+              <Badge
+                className="mt-1 text-[10px] font-semibold px-2 py-0.5 bg-muted text-muted-foreground border-0 rounded-md inline-flex items-center gap-1 max-w-full"
+                title={`Sponsored by ${sponsoringOrgName}`}
+              >
+                <Building2 className="h-3 w-3 shrink-0" />
+                <span className="truncate">Sponsored · {sponsoringOrgName}</span>
+              </Badge>
+            ) : null;
+          })()}
+        </div>
+      ),
+    },
+    {
+      key: "date",
+      header: "Date",
+      cell: (payment) => (
+        <span className="text-muted-foreground whitespace-nowrap">
+          {formatDate(payment.createdAt)}
+        </span>
+      ),
+    },
+    {
+      key: "type",
+      header: "Type",
+      cell: (payment) => (
+        <span className="text-muted-foreground whitespace-nowrap capitalize">
+          {payment.appointmentType?.toLowerCase() || "—"}
+        </span>
+      ),
+    },
+    {
+      key: "amount",
+      header: "Amount",
+      headClassName: "text-right",
+      className: "text-right",
+      cell: (payment) => (
+        <span className="whitespace-nowrap">
+          <span className="font-medium text-foreground">
+            {formatPaymentAmount(payment.amount, payment.currency)}
+          </span>
+          {payment.taxAmount && payment.taxAmount > 0 && (
+            <span className="block text-xs text-muted-foreground/70">
+              incl.{" "}
+              {formatPaymentAmount(payment.taxAmount ?? 0, payment.currency)} GST
+            </span>
+          )}
+          {payment.discount && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex items-center text-foreground ml-1 cursor-help">
+                    <Tag className="w-3 h-3" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>
+                    &ldquo;{payment.discount.code}&rdquo;
+                    {" — "}
+                    {payment.discount.type === "PERCENTAGE"
+                      ? `${payment.discount.value}% off`
+                      : `${formatPaymentAmount(payment.discount.value, payment.currency)} off`}
+                  </p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
+        </span>
+      ),
+    },
+    {
+      key: "method",
+      header: "Method",
+      cell: (payment) => (
+        <span className="text-muted-foreground whitespace-nowrap text-xs">
+          {formatGateway(payment.paymentGateway)}
+        </span>
+      ),
+    },
+    {
+      key: "status",
+      header: "Status",
+      cell: (payment) => {
+        const displayStatus = getDisplayStatus(payment);
+        return (
+          <div className="space-y-1">
+            <StatusBadge {...paymentStatusBadge(displayStatus)} size="sm" />
+            {payment.refundedPaise > 0 && (
+              <span className="block text-xs text-muted-foreground whitespace-nowrap">
+                {formatAmountInCurrency(payment.refundedPaise, payment.currency)}{" "}
+                refunded
+              </span>
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      key: "refunds",
+      header: "Refunds",
+      cell: (payment) => {
+        if (payment.refunds.length === 0) {
+          return <span className="text-muted-foreground/70">&mdash;</span>;
+        }
+        return (
+          <ul className="space-y-1.5">
+            {payment.refunds.map((refund) => (
+              <li key={refund.id} className="whitespace-nowrap">
+                <StatusBadge {...refundStatusBadge(refund.status)} size="sm" />
+                <span className="ml-1.5 text-xs text-muted-foreground">
+                  {formatAmountInCurrency(refund.amountPaise, payment.currency)}
+                  {" · "}
+                  {formatDate(refund.createdAt)}
+                </span>
+                {refund.reason && (
+                  <span
+                    className="block text-xs text-muted-foreground/70 max-w-[200px] truncate"
+                    title={refund.reason}
+                  >
+                    {refund.reason}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        );
+      },
+    },
+    {
+      key: "invoice",
+      header: "Tax invoice",
+      cell: renderInvoiceCell,
+    },
+    {
+      key: "expires",
+      header: "Expires",
+      cell: (payment) => {
+        const expiry = getExpiryInfo(payment);
+        if (!expiry) {
+          return <span className="text-muted-foreground/70">&mdash;</span>;
+        }
+        return (
+          <div className="whitespace-nowrap">
+            <span className="text-xs text-muted-foreground">
+              {expiry.datetime}
+            </span>
+            <span
+              className={cn(
+                "block text-xs",
+                expiry.isExpired
+                  ? "text-muted-foreground/70"
+                  : "text-amber-600 dark:text-amber-400",
+              )}
+            >
+              {expiry.relative}
+            </span>
+          </div>
+        );
+      },
+    },
+  ];
+
+  const creditColumns: ResponsiveColumn<CreditItem>[] = [
+    {
+      key: "source",
+      header: "Source",
+      primary: true,
+      cell: (credit) => (
+        <span className="capitalize text-foreground">
+          {credit.source.toLowerCase().replace(/_/g, " ")}
+        </span>
+      ),
+    },
+    {
+      key: "date",
+      header: "Date",
+      cell: (credit) => (
+        <span className="text-muted-foreground whitespace-nowrap">
+          {formatDate(credit.createdAt)}
+        </span>
+      ),
+    },
+    {
+      key: "amount",
+      header: "Amount",
+      headClassName: "text-right",
+      className: "text-right",
+      cell: (credit) => (
+        <span className="font-medium text-foreground">
+          {formatPrice(credit.amount)}
+        </span>
+      ),
+    },
+    {
+      key: "remaining",
+      header: "Remaining",
+      headClassName: "text-right",
+      className: "text-right",
+      cell: (credit) => (
+        <span className="font-medium text-green-600 dark:text-green-400">
+          {formatPrice(credit.remainingAmount)}
+        </span>
+      ),
+    },
+    {
+      key: "expires",
+      header: "Expires",
+      cell: (credit) => (
+        <span className="text-muted-foreground">
+          {credit.expiresAt ? formatDate(credit.expiresAt) : "No expiry"}
+        </span>
+      ),
+    },
+  ];
+
+  const creditUsageColumns: ResponsiveColumn<CreditUsageItem>[] = [
+    {
+      key: "source",
+      header: "Source",
+      primary: true,
+      cell: (usage) => (
+        <span className="capitalize text-foreground">
+          {usage.credit.source.toLowerCase().replace(/_/g, " ")}
+        </span>
+      ),
+    },
+    {
+      key: "date",
+      header: "Date",
+      cell: (usage) => (
+        <span className="text-muted-foreground">{formatDate(usage.usedAt)}</span>
+      ),
+    },
+    {
+      key: "used",
+      header: "Used",
+      headClassName: "text-right",
+      className: "text-right",
+      cell: (usage) => (
+        <span className="font-medium text-red-600 dark:text-red-400">
+          -{formatPrice(usage.amount)}
+        </span>
+      ),
+    },
+  ];
+
   if (!data) return null;
 
   return (
@@ -263,52 +561,72 @@ export function PaymentsTab({ data }: { data: PaymentsData | undefined }) {
       transition={{ duration: 0.3 }}
     >
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-zinc-900">Payments</h1>
-        <p className="text-zinc-500 mt-1">Your payment history and credits</p>
+        <DashboardHeader
+          title="Payments"
+          subtitle="Your payment history and credits"
+        />
       </div>
 
       {/* Summary Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-        <div className="bg-white rounded-xl border border-zinc-200 p-4">
+        <div className="bg-card rounded-xl border border-border p-4">
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
-                <p className="text-sm text-zinc-500 cursor-help w-fit">
+                <p className="text-sm text-muted-foreground cursor-help w-fit">
                   Total Spent{" "}
-                  <span className="text-zinc-400">&#9432;</span>
+                  <span className="text-muted-foreground/70">&#9432;</span>
                 </p>
               </TooltipTrigger>
               <TooltipContent>
-                <p>Only includes successful payments</p>
+                <p>
+                  Successful payments net of refunds. Multi-currency spend is
+                  totalled per currency, never converted.
+                </p>
               </TooltipContent>
             </Tooltip>
           </TooltipProvider>
-          <p className="text-2xl font-bold text-zinc-900">
-            {formatPrice(totalSpent)}
-          </p>
-          <p className="text-xs text-zinc-400 mt-1">
+          {totalsByCurrency.size === 0 ? (
+            <p className="text-2xl font-bold text-foreground">
+              {formatPrice(0)}
+            </p>
+          ) : (
+            <div className="space-y-0.5">
+              {Array.from(totalsByCurrency.entries()).map(([currency, entry]) => (
+                <p
+                  key={currency}
+                  className="text-2xl font-bold text-foreground leading-tight"
+                >
+                  {formatAmountInCurrency(entry.total, currency)}
+                </p>
+              ))}
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground/70 mt-1">
             {(() => {
-              const count = data.payments.filter((p) => p.status === "SUCCEEDED").length;
+              const count = data.payments.filter(
+                (p) => p.status === "SUCCEEDED",
+              ).length;
               return `${count} successful ${count === 1 ? "transaction" : "transactions"} `;
             })()}
             &middot; {data.payments.length} total
           </p>
         </div>
-        <div className="bg-white rounded-xl border border-zinc-200 p-4">
-          <p className="text-sm text-zinc-500">Credits Earned</p>
-          <p className="text-2xl font-bold text-zinc-900">
+        <div className="bg-card rounded-xl border border-border p-4">
+          <p className="text-sm text-muted-foreground">Credits Earned</p>
+          <p className="text-2xl font-bold text-foreground">
             {formatPrice(data.creditSummary.total)}
           </p>
-          <p className="text-xs text-zinc-400 mt-1">
+          <p className="text-xs text-muted-foreground/70 mt-1">
             {formatPrice(data.creditSummary.used)} used
           </p>
         </div>
-        <div className="bg-white rounded-xl border border-zinc-200 p-4">
-          <p className="text-sm text-zinc-500">Credit Balance</p>
-          <p className="text-2xl font-bold text-emerald-600">
+        <div className="bg-card rounded-xl border border-border p-4">
+          <p className="text-sm text-muted-foreground">Credit Balance</p>
+          <p className="text-2xl font-bold text-green-600 dark:text-green-400">
             {formatPrice(data.creditSummary.remaining)}
           </p>
-          <p className="text-xs text-zinc-400 mt-1">Available to use</p>
+          <p className="text-xs text-muted-foreground/70 mt-1">Available to use</p>
         </div>
       </div>
 
@@ -333,12 +651,16 @@ export function PaymentsTab({ data }: { data: PaymentsData | undefined }) {
               {/* Filter / Sort bar */}
               <div className="flex flex-wrap items-center gap-3">
                 <Select value={statusFilter} onValueChange={setStatusFilter}>
-                  <SelectTrigger className="w-[150px]">
+                  <SelectTrigger className="w-full sm:w-[150px]">
                     <SelectValue placeholder="Status" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All statuses</SelectItem>
                     <SelectItem value="SUCCEEDED">Succeeded</SelectItem>
+                    <SelectItem value="REFUNDED">Refunded</SelectItem>
+                    <SelectItem value="PARTIALLY_REFUNDED">
+                      Partially refunded
+                    </SelectItem>
                     <SelectItem value="PENDING">Pending</SelectItem>
                     <SelectItem value="FAILED">Failed</SelectItem>
                     <SelectItem value="EXPIRED">Expired</SelectItem>
@@ -346,7 +668,7 @@ export function PaymentsTab({ data }: { data: PaymentsData | undefined }) {
                 </Select>
 
                 <Select value={typeFilter} onValueChange={setTypeFilter}>
-                  <SelectTrigger className="w-[170px]">
+                  <SelectTrigger className="w-full sm:w-[170px]">
                     <SelectValue placeholder="Type" />
                   </SelectTrigger>
                   <SelectContent>
@@ -374,170 +696,13 @@ export function PaymentsTab({ data }: { data: PaymentsData | undefined }) {
               {filteredPayments.length === 0 ? (
                 <EmptyState message="No transactions match the selected filters" />
               ) : (
-            <div className="bg-white rounded-xl border border-zinc-200 overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-zinc-100 bg-zinc-50">
-                      <th className="text-left px-4 py-3 font-medium text-zinc-600">
-                        Date
-                      </th>
-                      <th className="text-left px-4 py-3 font-medium text-zinc-600">
-                        Invoice #
-                      </th>
-                      <th className="text-left px-4 py-3 font-medium text-zinc-600">
-                        Plan
-                      </th>
-                      <th className="text-left px-4 py-3 font-medium text-zinc-600">
-                        Type
-                      </th>
-                      <th className="text-right px-4 py-3 font-medium text-zinc-600">
-                        Amount
-                      </th>
-                      <th className="text-left px-4 py-3 font-medium text-zinc-600">
-                        Method
-                      </th>
-                      <th className="text-left px-4 py-3 font-medium text-zinc-600">
-                        Status
-                      </th>
-                      <th className="text-left px-4 py-3 font-medium text-zinc-600">
-                        Expires
-                      </th>
-                      <th className="text-center px-4 py-3 font-medium text-zinc-600">
-                        Invoice
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-zinc-50">
-                    {filteredPayments.map((payment) => {
-                      const invoice = invoiceByPaymentId.get(payment.id);
-                      const displayStatus = getDisplayStatus(payment);
-                      return (
-                        <tr key={payment.id} className="hover:bg-zinc-50">
-                          <td className="px-4 py-3 text-zinc-600 whitespace-nowrap">
-                            {formatDate(payment.createdAt)}
-                          </td>
-                          <td className="px-4 py-3 font-mono text-xs text-zinc-500 whitespace-nowrap">
-                            {invoice?.invoiceNumber || (
-                              <span className="text-zinc-300">—</span>
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-zinc-900 font-medium max-w-[200px] truncate">
-                            {payment.planTitle}
-                          </td>
-                          <td className="px-4 py-3 text-zinc-600 whitespace-nowrap capitalize">
-                            {payment.appointmentType?.toLowerCase() || "—"}
-                          </td>
-                          <td className="px-4 py-3 text-right whitespace-nowrap">
-                            <span className="font-medium text-zinc-900">
-                              {formatPrice(payment.amount)}
-                            </span>
-                            {payment.taxAmount && payment.taxAmount > 0 && (
-                              <span className="block text-xs text-zinc-400">
-                                incl.{" "}
-                                {formatPrice(payment.taxAmount ?? 0)}{" "}
-                                GST
-                              </span>
-                            )}
-                            {payment.discount && (
-                              <TooltipProvider>
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <span className="inline-flex items-center text-emerald-600 ml-1 cursor-help">
-                                      <Tag className="w-3 h-3" />
-                                    </span>
-                                  </TooltipTrigger>
-                                  <TooltipContent>
-                                    <p>
-                                      &ldquo;{payment.discount.code}&rdquo;
-                                      {" \u2014 "}
-                                      {payment.discount.type === "PERCENTAGE"
-                                        ? `${payment.discount.value}% off`
-                                        : `${formatPrice(payment.discount.value)} off`}
-                                    </p>
-                                  </TooltipContent>
-                                </Tooltip>
-                              </TooltipProvider>
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-zinc-600 whitespace-nowrap text-xs">
-                            {formatGateway(payment.paymentGateway)}
-                          </td>
-                          <td className="px-4 py-3">
-                            <StatusBadge status={displayStatus} />
-                          </td>
-                          <td className="px-4 py-3 whitespace-nowrap">
-                            {(() => {
-                              const expiry = getExpiryInfo(payment);
-                              if (!expiry) {
-                                return <span className="text-zinc-300">—</span>;
-                              }
-                              return (
-                                <div>
-                                  <span className="text-xs text-zinc-500">
-                                    {expiry.datetime}
-                                  </span>
-                                  <span
-                                    className={cn(
-                                      "block text-xs",
-                                      expiry.isExpired
-                                        ? "text-zinc-400"
-                                        : "text-amber-600",
-                                    )}
-                                  >
-                                    {expiry.relative}
-                                  </span>
-                                </div>
-                              );
-                            })()}
-                          </td>
-                          <td className="px-4 py-3 text-center">
-                            {invoice ? (
-                              <TooltipProvider>
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <Button
-                                      variant="ghost"
-                                      size="sm"
-                                      className="text-zinc-500 hover:text-zinc-900"
-                                      onClick={() => {
-                                        window.open(
-                                          `/api/invoices/${invoice.id}/pdf`,
-                                          "_blank",
-                                        );
-                                      }}
-                                    >
-                                      <Download className="w-4 h-4" />
-                                    </Button>
-                                  </TooltipTrigger>
-                                  <TooltipContent>
-                                    <p>Download invoice PDF</p>
-                                  </TooltipContent>
-                                </Tooltip>
-                              </TooltipProvider>
-                            ) : displayStatus === "FAILED" ||
-                              displayStatus === "EXPIRED" ? (
-                              <span className="text-xs text-zinc-300">—</span>
-                            ) : (
-                              <TooltipProvider>
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <FileText className="w-4 h-4 text-zinc-200 mx-auto" />
-                                  </TooltipTrigger>
-                                  <TooltipContent>
-                                    <p>Invoice pending</p>
-                                  </TooltipContent>
-                                </Tooltip>
-                              </TooltipProvider>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+                <div className="bg-card rounded-xl border border-border p-2 sm:p-3">
+                  <ResponsiveTable<PaymentItem>
+                    columns={paymentColumns}
+                    rows={filteredPayments}
+                    getRowId={(p) => p.id}
+                  />
+                </div>
               )}
             </div>
           )}
@@ -548,105 +713,35 @@ export function PaymentsTab({ data }: { data: PaymentsData | undefined }) {
           <div className="space-y-6">
             {/* Credits list */}
             {data.credits.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-12 bg-white rounded-xl border border-zinc-200">
-                <Gift className="w-8 h-8 text-zinc-300 mb-3" />
-                <p className="text-zinc-500">No credits yet</p>
-                <p className="text-sm text-zinc-400 mt-1">
+              <div className="flex flex-col items-center justify-center py-12 bg-card rounded-xl border border-border">
+                <Gift className="w-8 h-8 text-muted-foreground/70 mb-3" />
+                <p className="text-muted-foreground">No credits yet</p>
+                <p className="text-sm text-muted-foreground/70 mt-1">
                   Refer friends to earn credits you can use on future bookings.
                 </p>
               </div>
             ) : (
-              <div className="bg-white rounded-xl border border-zinc-200 overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-zinc-100 bg-zinc-50">
-                        <th className="text-left px-4 py-3 font-medium text-zinc-600">
-                          Date
-                        </th>
-                        <th className="text-left px-4 py-3 font-medium text-zinc-600">
-                          Source
-                        </th>
-                        <th className="text-right px-4 py-3 font-medium text-zinc-600">
-                          Amount
-                        </th>
-                        <th className="text-right px-4 py-3 font-medium text-zinc-600">
-                          Remaining
-                        </th>
-                        <th className="text-left px-4 py-3 font-medium text-zinc-600">
-                          Expires
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-zinc-50">
-                      {data.credits.map((credit) => (
-                        <tr key={credit.id} className="hover:bg-zinc-50">
-                          <td className="px-4 py-3 text-zinc-600 whitespace-nowrap">
-                            {formatDate(credit.createdAt)}
-                          </td>
-                          <td className="px-4 py-3 text-zinc-900 capitalize">
-                            {credit.source.toLowerCase().replace(/_/g, " ")}
-                          </td>
-                          <td className="px-4 py-3 text-right font-medium text-zinc-900">
-                            {formatPrice(credit.amount)}
-                          </td>
-                          <td className="px-4 py-3 text-right font-medium text-emerald-600">
-                            {formatPrice(credit.remainingAmount)}
-                          </td>
-                          <td className="px-4 py-3 text-zinc-500">
-                            {credit.expiresAt
-                              ? formatDate(credit.expiresAt)
-                              : "No expiry"}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+              <div className="bg-card rounded-xl border border-border p-2 sm:p-3">
+                <ResponsiveTable<CreditItem>
+                  columns={creditColumns}
+                  rows={data.credits}
+                  getRowId={(c) => c.id}
+                />
               </div>
             )}
 
             {/* Credit usage history */}
             {data.creditUsages.length > 0 && (
               <div>
-                <h3 className="text-sm font-semibold text-zinc-700 mb-3">
+                <h3 className="text-sm font-semibold text-foreground mb-3">
                   Usage History
                 </h3>
-                <div className="bg-white rounded-xl border border-zinc-200 overflow-hidden">
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b border-zinc-100 bg-zinc-50">
-                          <th className="text-left px-4 py-3 font-medium text-zinc-600">
-                            Date
-                          </th>
-                          <th className="text-left px-4 py-3 font-medium text-zinc-600">
-                            Source
-                          </th>
-                          <th className="text-right px-4 py-3 font-medium text-zinc-600">
-                            Used
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-zinc-50">
-                        {data.creditUsages.map((usage) => (
-                          <tr key={usage.id} className="hover:bg-zinc-50">
-                            <td className="px-4 py-3 text-zinc-600">
-                              {formatDate(usage.usedAt)}
-                            </td>
-                            <td className="px-4 py-3 text-zinc-900 capitalize">
-                              {usage.credit.source
-                                .toLowerCase()
-                                .replace(/_/g, " ")}
-                            </td>
-                            <td className="px-4 py-3 text-right font-medium text-red-600">
-                              -{formatPrice(usage.amount)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                <div className="bg-card rounded-xl border border-border p-2 sm:p-3">
+                  <ResponsiveTable<CreditUsageItem>
+                    columns={creditUsageColumns}
+                    rows={data.creditUsages}
+                    getRowId={(u) => u.id}
+                  />
                 </div>
               </div>
             )}
@@ -659,8 +754,8 @@ export function PaymentsTab({ data }: { data: PaymentsData | undefined }) {
 
 function EmptyState({ message }: { message: string }) {
   return (
-    <div className="flex flex-col items-center justify-center py-12 bg-white rounded-xl border border-zinc-200">
-      <p className="text-zinc-500">{message}</p>
+    <div className="flex flex-col items-center justify-center py-12 bg-card rounded-xl border border-border">
+      <p className="text-muted-foreground">{message}</p>
     </div>
   );
 }

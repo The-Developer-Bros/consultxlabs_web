@@ -31,15 +31,15 @@ export function BenefitsSection({ images }: BenefitsSectionProps) {
           >
             <Badge
               variant="secondary"
-              className="mb-4 bg-zinc-200 text-zinc-700 hover:bg-zinc-200 border-0"
+              className="mb-4 bg-secondary text-secondary-foreground hover:bg-secondary border-0"
             >
               Why Familiarise?
             </Badge>
-            <h2 className="text-3xl md:text-4xl lg:text-5xl font-bold text-zinc-900 mb-6">
+            <h2 className="text-fluid-4xl font-bold text-foreground mb-6 tracking-tight">
               Transform your career with{" "}
-              <span className="text-zinc-500">expert guidance</span>
+              <span className="text-muted-foreground">expert guidance</span>
             </h2>
-            <p className="text-lg text-zinc-600 mb-8">
+            <p className="text-lg text-muted-foreground mb-8">
               Join thousands of professionals who have accelerated their careers
               through personalized mentorship and expert guidance.
             </p>
@@ -54,14 +54,14 @@ export function BenefitsSection({ images }: BenefitsSectionProps) {
                   viewport={{ once: true }}
                   className="flex gap-4 group"
                 >
-                  <div className="w-12 h-12 rounded-xl bg-zinc-900 flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform shadow-lg">
-                    <benefit.icon className="w-6 h-6 text-white" />
+                  <div className="w-12 h-12 rounded-xl bg-primary flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform shadow-elevation-2">
+                    <benefit.icon className="w-6 h-6 text-primary-foreground" />
                   </div>
-                  <div>
-                    <h4 className="font-semibold text-zinc-900 mb-1">
+                  <div className="min-w-0">
+                    <h4 className="font-semibold text-foreground mb-1">
                       {benefit.title}
                     </h4>
-                    <p className="text-zinc-600 text-sm leading-relaxed">
+                    <p className="text-muted-foreground text-sm leading-relaxed">
                       {benefit.description}
                     </p>
                   </div>
@@ -77,20 +77,22 @@ export function BenefitsSection({ images }: BenefitsSectionProps) {
             viewport={{ once: true }}
             className="relative"
           >
-            <div className="relative rounded-2xl overflow-hidden shadow-2xl shadow-zinc-400/30 border border-zinc-200">
+            <div className="relative rounded-2xl overflow-hidden shadow-elevation-3 border border-border">
               {renderLCPImage(images, 0, "/placeholder.svg", 600, 400)}
             </div>
             {/* Floating card decoration */}
-            <div className="absolute -bottom-6 -left-6 bg-white rounded-xl shadow-xl shadow-zinc-300/50 p-4 hidden md:block border border-zinc-100">
+            <div className="absolute -bottom-6 -left-6 bg-card rounded-xl shadow-elevation-3 p-4 hidden md:block border border-border">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-zinc-900 flex items-center justify-center">
-                  <CheckCircle2 className="w-5 h-5 text-white" />
+                <div className="w-10 h-10 rounded-full bg-primary flex items-center justify-center">
+                  <CheckCircle2 className="w-5 h-5 text-primary-foreground" />
                 </div>
                 <div>
-                  <p className="font-semibold text-zinc-900 text-sm">
+                  <p className="font-semibold text-foreground text-sm">
                     Session Complete
                   </p>
-                  <p className="text-xs text-zinc-500">Great progress today!</p>
+                  <p className="text-xs text-muted-foreground">
+                    Great progress today!
+                  </p>
                 </div>
               </div>
             </div>

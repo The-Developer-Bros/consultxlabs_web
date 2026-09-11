@@ -16,6 +16,7 @@
 
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import type { FileObject } from "@supabase/storage-js";
+import { withCronLock, CronLockHeldError } from "@/lib/cron/with-cron-lock";
 
 interface FolderItem {
   name: string;
@@ -170,7 +171,15 @@ async function deleteEmptyFolder(
 /**
  * Main cleanup function
  */
+// #1169 — the one scheduled job that ran with no cron lock at all. Fail-open:
+// storage-only, repeat-safe; the lock only stops schedule overlap double-runs.
 async function cleanupEmptyFolders(): Promise<void> {
+  return withCronLock("cleanup-empty-folders", { failMode: "open" }, () =>
+    cleanupEmptyFoldersUnlocked(),
+  );
+}
+
+async function cleanupEmptyFoldersUnlocked(): Promise<void> {
   console.log("🧹 Starting empty folder cleanup...");
   console.log("Timestamp:", new Date().toISOString());
 
@@ -292,7 +301,9 @@ async function cleanupEmptyFolders(): Promise<void> {
     }
   } catch (error) {
     console.error("\n❌ Error during cleanup:", error);
-    process.exit(1);
+    // Throw instead of process.exit: a hard exit inside the lock would skip
+    // releaseLock's finally and leak the lock until TTL.
+    throw error;
   }
 }
 
@@ -305,6 +316,11 @@ async function main(): Promise<void> {
     console.log("\n✅ Cleanup script completed");
     process.exit(0);
   } catch (error) {
+    if (error instanceof CronLockHeldError) {
+      // Another run is in flight — a clean skip, not a pageable failure.
+      console.log(`⏭️  ${error.message}`);
+      process.exit(0);
+    }
     console.error("\n❌ Cleanup script failed:", error);
     process.exit(1);
   }

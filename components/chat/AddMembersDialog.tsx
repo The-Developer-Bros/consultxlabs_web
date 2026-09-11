@@ -1,21 +1,22 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useDebouncedCallback } from "use-debounce";
 import Image from "next/image";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  ResponsiveModal,
+  ResponsiveModalContent,
+  ResponsiveModalDescription,
+  ResponsiveModalFooter,
+  ResponsiveModalHeader,
+  ResponsiveModalTitle,
+} from "@/components/ui/responsive-modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/components/ui/use-toast";
 import { Loader2Icon, SearchIcon, UserPlusIcon, XIcon } from "lucide-react";
-import type { ConsulteeSearchResult } from "@/app/api/stream/search-consultees/route";
+import type { ConsulteeSearchResult } from "@/schemas/stream-search";
 
 interface AddMembersDialogProps {
   open: boolean;
@@ -48,44 +49,96 @@ export const AddMembersDialog = ({
     }
   }, [open]);
 
-  const searchConsultees = useCallback(async () => {
-    setIsSearching(true);
-    setHasSearched(true);
+  /**
+   * Same latest-wins guard and cancellation as `ChannelSearch`, for the same
+   * reason: this had a hand-rolled `setTimeout`, no `AbortController` and an
+   * unconditional `setConsultees(...)`, so whichever response landed last won
+   * regardless of which term it answered. Modelled on
+   * `hooks/scheduling/useCalendarData.ts`.
+   *
+   * Unlike ChannelSearch there is deliberately NO minimum-length guard. An
+   * empty term is a real query here — it lists everyone the consultant may add
+   * — and gating it would leave the dialog blank until you typed.
+   */
+  const requestIdRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
-    try {
-      const excludeParam = existingMemberIds.join(",");
-      const response = await fetch(
-        `/api/stream/search-consultees?term=${encodeURIComponent(searchTerm)}&exclude=${excludeParam}`,
-      );
+  // A primitive, so the debounced callback's identity does not change on every
+  // render the way it did with the `existingMemberIds` array in the deps —
+  // which re-ran the debounce effect continuously and re-armed the timer.
+  const excludeParam = existingMemberIds.join(",");
 
-      if (!response.ok) {
-        throw new Error("Failed to search consultees");
+  const searchConsultees = useCallback(
+    async (term: string, exclude: string) => {
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      const requestId = ++requestIdRef.current;
+
+      setIsSearching(true);
+      setHasSearched(true);
+
+      try {
+        const response = await fetch(
+          // Both halves encoded. `term` was, `exclude` was not — so a member id
+          // containing `&`, `+`, `#` or a space truncated or corrupted the
+          // exclusion set, and people already in the channel reappeared as
+          // addable.
+          `/api/stream/search-consultees?term=${encodeURIComponent(term)}&exclude=${encodeURIComponent(exclude)}`,
+          { signal: controller.signal },
+        );
+
+        if (!response.ok) {
+          throw new Error("Failed to search consultees");
+        }
+
+        const data = await response.json();
+        if (requestId !== requestIdRef.current) return;
+        setConsultees(data.consultees || []);
+      } catch (error) {
+        // Our own cancellation, not a failure — and surfacing it as a toast
+        // would fire one per keystroke.
+        if (error instanceof DOMException && error.name === "AbortError")
+          return;
+        if (requestId !== requestIdRef.current) return;
+        console.error("Error searching consultees:", error);
+        toast({
+          title: "Error",
+          description: "Failed to search consultees",
+          variant: "destructive",
+        });
+      } finally {
+        if (requestId === requestIdRef.current) setIsSearching(false);
       }
+    },
+    [toast],
+  );
 
-      const data = await response.json();
-      setConsultees(data.consultees || []);
-    } catch (error) {
-      console.error("Error searching consultees:", error);
-      toast({
-        title: "Error",
-        description: "Failed to search consultees",
-        variant: "destructive",
-      });
-    } finally {
-      setIsSearching(false);
-    }
-  }, [searchTerm, existingMemberIds, toast]);
+  const debouncedSearch = useDebouncedCallback(searchConsultees, 300);
 
-  // Debounced search
   useEffect(() => {
     if (!open) return;
+    debouncedSearch(searchTerm, excludeParam);
+  }, [searchTerm, excludeParam, open, debouncedSearch]);
 
-    const timeoutId = setTimeout(() => {
-      searchConsultees();
-    }, 300);
+  // Abort on close as well as unmount: the dialog resets its state when it
+  // closes, and a late response would repopulate the list behind it.
+  useEffect(() => {
+    if (!open) {
+      debouncedSearch.cancel();
+      abortRef.current?.abort();
+    }
+  }, [open, debouncedSearch]);
 
-    return () => clearTimeout(timeoutId);
-  }, [searchTerm, open, searchConsultees]);
+  useEffect(
+    () => () => {
+      // See ChannelSearch — use-debounce v10 leaves trailing callbacks armed
+      // across unmount.
+      debouncedSearch.cancel();
+      abortRef.current?.abort();
+    },
+    [debouncedSearch],
+  );
 
   const toggleSelection = (userId: string) => {
     setSelectedIds((prev) => {
@@ -146,21 +199,21 @@ export const AddMembersDialog = ({
   const selectedConsultees = consultees.filter((c) => selectedIds.has(c.id));
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[500px]">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
+    <ResponsiveModal open={open} onOpenChange={onOpenChange}>
+      <ResponsiveModalContent className="sm:max-w-[500px]">
+        <ResponsiveModalHeader>
+          <ResponsiveModalTitle className="flex items-center gap-2">
             <UserPlusIcon className="h-5 w-5" />
             Add Members
-          </DialogTitle>
-          <DialogDescription>
+          </ResponsiveModalTitle>
+          <ResponsiveModalDescription>
             Search and select consultees to add to this channel.
-          </DialogDescription>
-        </DialogHeader>
+          </ResponsiveModalDescription>
+        </ResponsiveModalHeader>
 
         {/* Search Input */}
         <div className="relative">
-          <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+          <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
             type="text"
             placeholder="Search by name or email..."
@@ -172,19 +225,22 @@ export const AddMembersDialog = ({
 
         {/* Selected Users Badges */}
         {selectedIds.size > 0 && (
-          <div className="flex flex-wrap gap-2 p-2 bg-gray-50 rounded-md">
-            <span className="text-xs text-gray-500 w-full mb-1">
+          <div className="flex flex-wrap gap-2 p-2 bg-muted rounded-md">
+            <span className="text-xs text-muted-foreground w-full mb-1">
               Selected ({selectedIds.size}):
             </span>
             {selectedConsultees.map((consultee) => (
               <span
                 key={consultee.id}
-                className="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-800 rounded-full text-sm"
+                className="inline-flex items-center gap-1 px-2 py-1 bg-secondary text-secondary-foreground rounded-full text-sm"
               >
                 {consultee.name || consultee.email}
                 <button
+                  type="button"
                   onClick={() => removeSelection(consultee.id)}
-                  className="hover:bg-blue-200 rounded-full p-0.5"
+                  aria-label={`Remove ${consultee.name || consultee.email} from the selection`}
+                  title="Remove from selection"
+                  className="hover:bg-accent rounded-full p-0.5"
                 >
                   <XIcon className="h-3 w-3" />
                 </button>
@@ -194,14 +250,16 @@ export const AddMembersDialog = ({
         )}
 
         {/* Search Results */}
-        <div className="max-h-[250px] overflow-y-auto border rounded-md">
+        <div className="max-h-[250px] overflow-y-auto border border-border rounded-md">
           {isSearching ? (
             <div className="flex items-center justify-center py-8">
-              <Loader2Icon className="h-6 w-6 animate-spin text-gray-400" />
-              <span className="ml-2 text-sm text-gray-500">Searching...</span>
+              <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
+              <span className="ml-2 text-sm text-muted-foreground">
+                Searching...
+              </span>
             </div>
           ) : consultees.length === 0 ? (
-            <div className="py-8 text-center text-gray-500 text-sm">
+            <div className="py-8 text-center text-muted-foreground text-sm">
               {hasSearched
                 ? "No consultees found. Try a different search term."
                 : "Type to search for consultees"}
@@ -213,8 +271,8 @@ export const AddMembersDialog = ({
                 return (
                   <label
                     key={consultee.id}
-                    className={`flex items-center gap-3 p-3 cursor-pointer hover:bg-gray-50 ${
-                      isSelected ? "bg-blue-50" : ""
+                    className={`flex items-center gap-3 p-3 cursor-pointer hover:bg-muted ${
+                      isSelected ? "bg-accent" : ""
                     }`}
                   >
                     <Checkbox
@@ -222,7 +280,7 @@ export const AddMembersDialog = ({
                       onCheckedChange={() => toggleSelection(consultee.id)}
                     />
                     {/* Avatar */}
-                    <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center overflow-hidden flex-shrink-0">
+                    <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center overflow-hidden flex-shrink-0">
                       {consultee.image ? (
                         <Image
                           src={consultee.image}
@@ -232,7 +290,7 @@ export const AddMembersDialog = ({
                           className="w-full h-full object-cover"
                         />
                       ) : (
-                        <span className="text-sm font-medium text-gray-600">
+                        <span className="text-sm font-medium text-muted-foreground">
                           {(consultee.name || consultee.email || "?")
                             .charAt(0)
                             .toUpperCase()}
@@ -241,10 +299,10 @@ export const AddMembersDialog = ({
                     </div>
                     {/* Name and relationship */}
                     <div className="flex-1 min-w-0">
-                      <div className="font-medium text-gray-900 truncate">
+                      <div className="font-medium text-foreground truncate">
                         {consultee.name || "Unknown"}
                       </div>
-                      <div className="text-xs text-gray-500">
+                      <div className="text-xs text-muted-foreground">
                         {getRelationshipLabel(consultee.relationshipType)}
                       </div>
                     </div>
@@ -256,7 +314,7 @@ export const AddMembersDialog = ({
         </div>
 
         {/* Footer */}
-        <DialogFooter className="gap-2 sm:gap-0">
+        <ResponsiveModalFooter className="gap-2 sm:gap-0">
           <Button
             variant="outline"
             onClick={() => onOpenChange(false)}
@@ -277,8 +335,8 @@ export const AddMembersDialog = ({
               `Add ${selectedIds.size} Member${selectedIds.size !== 1 ? "s" : ""}`
             )}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </ResponsiveModalFooter>
+      </ResponsiveModalContent>
+    </ResponsiveModal>
   );
 };

@@ -21,6 +21,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { AchievementCreateInputSchema } from "@/utils/onboarding";
+import { LONG_FORM_TEXT_MAX } from "@/schemas/user";
 import { AchievementType } from "@prisma/client";
 import type { Achievement } from "./AchievementsSection";
 
@@ -122,7 +123,10 @@ export function AddAchievementModal({
               <Select
                 value={formData.achievementType}
                 onValueChange={(value) =>
-                  setFormData({ ...formData, achievementType: value as AchievementType })
+                  setFormData({
+                    ...formData,
+                    achievementType: value as AchievementType,
+                  })
                 }
               >
                 <SelectTrigger>
@@ -148,7 +152,12 @@ export function AddAchievementModal({
                 }
                 placeholder="Brief description of this achievement..."
                 rows={3}
+                maxLength={LONG_FORM_TEXT_MAX}
               />
+              <p className="text-xs text-muted-foreground text-right">
+                {formData.description?.length || 0}/{LONG_FORM_TEXT_MAX}{" "}
+                characters
+              </p>
             </div>
 
             <div className="space-y-2">

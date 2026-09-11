@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { DiscountType } from "@prisma/client";
@@ -129,6 +130,7 @@ export async function POST(request: NextRequest) {
       message: "Discount code applied successfully",
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "payments" } });
     console.error("Error validating discount code:", error);
     return NextResponse.json<DiscountCodeResponse>(
       { valid: false, message: "Failed to validate discount code" },

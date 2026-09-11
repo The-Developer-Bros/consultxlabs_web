@@ -141,10 +141,10 @@ export default function CommunityPage() {
           >
             Coming Soon
           </Badge>
-          <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight mb-6">
+          <h1 className="text-fluid-4xl font-bold tracking-tight mb-6">
             Your Career, Together
           </h1>
-          <p className="text-lg md:text-xl text-zinc-400 leading-relaxed">
+          <p className="text-lg md:text-xl text-zinc-300 leading-relaxed">
             A community of professionals helping each other grow — through peer
             advice, expert AMAs, skill challenges, and real conversations about
             career moves.
@@ -153,30 +153,30 @@ export default function CommunityPage() {
       </section>
 
       {/* Features grid */}
-      <section className="py-16 md:py-24 bg-white">
+      <section className="py-16 md:py-24 bg-card">
         <div className="container mx-auto px-4 md:px-6 max-w-5xl">
-          <h2 className="text-3xl md:text-4xl font-bold text-center mb-4">
+          <h2 className="text-fluid-3xl font-bold tracking-tight text-center mb-4">
             What&apos;s Coming
           </h2>
-          <p className="text-zinc-500 text-center mb-12 max-w-2xl mx-auto">
+          <p className="text-muted-foreground text-center mb-12 max-w-2xl mx-auto">
             We&apos;re building the community features right now. Here&apos;s
             what to expect.
           </p>
-          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {COMMUNITY_FEATURES.map((feature) => {
               const Icon = feature.icon;
               return (
                 <div
                   key={feature.title}
-                  className="p-6 rounded-2xl border border-zinc-200 bg-zinc-50"
+                  className="p-6 rounded-2xl border border-border bg-muted"
                 >
-                  <div className="w-10 h-10 rounded-xl bg-zinc-900 text-white flex items-center justify-center mb-4">
+                  <div className="w-10 h-10 rounded-xl bg-primary text-primary-foreground flex items-center justify-center mb-4">
                     <Icon className="w-5 h-5" />
                   </div>
-                  <h3 className="text-lg font-semibold text-zinc-900 mb-2">
+                  <h3 className="text-lg font-semibold text-foreground mb-2">
                     {feature.title}
                   </h3>
-                  <p className="text-sm text-zinc-600 leading-relaxed">
+                  <p className="text-sm text-muted-foreground leading-relaxed">
                     {feature.description}
                   </p>
                 </div>
@@ -187,37 +187,37 @@ export default function CommunityPage() {
       </section>
 
       {/* Placeholder discussions — visible but locked */}
-      <section className="py-16 md:py-24 bg-zinc-50">
+      <section className="py-16 md:py-24 bg-muted">
         <div className="container mx-auto px-4 md:px-6 max-w-4xl">
-          <h2 className="text-3xl md:text-4xl font-bold text-center mb-4">
+          <h2 className="text-fluid-3xl font-bold tracking-tight text-center mb-4">
             Conversations You&apos;ll Find Here
           </h2>
-          <p className="text-zinc-500 text-center mb-12 max-w-2xl mx-auto">
+          <p className="text-muted-foreground text-center mb-12 max-w-2xl mx-auto">
             A preview of the kind of discussions our community will have.
           </p>
           <div className="space-y-3">
             {PLACEHOLDER_DISCUSSIONS.map((post, i) => (
               <div
                 key={i}
-                className="relative bg-white rounded-xl border border-zinc-200 overflow-hidden select-none"
+                className="relative bg-card rounded-xl border border-border overflow-hidden select-none"
               >
                 <div
                   className="blur-[6px] pointer-events-none flex items-start gap-4 p-4"
                   aria-hidden
                 >
-                  <div className="w-10 h-10 rounded-full bg-zinc-100 flex items-center justify-center shrink-0 text-sm font-bold text-zinc-400">
+                  <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center shrink-0 text-sm font-bold text-muted-foreground/70">
                     {post.author.charAt(0)}
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 mb-0.5">
-                      <span className="text-[11px] font-medium uppercase tracking-wider text-zinc-400">
+                      <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
                         {post.channel}
                       </span>
                     </div>
-                    <h3 className="text-sm font-semibold text-zinc-900 line-clamp-1">
+                    <h3 className="text-sm font-semibold text-foreground line-clamp-1">
                       {post.title}
                     </h3>
-                    <p className="text-xs text-zinc-500 mt-1">
+                    <p className="text-xs text-muted-foreground mt-1">
                       {post.author} &middot; {post.role} &middot; {post.replies}{" "}
                       replies
                     </p>
@@ -230,12 +230,12 @@ export default function CommunityPage() {
       </section>
 
       {/* Upcoming events preview */}
-      <section className="py-16 md:py-24 bg-white">
+      <section className="py-16 md:py-24 bg-card">
         <div className="container mx-auto px-4 md:px-6 max-w-3xl">
-          <h2 className="text-3xl md:text-4xl font-bold text-center mb-4">
+          <h2 className="text-fluid-3xl font-bold tracking-tight text-center mb-4">
             Upcoming Events
           </h2>
-          <p className="text-zinc-500 text-center mb-10 max-w-2xl mx-auto">
+          <p className="text-muted-foreground text-center mb-10 max-w-2xl mx-auto">
             Live sessions, challenges, and workshops — all free for community
             members.
           </p>
@@ -243,15 +243,15 @@ export default function CommunityPage() {
             {UPCOMING_EVENTS.map((event, i) => (
               <div
                 key={i}
-                className="flex items-center justify-between p-5 rounded-2xl border border-zinc-200 bg-zinc-50"
+                className="flex items-center justify-between gap-3 p-5 rounded-2xl border border-border bg-muted"
               >
-                <div>
-                  <h3 className="font-semibold text-zinc-900">{event.title}</h3>
-                  <p className="text-sm text-zinc-500 mt-0.5">{event.host}</p>
+                <div className="min-w-0">
+                  <h3 className="font-semibold text-foreground">{event.title}</h3>
+                  <p className="text-sm text-muted-foreground mt-0.5">{event.host}</p>
                 </div>
                 <Badge
                   variant="outline"
-                  className="border-zinc-300 text-zinc-400 shrink-0"
+                  className="border-border text-muted-foreground/70 shrink-0"
                 >
                   {event.date}
                 </Badge>
@@ -264,11 +264,11 @@ export default function CommunityPage() {
       {/* Bottom CTA */}
       <section className="py-20 md:py-28 bg-zinc-950 text-white">
         <div className="container mx-auto px-4 md:px-6 text-center max-w-2xl">
-          <Users className="w-10 h-10 text-zinc-500 mx-auto mb-4" />
-          <h2 className="text-3xl md:text-4xl font-bold mb-4">
+          <Users className="w-10 h-10 text-zinc-400 mx-auto mb-4" />
+          <h2 className="text-fluid-3xl font-bold tracking-tight mb-4">
             Be the first to join
           </h2>
-          <p className="text-zinc-400 leading-relaxed">
+          <p className="text-zinc-300 leading-relaxed">
             We&apos;re building a community where career conversations happen in
             the open — not behind paywalls or locked DMs. Stay tuned.
           </p>

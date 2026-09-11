@@ -1,6 +1,14 @@
 import { UserWithProfiles } from "./1a-create-users";
 import prisma from "../../lib/prisma";
 import { faker } from "@faker-js/faker";
+import { PlanLevel } from "@prisma/client";
+import {
+  FAQ_POOL,
+  PLAN_SUBTITLES,
+  TARGET_AUDIENCE_POOL,
+  WHATS_INCLUDED_POOL,
+  pick,
+} from "./plan-content";
 
 export async function createConsultationPlans(consultants: UserWithProfiles[]) {
   console.log(
@@ -25,10 +33,13 @@ export async function createConsultationPlans(consultants: UserWithProfiles[]) {
             priceCurrency: "INR",
             language: "English",
             level: faker.helpers.arrayElement([
-              "Beginner",
-              "Intermediate",
-              "Advanced",
+              PlanLevel.BEGINNER,
+              PlanLevel.INTERMEDIATE,
+              PlanLevel.ADVANCED,
             ]),
+            subtitle: pick(PLAN_SUBTITLES, i),
+            targetAudience: pick(TARGET_AUDIENCE_POOL, i),
+            whatsIncluded: pick(WHATS_INCLUDED_POOL, i),
             prerequisites: "No prior experience required",
             materialProvided: "Session summary and recommended resources",
             learningOutcomes: faker.helpers.arrayElements(
@@ -50,10 +61,13 @@ export async function createConsultationPlans(consultants: UserWithProfiles[]) {
             priceCurrency: "INR",
             language: "English",
             level: faker.helpers.arrayElement([
-              "Beginner",
-              "Intermediate",
-              "Advanced",
+              PlanLevel.BEGINNER,
+              PlanLevel.INTERMEDIATE,
+              PlanLevel.ADVANCED,
             ]),
+            subtitle: pick(PLAN_SUBTITLES, i),
+            targetAudience: pick(TARGET_AUDIENCE_POOL, i),
+            whatsIncluded: pick(WHATS_INCLUDED_POOL, i),
             prerequisites: "Basic familiarity with the subject area",
             materialProvided: "Detailed action plan, session recording, and curated reading list",
             learningOutcomes: faker.helpers.arrayElements(
@@ -74,7 +88,10 @@ export async function createConsultationPlans(consultants: UserWithProfiles[]) {
             price: faker.number.int({ min: 750000, max: 2000000 }), // ₹7500-₹20000 in paise
             priceCurrency: "INR",
             language: "English",
-            level: faker.helpers.arrayElement(["Intermediate", "Advanced"]),
+            level: faker.helpers.arrayElement([PlanLevel.INTERMEDIATE, PlanLevel.ADVANCED]),
+            subtitle: pick(PLAN_SUBTITLES, i),
+            targetAudience: pick(TARGET_AUDIENCE_POOL, i),
+            whatsIncluded: pick(WHATS_INCLUDED_POOL, i),
             prerequisites: "Prior consultation or intermediate-level knowledge recommended",
             materialProvided: "Comprehensive strategy document, session recording, templates, and 7-day email follow-up",
             learningOutcomes: faker.helpers.arrayElements(
@@ -88,6 +105,25 @@ export async function createConsultationPlans(consultants: UserWithProfiles[]) {
           },
         ],
       });
+
+      // createMany cannot write nested relations; attach the FAQ separately.
+      const created = await prisma.consultationPlan.findMany({
+        where: { consultantProfileId: consultant.consultantProfile.id },
+        select: { id: true },
+      });
+      for (const [planIndex, plan] of created.entries()) {
+        await prisma.consultationPlan.update({
+          where: { id: plan.id },
+          data: {
+            faqs: {
+              create: pick(FAQ_POOL, i + planIndex).map((faq, order) => ({
+                ...faq,
+                order,
+              })),
+            },
+          },
+        });
+      }
     } catch (error) {
       console.error(
         `Failed to create consultation plans for consultant ${consultant.id}:`,

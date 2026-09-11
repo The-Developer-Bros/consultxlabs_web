@@ -1,5 +1,6 @@
 "use client";
 
+import * as Sentry from "@sentry/nextjs";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "@/lib/auth-client";
@@ -15,6 +16,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
+import { formatCurrencyAmount } from "@/utils/formatting";
 import { Gift, Clock, Loader2, CheckCircle } from "lucide-react";
 
 interface TrialBookingModalProps {
@@ -25,6 +27,10 @@ interface TrialBookingModalProps {
   subscriptionPlanId: string;
   planTitle: string;
   trialDurationMinutes: number;
+  /** #1167 — 0 is a genuinely free trial; anything above is charged. */
+  trialPriceInPaise?: number;
+  /** The plan's own currency. Trials have no separate one. */
+  trialCurrency?: string;
 }
 
 export function TrialBookingModal({
@@ -35,7 +41,13 @@ export function TrialBookingModal({
   subscriptionPlanId,
   planTitle,
   trialDurationMinutes,
+  trialPriceInPaise = 0,
+  trialCurrency = "INR",
 }: Readonly<TrialBookingModalProps>) {
+  const isPaidTrial = trialPriceInPaise > 0;
+  const priceLabel = isPaidTrial
+    ? formatCurrencyAmount(trialPriceInPaise, trialCurrency)
+    : "Free trial";
   const { data: session } = useSession();
   const router = useRouter();
   const { toast } = useToast();
@@ -43,9 +55,17 @@ export function TrialBookingModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
 
+  // Send an unauthenticated visitor to sign-in, preserving the trial intent so
+  // that after auth + onboarding they land back on this expert with the trial
+  // modal auto-opened (the expert page honours ?action=trial).
+  const redirectToSignIn = () => {
+    const returnTo = `${window.location.pathname}?action=trial`;
+    router.push(`/auth/signin?callbackUrl=${encodeURIComponent(returnTo)}`);
+  };
+
   const handleSubmit = async () => {
     if (!session?.user?.id) {
-      router.push("/auth/signin");
+      redirectToSignIn();
       return;
     }
 
@@ -81,7 +101,7 @@ export function TrialBookingModal({
           title: "Not Eligible",
           description:
             eligibility.reason ||
-            "You are not eligible for a free trial with this consultant",
+            "You are not eligible for a trial with this consultant",
           variant: "destructive",
         });
         return;
@@ -117,6 +137,7 @@ export function TrialBookingModal({
         setNotes("");
       }, 2000);
     } catch (error) {
+      Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "client" } });
       console.error("Error requesting trial:", error);
       toast({
         title: "Error",
@@ -136,17 +157,17 @@ export function TrialBookingModal({
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Gift className="h-5 w-5 text-emerald-500" />
-              Book Free Trial
+              Book Trial
             </DialogTitle>
             <DialogDescription>
-              Sign in to request a free trial session
+              Sign in to request a trial session
             </DialogDescription>
           </DialogHeader>
           <div className="py-6 text-center">
-            <p className="text-gray-600 mb-4">
-              Please sign in to request a free trial with {consultantName}
+            <p className="text-muted-foreground mb-4">
+              Please sign in to request a trial with {consultantName}
             </p>
-            <Button onClick={() => router.push("/auth/signin")}>
+            <Button onClick={redirectToSignIn}>
               Sign In to Continue
             </Button>
           </div>
@@ -163,10 +184,10 @@ export function TrialBookingModal({
             <div className="mx-auto w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mb-4">
               <CheckCircle className="h-8 w-8 text-emerald-600" />
             </div>
-            <h3 className="text-xl font-semibold text-gray-900 mb-2">
+            <h3 className="text-xl font-semibold text-foreground mb-2">
               Trial Requested!
             </h3>
-            <p className="text-gray-600">
+            <p className="text-muted-foreground">
               {consultantName} will review your request and get back to you
               soon.
             </p>
@@ -182,21 +203,32 @@ export function TrialBookingModal({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Gift className="h-5 w-5 text-emerald-500" />
-            Book Free Trial Session
+            Book Trial Session
           </DialogTitle>
           <DialogDescription>
-            Request a free {trialDurationMinutes}-minute trial with{" "}
+            Request a {trialDurationMinutes}-minute trial with{" "}
             {consultantName}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 py-4">
-          {/* Plan Info */}
-          <div className="bg-gray-50 rounded-lg p-4">
-            <p className="text-sm font-medium text-gray-900">{planTitle}</p>
-            <div className="flex items-center gap-2 mt-2 text-sm text-gray-600">
-              <Clock className="h-4 w-4" />
-              <span>{trialDurationMinutes} minute free trial</span>
+          {/* Plan Info — the price is the first thing shown. Requesting a
+              trial used to name no number anywhere, so a paid trial read as
+              free right up until the payment link arrived. */}
+          <div className="bg-muted rounded-lg p-4">
+            <p className="text-sm font-medium text-foreground">{planTitle}</p>
+            <div className="flex items-center justify-between gap-3 mt-2">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Clock className="h-4 w-4" />
+                <span>{trialDurationMinutes} minute trial</span>
+              </div>
+              <span
+                className={`text-sm font-semibold ${
+                  isPaidTrial ? "text-foreground" : "text-emerald-600"
+                }`}
+              >
+                {priceLabel}
+              </span>
             </div>
           </div>
 
@@ -212,17 +244,25 @@ export function TrialBookingModal({
               onChange={(e) => setNotes(e.target.value)}
               className="min-h-[100px]"
             />
-            <p className="text-xs text-gray-500">
+            <p className="text-xs text-muted-foreground">
               This helps the consultant prepare for your session
             </p>
           </div>
 
-          {/* Info */}
-          <div className="bg-blue-50 rounded-lg p-4 text-sm text-blue-700">
+          {/* Info — say when money changes hands. Nothing is charged at
+              request time either way; a paid trial bills on acceptance. */}
+          <div className="bg-muted rounded-lg p-4 text-sm text-muted-foreground">
             <p>
               After submitting, the consultant will review your request and
               contact you to schedule a time that works for both of you.
             </p>
+            {isPaidTrial && (
+              <p className="mt-2">
+                You won&apos;t be charged now — we send a payment link for{" "}
+                <strong className="text-foreground">{priceLabel}</strong> after
+                the consultant accepts, and your slot is held until you pay it.
+              </p>
+            )}
           </div>
         </div>
 
@@ -239,7 +279,7 @@ export function TrialBookingModal({
             ) : (
               <>
                 <Gift className="h-4 w-4 mr-2" />
-                Request Free Trial
+                Request Trial
               </>
             )}
           </Button>

@@ -18,6 +18,8 @@ import {
   lockSlotBooking,
   unlockSlotBooking,
 } from "@/utils/appointmentlock";
+import { thirtyAfter } from "./race-conditions/utilities/test-helpers.js";
+
 
 async function testConcurrentLockAcquisition() {
   console.log("\n🧪 TESTING SLOT BOOKING RACE CONDITION FIX");
@@ -38,18 +40,18 @@ async function testConcurrentLockAcquisition() {
   );
 
   const startTime = Date.now();
-  const locks: (ApprovalLock | null)[] = [];
+  const locks: (ApprovalLock[] | null)[] = [];
 
   // Step 1: User A successfully acquires the lock (simulating booking in progress)
   console.log("   [User A] Attempting to acquire lock...");
-  const lockA = await lockSlotBooking(consultantId, slotTime, 20000); // 20s TTL
+  const lockA = await lockSlotBooking(consultantId, slotTime, thirtyAfter(slotTime), 20000); // 20s TTL
   locks.push(lockA);
   console.log(
     "   [User A] ✅ Lock acquired! Simulating booking process (2s)...\n",
   );
 
   // Step 2: While User A holds the lock, Users B & C try to acquire (should fail quickly)
-  const attemptBPromise = lockSlotBooking(consultantId, slotTime, 2000) // Short TTL for quick failure
+  const attemptBPromise = lockSlotBooking(consultantId, slotTime, thirtyAfter(slotTime), 2000) // Short TTL for quick failure
     .then((lock) => {
       locks.push(lock);
       return {
@@ -67,7 +69,7 @@ async function testConcurrentLockAcquisition() {
       };
     });
 
-  const attemptCPromise = lockSlotBooking(consultantId, slotTime, 2000) // Short TTL for quick failure
+  const attemptCPromise = lockSlotBooking(consultantId, slotTime, thirtyAfter(slotTime), 2000) // Short TTL for quick failure
     .then((lock) => {
       locks.push(lock);
       return {
@@ -145,13 +147,13 @@ async function testConcurrentLockAcquisition() {
   console.log("\n" + "=".repeat(62));
   console.log("\n⚡ TEST 2: Lock Release and Re-acquisition\n");
 
-  const lock1 = await lockSlotBooking(consultantId, slotTime, 5000);
+  const lock1 = await lockSlotBooking(consultantId, slotTime, thirtyAfter(slotTime), 5000);
   console.log("   ✅ First lock acquired");
 
   await unlockSlotBooking(lock1);
   console.log("   🔓 First lock released");
 
-  const lock2 = await lockSlotBooking(consultantId, slotTime, 5000);
+  const lock2 = await lockSlotBooking(consultantId, slotTime, thirtyAfter(slotTime), 5000);
   console.log("   ✅ Second lock acquired (after release)");
 
   await unlockSlotBooking(lock2);
@@ -169,8 +171,8 @@ async function testConcurrentLockAcquisition() {
   const slot2 = new Date("2025-12-01T11:00:00.000Z").toISOString();
 
   const [lock3, lock4] = await Promise.all([
-    lockSlotBooking(consultantId, slot1, 5000),
-    lockSlotBooking(consultantId, slot2, 5000),
+    lockSlotBooking(consultantId, slot1, thirtyAfter(slot1), 5000),
+    lockSlotBooking(consultantId, slot2, thirtyAfter(slot2), 5000),
   ]);
 
   console.log("   ✅ Lock acquired for slot 10:00");

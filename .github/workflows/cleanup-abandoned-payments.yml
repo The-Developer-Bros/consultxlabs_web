@@ -3,11 +3,13 @@ name: Cleanup Abandoned Payments
 on:
   schedule:
     # Run every 15 minutes
-    - cron: "*/15 * * * *"
+    # ADR 22 — this schedule is an upper bound on frequency, not a delivered cadence; ADR 27 — the Netlify ticker (netlify/functions/cron-tick.mts) is what actually holds the cadence for the money sweeps.
+    - cron: "6-59/15 * * * *"
   workflow_dispatch: # Allow manual triggering
-  push:
-    branches:
-      - dev
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   cleanup-abandoned-payments:
@@ -15,16 +17,22 @@ jobs:
     timeout-minutes: 10
 
     env:
+      # #1066 — jobs run as bare Node processes, so Sentry.init only sees
+      # what the step env carries. Without the DSN the runner initialises
+      # a disabled client and every captureException is a no-op again.
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
       # Database connection (required for Prisma)
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      # #476 — fail-closed cron lock: without these the job refuses to run.
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
 
       # Payment gateway credentials for cancelling abandoned payment intents
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
       RAZORPAY_KEY_ID: ${{ secrets.RAZORPAY_KEY_ID }}
       RAZORPAY_SECRET: ${{ secrets.RAZORPAY_SECRET }}
-      LEMON_SQUEEZY_API_KEY: ${{ secrets.LEMON_SQUEEZY_API_KEY }}
-      XFLOW_SECRET_KEY: ${{ secrets.XFLOW_SECRET_KEY }}
 
     steps:
       - name: Checkout code
@@ -43,10 +51,13 @@ jobs:
         run: npx prisma generate
 
       - name: Run abandoned payment cleanup
-        run: npx tsx jobs/payments/cleanup-abandoned-payments.ts
+        run: npx --yes tsx@4.23.1 jobs/payments/cleanup-abandoned-payments.ts
 
       - name: Notify on failure
         if: failure()
-        run: |
-          echo "Abandoned payment cleanup failed"
-          # Add notification logic here (Slack, email, etc.)
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          # Fallback sink — Slack has never been provisioned, so this is
+          # what actually pages today. See 07-required-secrets.md.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "cleanup-abandoned-payments"

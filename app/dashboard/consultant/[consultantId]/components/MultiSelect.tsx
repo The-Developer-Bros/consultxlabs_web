@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-export interface Option {
+interface Option {
   value: string;
   label: string;
 }

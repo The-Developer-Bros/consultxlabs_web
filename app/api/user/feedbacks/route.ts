@@ -5,6 +5,7 @@ import { CreateFeedbackSchema } from "@/schemas/feedbacks";
 import { spamLimiter, applyRateLimit } from "@/lib/rate-limit";
 
 import { getSession } from "@/lib/auth-server";
+import { assertBodySize } from "@/lib/validation/limits";
 export async function GET() {
   try {
     const session = await getSession();
@@ -53,6 +54,10 @@ export async function POST(req: NextRequest) {
       `feedbacks:${session.user.id}`,
     );
     if (rl) return rl;
+
+    // #831 — cap request body before parsing
+    const tooLarge = assertBodySize(req);
+    if (tooLarge) return tooLarge;
 
     const body = await req.json();
     const result = CreateFeedbackSchema.safeParse(body);

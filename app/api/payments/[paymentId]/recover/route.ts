@@ -9,6 +9,7 @@
  * provide corrected metadata and retry appointment creation.
  */
 
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { PaymentStatus, UserRole } from "@prisma/client";
@@ -79,6 +80,7 @@ export async function GET(
       },
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "payments" } });
     console.error("Error fetching payment for recovery:", error);
     return NextResponse.json(
       { error: "Failed to fetch payment details" },
@@ -211,6 +213,7 @@ export async function POST(
         appointment: updatedPayment?.appointment,
       });
     } catch (recoveryError) {
+      Sentry.captureException(recoveryError instanceof Error ? recoveryError : new Error(String(recoveryError)), { tags: { subsystem: "payments" } });
       console.error("Error during payment recovery:", recoveryError);
       return NextResponse.json(
         {

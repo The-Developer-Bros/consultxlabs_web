@@ -144,3 +144,8 @@ Is the database being modified?
                           + Disable cron jobs if possible
                           + Full notification to users
 ```
+
+## Database guarantee verification (2026-08-14, #1169 PR 9)
+
+After any `prisma db push`, restore, or reset, run `npm run db:assert-sidecars` against the target database. The sidecar's guarantees (the exclusion constraint that is the platform's last line of defence against double-booking, every CHECK, and the partial uniques) are applied by hand, not by any deploy step, so this assertion is what turns silent drift into a loud failure. It parses the names straight out of `prisma/sql/check-constraints.sql`, ignoring the block staged for the pre-MVP reset.
+

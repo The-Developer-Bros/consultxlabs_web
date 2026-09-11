@@ -2,9 +2,13 @@ name: Mark Expired Recordings
 
 on:
   schedule:
-    # Run daily at 3 AM UTC
-    - cron: "0 3 * * *"
+    # Daily 03:20 UTC. #709 — off the 03:00 pile-up.
+    - cron: "20 3 * * *"
   workflow_dispatch: # Allow manual triggering
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   mark-expired-recordings:
@@ -12,8 +16,24 @@ jobs:
     timeout-minutes: 5
 
     env:
+      # #1066 — jobs run as bare Node processes, so Sentry.init only sees
+      # what the step env carries. Without the DSN the runner initialises
+      # a disabled client and every captureException is a no-op again.
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # #476 cron locks load lib/redis at import — every job entry needs these
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
       DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      # #1270 — `lib/supabase.ts` THROWS at module scope when either of these
+      # is unset, and this entrypoint reaches it transitively (job →
+      # RecordingTransferService → lib/supabase). The job therefore died during
+      # import, before a single row was read, on every run it has ever had.
+      # The anon key is required even where only the admin client is used: the
+      # module builds the public client first and throws before it gets there.
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
 
     steps:
       - name: Checkout code
@@ -32,9 +52,13 @@ jobs:
         run: npx prisma generate
 
       - name: Mark expired recordings
-        run: npx tsx jobs/stream/mark-expired-recordings.ts
+        run: npx --yes tsx@4.23.1 jobs/stream/mark-expired-recordings.ts
 
       - name: Notify on failure
         if: failure()
-        run: |
-          echo "Mark expired recordings job failed"
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          # Fallback sink — Slack has never been provisioned, so this is
+          # what actually pages today. See 07-required-secrets.md.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "mark-expired-recordings"

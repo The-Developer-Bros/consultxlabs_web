@@ -1,6 +1,22 @@
 import { z } from "zod";
-import { AppointmentsType, PaymentGateway } from "@prisma/client";
+import { AppointmentsType } from "@prisma/client";
 import { validateSlotTiming } from "@/lib/payments/utils/slot-validation";
+import {
+  SUPPORTED_CURRENCY_CODES,
+  toSupportedCurrency,
+} from "@/lib/currency-codes";
+import { GST_STATE_OPTIONS } from "@/lib/compliance/state-codes";
+
+/**
+ * The 2-digit GST state codes that actually exist, derived from the same map
+ * the checkout picker renders. `.length(2)` alone let "00" or "99" through, and
+ * `numericStateCode` passes any two digits straight to `placeOfSupply` — so an
+ * invalid code reached a statutory document as a real-looking state and the
+ * register filed it under a state that does not exist, without even a warning.
+ */
+const GST_STATE_CODES: ReadonlySet<string> = new Set(
+  GST_STATE_OPTIONS.map((option) => option.code),
+);
 
 // Base schemas for individual components
 export const appointmentTypeSchema = z.enum([
@@ -11,20 +27,20 @@ export const appointmentTypeSchema = z.enum([
   "TRIAL",
 ]);
 
-export const paymentGatewaySchema = z.enum([
-  "STRIPE",
-  "RAZORPAY",
-  "LEMON_SQUEEZY",
-  "XFLOW",
-  "CARD",
-]);
+export const paymentGatewaySchema = z.enum(["STRIPE", "RAZORPAY", "CARD"]);
+
+// The implemented checkout gateways — a strict subset of the PaymentGateway
+// Prisma enum. Post-MVP stubs (e.g. DODO_PAYMENTS, #984) are NOT valid at
+// checkout, so everything flowing into CheckoutInput.paymentGateway uses this
+// narrow type, never the full enum.
+export type SupportedCheckoutGateway = z.infer<typeof paymentGatewaySchema>;
 
 // Search params validation (URL query parameters)
 export const searchParamsSchema = z.object({
   slotOfAvailabilityWeeklyId: z.string().optional(),
   slotOfAvailabilityCustomId: z.string().optional(),
-  slotStartTimeInUTC: z.string().datetime().optional(),
-  slotEndTimeInUTC: z.string().datetime().optional(),
+  startsAt: z.string().datetime().optional(),
+  endsAt: z.string().datetime().optional(),
   discountCode: z.string().optional(),
   eventId: z.string().optional(),
   notes: z.string().optional(),
@@ -33,8 +49,8 @@ export const searchParamsSchema = z.object({
 // Consultation-specific validation
 export const consultationSearchParamsSchema = searchParamsSchema
   .extend({
-    slotStartTimeInUTC: z.string().datetime(),
-    slotEndTimeInUTC: z.string().datetime(),
+    startsAt: z.string().datetime(),
+    endsAt: z.string().datetime(),
   })
   .refine(
     (data) =>
@@ -46,14 +62,10 @@ export const consultationSearchParamsSchema = searchParamsSchema
       path: ["slotOfAvailabilityWeeklyId"],
     },
   )
-  .refine(
-    (data) =>
-      new Date(data.slotStartTimeInUTC) < new Date(data.slotEndTimeInUTC),
-    {
-      message: "Start time must be before end time",
-      path: ["slotStartTimeInUTC"],
-    },
-  );
+  .refine((data) => new Date(data.startsAt) < new Date(data.endsAt), {
+    message: "Start time must be before end time",
+    path: ["startsAt"],
+  });
 
 // Subscription-specific validation
 export const subscriptionSearchParamsSchema = searchParamsSchema.extend({
@@ -77,28 +89,65 @@ export const checkoutSchema = z
     appointmentType: appointmentTypeSchema,
     planId: z.string(),
     eventId: z.string().optional(),
-    slotStartTimeInUTC: z.string().datetime().optional(),
-    slotEndTimeInUTC: z.string().datetime().optional(),
+    startsAt: z.string().datetime().optional(),
+    endsAt: z.string().datetime().optional(),
     slotOfAvailabilityWeeklyId: z.string().optional(),
     slotOfAvailabilityCustomId: z.string().optional(),
     schedulingPeriodStartsAt: z.string().datetime().optional(),
     schedulingPeriodEndsAt: z.string().datetime().optional(),
     discountCode: z.string().optional(),
+    // #828 — one key per logical checkout attempt; the server replays the
+    // original response for a duplicate instead of minting a second order.
+    clientIdempotencyKey: z.string().min(8).max(128).optional(),
     paymentGateway: paymentGatewaySchema.default("RAZORPAY"), // Server auto-routes; client hint only
-    displayCurrency: z.string().length(3).optional(), // Currency shown in the checkout UI
-    notes: z.string().optional(),
-    fromWaitlist: z.string().optional(), // Waitlist ID if coming from waitlist flow
+    // #1396 — this lands in `Payment.displayCurrencyAtCheckout` and it comes
+    // from localStorage. `z.string().length(3)` let any three letters through
+    // and `Intl.NumberFormat` renders an invented code without complaint
+    // ("XYZ 1,234.50"), so junk persisted onto a money row. Allowlisted against
+    // the same codes the navbar offers; the list is shared so the two cannot
+    // drift. This is a DISPLAY currency — settlement stays INR-only (ADR 15).
+    displayCurrency: z.enum(SUPPORTED_CURRENCY_CODES).optional(),
+    // #1437 — this note is forwarded verbatim into the Razorpay order's
+    // `notes` payload, where a value may not exceed 256 characters. Over that
+    // the gateway refuses to create the order and the buyer simply cannot pay,
+    // so bound it here with a message they can act on. The metadata builder
+    // truncates as a second line of defence; the full note is still persisted
+    // on the Payment and Appointment rows.
+    notes: z
+      .string()
+      .max(256, "Booking notes must be 256 characters or fewer")
+      .optional(),
+    // #1365 — the buyer's GST state (2-digit numeric), declared at checkout.
+    // Optional by design: Sec 12(2)(b) IGST Act places a B2C supply at the
+    // supplier's own location when no address is on record, so a blank field
+    // is the statutory default rather than a missing answer.
+    consumerStateCode: z
+      .string()
+      .length(2)
+      .refine((code) => GST_STATE_CODES.has(code), {
+        message: "Not a valid GST state code",
+      })
+      .optional(),
     useReferralCredits: z.boolean().optional(), // Apply available referral credits
+    // Enterprise: optional org context. When set, the payment is tagged with
+    // organizationId and billing is routed per the BillingAccount's
+    // fundingSource (Arch-4 model):
+    //   PERSONAL  → normal gateway, payment tagged for reporting.
+    //   WALLET    → wallet debit (lib/api/organizations/wallet.ts).
+    //   LICENSE   → covered by an active LICENSED_SEAT ProgramAssignment.
+    //   INVOICE   → deferred billing; line item lands on next invoice.
+    //   PROJECT   → reserved for v2.
+    organizationId: z.string().optional(),
   })
   .superRefine((data, ctx) => {
     // === CONSULTATION validation ===
     if (data.appointmentType === "CONSULTATION") {
       // Require slot timing
-      if (!data.slotStartTimeInUTC || !data.slotEndTimeInUTC) {
+      if (!data.startsAt || !data.endsAt) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "Consultation requires slot start and end times",
-          path: ["slotStartTimeInUTC"],
+          path: ["startsAt"],
         });
       }
 
@@ -117,7 +166,7 @@ export const checkoutSchema = z
 
     // === SUBSCRIPTION validation ===
     if (data.appointmentType === "SUBSCRIPTION") {
-      const hasSlotData = data.slotStartTimeInUTC && data.slotEndTimeInUTC;
+      const hasSlotData = data.startsAt && data.endsAt;
       const hasSchedulingPeriod =
         data.schedulingPeriodStartsAt && data.schedulingPeriodEndsAt;
 
@@ -127,7 +176,7 @@ export const checkoutSchema = z
           code: z.ZodIssueCode.custom,
           message:
             "Subscription requires either slot timing or scheduling period",
-          path: ["slotStartTimeInUTC"],
+          path: ["startsAt"],
         });
       }
 
@@ -168,27 +217,27 @@ export const checkoutSchema = z
     }
 
     // Validate slot timing order if both provided
-    if (data.slotStartTimeInUTC && data.slotEndTimeInUTC) {
-      const startTime = new Date(data.slotStartTimeInUTC);
-      const endTime = new Date(data.slotEndTimeInUTC);
+    if (data.startsAt && data.endsAt) {
+      const startTime = new Date(data.startsAt);
+      const endTime = new Date(data.endsAt);
       if (startTime >= endTime) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "Start time must be before end time",
-          path: ["slotEndTimeInUTC"],
+          path: ["endsAt"],
         });
       }
     }
 
     // Validate slot is not in the past or within minimum booking lead time
-    if (data.slotStartTimeInUTC) {
-      const slotStart = new Date(data.slotStartTimeInUTC);
+    if (data.startsAt) {
+      const slotStart = new Date(data.startsAt);
       const timingError = validateSlotTiming(slotStart);
       if (timingError) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: timingError,
-          path: ["slotStartTimeInUTC"],
+          path: ["startsAt"],
         });
       }
     }
@@ -231,7 +280,7 @@ export const checkoutSuccessResponseSchema = z.object({
   paymentIntent: z
     .object({
       id: z.string(),
-      client_secret: z.string().optional(), // Can be Payment Intent secret or Checkout URL
+      client_secret: z.string().nullish(), // Can be Payment Intent secret, Checkout URL, or null for org billing modes
     })
     .optional(),
   amount: z.number().optional(),
@@ -260,13 +309,6 @@ export type SubscriptionSearchParams = z.infer<
   typeof subscriptionSearchParamsSchema
 >;
 export type WebinarSearchParams = z.infer<typeof webinarSearchParamsSchema>;
-export type ClassSearchParams = z.infer<typeof classSearchParamsSchema>;
-export type PaymentMetadata = z.infer<typeof paymentMetadataSchema>;
-export type CheckoutResponse = z.infer<typeof checkoutResponseSchema>;
-export type CheckoutSuccessResponse = z.infer<
-  typeof checkoutSuccessResponseSchema
->;
-export type CheckoutErrorResponse = z.infer<typeof checkoutErrorResponseSchema>;
 
 // Utility functions for validation
 export const validateSearchParamsForAppointmentType = (
@@ -293,10 +335,10 @@ export const validateSearchParamsForAppointmentType = (
 export const createCheckoutData = (params: {
   appointmentType: AppointmentsType;
   planId: string;
-  paymentGateway: PaymentGateway;
+  paymentGateway: SupportedCheckoutGateway;
   eventId?: string;
-  slotStartTimeInUTC?: string;
-  slotEndTimeInUTC?: string;
+  startsAt?: string;
+  endsAt?: string;
   slotOfAvailabilityWeeklyId?: string;
   slotOfAvailabilityCustomId?: string;
   schedulingPeriodStartsAt?: string;
@@ -304,24 +346,26 @@ export const createCheckoutData = (params: {
   discountCode?: string;
   displayCurrency?: string;
   notes?: string;
-  fromWaitlist?: string;
   useReferralCredits?: boolean;
+  organizationId?: string;
+  consumerStateCode?: string;
 }): CheckoutInput => {
   return {
     appointmentType: params.appointmentType,
     planId: params.planId,
     paymentGateway: params.paymentGateway,
     eventId: params.eventId,
-    slotStartTimeInUTC: params.slotStartTimeInUTC,
-    slotEndTimeInUTC: params.slotEndTimeInUTC,
+    startsAt: params.startsAt,
+    endsAt: params.endsAt,
     slotOfAvailabilityWeeklyId: params.slotOfAvailabilityWeeklyId,
     slotOfAvailabilityCustomId: params.slotOfAvailabilityCustomId,
     schedulingPeriodStartsAt: params.schedulingPeriodStartsAt,
     schedulingPeriodEndsAt: params.schedulingPeriodEndsAt,
     discountCode: params.discountCode,
-    displayCurrency: params.displayCurrency?.toUpperCase(),
+    displayCurrency: toSupportedCurrency(params.displayCurrency),
     notes: params.notes,
-    fromWaitlist: params.fromWaitlist,
     useReferralCredits: params.useReferralCredits,
+    organizationId: params.organizationId,
+    consumerStateCode: params.consumerStateCode,
   };
 };

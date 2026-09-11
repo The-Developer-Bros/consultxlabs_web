@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-server";
 import { isPrivileged } from "@/lib/auth-helpers";
@@ -28,7 +29,7 @@ export async function GET(
       const isOwner =
         session.user.consultantProfileId === plan.consultantProfileId;
       if (!isOwner) {
-        const collab = await prisma.webinarCollaborator.findFirst({
+        const collab = await prisma.collaborator.findFirst({
           where: {
             webinarPlanId: planId,
             consultantProfileId: session.user.consultantProfileId ?? "__none__",
@@ -46,6 +47,7 @@ export async function GET(
     const splits = await calculateRevenueSplit("webinar", planId, amount);
     return NextResponse.json({ data: splits });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "collaborations" } });
     console.error("Error calculating revenue split:", error);
     return NextResponse.json(
       { error: "Failed to calculate revenue split" },

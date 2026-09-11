@@ -19,7 +19,17 @@
 
 ## Overview
 
-The payment system supports multiple payment gateways (Stripe, Razorpay) with planned support for Lemon Squeezy and XFlow. It handles four appointment types:
+The payment system uses **Razorpay** as the sole active payment gateway. Stripe is implemented but fenced off, and `DODO_PAYMENTS` exists in the `PaymentGateway` enum as a post-MVP placeholder with no implementation behind it. `POST_MVP_GATEWAY_STUBS` in `lib/payments/constants.ts` is the placeholder list, and `assertGatewayUsable` in `lib/payments/validation/gateway-guards.ts` refuses both a placeholder and a fenced-off gateway at runtime. The gateway comparison that led here is recorded in [gateways/gateway-evaluation-mar-2026.md](./gateways/gateway-evaluation-mar-2026.md).
+
+| Gateway           | Status                  | How it is gated                                                                                                                                                                                                                                                                                                             |
+| ----------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Razorpay**      | Live, primary           | No flag. `routeGateway` selects it for every buyer country, domestic directly and international over IBT.                                                                                                                                                                                                                   |
+| **Stripe**        | Implemented, fenced off | `STRIPE_ENABLED=true` on the server and `NEXT_PUBLIC_STRIPE_ENABLED=true` in the checkout UI. Auto-routing never selects it; only an explicit request reaches it, and `assertGatewayUsable` throws a `DisabledGatewayError` when the flag is unset. Refunds of existing Stripe payments are deliberately outside the fence. |
+| **Dodo Payments** | Schema placeholder      | Listed in `POST_MVP_GATEWAY_STUBS`. Any use throws `UnsupportedGatewayError`.                                                                                                                                                                                                                                               |
+
+Stripe is retained as a contingency rail in case RBI rules make Razorpay unusable for a class of collections, and for Connect transfers if international payouts are ever turned on. It is not a live payment method, so no customer should ever see the Stripe button.
+
+The system handles four appointment types:
 
 | Type             | Description          | Slot Handling                      |
 | ---------------- | -------------------- | ---------------------------------- |
@@ -127,7 +137,7 @@ The payment system supports multiple payment gateways (Stripe, Razorpay) with pl
 +----------------------+       +----------------------+
 | id                   |       | id                   |
 | consultationPlanId   |       | subscriptionPlanId   |
-| requestStatus        |       | requestStatus        |
+| status (AppointmentStatus) |  | status (AppointmentStatus) |
 | requestedById        |       | requestedById        |
 | pendingPaymentUrl    |       | pendingPaymentUrl    |
 | bookingSource        |       | schedulingPeriod*    |
@@ -158,11 +168,12 @@ DisputeStatus:
   WON                      -> Dispute won
   LOST                     -> Dispute lost
 
-RequestStatus:
+AppointmentStatus:
   PENDING                  -> Awaiting approval
   APPROVED                 -> Approved by consultant
   APPROVED_PENDING_PAYMENT -> Approved, awaiting payment
   SCHEDULED                -> Fully booked
+  COMPLETED                -> Session completed
   REJECTED                 -> Request rejected
   CANCELLED                -> Cancelled
   EXPIRED                  -> Expired
@@ -234,7 +245,7 @@ RequestStatus:
 | `lib/payments/core/types.ts`                 | Payment type definitions        |
 | `lib/payments/core/stripe.ts`                | Stripe gateway implementation   |
 | `lib/payments/core/razorpay.ts`              | Razorpay gateway implementation |
-| `lib/payments/operations/appointmentlock.ts` | Distributed locking             |
+| `utils/appointmentlock.ts`                   | Distributed locking             |
 
 ### Admin Dashboard Pages
 
@@ -276,7 +287,7 @@ RequestStatus:
 |  CHECKOUT PAGE: /checkout/plans/[type]/[planId]                                   |
 |  ------------------------------------------------------------------------------   |
 |  URL Search Params:                                                               |
-|  - CONSULTATION: slotStartTimeInUTC, slotEndTimeInUTC, slotOfAvailability*Id      |
+|  - CONSULTATION: startsAt, endsAt, slotOfAvailability*Id                          |
 |  - SUBSCRIPTION: schedulingPeriodStartsAt, schedulingPeriodEndsAt                 |
 |  - WEBINAR/CLASS: eventId                                                         |
 |  - Optional: discountCode, notes                                                  |
@@ -352,7 +363,7 @@ RequestStatus:
 +-----------------------------------------------------------------------------------+
 |  STEP 2: ACQUIRE DISTRIBUTED LOCK                                                 |
 |  ------------------------------------------------------------------------------   |
-|  File: lib/payments/operations/appointmentlock.ts                                 |
+|  File: utils/appointmentlock.ts                                                   |
 |  - CONSULTATION/SUBSCRIPTION (direct): Lock on slot ID                            |
 |  - WEBINAR/CLASS: Lock on event ID                                                |
 |  - Prevents race conditions during concurrent checkouts                           |
@@ -602,9 +613,9 @@ RequestStatus:
 | **Stripe**   | `charge.dispute.created`        | `handleDisputeCreated()` |
 | **Stripe**   | `charge.dispute.updated`        | `handleDisputeUpdated()` |
 | **Stripe**   | `charge.dispute.closed`         | `handleDisputeUpdated()` |
-| **Razorpay** | `payment.captured`              | `handlePaymentSuccess()` |
-| **Razorpay** | `order.paid`                    | `handlePaymentSuccess()` |
-| **Razorpay** | `payment.failed`                | `handlePaymentFailure()` |
+| **Razorpay** | `payment.captured`              | `razorpay-dispatch.ts` → routes by `notes.type`: `credit_purchase`/`invoice_payment` → `handleOrgPaymentSuccess()`; `overage_member` → `handleOverageMemberSuccess()`; B2C → `handlePaymentSuccess()` |
+| **Razorpay** | `order.paid`                    | `razorpay-dispatch.ts` → same routing by `notes.type` as `payment.captured` |
+| **Razorpay** | `payment.failed`                | `razorpay-dispatch.ts` → routes by `notes.type`: org paths → `handleOrgPaymentFailure()`; B2C → `handlePaymentFailure()` |
 | **Razorpay** | `refund.created`                | `handleRefundCreated()`  |
 | **Razorpay** | `refund.processed`              | `handleRefundCreated()`  |
 | **Razorpay** | `refund.failed`                 | `handleRefundCreated()`  |
@@ -962,12 +973,17 @@ RequestStatus:
 
 ### Gateway Support Matrix
 
-| Feature             | Stripe | Razorpay            |
-| ------------------- | ------ | ------------------- |
-| Dispute Webhooks    | Yes    | Yes                 |
-| List Disputes API   | Yes    | No (Dashboard only) |
-| Submit Evidence API | Yes    | No (Dashboard only) |
-| Retrieve Dispute    | Yes    | No                  |
+The matrix below covers the dispute surface, where the two gateways differ most, and the settlement currency, where they deliberately do not differ at all.
+
+| Feature              | Stripe                          | Razorpay                        |
+| -------------------- | ------------------------------- | ------------------------------- |
+| Dispute Webhooks     | Yes                             | Yes                             |
+| List Disputes API    | Yes                             | No (Dashboard only)             |
+| Submit Evidence API  | Yes                             | No (Dashboard only)             |
+| Retrieve Dispute     | Yes                             | No                              |
+| Settlement currency  | INR only, enforced at order creation | INR only, enforced at order creation |
+
+Settlement is INR-only by design, per [ADR 15](../enterprise/70-design-decisions/15-currency-as-enum-with-display-fields.md): every stored amount is an integer count of INR paise and the double-entry ledger is INR-denominated. That is enforced rather than assumed. `assertInrSettlement`, in `lib/payments/validation/currency-guards.ts`, is the first statement of both `createRazorpayOrder` and `createStripeCheckoutSession`, and it throws a `PaymentError` with code `NON_INR_SETTLEMENT` for anything else. The assertion sits at the gateway boundary rather than at each caller because callers read a currency out of the database — an organisation's billing account, an invoice's display currency, an overage event — and any one of them forwarding a stale non-INR value would otherwise mint an order denominated in that currency's own subunit while the platform recorded rupees. An international buyer is still served an INR order; their card issuer performs the conversion. See [multi-currency/01-architecture.md](./multi-currency/01-architecture.md) for the display-side story.
 
 ---
 
@@ -1130,10 +1146,10 @@ RequestStatus:
 |  ALSO: EXPIRED APPROVAL-PENDING CONSULTATIONS                                     |
 |  ------------------------------------------------------------------------------   |
 |  WHERE:                                                                           |
-|    requestStatus = APPROVED_PENDING_PAYMENT                                       |
+|    status = APPROVED_PENDING_PAYMENT                                              |
 |    updatedAt < (now - 48 hours)                                                   |
 |  ACTION:                                                                          |
-|    - Revert to requestStatus = PENDING                                            |
+|    - Revert to status = PENDING                                                   |
 |    - Clear pendingPaymentUrl                                                      |
 |    - Add note: "[System] Payment link expired..."                                 |
 |    - Mark payment as FAILED                                                       |
@@ -1182,7 +1198,6 @@ RequestStatus:
 |  |        DATABASE_URL, DIRECT_URL                                         |      |
 |  |        STRIPE_SECRET_KEY                                                |      |
 |  |        RAZORPAY_KEY_ID, RAZORPAY_SECRET                                 |      |
-|  |        LEMON_SQUEEZY_API_KEY, XFLOW_SECRET_KEY                          |      |
 |  +-------------------------------------------------------------------------+      |
 +-----------------------------------------------------------------------------------+
 
@@ -1430,20 +1445,22 @@ STRIPE_SECRET_KEY=
 STRIPE_WEBHOOK_SECRET=
 NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=
 
-# Razorpay
+# Razorpay (Payments)
 RAZORPAY_KEY_ID=
 RAZORPAY_SECRET=
 RAZORPAY_WEBHOOK_SECRET=
 NEXT_PUBLIC_RAZORPAY_KEY_ID=
 
+# RazorpayX (Payouts)
+RAZORPAYX_KEY_ID=
+RAZORPAYX_KEY_SECRET=
+RAZORPAYX_ACCOUNT_NUMBER=
+RAZORPAYX_WEBHOOK_SECRET=
+
 # Cron Jobs
 CRON_SECRET=
 # or
 VERCEL_CRON_SECRET=
-
-# Optional: Future Gateways
-LEMON_SQUEEZY_API_KEY=
-XFLOW_SECRET_KEY=
 ```
 
 ### Key API Endpoints

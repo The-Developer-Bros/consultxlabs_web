@@ -1,6 +1,8 @@
 // schemas/user.ts
 import { z } from "zod";
+import { UserRole } from "@prisma/client";
 import { experienceValidation } from "./shared";
+import { DateOfBirthSchema } from "@/lib/compliance/age";
 
 // #region Enums
 
@@ -29,12 +31,10 @@ export const BudgetPreferenceEnum = z.enum([
 
 export const SessionTypeEnum = z.enum(["ONE_ON_ONE", "GROUP", "ASYNC_REVIEW"]);
 
-export const UserRoleEnum = z.enum([
-  "CONSULTANT",
-  "CONSULTEE",
-  "ADMIN",
-  "STAFF",
-]);
+// Derived from Prisma, not hand-listed: this drifted when ORG_WORKSPACE landed,
+// which made Partial<OnboardingFormData> unassignable to every step-form prop
+// type in app/form/onboarding and forced a chain of casts at the call sites.
+export const UserRoleEnum = z.nativeEnum(UserRole);
 
 export const ScheduleTypeEnum = z.enum(["WEEKLY", "CUSTOM"]);
 
@@ -104,7 +104,7 @@ export const PersonalInfoAndRoleSchema = z.object({
   onboardingCompleted: z.boolean().optional().default(false),
   role: UserRoleEnum,
   // New fields
-  dateOfBirth: z.date().optional().nullable(),
+  dateOfBirth: DateOfBirthSchema,
   gender: GenderEnum.optional().nullable(),
   city: z.string().optional(),
   country: z.string().optional(),
@@ -134,6 +134,23 @@ export const CustomSlotSchema = z.object({
 
 // #region Professional Background Schemas
 
+/**
+ * Ceilings for the free-text fields a user can paste into.
+ *
+ * These are the fields with no natural length: a pasted résumé section, a job
+ * description copied out of an offer letter. They are also the ONLY realistic
+ * way an onboarding draft reaches the 64KB payload cap, after which autosave
+ * silently stops (#onboarding-ux). Every cap here is paired with a `maxLength`
+ * on the input that writes it, so the browser refuses the paste rather than
+ * letting Zod reject the whole step afterwards.
+ *
+ * Sized against the fields that were already capped — `bio` at 160 for a
+ * one-liner, verification notes at 500 for a paragraph — so 2000 is "several
+ * paragraphs" and 500 is "a line or two".
+ */
+export const LONG_FORM_TEXT_MAX = 2000;
+export const SHORT_FORM_TEXT_MAX = 500;
+
 export const WorkExperienceSchema = z.object({
   id: z.string().optional(),
   company: z.string().min(1, "Company name is required"),
@@ -143,7 +160,13 @@ export const WorkExperienceSchema = z.object({
   startDate: z.coerce.date({ required_error: "Start date is required" }),
   endDate: z.coerce.date().optional().nullable(),
   isCurrent: z.boolean().default(false),
-  description: z.string().optional(),
+  description: z
+    .string()
+    .max(
+      LONG_FORM_TEXT_MAX,
+      `Description must be ${LONG_FORM_TEXT_MAX} characters or less`,
+    )
+    .optional(),
 });
 
 export type WorkExperience = z.infer<typeof WorkExperienceSchema>;
@@ -169,8 +192,20 @@ export const EducationSchema = z.object({
   startYear: z.number().min(1900).max(2100).optional().nullable(),
   endYear: z.number().min(1900).max(2100).optional().nullable(),
   grade: z.string().optional(),
-  activities: z.string().optional(),
-  description: z.string().optional(),
+  activities: z
+    .string()
+    .max(
+      SHORT_FORM_TEXT_MAX,
+      `Activities must be ${SHORT_FORM_TEXT_MAX} characters or less`,
+    )
+    .optional(),
+  description: z
+    .string()
+    .max(
+      LONG_FORM_TEXT_MAX,
+      `Description must be ${LONG_FORM_TEXT_MAX} characters or less`,
+    )
+    .optional(),
 });
 
 export type Education = z.infer<typeof EducationSchema>;
@@ -180,7 +215,13 @@ export type Education = z.infer<typeof EducationSchema>;
 // #region Consultant Profile Schema
 
 export const ConsultantProfileSchema = z.object({
-  description: z.string().optional(),
+  description: z
+    .string()
+    .max(
+      LONG_FORM_TEXT_MAX,
+      `Description must be ${LONG_FORM_TEXT_MAX} characters or less`,
+    )
+    .optional(),
   experience: experienceValidation,
   rating: z.number().default(0),
 
@@ -195,7 +236,13 @@ export const ConsultantProfileSchema = z.object({
   videoIntroUrl: websiteUrlSchema,
   languages: z.array(z.string()).default([]),
   toolsAndTechnologies: z.array(z.string()).default([]),
-  mentoringStyle: z.string().optional(),
+  mentoringStyle: z
+    .string()
+    .max(
+      SHORT_FORM_TEXT_MAX,
+      `Mentoring style must be ${SHORT_FORM_TEXT_MAX} characters or less`,
+    )
+    .optional(),
   sessionTypes: z.array(SessionTypeEnum).default([]),
   profileCompletionPercentage: z.number().min(0).max(100).default(0),
   isVerified: z.boolean().default(false),
@@ -235,8 +282,6 @@ export const ConsultantProfileSchema = z.object({
   certifications: z.array(CertificationSchema).optional(),
   education: z.array(EducationSchema).optional(),
 });
-
-export type ConsultantProfile = z.infer<typeof ConsultantProfileSchema>;
 
 // #endregion
 
@@ -284,8 +329,6 @@ export const AdminProfileSchema = z.object({
   notes: z.string().optional(),
 });
 
-export type AdminProfile = z.infer<typeof AdminProfileSchema>;
-
 // #endregion
 
 // #region Schedule Schemas
@@ -320,8 +363,6 @@ export const CookiePreferenceSchema = z.object({
   functional: z.boolean().default(false),
 });
 
-export type CookiePreference = z.infer<typeof CookiePreferenceSchema>;
-
 export const NotificationPreferenceSchema = z.object({
   allNotifications: z.boolean().default(true),
 
@@ -343,6 +384,12 @@ export const NotificationPreferenceSchema = z.object({
   trialNotifications: z.boolean().default(true),
   subscriptionAlerts: z.boolean().default(true),
   marketingEmails: z.boolean().default(false),
+
+  // Org category preferences (ADR 23) — the categories above are all
+  // B2C-shaped, which left the ORG_* workflow family unmutable.
+  orgBillingAlerts: z.boolean().default(true),
+  orgMembershipAlerts: z.boolean().default(true),
+  orgProgramAlerts: z.boolean().default(true),
 
   // Quiet hours
   quietHoursEnabled: z.boolean().default(false),
@@ -375,7 +422,5 @@ export const FullUserSchema = z.object({
   cookiePreferences: CookiePreferenceSchema.optional().nullable(),
   notificationPreferences: NotificationPreferenceSchema.optional().nullable(),
 });
-
-export type FullUser = z.infer<typeof FullUserSchema>;
 
 // #endregion

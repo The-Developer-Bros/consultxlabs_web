@@ -1,0 +1,104 @@
+name: GST Outward-Supplies Register Export
+
+on:
+  schedule:
+    # 01:40 UTC = 07:10 IST on the 3rd of each month — after the month has
+    # closed in IST and well before the 11th GSTR-1 deadline, on a minute no
+    # other workflow starts on.
+    # cron-runtime-minutes: 4
+    - cron: "40 1 3 * *"
+  workflow_dispatch:
+    inputs:
+      period_start:
+        description: "Period start (YYYY-MM-DD, inclusive). Leave blank for the previous IST calendar month."
+        required: false
+        type: string
+      period_end:
+        description: "Period end (YYYY-MM-DD, exclusive). Must be set together with period_start."
+        required: false
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+# The job reads the repository and nothing else; the credentials it needs are
+# the database, Redis and GST ones below, not the Actions token.
+permissions:
+  contents: read
+
+jobs:
+  gst-outward-register-export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      # #1066 — jobs run as bare Node processes, so Sentry.init only sees
+      # what the step env carries.
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      # #476 cron locks load lib/redis at import — every job entry needs these
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      # Statutory supplier identity. Without PLATFORM_GSTIN the healer mints
+      # nothing (fail-closed) and the register only reports what already exists.
+      PLATFORM_GSTIN: ${{ secrets.PLATFORM_GSTIN }}
+      SUPPLIER_STATE_CODE: ${{ secrets.SUPPLIER_STATE_CODE }}
+      PLATFORM_INVOICE_PREFIX: ${{ secrets.PLATFORM_INVOICE_PREFIX }}
+      GST_REGISTER_CSV_OUT: gst-outward-register.csv
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          # The Actions token is never used after checkout, and leaving it in
+          # .git/config lets any later step — or an uploaded artifact — carry it.
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies without lifecycle scripts
+        # S6505 — no arbitrary lifecycle scripts during install; the one
+        # artifact generation we need (Prisma client) is invoked explicitly
+        # from our pinned devDependency right after.
+        run: npm ci --ignore-scripts
+
+      - name: Generate Prisma client
+        run: npx --no-install prisma generate
+
+      - name: Export the outward-supplies register
+        env:
+          # inputs.* is read through the step env so the expression is never
+          # interpolated straight into a shell command (S7630).
+          GST_REGISTER_PERIOD_START: ${{ inputs.period_start }}
+          GST_REGISTER_PERIOD_END: ${{ inputs.period_end }}
+        # S8543/S6505 — run the locally-installed binary directly; no
+        # on-demand package resolution at execution time.
+        run: node_modules/.bin/tsx jobs/compliance/gst-outward-register-export.ts
+
+      - name: Upload the register CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gst-outward-register
+          path: gst-outward-register.csv
+          # The CSV carries GSTINs, document numbers and amounts — no PAN, no
+          # bank detail, no buyer address. Ninety days covers the filing plus
+          # one amendment cycle.
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          # Fallback sink — Slack has never been provisioned, so this is
+          # what actually pages today. See 07-required-secrets.md.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "gst-outward-register-export"

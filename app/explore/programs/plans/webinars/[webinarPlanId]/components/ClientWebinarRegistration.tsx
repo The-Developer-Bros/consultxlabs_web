@@ -14,9 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { CheckCircle } from "lucide-react";
 import { useCurrency } from "@/hooks/useCurrency";
 import { formatInTimeZone } from "date-fns-tz";
-import { JoinWaitlistButton } from "@/components/waitlist/JoinWaitlistButton";
-import { WaitlistBadge } from "@/components/waitlist/WaitlistBadge";
-import { countWebinarParticipants } from "@/lib/payments/utils/participants";
+import { getWebinarCapacity } from "@/lib/events/capacity";
 import type { TSessionStatus } from "../types";
 
 type ClientWebinarRegistrationProps = {
@@ -29,8 +27,10 @@ type ClientWebinarRegistrationProps = {
   appointment?: {
     slotsOfAppointment?: Array<{ user?: Array<{ id: string }> }>;
   } | null;
+  /** Plan default; the instance may override it. */
   maxParticipants?: number;
-  waitlist?: Array<{ userId: string; position?: number | null }>;
+  /** Per-instance capacity override; null inherits the plan's value. */
+  instanceMaxParticipants?: number | null;
   consultantUserId?: string;
 };
 
@@ -43,7 +43,7 @@ export function ClientWebinarRegistration({
   sessionStatus,
   appointment,
   maxParticipants = 100,
-  waitlist = [],
+  instanceMaxParticipants,
   consultantUserId,
 }: ClientWebinarRegistrationProps) {
   const { data: session } = useSession();
@@ -67,27 +67,32 @@ export function ClientWebinarRegistration({
       slot.user?.some((u) => u.id === userId),
     );
 
-  // Check capacity using shared utility — exclude consultant from participant count
-  const currentParticipants = countWebinarParticipants(
-    appointment ?? null,
-    consultantUserId ? [consultantUserId] : [],
-  );
-  const isFull = currentParticipants >= maxParticipants;
-
-  // Check if user is on the waitlist
-  const userWaitlistEntry = userId
-    ? waitlist.find((w) => w.userId === userId)
-    : null;
-  const isOnWaitlist = !!userWaitlistEntry;
+  const capacity = getWebinarCapacity({
+    webinar: { maxParticipants: instanceMaxParticipants ?? null, appointment },
+    plan: { maxParticipants },
+    excludeUserIds: consultantUserId ? [consultantUserId] : [],
+  });
+  const isFull = capacity.isFull;
 
   const handleRegistration = () => {
+    // Only checkout-able when the session is upcoming, a webinar instance
+    // exists, and there's still room — a sold-out webinar falls back to the
+    // page so the visitor sees the sold-out state rather than a dead checkout.
+    const checkoutUrl =
+      sessionStatus === "Upcoming" && webinarId && !isFull
+        ? `/checkout/plans/webinar/${webinarPlanId}?eventId=${webinarId}`
+        : null;
     if (!isLoggedIn) {
-      window.location.href = `/auth/signin?callbackUrl=${encodeURIComponent(window.location.href)}`;
+      // Preserve the next step as a RELATIVE callbackUrl (the sign-in page drops
+      // absolute URLs) — checkout when registerable, else this page — so a
+      // first-timer lands there after auth + onboarding.
+      const returnTo =
+        checkoutUrl ?? window.location.pathname + window.location.search;
+      window.location.href = `/auth/signin?callbackUrl=${encodeURIComponent(returnTo)}`;
       return;
     }
-    // Ensure we only redirect to checkout if the session is upcoming AND we have a webinar instance ID
-    if (sessionStatus === "Upcoming" && webinarId) {
-      window.location.href = `/checkout/plans/webinar/${webinarPlanId}?eventId=${webinarId}`;
+    if (checkoutUrl) {
+      window.location.href = checkoutUrl;
     }
   };
 
@@ -148,6 +153,11 @@ export function ClientWebinarRegistration({
     } else if (sessionStatus === "To be announced" || !webinarId) {
       signInButtonText = "Registration Opening Soon";
       signInButtonDisabled = true;
+    } else if (isFull) {
+      // Sending a signed-out visitor through sign-in only to meet a sold-out
+      // card is a wasted round trip; say so up front.
+      signInButtonText = "Sold out";
+      signInButtonDisabled = true;
     }
 
     return (
@@ -156,17 +166,25 @@ export function ClientWebinarRegistration({
           <CardTitle>Webinar Registration</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-gray-600 mb-4">
+          <p className="text-muted-foreground mb-4">
             {sessionInfoText} {/* Show current session status info */}
           </p>
+          {isFull && (
+            <Badge
+              variant="secondary"
+              className="mb-4 bg-amber-100 text-amber-800"
+            >
+              Sold out — all {capacity.max} seats taken
+            </Badge>
+          )}
           {!signInButtonDisabled && (
-            <p className="text-gray-600 mb-4">
+            <p className="text-muted-foreground mb-4">
               Please sign in to register for this webinar.
             </p>
           )}
           <Button
             onClick={handleRegistration} // This redirects to sign-in
-            className="w-full bg-black hover:bg-gray-800"
+            className="w-full bg-primary hover:bg-primary/90 text-primary-foreground"
             disabled={signInButtonDisabled}
           >
             {signInButtonText}
@@ -190,8 +208,10 @@ export function ClientWebinarRegistration({
               Already Registered
             </Badge>
           </div>
-          <p className="text-sm text-gray-600 mb-4">{sessionInfoText}</p>
-          <p className="text-sm text-gray-600">
+          <p className="text-sm text-muted-foreground mb-4">
+            {sessionInfoText}
+          </p>
+          <p className="text-sm text-muted-foreground">
             Check your email for webinar details and join link.
           </p>
         </CardContent>
@@ -199,7 +219,8 @@ export function ClientWebinarRegistration({
     );
   }
 
-  // Show waitlist UI when event is full
+  // Sold out — registration is simply closed. The host can reopen it by
+  // raising the capacity on this webinar.
   if (isFull && isLoggedIn && !isAlreadyRegistered) {
     return (
       <Card>
@@ -207,36 +228,24 @@ export function ClientWebinarRegistration({
           <CardTitle>Webinar Registration</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-gray-600 mb-4">{sessionInfoText}</p>
+          <p className="text-sm text-muted-foreground mb-4">
+            {sessionInfoText}
+          </p>
           <Badge
             variant="secondary"
             className="mb-4 bg-amber-100 text-amber-800"
           >
-            Event is full ({currentParticipants}/{maxParticipants} spots)
+            Sold out — all {capacity.max} seats taken
           </Badge>
+          <p className="text-sm text-muted-foreground">
+            Registration for this session is closed. Check back in case the host
+            opens more seats, or browse the other sessions on this plan.
+          </p>
         </CardContent>
         <CardFooter>
-          {isOnWaitlist ? (
-            <div className="w-full text-center">
-              <WaitlistBadge
-                position={userWaitlistEntry?.position ?? null}
-                variant="extended"
-              />
-              <p className="text-xs text-gray-500 mt-2">
-                We'll notify you when a spot opens up
-              </p>
-            </div>
-          ) : webinarId ? (
-            <JoinWaitlistButton
-              eventType="webinar"
-              eventId={webinarId}
-              className="w-full"
-            />
-          ) : (
-            <p className="text-sm text-gray-500 text-center">
-              No session available for waitlist
-            </p>
-          )}
+          <Button className="w-full" disabled>
+            Sold out
+          </Button>
         </CardFooter>
       </Card>
     );
@@ -248,12 +257,12 @@ export function ClientWebinarRegistration({
         <CardTitle>Webinar Registration</CardTitle>
       </CardHeader>
       <CardContent>
-        <p className="text-sm text-gray-600 mb-4">{sessionInfoText}</p>
+        <p className="text-sm text-muted-foreground mb-4">{sessionInfoText}</p>
       </CardContent>
       <CardFooter>
         <Button
           onClick={handleRegistration}
-          className="w-full bg-black hover:bg-gray-800"
+          className="w-full bg-primary hover:bg-primary/90 text-primary-foreground"
           disabled={buttonDisabled}
         >
           {buttonText}

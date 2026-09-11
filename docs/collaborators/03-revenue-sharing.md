@@ -2,233 +2,122 @@
 
 ## Overview
 
-When a service (webinar or class) has accepted collaborators, payments for that service are split among all parties. The platform takes its 20% fee from each party's share independently.
+When a webinar or class with accepted collaborators is paid for, settlement divides the money among all parties. Two properties define the current design: all share math is **integer** (shares are stored as basis points per #772 B5, amounts are paise), and the platform fee is taken **once off the gross** before the split — the pool that remains is what gets divided. This guide was rewritten on 2026-08-14 against `lib/collaborators/service.ts` and `lib/payments/payouts/earnings-service.ts`.
 
 ---
 
 ## Rules
 
-| Rule                              | Value                           | Enforcement                                               |
-| --------------------------------- | ------------------------------- | --------------------------------------------------------- |
-| Minimum host share                | 10%                             | Validated at invite time: total collaborator shares ≤ 90% |
-| Maximum single collaborator share | 90%                             | By extension of the above rule                            |
-| Platform fee                      | 20% of each party's gross share | Applied independently per earning                         |
-| Host share calculation            | 100% - sum(collaborator shares) | Automatic remainder                                       |
+The enforcement points for each rule are listed alongside it.
+
+| Rule | Value | Enforcement |
+| --- | --- | --- |
+| Minimum host share | 10% of the pool | Collaborator total ≤ 9000 bps, validated inside a Serializable transaction at invite and update time |
+| Share storage | Integer basis points (`revenueShareBps`; 2500 = 25%) | `pctToBps()` converts the percent API surface at the DB boundary (`service.ts:28`) |
+| Platform fee | 20% of gross, floored, applied once | `PLATFORM_FEE_PERCENTAGE = 20` (`lib/payments/payouts/constants.ts:11`); floors per #778 §C-2 |
+| Collaborator share | `floor(pool × bps / 10000)` | `calculateRevenueSplit()` (`service.ts:900`) |
+| Host share | Pool minus the collaborator shares (the remainder) | The owner is the pool's designated residual party |
+| Over-allocation | Σbps > 10000 throws | A mis-configured plan is refused rather than allowed to mint money |
 
 ---
 
-## Revenue Split Calculation
+## The split calculation
 
-### Formula
+### Fee first, then the pool
 
-```
-For a payment of amount P with N collaborators:
-
-  collaborator_i_gross = P * (collaborator_i_share / 100)
-  collaborator_i_fee   = collaborator_i_gross * 0.20
-  collaborator_i_net   = collaborator_i_gross - collaborator_i_fee
-
-  total_collab_share   = sum(all collaborator share percentages)
-  host_share_pct       = 100 - total_collab_share
-  host_gross           = P * (host_share_pct / 100)
-  host_fee             = host_gross * 0.20
-  host_net             = host_gross - host_fee
-```
-
-### Example
-
-**Setup**: Webinar priced at ₹1,000. Two collaborators accepted:
-
-- Co-Host A: 25% share
-- Moderator B: 15% share
-- Host gets remainder: 100% - 25% - 15% = 60%
+`createEarningsFromPayment()` computes the marketplace fee by flooring 20% of the gross (the shaved paisa stays with the consultants), and the remainder is the **consultant pool**:
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                    REVENUE SPLIT                              │
-│                    Total: ₹1,000                             │
-├──────────────┬──────────┬──────────┬──────────┬─────────────┤
-│ Party        │ Share %  │ Gross    │ Fee (20%)│ Net Payout  │
-├──────────────┼──────────┼──────────┼──────────┼─────────────┤
-│ Host         │ 60%      │ ₹600     │ ₹120     │ ₹480        │
-│ Co-Host A    │ 25%      │ ₹250     │ ₹50      │ ₹200        │
-│ Moderator B  │ 15%      │ ₹150     │ ₹30      │ ₹120        │
-├──────────────┼──────────┼──────────┼──────────┼─────────────┤
-│ TOTAL        │ 100%     │ ₹1,000   │ ₹200     │ ₹800        │
-└──────────────┴──────────┴──────────┴──────────┴─────────────┘
-
-Platform revenue: ₹200 (20% of ₹1,000)
+platformFeePaise = floor(gross × 20 / 100)
+pool             = gross − platformFeePaise
 ```
+
+When the plan is org-owned, the pool instead comes from the org rate-card split (`resolveOrgSplit`), and the org's cut is carved out before collaborators see anything. `calculateRevenueSplit(planType, planId, pool)` is then called **with the pool**, not the gross.
+
+Taking the fee per party or once up front produces the same proportions in exact arithmetic; with integer floors they differ by paise, and the code's order of operations — fee first, floors per collaborator, owner absorbs — is the authoritative one.
+
+### The division
+
+`calculateRevenueSplit()` returns an empty array when the plan has no `ACCEPTED` collaborators, which routes settlement down the ordinary single-owner path. Otherwise each collaborator receives `floor(pool × revenueShareBps / 10000)`, and the owner receives the remainder. Flooring rather than rounding matters: `Math.round` on each share could overshoot the total and push the owner's remainder negative (#778 §C-2). If the stored bps sum exceeds 10000 the function throws.
+
+### Worked example
+
+A webinar sells for ₹1,000 (100000 paise) with an accepted co-host at 25% (2500 bps) and a moderator at 15% (1500 bps). The lead-in numbers land as follows.
+
+```
+Fee:   floor(100000 × 20 / 100)      = 20000 paise  (platform)
+Pool:  100000 − 20000                = 80000 paise
+
+Co-host:    floor(80000 × 2500/10000) = 20000 paise
+Moderator:  floor(80000 × 1500/10000) = 12000 paise
+Host:       80000 − 20000 − 12000     = 48000 paise  (remainder)
+```
+
+Every paisa is accounted for: 20000 + 20000 + 12000 + 48000 = 100000.
 
 ---
 
-## Validation Logic
+## Validation logic at invite and update time
 
-### At Invitation Time
+`validateRevenueSharesTx()` (`service.ts:864`) sums `revenueShareBps` over the plan's `PENDING` and `ACCEPTED` collaborators (excluding the row being updated, when updating) and requires the total plus the new share to stay at or under `MAX_COLLAB_BPS` (9000). Both `inviteCollaborator()` and `updateCollaborator()` run this check **inside a Serializable transaction** together with the write (FIX B1), so two concurrent invitations cannot jointly break the cap.
 
-```typescript
-// lib/collaborators/service.ts — validateRevenueShares()
+`PENDING` counts toward the total deliberately: an unanswered 25% invitation reserves those basis points, otherwise the host could over-allocate by inviting several people whose shares overlap.
 
-function validateRevenueShares(
-  planType: "webinar" | "class",
-  planId: string,
-  newSharePercentage: number,
-  excludeCollaboratorId?: string, // For updates
-): boolean {
-  // 1. Get all active collaborators (PENDING + ACCEPTED, excluding removed/declined)
-  const existing = getCollaborators(planType, planId)
-    .filter((c) => c.status === "PENDING" || c.status === "ACCEPTED")
-    .filter((c) => c.id !== excludeCollaboratorId);
+---
 
-  // 2. Sum existing shares
-  const existingTotal = existing.reduce(
-    (sum, c) => sum + c.revenueSharePercentage,
-    0,
-  );
+## ConsultantEarnings rows
 
-  // 3. Check: existing + new ≤ 90%
-  return existingTotal + newSharePercentage <= 90;
-}
+Settlement writes one `ConsultantEarnings` row per party against the same `paymentId`; uniqueness is `@@unique([paymentId, consultantProfileId, role])`, and `paymentId` alone is only indexed. The money columns are BigInt paise. Continuing the example above (with no org settlement in play), the rows are:
+
+```
+Owner row:      role: OWNER,        grossAmount: 100000, platformFeePaise: 20000, consultantSharePaise: 48000, shareBps: 6000
+Co-host row:    role: COLLABORATOR, grossAmount: 0,      platformFeePaise: 0,     consultantSharePaise: 20000, shareBps: 2500
+Moderator row:  role: COLLABORATOR, grossAmount: 0,      platformFeePaise: 0,     consultantSharePaise: 12000, shareBps: 1500
 ```
 
-**Why PENDING counts**: If a collaborator is invited with 25% but hasn't responded yet, that 25% is reserved. Otherwise the host could over-allocate by inviting multiple people whose shares overlap.
+The gross and the marketplace fee ride the owner's row only. `shareBps` is a **derived display cache** of each party's share of the pool: each row's value is floored and the last row absorbs the remainder so the cached values sum to exactly 10000 (#812) — the authoritative amounts are always the paise columns.
 
-### Revenue Split Preview
+When the sponsoring org of the booking is an unverified INVOICE-funded org, every row is parked in `PENDING_TRUST` instead of `PENDING` until the org verifies or pays its first invoice (#687 E-02).
 
-```typescript
-// lib/collaborators/service.ts — calculateRevenueSplit()
+### Settlement to a collaborator's host org (#773)
 
-function calculateRevenueSplit(
-  planType: "webinar" | "class",
-  planId: string,
-  totalAmount: number,
-) {
-  const collaborators = getAcceptedCollaborators(planType, planId);
-  const PLATFORM_FEE_RATE = 0.2;
+Collaborations are org-blind (ADR 18): each collaborator's earnings resolve against **their own** HOST/HYBRID org's rate card, never the selling org's. For a collaborator with an active org rate card, `resolveOrgSplit()` decomposes their pool share into the card's fee slice (platform revenue), the org's cut (an `OrganizationEarnings` row), and the NET (what lands on their `ConsultantEarnings` row and is later paid out). An independent collaborator keeps the full share. If two settled parties would produce a second `OrganizationEarnings` row for the same (payment, org) pair, the collision is detected deterministically and the second collaborator simply stays unsettled — full share on `ConsultantEarnings`, no org accrual.
 
-  const totalCollabShare = collaborators.reduce(
-    (sum, c) => sum + c.revenueSharePercentage,
-    0,
-  );
-  const ownerSharePct = 100 - totalCollabShare;
+### The booking journal
 
-  const splits = [
-    // Owner
-    {
-      role: "OWNER",
-      sharePercentage: ownerSharePct,
-      grossAmount: Math.round((totalAmount * ownerSharePct) / 100),
-      platformFee: Math.round(
-        ((totalAmount * ownerSharePct) / 100) * PLATFORM_FEE_RATE,
-      ),
-      netAmount: Math.round(
-        ((totalAmount * ownerSharePct) / 100) * (1 - PLATFORM_FEE_RATE),
-      ),
-    },
-    // Collaborators
-    ...collaborators.map((c) => ({
-      role: "COLLABORATOR",
-      sharePercentage: c.revenueSharePercentage,
-      grossAmount: Math.round((totalAmount * c.revenueSharePercentage) / 100),
-      platformFee: Math.round(
-        ((totalAmount * c.revenueSharePercentage) / 100) * PLATFORM_FEE_RATE,
-      ),
-      netAmount: Math.round(
-        ((totalAmount * c.revenueSharePercentage) / 100) *
-          (1 - PLATFORM_FEE_RATE),
-      ),
-    })),
-  ];
+The same transaction posts the balanced double-entry booking journal, keyed `booking:<paymentId>`: one `CONSULTANT_PAYABLE` credit per party mirroring the rows above, one `ORG_PAYABLE` per involved org, and the summed fee slices as a single `PLATFORM_FEE` credit. The cached rows must mirror the journal's legs — the reconciler alarms on `EARNINGS_LEDGER_DRIFT` otherwise — and a non-retryable posting failure re-throws so earnings and journal roll back together (#812).
 
-  return splits;
-}
+---
+
+## Payout processing
+
+Each `ConsultantEarnings` row is processed independently by the payout system. All earnings carry a `holdUntil` timestamp; once released, payout batches group rows by `consultantProfileId`, so the host, the co-host and the moderator each receive their own payout with no cross-dependency:
+
+```
+Payout batch run:
+  ├── Host:      earnings rows where consultantProfileId = host      → one payout
+  ├── Co-host:   earnings rows where consultantProfileId = co-host   → one payout
+  └── Moderator: earnings rows where consultantProfileId = moderator → one payout
 ```
 
 ---
 
-## ConsultantEarnings Records
+## Refunds
 
-### Before Collaborators (1:1)
-
-```
-Payment ──── 1:1 ──── ConsultantEarnings
-                       role: OWNER
-                       sharePercentage: 100
-                       paymentId: UNIQUE
-```
-
-### After Collaborators (1:many)
-
-```
-Payment ──── 1:many ──── ConsultantEarnings[]
-                          ├── role: OWNER,        share: 60%
-                          ├── role: COLLABORATOR,  share: 25%
-                          └── role: COLLABORATOR,  share: 15%
-                          paymentId: INDEX (not unique)
-```
-
-### Migration Impact
-
-The `@unique` constraint on `paymentId` was removed. This was the riskiest schema change because every location in the codebase that accessed `payment.earnings` (singular) needed to be updated to handle `payment.earnings[]` (array).
-
-**Affected files**:
-
-- `lib/payments/payouts/earnings-service.ts` — `refundEarnings()` now uses `findMany` + iterates
-- `scripts/refunds/cascade-refund-earnings.ts` — Array iteration
-- `scripts/disputes/handle-lost-disputes.ts` — Array iteration
-- `scripts/earnings/sync-payment-earnings.ts` — `{ none: {} }` instead of `null`
+`refundEarnings()` (`earnings-service.ts:1079`) reverses **every** row for the payment — `findMany` on `paymentId`, covering owner, collaborators, and any `OrganizationEarnings` rows. Partial refunds reverse proportionally using the shared integer-paise proration helper (#813): each party's clawback is floored, and because the buyer is made whole in full, the shaved paise are absorbed by the **platform**, never over-clawed from a consultant or an org (#778 §C-2). `refundedShareAmount` accumulates across successive partial refunds so no row is reversed past its share.
 
 ---
 
-## Payout Processing
+## Edge cases
 
-Each `ConsultantEarnings` record is processed independently by the existing payout system:
+The behaviors below are the ones tests should pin.
 
-1. **Hold period**: All earnings have a `holdUntil` date (typically 7 days after payment)
-2. **Batch grouping**: Payouts are grouped by `consultantProfileId` — so each consultant gets their own payout
-3. **No cross-dependency**: Host's payout is independent of collaborator payouts
-
-```
-Payout Batch Run:
-  ├── Consultant A (Host):
-  │    ├── Earning from Webinar 1 (OWNER, 60%, ₹480)
-  │    ├── Earning from Webinar 2 (OWNER, 100%, ₹800)
-  │    └── Total payout: ₹1,280
-  │
-  ├── Consultant B (Collaborator):
-  │    ├── Earning from Webinar 1 (COLLABORATOR, 25%, ₹200)
-  │    └── Total payout: ₹200
-  │
-  └── Consultant C (Collaborator):
-       ├── Earning from Webinar 1 (COLLABORATOR, 15%, ₹120)
-       └── Total payout: ₹120
-```
-
----
-
-## Earnings Dashboard
-
-The consultant earnings dashboard now shows a "Role" column:
-
-| Date   | Service       | Role         | Share | Gross | Fee  | Net  | Status  |
-| ------ | ------------- | ------------ | ----- | ----- | ---- | ---- | ------- |
-| Feb 10 | React Webinar | Owner        | 60%   | ₹600  | ₹120 | ₹480 | Pending |
-| Feb 10 | React Webinar | Collaborator | 25%   | ₹250  | ₹50  | ₹200 | Pending |
-
-Role badges:
-
-- **Owner** — Zinc/gray badge
-- **Collaborator** — Purple badge with percentage (e.g. "Collaborator (25%)")
-
----
-
-## Edge Cases
-
-| Scenario                                  | Behavior                                                                  |
-| ----------------------------------------- | ------------------------------------------------------------------------- |
-| No collaborators accepted                 | Standard 1:1 earnings (role: OWNER, share: 100%)                          |
-| Collaborator removed after payment        | Existing earnings for past payments remain; future payments use new split |
-| Collaborator declined after being pending | Share freed up, no earnings created                                       |
-| Rounding errors                           | `Math.round()` applied to each share; total may differ by ±1 paise        |
-| Free service (price = 0)                  | No earnings created for anyone                                            |
-| Refund on collaborative service           | All earnings (owner + collaborators) refunded                             |
+| Scenario | Behavior |
+| --- | --- |
+| No collaborators accepted | `calculateRevenueSplit` returns `[]`; the single-owner path writes one row with the full pool |
+| Collaborator removed after payment | Existing rows remain; future settlements use the new split |
+| Invitation declined while pending | The reserved share is freed; no earnings are ever created for a non-accepted collaborator |
+| Rounding | Collaborator shares floor; the owner absorbs the remainder; `shareBps` caches sum to exactly 10000 via last-row absorption (#812) |
+| Σ revenueShareBps > 10000 | Settlement throws — a mis-configured plan is refused |
+| Free service (amount 0) | Shares floor to 0; nothing meaningful accrues |
+| Refund on a collaborative service | All parties (and org accruals) reverse proportionally; platform absorbs the floored paise |

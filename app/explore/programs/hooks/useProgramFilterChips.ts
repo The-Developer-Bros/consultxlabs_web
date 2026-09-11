@@ -5,14 +5,14 @@ import type { ActiveFilter } from "../components/FilterChips";
 import type {
   ProgramFilters,
   TopicWithCount,
-} from "../utils";
+} from "@/lib/explore/programs";
 
 /**
  * Structured chip key. Replaces the old `topic-${id}` string encoding so
  * removal can dispatch off `kind` without parsing — topic ids that contain
  * hyphens (or any other separator) just work.
  */
-export type ProgramChipKey =
+type ProgramChipKey =
   | { kind: "topic"; id: string }
   | { kind: "language" }
   | { kind: "price" }

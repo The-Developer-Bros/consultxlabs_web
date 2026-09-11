@@ -1,16 +1,15 @@
 "use client";
 
 import { SystemJobsPanel } from "@/components/dashboard/SystemJobsPanel";
+import { DashboardHeader } from "@/components/dashboard/PageScaffold";
 
 export default function AdminSystemJobsPage() {
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">System Jobs</h1>
-        <p className="text-gray-600 mt-1">
-          Manually trigger background jobs for data validation and cleanup
-        </p>
-      </div>
+      <DashboardHeader
+        title="System Jobs"
+        subtitle="Manually trigger background jobs for data validation and cleanup"
+      />
 
       <SystemJobsPanel />
     </div>

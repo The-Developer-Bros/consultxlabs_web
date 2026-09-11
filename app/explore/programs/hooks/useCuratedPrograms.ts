@@ -7,7 +7,7 @@ import {
   type ProgramType,
   type ClassPlanProgram,
   type WebinarPlanProgram,
-} from "../utils";
+} from "@/lib/explore/programs";
 import {
   fetchPlans,
   type ClassPlanApiItem,

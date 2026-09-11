@@ -38,7 +38,6 @@ newsletter@familiarise.com
 **Files using these `from:` addresses:**
 
 - `lib/email.ts` — 6 functions (onboarding@, security@, payments@)
-- `lib/waitlist/notifications.ts` — 4 functions (notifications@)
 - `app/api/admin/newsletter/send/route.ts` — 1 function (newsletter@)
 
 **The problem:** The live site is at `familiarisenow.com`, not `familiarise.com`. Resend requires you to verify the sending domain via DNS. You can only verify a domain you own and control.
@@ -137,7 +136,7 @@ newsletter@familiarise.com
 ### Step 1: Domain Decision
 
 - [ ] Decide: `familiarise.com` (buy) or `familiarisenow.com` (already owned)
-- [ ] If using `familiarisenow.com`: update `from:` addresses in `lib/email.ts`, `lib/waitlist/notifications.ts`, `app/api/admin/newsletter/send/route.ts`
+- [ ] If using `familiarisenow.com`: update `from:` addresses in `lib/email.ts` and `app/api/admin/waitlist/broadcast/route.ts`
 - [ ] If buying `familiarise.com`: purchase and configure DNS
 
 ### Step 2: Resend Setup
@@ -427,7 +426,7 @@ _Kit free tier covers 10K subscribers. Creator ($39/mo) only needed for drip seq
 6. Update `app/api/webhooks/directus/route.ts` to handle real events
 7. Build blog frontend pages in Next.js
 
-**Architecture docs:** `docs/roadmap/content-strategy/01-directus-cms-setup.md`
+**Architecture docs:** the Directus CMS design was deleted with `docs/roadmap/` in #1535; the live question is tracked in #767.
 
 ---
 

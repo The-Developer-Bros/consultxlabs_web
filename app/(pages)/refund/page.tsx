@@ -14,13 +14,13 @@ import {
 export default function RefundPolicyPage() {
   return (
     <section className="w-full">
-      <div className="container mx-auto px-4 md:px-6 py-8">
+      <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Hero Section */}
         <div className="text-center mb-12">
           <div className="flex justify-center mb-4">
-            <RefreshCw className="h-16 w-16 text-blue-600" />
+            <RefreshCw className="h-16 w-16 text-foreground" />
           </div>
-          <h1 className="text-4xl md:text-5xl font-bold mb-4">
+          <h1 className="text-fluid-4xl md:text-fluid-5xl font-bold tracking-tight mb-4">
             {PAGE_META.refund.title}
           </h1>
           <p className="text-muted-foreground max-w-3xl mx-auto">
@@ -28,10 +28,10 @@ export default function RefundPolicyPage() {
           </p>
         </div>
 
-        <div className="max-w-4xl mx-auto">
-          <Card>
+        <div className="max-w-3xl mx-auto">
+          <Card className="shadow-elevation-1">
             <CardHeader>
-              <CardTitle className="text-2xl">
+              <CardTitle className="text-fluid-2xl">
                 Cancellation & Refund Policy
               </CardTitle>
               <p className="text-sm text-muted-foreground">
@@ -66,7 +66,7 @@ export default function RefundPolicyPage() {
                 students and consultants while maintaining the integrity of
                 scheduled services.
               </p>
-              <div className="bg-blue-50 dark:bg-blue-950 p-4 rounded-lg mt-4">
+              <div className="bg-muted border border-border p-4 rounded-lg mt-4">
                 <p className="text-sm">
                   <strong>Important:</strong> All cancellation requests must be
                   submitted through the platform. Cancellations made outside the
@@ -338,7 +338,7 @@ export default function RefundPolicyPage() {
                 Alternatively, you can contact our support team at{" "}
                 <a
                   href={getMailtoLink()}
-                  className="text-blue-600 hover:underline"
+                  className="font-medium text-foreground underline underline-offset-4 hover:no-underline"
                 >
                   {COMPANY_INFO.email}
                 </a>{" "}
@@ -547,7 +547,7 @@ export default function RefundPolicyPage() {
                   Contact our support team immediately at{" "}
                   <a
                     href={getMailtoLink()}
-                    className="text-blue-600 hover:underline"
+                    className="font-medium text-foreground underline underline-offset-4 hover:no-underline"
                   >
                     {COMPANY_INFO.email}
                   </a>
@@ -686,13 +686,10 @@ export default function RefundPolicyPage() {
                   <strong>Company Name:</strong> {COMPANY_INFO.name}
                 </p>
                 <p>
-                  <strong>Address:</strong> {COMPANY_INFO.address}
-                </p>
-                <p>
                   <strong>Email:</strong>{" "}
                   <a
                     href={getMailtoLink()}
-                    className="text-blue-600 hover:underline"
+                    className="font-medium text-foreground underline underline-offset-4 hover:no-underline"
                   >
                     {COMPANY_INFO.email}
                   </a>
@@ -701,7 +698,7 @@ export default function RefundPolicyPage() {
                   <strong>Support:</strong>{" "}
                   <Link
                     href="/contactus"
-                    className="text-blue-600 hover:underline"
+                    className="font-medium text-foreground underline underline-offset-4 hover:no-underline"
                   >
                     Contact Form
                   </Link>
@@ -714,7 +711,7 @@ export default function RefundPolicyPage() {
 
               <Separator className="my-6" />
 
-              <div className="bg-blue-50 dark:bg-blue-950 p-6 rounded-lg mt-8">
+              <div className="bg-secondary border border-border p-6 rounded-lg mt-8">
                 <h3 className="text-lg font-semibold mb-2">
                   Fair Treatment for All
                 </h3>

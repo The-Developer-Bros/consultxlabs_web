@@ -1,0 +1,17 @@
+{
+  "_comment": "India DTAA withholding rates for fees-for-technical-services / professional / royalty income, expressed as decimal (0.10 = 10%). Rates verified against CBDT circular as of 2026-04-01; consult tax counsel before reliance. Source: CBDT DTAA schedules + DTAA articles for FTS / FIS where applicable.",
+  "_keying": "ISO 3166-1 alpha-2 country codes (uppercase). Lookups in lib/compliance/tds.ts uppercase the consultant's providerCountry before matching.",
+  "_scope": "Covers v1 launch corridors (US, UK, Singapore, UAE, Germany, Australia, Canada, Netherlands, France, Japan). Add countries here as new corridors open; do NOT inline rates in code.",
+  "rates": {
+    "US": 0.10,
+    "GB": 0.10,
+    "SG": 0.10,
+    "AE": 0.10,
+    "DE": 0.10,
+    "AU": 0.10,
+    "CA": 0.10,
+    "NL": 0.10,
+    "FR": 0.10,
+    "JP": 0.10
+  }
+}

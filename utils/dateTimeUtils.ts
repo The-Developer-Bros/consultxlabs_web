@@ -1,4 +1,5 @@
 import { toZonedTime, fromZonedTime } from "date-fns-tz";
+import { localTimesCrossMidnight } from "@/utils/schedule/overnight";
 
 export const DAYS_OF_WEEK = [
   "MONDAY",
@@ -63,27 +64,9 @@ export const getLocalDateString = (date: Date): string => {
   return `${year}-${month}-${day}`;
 };
 
-export const isOvernight = (startTime: string, endTime: string): boolean => {
-  // Handle empty strings
-  if (!startTime || !endTime) return false;
-
-  const [startHour, startMinute] = startTime.split(":").map(Number);
-  const [endHour, endMinute] = endTime.split(":").map(Number);
-
-  // Check if numbers are valid
-  if (
-    isNaN(startHour) ||
-    isNaN(startMinute) ||
-    isNaN(endHour) ||
-    isNaN(endMinute)
-  ) {
-    return false;
-  }
-
-  const startMinutes = startHour * 60 + startMinute;
-  const endMinutes = endHour * 60 + endMinute;
-  return endMinutes < startMinutes;
-};
+// #503 item 2 — canonical rule lives in utils/schedule/overnight.ts.
+export const isOvernight = (startTime: string, endTime: string): boolean =>
+  localTimesCrossMidnight(startTime, endTime);
 
 export const formatDayDisplay = (day: DayOfWeek): string => {
   return day.charAt(0) + day.slice(1).toLowerCase();

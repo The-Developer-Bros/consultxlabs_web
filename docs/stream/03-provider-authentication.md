@@ -18,15 +18,32 @@
 
 ### Dual-Client Design Pattern
 
-**File:** `/providers/StreamProvider.tsx` (Lines 1-382)
+**File:** `providers/StreamProviderImpl.tsx` (the SDK-free shell lives in `providers/StreamProvider.tsx`)
 
-StreamProvider implements a **dual-client architecture**, managing two independent SDK clients simultaneously:
+StreamProvider manages two SDK clients — one for chat, one for video — but holds them in a **single piece of state**:
 
 ```typescript
-// Two separate client instances
-const [chatClient, setChatClient] = useState<StreamChat | null>(null);
-const [videoClient, setVideoClient] = useState<StreamVideoClient | null>(null);
+// One settled value, not two independent ones
+interface SettledStreamClients {
+  chat: StreamChat | null;
+  video: StreamVideoClient | null;
+}
+const [clients, setClients] = useState<SettledStreamClients | null>(null);
 ```
+
+`null` means "not settled yet", which is deliberately distinct from a settled result whose `chat` or `video` is `null` because that particular connect failed.
+
+#### Why one state and not two
+
+This is the most important thing to understand before changing this file, because the obvious refactor — a `useState` per client — is the bug.
+
+The provider wraps its children in `<Chat>` and `<StreamVideo>` only once a client exists. With two independent states set by two async connects that race, the element occupying that wrapper slot changed **type** between renders: `children`, then `<StreamVideo>`, then `<Chat>`, in whichever order the sockets happened to settle. React cannot reconcile a change of element type in place — it unmounts the old tree and mounts a new one — and the subtree here is the entire dashboard.
+
+The user-visible symptom was a join button that appeared to do nothing: the click started a join, the dashboard remounted underneath it as the second client connected, and the in-flight join was destroyed. People pressed it repeatedly.
+
+Committing both clients in one `setClients` makes the tree shape a pure function of one value, so it changes exactly once per session: unwrapped while connecting, then wrapped once both connects settle. A connect that genuinely _fails_ can still cost a second change if a later retry succeeds; that is accepted, because withholding the client that did connect would break the sidebar's chat-unread badge on every route (#248).
+
+The nesting order is fixed — `<Chat>` outside, `<StreamVideo>` inside — for the same reason. Order must not depend on arrival order.
 
 #### 1. Chat Client (`StreamChat`)
 
@@ -105,9 +122,8 @@ export default function StreamProvider({
   enableChat = true,
   enableVideo = true,
 }: StreamProviderProps) {
-  // Connection state
-  const [chatClient, setChatClient] = useState<StreamChat | null>(null);
-  const [videoClient, setVideoClient] = useState<StreamVideoClient | null>(null);
+  // Connection state — both clients in ONE value, see "Why one state and not two"
+  const [clients, setClients] = useState<SettledStreamClients | null>(null);
   const [chatConnected, setChatConnected] = useState(false);
   const [videoConnected, setVideoConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
@@ -132,22 +148,20 @@ export default function StreamProvider({
     };
   }, [userDetails, isLoading, apiKey]);
 
+  // Built up in a fixed order from the single settled value, so the tree shape
+  // never depends on which socket connected first.
+  let content = children;
+  if (clients?.video) {
+    content = <StreamVideo client={clients.video}>{content}</StreamVideo>;
+  }
+  if (clients?.chat) {
+    content = <Chat client={clients.chat}>{content}</Chat>;
+  }
+
   return (
     <StreamErrorBoundary onError={handleError} enableRetry={true}>
       <StreamConnectionContext.Provider value={connectionState}>
-        {enableVideo && videoClient ? (
-          <StreamVideo client={videoClient}>
-            {enableChat && chatClient ? (
-              <Chat client={chatClient}>{children}</Chat>
-            ) : (
-              children
-            )}
-          </StreamVideo>
-        ) : enableChat && chatClient ? (
-          <Chat client={chatClient}>{children}</Chat>
-        ) : (
-          children
-        )}
+        {content}
       </StreamConnectionContext.Provider>
     </StreamErrorBoundary>
   );
@@ -158,7 +172,9 @@ export default function StreamProvider({
 
 - Outermost: `StreamErrorBoundary` (error handling)
 - Middle: `StreamConnectionContext` (connection state)
-- Inner: `StreamVideo` → `Chat` → `children` (SDK providers)
+- Inner: `Chat` → `StreamVideo` → `children` (SDK providers)
+
+Note that the connection _flags_ (`chatConnected`, `videoConnected`, `isConnecting`) are still separate state. That is fine and intentional: they feed the context value, which changes what consumers render but not the shape of the tree above them.
 
 ---
 
@@ -226,11 +242,18 @@ sequenceDiagram
         Provider->>Provider: setChatConnected(true)
 
         alt Initial sync not completed
+            Provider->>Provider: mark sync as kicked (before the call)
             Provider->>Sync: syncUserEventChannels(userId)
+            Note over Provider,Sync: Not awaited. Chat is usable<br/>as soon as the socket is up.
             Sync->>DB: Fetch user's events
             Sync->>ChatSDK: Create/update channels
-            Sync-->>Provider: Channels synchronized
-            Provider->>Provider: setHasInitialSyncCompleted(true)
+            alt result.success
+                Sync-->>Provider: { success: true }
+                Provider->>Provider: persist the marker to sessionStorage
+            else result.success is false, or the promise rejects
+                Sync-->>Provider: { success: false, error }
+                Provider->>Provider: clear both markers, so a later render retries
+            end
         end
     and Video Client Connection
         Provider->>VideoSDK: new StreamVideoClient(config)
@@ -378,7 +401,7 @@ const connectChat = useCallback(async () => {
         id: userDetails.id,
         name: userDetails.name ?? userDetails.id,
         image: userDetails.image ?? undefined,
-        role: streamRole, // ⚠️ Currently always "admin"
+        role: streamRole, // "admin" only for staff/admins, "user" for everyone else
       },
       () => getCachedToken("chat"),
     );
@@ -386,21 +409,35 @@ const connectChat = useCallback(async () => {
     setChatClient(client);
     setChatConnected(true);
 
-    // Initial channel sync only once
-    if (!hasInitialSyncCompleted) {
-      try {
-        console.log(
-          `Performing initial channel sync for user ${userDetails.id}`,
-        );
-        await syncUserEventChannels(userDetails.id);
-        setHasInitialSyncCompleted(true);
-        console.log(`Completed initial sync for user ${userDetails.id}`);
-      } catch (syncError) {
-        console.warn(
-          `Channel sync failed for user ${userDetails.id}:`,
-          syncError,
-        );
-      }
+    // Initial channel sync, once per user per browser session.
+    //
+    // Deliberately NOT awaited. The sync costs roughly 1 + W + C + D + ceil(N/100)
+    // Stream round trips, so a consultant with two hundred clients waited eight
+    // to twenty seconds with chat apparently dead before it was ever marked
+    // connected. Chat is usable the moment the socket is up, and channels stream
+    // into the sidebar as they land.
+    if (!alreadySynced) {
+      // Marked BEFORE the call, not after. This flag means "we have kicked the
+      // sync for this user"; marking on completion let a re-render start a
+      // second one while the first was still in flight.
+      clientSyncCompletedUsers.add(userDetails.id);
+
+      void syncUserEventChannels(userDetails.id)
+        .then((result) => {
+          // syncUserEventChannels reports failure by RESOLVING with
+          // { success: false }, not by rejecting. A `.then` that ignores its
+          // argument therefore treats a failed sync as a completed one, and the
+          // sessionStorage marker then suppresses the retry for the rest of the
+          // tab's life. The `.catch` below only ever sees the thrown case.
+          if (!result?.success) {
+            markSyncIncomplete(userDetails.id, syncKey);
+            return;
+          }
+          sessionStorage.setItem(syncKey, "1");
+        })
+        .catch(() => {
+          markSyncIncomplete(userDetails.id, syncKey);
+        });
     }
 
     console.log(`Chat connection successful for user ${userDetails.id}`);
@@ -423,7 +460,7 @@ const connectChat = useCallback(async () => {
 
 - Singleton pattern: `StreamChat.getInstance()` returns same instance
 - User upserted to Stream database before connection
-- Role mapping via `mapRoleToStream()` (currently always returns "admin")
+- Role mapping via `mapRoleToStream()` (returns "admin" only for staff/admins, "user" for everyone else)
 - Token provided as callback function
 - Channel sync only runs once per session
 - Errors thrown to trigger retry logic
@@ -475,11 +512,26 @@ const connectServices = useCallback(async () => {
   setError(null);
 
   try {
-    const promises = [];
-    if (enableChat && !chatConnected) promises.push(connectChat());
-    if (enableVideo && !videoConnected) promises.push(connectVideo());
+    // allSettled, not all: `all` rejects on the first failure and abandons the
+    // other promise's result, so a chat failure threw away a good video client.
+    // Each connect RESOLVES to its client (or null) rather than setting state,
+    // so both land in one commit below.
+    const [chatResult, videoResult] = await Promise.allSettled([
+      connectChat(),
+      connectVideo(),
+    ]);
 
-    await Promise.all(promises); // Parallel execution
+    setClients({
+      chat: chatResult.status === "fulfilled" ? chatResult.value : null,
+      video: videoResult.status === "fulfilled" ? videoResult.value : null,
+    });
+
+    // Retry is still driven by a rejection, so re-throw the first one.
+    const failure = [chatResult, videoResult].find(
+      (result) => result.status === "rejected",
+    );
+    if (failure?.status === "rejected") throw failure.reason;
+
     setConnectionAttempts(0); // Reset on success
   } catch (error) {
     const errorMessage =
@@ -620,24 +672,20 @@ export function ConnectionStatus() {
 
 ### Loading States
 
-Provider shows loading UI while connecting (Lines 321-334):
+**The provider no longer blocks children behind a spinner.** It used to: while either client was unconnected it returned a spinner instead of `children`, which gated the entire dashboard on two websocket handshakes even on routes with no chat or video UI at all.
+
+Children now render immediately and the wrappers appear around them once the clients settle. Video consumers already guard a null client, and chat consumers only render on the chat route, underneath `<Chat>`.
+
+The only spinner left is in the SDK-free shell (`providers/StreamProvider.tsx`), shown during the brief window where the lazy impl chunk is still downloading:
 
 ```typescript
-if (
-  (enableChat && !chatClient && !error) ||
-  (enableVideo && !videoClient && !error) ||
-  isConnecting
-) {
-  return (
-    <div className="flex items-center justify-center min-h-[200px]">
-      <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-primary"></div>
-      {isConnecting && (
-        <p className="ml-4 text-sm text-gray-600">Connecting to Stream...</p>
-      )}
-    </div>
-  );
-}
+const LazyStreamProviderImpl = dynamic(
+  () => import("@/providers/StreamProviderImpl"),
+  { ssr: false, loading: () => <StreamProviderLoading /> },
+);
 ```
+
+If you are tempted to reintroduce a connection gate here, note that it interacts badly with the single-commit design above: gating on "all clients ready" turns one shape change into a shape change plus an unmount, and a permanently failing service would hold the whole dashboard hostage.
 
 ### Error States
 
@@ -775,37 +823,35 @@ See: [Troubleshooting - Token Expiry Race Condition](./troubleshooting.md#token-
 
 ### Cache Invalidation (Lines 276-298)
 
+Disconnection is **not** owned by the provider and does **not** happen on unmount. The clients live in module-level refs in `lib/stream/disconnect.ts` — an SDK-free module so that callers which only need to disconnect (Navbar, UserDropdown, the org/admin/staff layouts) do not statically link the heavy SDK into their bundles.
+
 ```typescript
-const disconnect = useCallback(async () => {
-  const promises = [];
+export async function disconnectStreamClients(): Promise<void> {
+  const promises: Promise<void>[] = [];
+  if (globalChatClient) promises.push(globalChatClient.disconnectUser().then(...));
+  if (globalVideoClient) promises.push(globalVideoClient.disconnectUser().then(...));
 
-  if (chatClient) {
-    promises.push(
-      chatClient.disconnectUser().then(() => {
-        console.log("Chat client disconnected");
-        setChatClient(null);
-        setChatConnected(false);
-      }),
-    );
-  }
+  // allSettled (not all): a rejected disconnectUser() must NOT skip the global
+  // teardown below — stale refs after a failed logout would let the next login
+  // adopt the prior user's connection.
+  await Promise.allSettled(promises);
 
-  if (videoClient) {
-    // Note: StreamVideoClient doesn't have explicit disconnect method
-    setVideoClient(null);
-    setVideoConnected(false);
-  }
-
-  await Promise.all(promises);
-  setTokenCache({}); // Clear token cache
-}, [chatClient, videoClient]);
+  globalChatClient = null;
+  globalVideoClient = null;
+  currentUserId = null;
+  clearAllStreamCaches();
+}
 ```
 
-**Cache cleared on:**
+**Why unmount does not disconnect:** the clients are deliberately kept alive across remounts and tab switches, so navigating between dashboard routes does not pay for a fresh websocket handshake each time. The provider adopts an existing global client for the same user rather than building a new one.
 
-- User logout
-- Component unmount
-- Manual disconnect
-- Connection error (after max retries)
+**The one case that must tear down** is a _different_ user appearing — on a fresh mount the provider's local `clients` state is `null` while the globals still point at the previous user. The provider therefore calls `disconnectStreamClients()` (global refs) rather than any local teardown, which would no-op and leak the prior user's connection for the next connect to adopt.
+
+**Disconnect happens on:**
+
+- User logout (the primary path)
+- A different user mounting the provider
+- Not on unmount, and not on connection error — the retry loop owns that
 
 ---
 
@@ -1070,26 +1116,32 @@ const { retryConnection } = useStreamConnection();
 
 ## Advanced Topics
 
-### Cleanup on Unmount (Lines 301-309)
+### Cleanup on Unmount
+
+Unmount cancels _pending work_ and nothing else. It does not disconnect.
 
 ```typescript
-useEffect(() => {
-  if (!isLoading && userDetails && apiKey) {
-    connectServices();
-  }
+return () => {
+  // Cancel the scheduled idle connect and any pending retry so nothing calls
+  // setState after unmount.
+  if (idleHandle !== undefined) cancelIdleCallback(idleHandle);
+  if (timeoutHandle) clearTimeout(timeoutHandle);
+  if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
 
-  return () => {
-    disconnect(); // Cleanup function
-  };
-}, [userDetails, isLoading, apiKey]);
+  // Intentionally NOT calling disconnect() here.
+  // Global clients are reused across component remounts.
+};
 ```
 
-**Cleanup Process:**
+**Cleanup process:**
 
-1. Disconnect chat client (`chatClient.disconnectUser()`)
-2. Nullify video client (no explicit disconnect method)
-3. Clear token cache
-4. Reset connection states
+1. Cancel the deferred `requestIdleCallback` connect (#248)
+2. Clear the retry backoff timer
+3. Leave the clients connected
+
+The third point is the whole design. Disconnecting here would mean a websocket handshake on every dashboard navigation, and — before the single-commit change described above — the provider remounted on its own during connection anyway, so an unmount-disconnect would have torn down the connection it had just established.
+
+Actual disconnection happens on logout, via `disconnectStreamClients()`. See §Disconnection.
 
 ### Connection State Persistence
 

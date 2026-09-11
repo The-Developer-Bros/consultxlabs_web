@@ -77,14 +77,18 @@ graph TB
 
 #### Client Components
 
-| Component              | Location                                    | Purpose                                                    |
-| ---------------------- | ------------------------------------------- | ---------------------------------------------------------- |
-| **StreamProvider**     | `providers/StreamProvider.tsx`              | Initializes Chat & Video clients, manages connection state |
-| **Chat Client**        | Stream SDK                                  | Manages real-time messaging connections                    |
-| **Video Client**       | Stream SDK                                  | Manages video call connections                             |
-| **Meeting Components** | `app/meetings/[id]/`                        | Video call UI (Setup, Room, Controls)                      |
-| **Error Boundary**     | `components/stream/StreamErrorBoundary.tsx` | Catches and recovers from Stream errors                    |
-| **Custom Hooks**       | `app/meetings/[id]/hooks/`                  | React hooks for Stream operations                          |
+| Component              | Location                                    | Purpose                                                                          |
+| ---------------------- | ------------------------------------------- | -------------------------------------------------------------------------------- |
+| **StreamProvider**     | `providers/StreamProvider.tsx`              | Thin, SDK-free shell that lazy-loads the implementation                          |
+| **StreamProviderImpl** | `providers/StreamProviderImpl.tsx`          | Heavy implementation: initializes Chat & Video clients, manages connection state |
+| **Disconnect Module**  | `lib/stream/disconnect.ts`                  | SDK-free shared client refs + `disconnectStreamClients`                          |
+| **Chat Client**        | Stream SDK                                  | Manages real-time messaging connections                                          |
+| **Video Client**       | Stream SDK                                  | Manages video call connections                                                   |
+| **Meeting Components** | `app/meetings/[id]/`                        | Video call UI (Setup, Room, Controls)                                            |
+| **Error Boundary**     | `components/stream/StreamErrorBoundary.tsx` | Catches and recovers from Stream errors                                          |
+| **Custom Hooks**       | `app/meetings/[id]/hooks/`                  | React hooks for Stream operations                                                |
+
+> **Provider split (PR #887, nav-perf):** The provider is split for bundle reasons. `providers/StreamProvider.tsx` is a thin, SDK-free shell that lazy-loads the heavy implementation `providers/StreamProviderImpl.tsx` via `next/dynamic(..., { ssr: false })`. All Stream SDK imports and the two SDK stylesheets live only in that lazy chunk, so routes that merely mount the provider no longer ship the SDK synchronously. The SDK-free module `lib/stream/disconnect.ts` owns the shared module-level client refs (chat, video, current user ID) plus `disconnectStreamClients`, so SDK-free callers (the navbar, other dashboards) can disconnect on logout without statically linking the SDK. See [Navigation Performance](../performance/01-navigation-performance.md) for the full rationale.
 
 #### Server Components
 
@@ -106,22 +110,29 @@ graph TB
 ```mermaid
 graph TD
     App[Next.js App]
-    Auth[NextAuth Session Provider]
-    Stream[StreamProvider]
+    Auth[Better Auth Session]
+    Stream["StreamProvider (SDK-free shell)"]
+    Impl["StreamProviderImpl (lazy SDK chunk)"]
     Pages[Application Pages]
 
     App --> Auth
     Auth --> Stream
+    Stream -.->|"next/dynamic, ssr:false"| Impl
     Stream --> Pages
 
-    Stream -.->|Initializes| ChatClient[Chat Client Instance]
-    Stream -.->|Initializes| VideoClient[Video Client Instance]
-    Stream -.->|Manages| TokenCache[Token Cache]
-    Stream -.->|Wraps| ErrorBoundary[Error Boundary]
+    Impl -.->|Initializes| ChatClient[Chat Client Instance]
+    Impl -.->|Initializes| VideoClient[Video Client Instance]
+    Impl -.->|Manages| TokenCache[Token Cache]
+    Impl -.->|Wraps| ErrorBoundary[Error Boundary]
+
+    Disconnect["lib/stream/disconnect.ts (SDK-free)"]
+    Impl -.->|Owns global refs via| Disconnect
 
     Pages -->|Uses| ChatClient
     Pages -->|Uses| VideoClient
 ```
+
+The shell renders `StreamProviderImpl` through `next/dynamic` with `ssr: false`, so the Stream SDK is never part of the synchronous bundle for a route that only mounts the provider. The implementation and the SDK-free `lib/stream/disconnect.ts` module share the same module-level client references, which lets a logout handler in any SDK-free component tear the connection down without pulling the SDK into that component's chunk.
 
 ### Dependency Graph
 
@@ -168,14 +179,14 @@ graph LR
 ```mermaid
 sequenceDiagram
     participant User
-    participant NextAuth
+    participant BetterAuth as Better Auth
     participant StreamProvider
     participant TokenProvider
     participant StreamCloud
     participant Database
 
-    User->>NextAuth: Login
-    NextAuth->>User: Session created
+    User->>BetterAuth: Login
+    BetterAuth->>User: Session created
 
     User->>StreamProvider: Page loads
     StreamProvider->>Database: Fetch user details
@@ -253,7 +264,7 @@ sequenceDiagram
     Database-->>ChannelAction: Webinar data
 
     ChannelAction->>ChannelAction: Collect member IDs
-    Note over ChannelAction: - Waitlist users<br/>- Appointment users<br/>- Consultant host
+    Note over ChannelAction: - Registered attendees<br/>- Consultant host
 
     ChannelAction->>NodeSDK: channel.create()
     NodeSDK->>StreamCloud: Create channel
@@ -301,7 +312,7 @@ await chatClient.upsertUser({
   id: user.id,
   name: user.name,
   image: user.image,
-  role: mapRoleToStream(user.role), // ⚠️ Currently returns "admin" for all
+  role: mapRoleToStream(user.role), // "admin" only for staff/admins, "user" for everyone else
 });
 ```
 
@@ -326,11 +337,11 @@ model MeetingSession {
 - Webinars → Group team channels
 - Classes → Group team channels
 
-### 2. NextAuth Session Management
+### 2. Better Auth Session Management
 
 ```typescript
 // StreamProvider uses session for initialization
-const { data: session } = useSession();
+const { data: session } = useSession(); // from "@/lib/auth-client"
 
 if (session?.user?.id) {
   // Initialize Stream with authenticated user
@@ -458,6 +469,8 @@ useEffect(() => {
 - Handles offline scenarios
 - Automatic recovery
 
+> **Note (PR #887, #248):** This one-time sync now runs inside the deferred initial connect (scheduled with `requestIdleCallback`) rather than synchronously on provider mount, and it is guarded so it is a no-op after the first sync. This keeps the sync off the dashboard-home critical path while preserving the recovery behaviour described above. See [Connection Optimization](#connection-optimization) and [Navigation Performance](../performance/01-navigation-performance.md).
+
 ---
 
 ## Architecture Decisions
@@ -523,22 +536,28 @@ export async function tokenProvider(userId: string) {
 
 ## Security Considerations
 
-### 🔴 CRITICAL: Universal Admin Role
+### Least-Privilege Stream Roles (#899)
 
-**Current:** All users get "admin" role in Stream
+**Current:** Only platform staff and admins get Stream's global `admin` role. Everyone else, consultants included, is mapped to the plain `user` role.
 
 ```typescript
-// File: lib/user.ts:98-115
-export function mapRoleToStream(role: string): string {
-  return "admin"; // ⚠️ Everyone is admin!
+// File: lib/user.ts
+export function mapRoleToStream(role: string | null | undefined): string {
+  switch (role?.toUpperCase()) {
+    case "ADMIN":
+    case "STAFF":
+      return "admin";
+    default:
+      return "user";
+  }
 }
 ```
 
-**Impact:**
+**How hosts get moderation:**
 
-- No permission enforcement
-- All users can moderate channels
-- Potential data access issues
+- Channel creation is performed server-side
+- Each host receives a channel-scoped `channel_moderator` grant on their own host channels at creation time
+- No global admin grant, and no moderation rights over unrelated peer direct-message channels
 
 **See:** [Troubleshooting - Universal Admin Role](./troubleshooting.md#universal-admin-role-critical)
 
@@ -574,6 +593,10 @@ Promise.all([
 ```
 
 **Result:** ~2-3 second total connection time instead of 4-6 seconds
+
+**Deferred initial connect (PR #887, #248):** The initial connect (`connectUser` plus the one-time `syncUserEventChannels`) is deferred off the dashboard-home critical path via `requestIdleCallback` (with a `setTimeout` fallback). This removes the prior storm of roughly 50–100 `queryChannels` and video-connect calls that fired on dashboard load. The chat sidebar's channel fetch is now split into an initial fetch keyed on the client plus the org scope, and a separate listener effect keyed on the client alone. An in-flight fetch-key guard ensures that rapid channel clicks and mid-fetch org-scope switches no longer refire the storm or strand the wrong tenant's data: a duplicate fetch for the same key is skipped, while a fetch for a new key (an org-scope switch during an in-flight fetch) proceeds so the new scope actually loads. See [Navigation Performance](../performance/01-navigation-performance.md) for the measured impact.
+
+**Connection robustness (PR #887):** On a user switch the _global_ clients are disconnected, not just local React state, so a stale connection cannot survive the swap. Logout teardown uses `Promise.allSettled` and always clears global state even if an individual disconnect rejects. A Join click awaits a short readiness window (`waitForGlobalVideoClient`) so a click that lands during the deferred connect does not fail; if the client is still not ready it falls back to a soft "Connecting…" toast. `useStreamConnection` returns a safe default when called outside the provider, which keeps consumers from crashing during the lazy-load window (only the development `DebugDialog` relies on this hook).
 
 ### Token Caching
 

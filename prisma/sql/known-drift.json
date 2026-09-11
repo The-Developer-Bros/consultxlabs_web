@@ -1,0 +1,14 @@
+{
+  "$comment": [
+    "Known, tracked divergences between prisma/schema.prisma and the live database.",
+    "scripts/ci/check-db-drift.ts fails on any drift NOT listed here, so this file is",
+    "the reviewed record of what we are knowingly carrying and until when.",
+    "",
+    "Every entry needs an owner, a reason, and an `expires` date. Past the expiry the",
+    "guard fails anyway \u2014 an allowlist without an expiry is just a permanently",
+    "disabled check, which is how the ledger reconciler ended up ignored.",
+    "",
+    "Remove an entry the moment its fix lands. Do not add one to make CI green."
+  ],
+  "enumLabelsInDbNotInSchema": []
+}

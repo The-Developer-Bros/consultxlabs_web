@@ -1,28 +1,99 @@
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import { after } from "next/server";
+import crypto from "node:crypto";
+import { logWebhookEvent, isDbHealthy } from "../utils";
+import { recordSystemEvent } from "@/lib/enterprise/system-events";
 import {
-  handlePaymentFailure,
-  handlePaymentSuccess,
-  handleRefundCreated,
-  handleDisputeCreated,
-  handleDisputeUpdated,
-  verifyWebhookSignature,
-  logWebhookEvent,
-  markWebhookEventProcessed,
-  handleRazorpayPayoutWebhook,
-  isDbHealthy,
-} from "../utils";
-import {
-  razorpayBaseEventSchema,
-  razorpayPaymentCapturedEventSchema,
-  razorpayPaymentFailedEventSchema,
-  razorpayOrderPaidEventSchema,
+  razorpayWebhookEnvelopeSchema,
+  type RazorpayWebhookEnvelope,
 } from "../../../../schemas/webhooks/razorpay";
-import { razorpayClient } from "@/lib/payments/core/razorpay";
+// #785 — dispatch switch extracted to a Next-agnostic module so the B5
+// stuck-webhook sweeper (jobs/cleanup/sweep-stuck-webhook-events) can replay
+// crashed events through the exact same handler routing.
+import { processRazorpayWebhookEvent } from "../razorpay-dispatch";
+import {
+  isPayoutEventName,
+  matchRazorpayWebhookSecret,
+  resolveRazorpayPaymentSecrets,
+  verifyRazorpaySignature,
+} from "./signature";
+
+// #1377 — signature verification needs `node:crypto`, which the edge runtime
+// does not provide. Node is already the App Router default for route handlers;
+// pinning it here means a future project-wide default flip cannot silently
+// break every inbound payment confirmation.
+export const runtime = "nodejs";
+
+/**
+ * #1459 — a Razorpay event payload is a few kilobytes; the largest we have seen
+ * is well under a hundredth of this. Anything bigger is not a delivery we have
+ * to serve, and reading it into a buffer to HMAC it is work an unauthenticated
+ * caller gets to make us do. The refusal is the first thing the handler does,
+ * so an oversized body never reaches the signature read and never writes a
+ * webhook-inbox row.
+ */
+const MAX_WEBHOOK_BODY_BYTES = 256 * 1024;
+
+/**
+ * #1459 — Content-Length is optional and set by the caller, so the header check
+ * alone is a cap only a well-behaved sender honours: omit it, or send chunked,
+ * and `req.text()` would buffer whatever arrives. Counting the bytes as they
+ * stream in and abandoning the read the moment the cap is passed is what makes
+ * the limit hold against the caller it was written for. The whole body is
+ * decoded in one pass at the end, because a multi-byte character split across
+ * two chunks must not be decoded twice — the HMAC covers these exact bytes.
+ *
+ * @returns The raw body, or `null` when the request exceeded the cap.
+ */
+async function readBodyWithinCap(req: NextRequest): Promise<string | null> {
+  const stream = req.body;
+  // No stream means there is no body to bound; `text()` yields "" and the
+  // signature check below rejects it.
+  if (!stream) return req.text();
+
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_WEBHOOK_BODY_BYTES) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks));
+}
 
 export async function POST(req: NextRequest) {
-  const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
-  if (!secret) {
+  // Content-Length is what a refusal can be based on before a single byte is
+  // read, so an honest oversized delivery costs us nothing at all. A caller
+  // that omits or understates it is caught by readBodyWithinCap instead.
+  const declaredBytes = Number(req.headers.get("content-length"));
+  if (
+    Number.isFinite(declaredBytes) &&
+    declaredBytes > MAX_WEBHOOK_BODY_BYTES
+  ) {
+    console.warn(
+      `Rejected oversized Razorpay webhook body: ${declaredBytes} bytes`,
+    );
+    return NextResponse.json({ error: "Payload too large" }, { status: 413 });
+  }
+
+  Sentry.setTag("subsystem", "payments");
+
+  // #1377 — the payment-side secrets, current first and (only during a
+  // rotation) the previous one. See resolveRazorpayPaymentSecrets for why the
+  // grace window exists: a hard cutover loses events permanently.
+  const paymentSecrets = resolveRazorpayPaymentSecrets();
+  if (paymentSecrets.length === 0) {
     console.error("RAZORPAY_WEBHOOK_SECRET not configured");
     return NextResponse.json(
       { error: "Webhook secret not configured" },
@@ -35,70 +106,72 @@ export async function POST(req: NextRequest) {
   // is configured, re-verify with it (for payout.* events).
   const razorpayXSecret = process.env.RAZORPAYX_WEBHOOK_SECRET;
 
-  const { isValid, body } = await verifyWebhookSignature(
-    req,
-    secret,
-    "razorpay",
-  );
+  const signature = req.headers.get("x-razorpay-signature");
+  // The HMAC covers the RAW bytes. Read them once here and hand the same
+  // string to every verification attempt — parsing and re-serialising would
+  // reorder keys and break the digest.
+  const body = signature ? await readBodyWithinCap(req) : "";
+  if (body === null) {
+    console.warn(
+      `Rejected oversized Razorpay webhook body: over ${MAX_WEBHOOK_BODY_BYTES} bytes`,
+    );
+    return NextResponse.json({ error: "Payload too large" }, { status: 413 });
+  }
 
-  if (!isValid) {
+  const matchedRole = signature
+    ? matchRazorpayWebhookSecret(body, signature, paymentSecrets)
+    : null;
+
+  if (matchedRole === "previous") {
+    // The rotation grace is meant to be short. Every delivery that only the
+    // OLD secret can verify is reported so a variable left behind after the
+    // cutover shows up in the operations timeline instead of quietly
+    // extending the window forever.
+    await recordSystemEvent({
+      category: "WEBHOOK",
+      severity: "WARN",
+      message:
+        "Razorpay webhook verified with RAZORPAY_WEBHOOK_SECRET_PREVIOUS — rotation grace still in use",
+      context: { provider: "razorpay" },
+    });
+  }
+
+  if (!matchedRole) {
     // M2 FIX: Only allow RazorpayX secret fallback for payout.* events.
-    // Parse the body to check event type before re-verifying — this prevents
-    // non-payout events from being accepted with the RazorpayX secret.
-    let isPossiblyPayoutEvent = false;
-    try {
-      const parsed = JSON.parse(body);
-      isPossiblyPayoutEvent =
-        typeof parsed.event === "string" &&
-        parsed.event.startsWith("payout.");
-    } catch {
-      // Can't parse — not a valid webhook, reject
-    }
+    // Read the event name from the (still unverified) body first — this
+    // prevents non-payout events from being accepted with the RazorpayX
+    // secret, and can only ever narrow what we accept.
+    const isPossiblyPayoutEvent = signature ? isPayoutEventName(body) : false;
 
-    if (
+    const razorpayXAccepted =
       isPossiblyPayoutEvent &&
-      razorpayXSecret &&
-      razorpayXSecret !== secret
-    ) {
-      const signature = req.headers.get("x-razorpay-signature");
-      if (signature) {
-        const crypto = await import("crypto");
-        const expectedSig = crypto
-          .createHmac("sha256", razorpayXSecret)
-          .update(body)
-          .digest("hex");
-        const sigBuf = Buffer.from(signature, "hex");
-        const expectedBuf = Buffer.from(expectedSig, "hex");
-        const isRazorpayXValid =
-          sigBuf.length === expectedBuf.length &&
-          crypto.timingSafeEqual(sigBuf, expectedBuf);
+      !!signature &&
+      !!razorpayXSecret &&
+      !paymentSecrets.some(
+        (candidate) => candidate.value === razorpayXSecret,
+      ) &&
+      verifyRazorpaySignature(body, signature, razorpayXSecret);
 
-        if (!isRazorpayXValid) {
-          return NextResponse.json(
-            { error: "Invalid signature" },
-            { status: 400 },
-          );
-        }
-        // RazorpayX signature valid for payout event — continue processing
-      } else {
-        return NextResponse.json(
-          { error: "Invalid signature" },
-          { status: 400 },
-        );
-      }
-    } else {
-      return NextResponse.json(
-        { error: "Invalid signature" },
-        { status: 400 },
-      );
+    if (!razorpayXAccepted) {
+      // #776 §K — repeated HMAC failures are a tamper/misconfig signal.
+      await recordSystemEvent({
+        category: "WEBHOOK",
+        severity: "WARN",
+        message: isPossiblyPayoutEvent
+          ? "Razorpay webhook HMAC verification failed (RazorpayX secret)"
+          : "Razorpay webhook HMAC verification failed",
+        context: isPossiblyPayoutEvent
+          ? { provider: "razorpayx", event: "payout.*" }
+          : { provider: "razorpay" },
+      });
+      return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
     }
+    // RazorpayX signature valid for payout event — continue processing
   }
 
   // DB health check — return 503 if DB is unreachable so Razorpay retries
   if (!(await isDbHealthy())) {
-    console.warn(
-      "[razorpay webhook] DB unhealthy — returning 503 for Razorpay retry",
-    );
+    Sentry.logger.warn("razorpay webhook: db unhealthy, returning 503");
     return NextResponse.json(
       { error: "Service temporarily unavailable" },
       { status: 503 },
@@ -109,33 +182,58 @@ export async function POST(req: NextRequest) {
   // then return 200 immediately and process the event asynchronously via
   // Next.js `after()` to stay within Razorpay's 5-second webhook timeout.
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let event: any;
+  let event: RazorpayWebhookEnvelope;
   let eventType: string;
-  let eventId: string;
 
   try {
-    event = JSON.parse(body);
-    ({ event: eventType } = razorpayBaseEventSchema.parse(event));
+    const rawJson: unknown = JSON.parse(body);
+    event = razorpayWebhookEnvelopeSchema.parse(rawJson);
+    eventType = event.event;
   } catch (parseError) {
     console.error("Razorpay webhook parse error:", parseError);
+    Sentry.captureException(parseError, {
+      tags: { subsystem: "payments" },
+      contexts: { webhook: { provider: "razorpay" } },
+    });
     return NextResponse.json(
       { error: "Invalid webhook payload" },
       { status: 400 },
     );
   }
 
-  // Composite key prevents collisions between different lifecycle events
-  // for the same entity (e.g., payment.captured vs refund.created).
+  // Razorpay sends `x-razorpay-event-id`, and it is tempting as the dedup key.
+  // This repo deliberately does NOT use it — see
+  // .claude/skills/finance/references/razorpay/references/webhooks.md.
+  //
+  // Two reasons, and the second is the one that matters. First, the synthesized
+  // key dedups on the *business fact* rather than the delivery, so two distinct
+  // deliveries describing the same state transition collapse to one. Second,
+  // and decisively: the HMAC covers the BODY ONLY. A header is unsigned, so
+  // keying on it would let anyone holding one captured (body, signature) pair
+  // replay it N times under N invented header values and get N full dispatches.
+  // The key below is derived entirely from signature-covered material — an
+  // entity id from the payload, or a hash of the raw body — which is what makes
+  // the dedup boundary tamper-proof rather than merely convenient.
+  //
+  // Every downstream handler is separately idempotent, so the amplification
+  // would not have moved money; it would have removed a defence-in-depth layer
+  // for no correctness gain. If you change this, you are changing what "already
+  // processed" means AND weakening a trust boundary.
+  // #1132 — refund/dispute MUST be probed before payment. Razorpay sends
+  // `contains: ["refund","payment"]` on refund events, so a payment-first chain
+  // keyed every refund on a given payment to the same id. The second partial
+  // refund then matched as a duplicate and never reached handleRefundCreated —
+  // no Refund row, no earnings reversal, no credit note, no ledger posting,
+  // while the money had already left. Most-specific entity wins.
   const entityId =
-    event.payload?.payment?.entity?.id ||
-    event.payload?.order?.entity?.id ||
     event.payload?.refund?.entity?.id ||
     event.payload?.dispute?.entity?.id ||
     event.payload?.payout?.entity?.id ||
+    event.payload?.payment?.entity?.id ||
+    event.payload?.order?.entity?.id ||
     event.account_id ||
-    `noid_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  eventId = `${eventType}:${entityId}`;
+    `body_${crypto.createHash("sha256").update(body).digest("hex").slice(0, 16)}`;
+  const eventId = `${eventType}:${entityId}`;
 
   // Idempotency check (synchronous — must complete before returning 200)
   const { isNew } = await logWebhookEvent(
@@ -143,7 +241,7 @@ export async function POST(req: NextRequest) {
     eventId,
     eventType,
     event.payload,
-    req.headers.get("x-razorpay-signature") || undefined,
+    signature || undefined,
   );
 
   if (!isNew) {
@@ -151,198 +249,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ status: "ok", duplicate: true });
   }
 
+  Sentry.logger.info(Sentry.logger.fmt`razorpay webhook: ${eventType}`, {
+    eventId,
+  });
+
   // Return 200 immediately — process the event asynchronously
   after(async () => {
-    await processWebhookEvent(event, eventType, eventId);
+    await processRazorpayWebhookEvent(event, eventType, eventId);
   });
 
   return NextResponse.json({ status: "ok" });
-}
-
-/**
- * Process a webhook event asynchronously (called via next/server `after()`).
- * Errors here are logged and recorded on the webhook event record for retry.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function processWebhookEvent(
-  event: any,
-  eventType: string,
-  eventId: string,
-): Promise<void> {
-  console.log(`🔔 Razorpay Webhook Event: ${eventType}`, {
-    payload: event.payload,
-  });
-
-  let processingError: string | undefined;
-
-  try {
-    switch (eventType) {
-      case "payment.captured": {
-        const capturedEvent = razorpayPaymentCapturedEventSchema.parse(event);
-        await handlePaymentSuccess(
-          capturedEvent.payload.payment.entity.order_id,
-          capturedEvent.payload.payment.entity.notes || {},
-        );
-        break;
-      }
-
-      case "order.paid": {
-        const paidEvent = razorpayOrderPaidEventSchema.parse(event);
-        await handlePaymentSuccess(
-          paidEvent.payload.order.entity.id,
-          paidEvent.payload.order.entity.notes || {},
-        );
-        break;
-      }
-
-      case "payment.failed": {
-        const failedEvent = razorpayPaymentFailedEventSchema.parse(event);
-        await handlePaymentFailure(
-          failedEvent.payload.payment.entity.order_id,
-        );
-        break;
-      }
-
-      // Refund events
-      // FIX #5: Razorpay refunds use payment_id, but our DB stores order_id as
-      // paymentIntent. Resolve payment_id → order_id via Razorpay API first.
-      case "refund.created":
-      case "refund.processed": {
-        const refundEvent = event.payload.refund.entity;
-        let paymentIntentId = refundEvent.payment_id;
-
-        if (razorpayClient) {
-          try {
-            const rzpPayment = await razorpayClient.payments.fetch(
-              refundEvent.payment_id,
-            );
-            if (rzpPayment.order_id) {
-              paymentIntentId = rzpPayment.order_id;
-            }
-          } catch (lookupError) {
-            console.error(
-              `Failed to resolve Razorpay payment_id ${refundEvent.payment_id} to order_id:`,
-              lookupError,
-            );
-          }
-        }
-
-        await handleRefundCreated(
-          refundEvent.id,
-          paymentIntentId,
-          refundEvent.amount,
-          refundEvent.currency || "INR",
-          refundEvent.status,
-          "RAZORPAY",
-        );
-        break;
-      }
-
-      case "refund.failed": {
-        const failedRefundEvent = event.payload.refund.entity;
-        let failedPaymentIntentId = failedRefundEvent.payment_id;
-
-        if (razorpayClient) {
-          try {
-            const rzpPayment = await razorpayClient.payments.fetch(
-              failedRefundEvent.payment_id,
-            );
-            if (rzpPayment.order_id) {
-              failedPaymentIntentId = rzpPayment.order_id;
-            }
-          } catch (lookupError) {
-            console.error(
-              `Failed to resolve Razorpay payment_id ${failedRefundEvent.payment_id} to order_id:`,
-              lookupError,
-            );
-          }
-        }
-
-        await handleRefundCreated(
-          failedRefundEvent.id,
-          failedPaymentIntentId,
-          failedRefundEvent.amount,
-          failedRefundEvent.currency || "INR",
-          "failed",
-          "RAZORPAY",
-        );
-        break;
-      }
-
-      // L1 FIX: Handle refund.speed_changed (informational only)
-      case "refund.speed_changed": {
-        console.log(
-          `📄 Refund speed changed: ${event.payload?.refund?.entity?.id}`,
-        );
-        break;
-      }
-
-      // Dispute events
-      case "payment.dispute.created": {
-        const disputeCreatedEvent = event.payload.dispute.entity;
-        await handleDisputeCreated(
-          disputeCreatedEvent.id,
-          disputeCreatedEvent.payment_id,
-          disputeCreatedEvent.amount,
-          disputeCreatedEvent.currency || "INR",
-          disputeCreatedEvent.reason_description ||
-            disputeCreatedEvent.reason_code,
-          disputeCreatedEvent.status,
-          disputeCreatedEvent.respond_by || null,
-          disputeCreatedEvent.deduct_at_onset === false,
-          "RAZORPAY",
-        );
-        break;
-      }
-
-      case "payment.dispute.won": {
-        const disputeWonEvent = event.payload.dispute.entity;
-        await handleDisputeUpdated(disputeWonEvent.id, "won", null);
-        break;
-      }
-
-      case "payment.dispute.lost": {
-        const disputeLostEvent = event.payload.dispute.entity;
-        await handleDisputeUpdated(disputeLostEvent.id, "lost", null);
-        break;
-      }
-
-      case "payment.dispute.closed": {
-        const disputeClosedEvent = event.payload.dispute.entity;
-        await handleDisputeUpdated(
-          disputeClosedEvent.id,
-          disputeClosedEvent.status,
-          null,
-        );
-        break;
-      }
-
-      // RazorpayX Payout events
-      case "payout.processed":
-      case "payout.reversed":
-      case "payout.rejected":
-      case "payout.queued":
-      case "payout.pending":
-      case "payout.cancelled": {
-        const payoutEvent = event.payload.payout.entity;
-        await handleRazorpayPayoutWebhook(eventType, {
-          id: payoutEvent.id,
-          status: payoutEvent.status,
-          failure_reason: payoutEvent.failure_reason,
-        });
-        break;
-      }
-
-      default:
-        console.log(`📄 Unhandled Razorpay event type: ${eventType}`);
-    }
-  } catch (handlerError) {
-    processingError =
-      handlerError instanceof Error
-        ? handlerError.message
-        : String(handlerError);
-    console.error(`Razorpay webhook processing error for ${eventId}:`, handlerError);
-  } finally {
-    await markWebhookEventProcessed(eventId, processingError);
-  }
 }

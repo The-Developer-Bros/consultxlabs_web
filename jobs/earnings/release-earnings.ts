@@ -15,6 +15,8 @@ import {
 
 import fs from "fs";
 import { abortIfMaintenance } from "../../lib/maintenance-cron";
+import * as Sentry from "@sentry/nextjs";
+import { runJob } from "../../lib/observability/job-sentry";
 
 /**
  * Output results to GitHub Actions using environment files
@@ -26,6 +28,9 @@ function outputToGitHubActions(result: ReleaseResult): void {
   if (outputFile) {
     const outputs = [
       `released_count=${result.releasedCount}`,
+      // #1471 — host-org earnings are released by the same run; a separate
+      // output keeps `released_count` meaning what downstream steps expect.
+      `org_released_count=${result.organizationEarningsReleased}`,
       `error_count=${result.errorCount}`,
       `success=${result.success}`,
     ].join("\n");
@@ -46,6 +51,7 @@ function outputToGitHubActions(result: ReleaseResult): void {
  */
 async function main(): Promise<void> {
   await abortIfMaintenance("release-earnings");
+  Sentry.logger.info("job:release-earnings started");
   const startTime = Date.now();
   console.log(
     `🚀 Starting release earnings job at ${new Date().toISOString()}`,
@@ -60,41 +66,26 @@ async function main(): Promise<void> {
 
     // Summary
     console.log(`\n📊 Release Summary:`);
-    console.log(`   ✅ Earnings released: ${result.releasedCount}`);
+    console.log(`   ✅ Consultant earnings released: ${result.releasedCount}`);
+    console.log(
+      `   ✅ Organization earnings released: ${result.organizationEarningsReleased}`,
+    );
     console.log(`   ❌ Errors: ${result.errorCount}`);
 
     // Output to GitHub Actions
     outputToGitHubActions(result);
 
     if (result.success) {
+      Sentry.logger.info("job:release-earnings finished", { releasedCount: result.releasedCount, organizationEarningsReleased: result.organizationEarningsReleased, errorCount: result.errorCount });
       console.log("🎉 Release earnings job completed successfully");
-      process.exit(0);
     } else {
       console.error("❌ Release earnings job completed with errors");
-      process.exit(1);
+      process.exitCode = 1;
     }
-  } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : "Unknown error";
-    console.error("💥 Release earnings job failed:", errorMessage);
-
-    if (process.env.GITHUB_ACTIONS) {
-      const outputFile = process.env.GITHUB_OUTPUT;
-      if (outputFile) {
-        fs.appendFileSync(outputFile, "success=false\n");
-      }
-      console.log(`::error::Release earnings job failed: ${errorMessage}`);
-    }
-
-    process.exit(1);
   } finally {
     await disconnectDatabase();
   }
 }
 
 // Run the job
-main().catch((error) => {
-  console.error("\n❌ Release earnings job failed:");
-  console.error(error);
-  process.exit(1);
-});
+runJob("release-earnings", main);

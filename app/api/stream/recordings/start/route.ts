@@ -8,6 +8,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { RecordingService } from "@/lib/stream/recording-service";
+import {
+  consentRegimeFor,
+  getRecordingBlock,
+} from "@/lib/stream/recording-consent";
+import { RecordingConsentDecision } from "@prisma/client";
 import { getMeetingSessionOwnershipInfo } from "@/lib/stream/recording-utils";
 import prisma from "@/lib/prisma";
 import { streamLogger } from "@/lib/stream-logger";
@@ -25,8 +30,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Only consultants can start recordings
-    if (session.user.role !== "CONSULTANT") {
+    // Capability, not UserRole (#org-appts): owning a consultantProfile is what
+    // matters (an org EXPERT counts); the per-appointment ownership check below
+    // is the real authz.
+    if (!session.user.consultantProfileId) {
       return NextResponse.json(
         { error: "Only consultants can start recordings" },
         { status: 403 },
@@ -58,6 +65,30 @@ export async function POST(req: NextRequest) {
                 class: {
                   include: {
                     classPlan: {
+                      select: {
+                        consultantProfileId: true,
+                        recordingEnabled: true,
+                      },
+                    },
+                  },
+                },
+                // #1134 P1-6 — without these two the resolver sees no plan for a
+                // 1:1, so the actual owner fails isAppointmentOwner and start
+                // returns 403. Recording a consultation was not disabled, it was
+                // impossible.
+                consultation: {
+                  include: {
+                    consultationPlan: {
+                      select: {
+                        consultantProfileId: true,
+                        recordingEnabled: true,
+                      },
+                    },
+                  },
+                },
+                subscription: {
+                  include: {
+                    subscriptionPlan: {
                       select: {
                         consultantProfileId: true,
                         recordingEnabled: true,
@@ -106,9 +137,48 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Atomically set isRecording=true (prevents race condition with concurrent requests)
+    // #1134 P1-7 — consent gate, BEFORE the claim. A 1:1 participant who
+    // declined in the lobby blocks recording outright; declining has to have an
+    // effect or it is not consent. Group sessions are never blocked here — their
+    // recording is the product, disclosed at purchase, and acknowledged rather
+    // than consented to.
+    const appointment = meetingSession.slotOfAppointment?.appointment;
+
+    /** One shape for a refusal, used by the pre-claim gate and the race re-read. */
+    const refuse = (reason: string | undefined) => {
+      streamLogger.info("Recording refused — participant declined", {
+        meetingSessionId,
+      });
+      return NextResponse.json({ error: reason }, { status: 409 });
+    };
+
+    const consentBlock = await getRecordingBlock(meetingSessionId, appointment);
+    if (consentBlock.blocked) return refuse(consentBlock.reason);
+
+    // Claim atomically, and re-assert the consent condition IN the claim.
+    //
+    // The `getRecordingBlock` call above is a separate read, so a participant
+    // could commit a DECLINED decision in the window between that count and this
+    // write, and recording would start despite a refusal that was already in the
+    // database. Check-then-act, with a compliance record as the loser.
+    //
+    // The relation filter closes it without a transaction: Postgres evaluates the
+    // whole predicate at write time, so a decline that commits first makes this
+    // match zero rows. The earlier read stays because it produces the specific
+    // user-facing reason; this is the part that has to be true.
+    const blockOnDecline = consentRegimeFor(appointment) === "OPT_OUT";
     const updated = await prisma.meetingSession.updateMany({
-      where: { id: meetingSessionId, isRecording: false },
+      where: {
+        id: meetingSessionId,
+        isRecording: false,
+        ...(blockOnDecline
+          ? {
+              recordingConsents: {
+                none: { decision: RecordingConsentDecision.DECLINED },
+              },
+            }
+          : {}),
+      },
       data: {
         isRecording: true,
         recordingStartedAt: new Date(),
@@ -117,6 +187,11 @@ export async function POST(req: NextRequest) {
     });
 
     if (updated.count === 0) {
+      // Either a concurrent start won, or a decline landed between the read and
+      // this write. Re-read to say which, so a refused host is not told the
+      // wrong thing.
+      const raced = await getRecordingBlock(meetingSessionId, appointment);
+      if (raced.blocked) return refuse(raced.reason);
       return NextResponse.json(
         { error: "Recording is already in progress" },
         { status: 409 },

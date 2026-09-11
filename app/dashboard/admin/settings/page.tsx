@@ -1,5 +1,6 @@
 "use client";
 
+import * as Sentry from "@sentry/nextjs";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -126,7 +127,8 @@ export default function AdminSettingsPage() {
       });
 
       queryClient.invalidateQueries({ queryKey: ["admin-settings", userId] });
-    } catch (_error) {
+    } catch (error) {
+      Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "client" } });
       toast({
         title: "Error",
         description: "Failed to save settings. Please try again.",
@@ -141,8 +143,8 @@ export default function AdminSettingsPage() {
     return (
       <div className="space-y-6">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Settings</h1>
-          <p className="text-gray-600 mt-1">Manage your account settings</p>
+          <h1 className="text-3xl font-bold text-foreground">Settings</h1>
+          <p className="text-muted-foreground mt-1">Manage your account settings</p>
         </div>
         <Card>
           <CardHeader>
@@ -163,8 +165,8 @@ export default function AdminSettingsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold text-gray-900">Settings</h1>
-        <p className="text-gray-600 mt-1">
+        <h1 className="text-3xl font-bold text-foreground">Settings</h1>
+        <p className="text-muted-foreground mt-1">
           Manage your account settings and preferences
         </p>
       </div>
@@ -260,7 +262,7 @@ export default function AdminSettingsPage() {
               placeholder="A brief description about yourself"
               maxLength={160}
             />
-            <p className="text-xs text-gray-400">
+            <p className="text-xs text-muted-foreground">
               {formData.bio?.length || 0}/160 characters
             </p>
           </div>
@@ -352,12 +354,12 @@ export default function AdminSettingsPage() {
             {adminData.adminProfile.notes && (
               <div className="space-y-2">
                 <Label>Notes</Label>
-                <p className="text-sm text-gray-600 bg-gray-100 p-2 rounded">
+                <p className="text-sm text-muted-foreground bg-muted p-2 rounded">
                   {adminData.adminProfile.notes}
                 </p>
               </div>
             )}
-            <p className="text-xs text-gray-400">
+            <p className="text-xs text-muted-foreground">
               Admin profile notes are managed by platform administrators.
             </p>
           </CardContent>

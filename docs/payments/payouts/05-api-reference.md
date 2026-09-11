@@ -254,7 +254,7 @@ GET /api/admin/earnings
 
 | Param          | Type   | Description                          |
 | -------------- | ------ | ------------------------------------ |
-| `status`       | string | PENDING, READY, HELD, PAID, REFUNDED |
+| `status`       | string | PENDING, READY, HELD, BATCHED, PAID, REFUNDED |
 | `consultantId` | string | Filter by consultant                 |
 | `limit`        | number | Results per page                     |
 | `offset`       | number | Pagination offset                    |

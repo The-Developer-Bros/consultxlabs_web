@@ -180,7 +180,7 @@ T2    User A: Release lock
 ```typescript
 // Approval endpoint
 let lock;
-if (status === RequestStatus.APPROVED) {
+if (status === AppointmentStatus.APPROVED) {
   try {
     lock = await lockConsultationApproval(consultationId, 30000);
   } catch (error) {
@@ -318,11 +318,11 @@ describe("Concurrent Approval Protection", () => {
 
     // Simulate two users clicking approve simultaneously
     const approvalPromises = [
-      fetch(`/api/events/consultations/${consultationId}`, {
+      fetch(`/api/bookings/consultations/${consultationId}`, {
         method: "PATCH",
         body: JSON.stringify({ status: "APPROVED" }),
       }),
-      fetch(`/api/events/consultations/${consultationId}`, {
+      fetch(`/api/bookings/consultations/${consultationId}`, {
         method: "PATCH",
         body: JSON.stringify({ status: "APPROVED" }),
       }),
@@ -456,7 +456,7 @@ lock = await lockConsultationApproval(id);
 const consultation = await prisma.consultation.findUnique(...);
 
 // ✅ Good: Only lock approval mutations
-if (status === RequestStatus.APPROVED) {
+if (status === AppointmentStatus.APPROVED) {
   lock = await lockConsultationApproval(id);
 }
 ```

@@ -32,86 +32,35 @@ Comprehensive troubleshooting guide for Stream Chat and Video integration issues
 
 This section documents known critical bugs and their workarounds. Review before deploying to production.
 
-### Universal Admin Role (Critical)
+### Stream Role Mapping (Resolved in #899)
 
-**Severity:** CRITICAL | **Security Impact:** HIGH
+**Severity:** RESOLVED | **Security Impact:** N/A
 
 #### Problem Description
 
-All users receive "admin" role in Stream Chat regardless of their actual role in the system. This means there is no permission differentiation between user types.
+Earlier builds mapped every user to the "admin" role in Stream Chat regardless of their actual role, which left no permission differentiation between user types. As of #899 the mapping follows least privilege, so this is no longer an issue.
 
 #### Location
 
-**File:** `/Users/kaustavghosh/Desktop/familiarise_web/lib/user.ts`
-**Lines:** 98-115
+**File:** `lib/user.ts`
 
 #### Current Code
 
 ```typescript
 export function mapRoleToStream(role: string | null | undefined): string {
-  if (!role) return "admin"; // Default to admin for team channel access
-
-  switch (role.toUpperCase()) {
+  switch (role?.toUpperCase()) {
     case "ADMIN":
-      return "admin";
-    case "CONSULTANT":
-      return "admin"; // Should be custom role or "channel_moderator"
-    case "CONSULTEE":
-      return "admin"; // Should be "user" or "channel_member"
-    case "USER":
-      return "admin";
-    default:
-      return "admin";
-  }
-}
-```
-
-#### Impact
-
-1. **No Permission Enforcement:**
-   - Consultees can moderate channels they shouldn't
-   - All users can delete messages from anyone
-   - No role-based access control
-
-2. **Security Risks:**
-   - Unauthorized access to sensitive operations
-   - Potential data tampering
-   - No audit trail for privileged operations
-
-3. **Billing Impact:**
-   - Stream pricing may differ based on user roles
-   - All users counted as admin users
-
-#### Recommended Fix
-
-**Option 1: Custom Roles** (Recommended)
-
-```typescript
-export function mapRoleToStream(role: string | null | undefined): string {
-  if (!role) return "user";
-
-  switch (role.toUpperCase()) {
-    case "ADMIN":
-      return "admin";
-    case "CONSULTANT":
-      return "channel_moderator"; // Can moderate their own channels
-    case "CONSULTEE":
-      return "user"; // Regular user permissions
     case "STAFF":
-      return "admin"; // Full administrative access
+      return "admin";
     default:
       return "user";
   }
 }
 ```
 
-#### Current Workaround
+#### How Hosts Get Moderation
 
-**Temporary Mitigation:**
-
-- Application-level permission checks (don't rely on Stream roles)
-- Audit logging for sensitive operations
-- User education about not abusing permissions
+Only platform staff and admins receive Stream's global `admin` role. Everyone else, consultants included, is mapped to the plain `user` role. Channel creation happens server-side, and each host is given a channel-scoped `channel_moderator` grant on their own host channels at creation time. Hosts therefore moderate the channels they own without receiving global admin permissions or moderation rights over unrelated peer direct-message channels.
 
 ---
 
@@ -381,7 +330,7 @@ logger.error("stream.chat.connection_failed", {
 
 | Issue           | Workaround                   | Effectiveness | Notes                            |
 | --------------- | ---------------------------- | ------------- | -------------------------------- |
-| Admin role bug  | Application-level checks     | Partial       | Doesn't prevent Stream API abuse |
+| Admin role bug  | Resolved in #899             | Fixed         | Least-privilege role mapping now in place |
 | Token expiry    | 50-min cache (10-min buffer) | Good          | Still occasional drops           |
 | Race conditions | Atomic creation              | Moderate      | Race window still exists         |
 | User cleanup    | Exclusion list               | Good          | Manual maintenance required      |
@@ -442,6 +391,45 @@ curl -X GET "https://chat.stream-io-api.com/health"
 ---
 
 ## Connection Issues
+
+### Issue: The dashboard flickers or reloads as the page settles, and the first Join click does nothing
+
+#### Symptoms
+
+- The dashboard visibly remounts a second or two after load
+- Clicking Join appears to do nothing, so the user clicks it several more times
+- Component state (open dialogs, scroll position, half-filled forms) resets on its own
+- Possibly a React error #310 — "rendered more hooks than during the previous render" — pointing into Stream SDK internals
+
+#### Cause
+
+The provider held the chat and video clients in two independent `useState`s. Their connects race, so the element wrapping the dashboard changed *type* between renders (`children` → `<StreamVideo>` → `<Chat>`, in socket-arrival order). React cannot reconcile a type change in place, so it remounted the whole subtree — destroying any in-flight join.
+
+#### Fix
+
+Both clients are committed in a single `setClients` via `Promise.allSettled`, so the tree shape is a pure function of one settled value. See §Why one state and not two in `docs/stream/03-provider-authentication.md`.
+
+**If you see this again**, the first thing to check is whether someone has reintroduced a second source of truth for client state, or made the wrapper nesting order depend on which client arrived first.
+
+### Issue: Video works locally but fails in production, or the console fills with CSP violations
+
+#### Symptoms
+
+- `Refused to connect to 'https://hint.stream-io-video.com/…'` or `'wss://video.stream-io-api.com/…'`
+- Calls connect locally (where CSP is often not exercised) but not on a deploy preview or production
+- `POST /api/csp-report` returning `429`
+
+#### Cause
+
+Stream does **not** use `getstream.io` at runtime — that is the marketing domain. The SDKs talk to `*.stream-io-api.com`, `*.stream-io-video.com`, and `*.stream-io-cdn.com`. An allow-list containing only `*.getstream.io` does not match any of them.
+
+Separately, `/api/csp-report` was rate-limited at 5/hour, so the violation reports that would have revealed this were themselves being dropped.
+
+#### Fix
+
+Both are corrected in `next.config.mjs` and `lib/rate-limit.ts`. The full domain breakdown is in `docs/enterprise/20-iam-and-security/05-security-headers.md`.
+
+**Verify with the browser, not the docs.** This class of drift is only visible in a real network log; Stream's documentation does not enumerate the SFU and hint domains in one place.
 
 ### Issue: "Chat connection failed"
 

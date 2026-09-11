@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-server";
 import prisma from "@/lib/prisma";
@@ -46,6 +47,7 @@ export async function PATCH(
 
     return NextResponse.json({ data: collab });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "collaborations" } });
     console.error("Error updating webinar collaborator:", error);
     return NextResponse.json(
       { error: "Failed to update collaborator" },
@@ -92,6 +94,7 @@ export async function DELETE(
 
     return NextResponse.json({ data: collab });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "collaborations" } });
     console.error("Error removing webinar collaborator:", error);
     return NextResponse.json(
       { error: "Failed to remove collaborator" },

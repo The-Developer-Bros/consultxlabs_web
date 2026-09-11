@@ -1,4 +1,22 @@
+---
+status: historical
+superseded-by: docs/payments/gateways/README.md
+---
+
 # Payment Gateway Evaluation — March 2026
+
+> **This is a dated decision record, not current guidance.** It captures the
+> comparison as it stood in March 2026 and the reasoning that produced the
+> current setup. The gateways it recommends removing were removed, and their
+> code is gone. Read it to understand *why* the platform runs on Razorpay; read
+> [README.md](./README.md) for what is actually wired today.
+>
+> One thing has changed materially since this was written: Razorpay Route, the
+> split-payment product a marketplace would normally reach for, was restricted
+> from 1 January 2026 to merchants meeting turnover criteria. The platform does
+> not use Route — funds settle to the platform account and RazorpayX payouts
+> disburse from there — so this is a confirmation of the existing design rather
+> than a change to it.
 
 > Comprehensive analysis of payment gateways for Familiarise's services marketplace. 90% Indian users, 10% international.
 

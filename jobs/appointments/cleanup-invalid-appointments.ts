@@ -14,6 +14,8 @@ import {
 
 import fs from "fs";
 import { abortIfMaintenance } from "../../lib/maintenance-cron";
+import * as Sentry from "@sentry/nextjs";
+import { runJob } from "../../lib/observability/job-sentry";
 
 /**
  * Output results to GitHub Actions using environment files
@@ -48,66 +50,54 @@ function outputToGitHubActions(result: CleanupResult): void {
  */
 async function main(): Promise<void> {
   await abortIfMaintenance("cleanup-invalid-appointments");
+  Sentry.logger.info("job:cleanup-invalid-appointments started");
   const startTime = Date.now();
   console.log(
     `🚀 Starting invalid appointments cleanup job at ${new Date().toISOString()}`,
   );
 
-  try {
-    // Run all cleanup tasks
-    const result = await runAllCleanupTasks();
+  // Run all cleanup tasks
+  const result = await runAllCleanupTasks();
 
-    const duration = (Date.now() - startTime) / 1000;
-    console.log(`⏱️ Job completed in ${duration.toFixed(2)} seconds`);
+  const duration = (Date.now() - startTime) / 1000;
+  console.log(`⏱️ Job completed in ${duration.toFixed(2)} seconds`);
 
-    // Summary
-    console.log(`\n📊 Cleanup Summary:`);
-    console.log(
-      `   🔄 Duplicate consultations cancelled: ${result.duplicateConsultationsCancelled}`,
-    );
-    console.log(
-      `   🔄 Duplicate subscriptions cancelled: ${result.duplicateSubscriptionsCancelled}`,
-    );
-    console.log(
-      `   ⏱️ Invalid duration consultations cancelled: ${result.invalidDurationConsultationsCancelled}`,
-    );
-    console.log(
-      `   ⏱️ Invalid duration subscriptions cancelled: ${result.invalidDurationSubscriptionsCancelled}`,
-    );
-    console.log(`   📊 Total cancelled: ${result.totalCancelled}`);
-    console.log(`   ❌ Errors: ${result.errors.length}`);
+  // Summary
+  console.log(`\n📊 Cleanup Summary:`);
+  console.log(
+    `   🔄 Duplicate consultations cancelled: ${result.duplicateConsultationsCancelled}`,
+  );
+  console.log(
+    `   🔄 Duplicate subscriptions cancelled: ${result.duplicateSubscriptionsCancelled}`,
+  );
+  console.log(
+    `   ⏱️ Invalid duration consultations cancelled: ${result.invalidDurationConsultationsCancelled}`,
+  );
+  console.log(
+    `   ⏱️ Invalid duration subscriptions cancelled: ${result.invalidDurationSubscriptionsCancelled}`,
+  );
+  console.log(`   📊 Total cancelled: ${result.totalCancelled}`);
+  console.log(`   ❌ Errors: ${result.errors.length}`);
 
-    // Output to GitHub Actions
-    outputToGitHubActions(result);
+  // Output to GitHub Actions
+  outputToGitHubActions(result);
 
-    if (result.success) {
-      console.log("🎉 Cleanup job completed successfully");
-      process.exit(0);
-    } else {
-      console.error("❌ Cleanup job completed with errors");
-      process.exit(1);
-    }
-  } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : "Unknown error";
-    console.error("💥 Cleanup job failed:", errorMessage);
-
-    if (process.env.GITHUB_ACTIONS) {
-      const outputFile = process.env.GITHUB_OUTPUT;
-      if (outputFile) {
-        fs.appendFileSync(outputFile, "success=false\n");
-      }
-      console.log(`::error::Cleanup job failed: ${errorMessage}`);
-    }
-
-    process.exit(1);
+  if (result.success) {
+    console.log("🎉 Cleanup job completed successfully");
+    Sentry.logger.info("job:cleanup-invalid-appointments finished", {
+      duplicateConsultationsCancelled: result.duplicateConsultationsCancelled,
+      duplicateSubscriptionsCancelled: result.duplicateSubscriptionsCancelled,
+      invalidDurationConsultationsCancelled: result.invalidDurationConsultationsCancelled,
+      invalidDurationSubscriptionsCancelled: result.invalidDurationSubscriptionsCancelled,
+      totalCancelled: result.totalCancelled,
+      errorCount: result.errors.length,
+    });
+  } else {
+    console.error("❌ Cleanup job completed with errors");
+    process.exitCode = 1;
   }
   // Note: runAllCleanupTasks() handles database disconnection in its finally block
 }
 
 // Run the cleanup job
-main().catch((error) => {
-  console.error("\n❌ Cleanup job failed:");
-  console.error(error);
-  process.exit(1);
-});
+runJob("cleanup-invalid-appointments", main);

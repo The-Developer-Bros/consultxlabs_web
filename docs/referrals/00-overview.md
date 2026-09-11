@@ -26,6 +26,16 @@ The referral system enables viral growth by rewarding both referrers and referee
 | Credit consumption   | FIFO by expiry date             | Minimizes expired unused credits          |
 | Anti-fraud           | Deferred for MVP                | Ship fast, add safeguards later           |
 
+> **Planned evolution (decisions finalized 2026-06-17).** The flat ₹500/₹200,
+> role-blind scheme above is the shipped MVP. It is being superseded by a
+> role-weighted, demand-biased policy with a seller-side commission waiver,
+> tightened guardrails, and a conservative launch. The full target model,
+> decision log, and trade-offs live in
+> [04-reward-economics-and-decisions.md](./04-reward-economics-and-decisions.md),
+> and the capture-and-apply flow that fixes the OAuth referral drop is in
+> [05-auth-onboarding-integration.md](./05-auth-onboarding-integration.md).
+> Tracking issue: [#880](https://github.com/Practitionist/familiarise_web/issues/880).
+
 ---
 
 ## Architecture

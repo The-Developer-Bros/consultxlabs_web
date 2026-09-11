@@ -196,8 +196,8 @@ describe("Approval Payment Operations", () => {
       consultationId: "clxConsult123",
       planId: "clxPlan123",
       paymentGateway: "STRIPE",
-      slotStartTimeInUTC: "2025-01-20T14:00:00.000Z",
-      slotEndTimeInUTC: "2025-01-20T14:30:00.000Z",
+      startsAt: "2025-01-20T14:00:00.000Z",     // renamed from `slotStartTimeInUTC`
+      endsAt: "2025-01-20T14:30:00.000Z",       // renamed from `slotEndTimeInUTC`
     });
 
     expect(result).toHaveProperty("checkoutUrl");
@@ -215,11 +215,11 @@ describe("Approval Payment Operations", () => {
 ### 1. Approval Flow
 
 ```typescript
-// __tests__/api/events/consultations/approval.test.ts
+// __tests__/api/bookings/consultations/approval.test.ts
 import { createMocks } from "node-mocks-http";
-import { PATCH } from "@/app/api/events/consultations/[consultationId]/route";
+import { PATCH } from "@/app/api/bookings/consultations/[consultationId]/route";
 import prisma from "@/lib/prisma";
-import { RequestStatus } from "@prisma/client";
+import { AppointmentStatus } from "@prisma/client"; // renamed from `RequestStatus`
 
 describe("Consultation Approval API", () => {
   let testConsultation: any;
@@ -228,7 +228,7 @@ describe("Consultation Approval API", () => {
     // Create test consultation
     testConsultation = await prisma.consultation.create({
       data: {
-        requestStatus: RequestStatus.PENDING,
+        status: AppointmentStatus.PENDING,
         consultationPlan: {
           connect: { id: "test-plan-id" },
         },
@@ -248,7 +248,7 @@ describe("Consultation Approval API", () => {
   it("should generate payment link when approving without payment", async () => {
     const { req, res } = createMocks({
       method: "PATCH",
-      body: { status: RequestStatus.APPROVED },
+      body: { status: AppointmentStatus.APPROVED },
     });
 
     const response = await PATCH(req, {
@@ -259,22 +259,22 @@ describe("Consultation Approval API", () => {
     expect(response.status).toBe(200);
     expect(data.requiresPayment).toBe(true);
     expect(data.paymentUrl).toBeDefined();
-    expect(data.data.requestStatus).toBe(
-      RequestStatus.APPROVED_PENDING_PAYMENT,
+    expect(data.data.status).toBe(
+      AppointmentStatus.APPROVED_PENDING_PAYMENT,
     );
   });
 
   it("should prevent duplicate approvals", async () => {
     // First approval
     const response1 = await PATCH(
-      createMocks({ method: "PATCH", body: { status: RequestStatus.APPROVED } })
+      createMocks({ method: "PATCH", body: { status: AppointmentStatus.APPROVED } })
         .req,
       { params: Promise.resolve({ consultationId: testConsultation.id }) },
     );
 
     // Second approval (concurrent)
     const response2 = await PATCH(
-      createMocks({ method: "PATCH", body: { status: RequestStatus.APPROVED } })
+      createMocks({ method: "PATCH", body: { status: AppointmentStatus.APPROVED } })
         .req,
       { params: Promise.resolve({ consultationId: testConsultation.id }) },
     );
@@ -295,7 +295,7 @@ describe("Consultation Approval API", () => {
       const response = await PATCH(
         createMocks({
           method: "PATCH",
-          body: { status: RequestStatus.APPROVED },
+          body: { status: AppointmentStatus.APPROVED },
         }).req,
         { params: Promise.resolve({ consultationId: testConsultation.id }) },
       );
@@ -483,7 +483,7 @@ import autocannon from "autocannon";
 describe("Approval Endpoint Performance", () => {
   it("should handle 100 concurrent approvals", async () => {
     const result = await autocannon({
-      url: "http://localhost:3000/api/events/consultations/test-id",
+      url: "http://localhost:3000/api/bookings/consultations/test-id",
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
@@ -668,12 +668,12 @@ export const mockRedis = {
 // __tests__/factories/consultation.ts
 import { faker } from "@faker-js/faker";
 import prisma from "@/lib/prisma";
-import { RequestStatus } from "@prisma/client";
+import { AppointmentStatus } from "@prisma/client"; // renamed from `RequestStatus`
 
 export async function createTestConsultation(overrides = {}) {
   return await prisma.consultation.create({
     data: {
-      requestStatus: RequestStatus.PENDING,
+      status: AppointmentStatus.PENDING,
       requestNotes: faker.lorem.paragraph(),
       consultationPlan: {
         create: {

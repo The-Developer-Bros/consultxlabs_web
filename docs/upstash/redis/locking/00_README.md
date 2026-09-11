@@ -170,13 +170,17 @@ export async function processLongOperation(
 
 ### Lock Types
 
-| Lock Type                  | Default TTL | Use Case                             |
-| -------------------------- | ----------- | ------------------------------------ |
-| **Slot Booking**           | 60 seconds  | Prevent double-booking consultations |
-| **Consultation Approval**  | 60 seconds  | Payment link generation              |
-| **Subscription Approval**  | 60 seconds  | Subscription processing              |
-| **Event Checkout**         | 60 seconds  | Webinar/class checkout               |
-| **Event Slot (Semaphore)** | 5 minutes   | Multi-participant events             |
+| Lock Type                  | Default TTL                                                        | Use Case                             |
+| -------------------------- | ------------------------------------------------------------------ | ------------------------------------ |
+| **Slot Booking**           | 60 seconds                                                         | Prevent double-booking consultations |
+| **Consultation Approval**  | 60 seconds                                                         | Payment link generation              |
+| **Subscription Approval**  | 60 seconds                                                         | Subscription processing              |
+| **Event Checkout**         | Per-type via `CHECKOUT_LOCK_TTL_MS` (#832): CONSULTATION 60s / SUBSCRIPTION 120s / WEBINAR 120s / CLASS 300s | Webinar/class/subscription checkout  |
+| **Event Slot (Semaphore)** | 5 minutes                                                          | Multi-participant events             |
+| **Auto-Allocate**          | 150 seconds (consultant-level, not narrowed — #860 tracks per-slot narrowing) | Auto-allocation serialization per consultant |
+| **Payout Batch Creation**  | 2 minutes (`lock:payout_batch_creation`)                           | Cron — create payout batches         |
+| **Payout Processing**      | 5 minutes (`lock:payout_processing`)                               | Cron — process approved payouts      |
+| **Org Payout Batch**       | 60 seconds (`org:{orgId}:payout-batch`)                            | Per-org payout batch creation        |
 
 ### Core Features
 
@@ -288,11 +292,13 @@ graph LR
 
 ```
 utils/
-└── appointmentlock.ts          # Core lock implementation (~674 lines)
+└── appointmentlock.ts          # Core lock implementation
     ├── lockConsultationApproval()     # Consultation approval locks
     ├── lockSubscriptionApproval()     # Subscription approval locks
     ├── lockSlotBooking()              # Time slot booking locks
-    ├── lockEventCheckout()            # Event checkout locks
+    ├── lockEventCheckout()            # Event checkout locks (per-type TTL via CHECKOUT_LOCK_TTL_MS #832)
+    ├── lockAutoAllocate()             # Auto-allocate consultant-level lock (NOT narrowed — #860 tracks that)
+    ├── unlockAutoAllocate()           # Release auto-allocate lock
     ├── acquireEventSlot()             # Semaphore for multi-participant events
     ├── releaseEventSlot()             # Release semaphore slot
     ├── confirmEventSlot()             # Confirm slot after payment
@@ -301,12 +307,19 @@ utils/
     └── Legacy: lockAppointment(), isAppointmentLocked()
 
 lib/
-└── redis.ts                    # Upstash client setup (~250 lines)
-    ├── withCircuitBreaker()           # Circuit breaker pattern
-    ├── checkRedisHealth()             # Health check
-    ├── getCircuitBreakerStatus()      # Status for monitoring
-    ├── acquireLock() / releaseLock()  # Simple lock utilities
-    └── Environment validation
+├── redis.ts                    # Upstash client setup
+│   ├── withCircuitBreaker()           # Circuit breaker pattern
+│   ├── checkRedisHealth()             # Health check
+│   ├── getCircuitBreakerStatus()      # Status for monitoring
+│   ├── acquireLock() / releaseLock()  # Simple lock utilities
+│   └── Environment validation
+├── cron/with-cron-lock.ts      # Distributed mutual exclusion for cron jobs (#476)
+│   └── withCronLock()                 # Wraps cron job with Redis lock; fail-open or fail-closed
+└── payments/payouts/payout-service.ts
+    ├── lock:payout_batch_creation     # 2-minute lock for batch creation cron
+    ├── lock:payout_processing         # 5-minute lock for payout processing cron
+    └── org-payout-service.ts
+        └── org:{orgId}:payout-batch       # 60s per-org payout batch creation lock
 ```
 
 ---

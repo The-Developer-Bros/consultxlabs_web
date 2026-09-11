@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { reportSentryError } from "@/lib/observability/report";
 import { useToast } from "@/components/ui/use-toast";
 import {
   TConsultation,
@@ -18,20 +19,10 @@ export type TSubscriptionWithPlan = TSubscription & {
 
 export type TWebinarWithPlan = TWebinar & {
   appointment: TAppointment | null;
-  waitlist?: Array<{
-    id: string;
-    status: string;
-    position: number | null;
-  }>;
 };
 
 export type TClassWithPlan = TClass & {
   appointment: TAppointment[];
-  waitlist?: Array<{
-    id: string;
-    status: string;
-    position: number | null;
-  }>;
 };
 
 // Trial session type for consultee dashboard
@@ -41,10 +32,15 @@ export type TTrialWithPlan = {
   notes: string | null;
   requestedAt: string;
   completedAt: string | null;
+  /** Live while AWAITING_PAYMENT; drives the "Pay Now to Confirm" affordance. */
+  pendingPaymentUrl: string | null;
+  /** Deadline for that pay-link — 24h from acceptance, or the session start. */
+  paymentDueAt: string | null;
   subscriptionPlan: {
     id: string;
     title: string;
-    freeTrialDurationMinutes: number;
+    trialDurationMinutes: number;
+    trialPriceInPaise: number;
     consultantProfile: {
       id: string;
       user: {
@@ -96,6 +92,12 @@ function useEventsInternal(mode: TEventQueryMode): IEventsResult {
   useEffect(() => {
     if (!identifier) return;
 
+    // Cancelled-flag teardown: every setState below is guarded so a fast
+    // unmount / scope flip can't set state on a dead component, and a
+    // superseded run can't clobber a newer run's results (stale-response
+    // race — responses are now tagged to their own effect invocation).
+    let cancelled = false;
+
     const fetchEvents = async () => {
       setIsLoading(true);
       setError(null);
@@ -128,6 +130,7 @@ function useEventsInternal(mode: TEventQueryMode): IEventsResult {
             queryParam = `consulteeProfileId=${userDetails.consulteeProfile.id}`;
           } else {
             // If role or profile is not found, use empty arrays
+            if (cancelled) return;
             setConsultations([]);
             setSubscriptions([]);
             setWebinars([]);
@@ -143,10 +146,10 @@ function useEventsInternal(mode: TEventQueryMode): IEventsResult {
 
         const [consultationsRes, subscriptionsRes, webinarsRes, classesRes] =
           await Promise.all([
-            fetch(`/api/events/consultations?${queryParam}`),
-            fetch(`/api/events/subscriptions?${queryParam}`),
-            fetch(`/api/events/webinars?${queryParam}`),
-            fetch(`/api/events/classes?${queryParam}`),
+            fetch(`/api/bookings/consultations?${queryParam}`),
+            fetch(`/api/bookings/subscriptions?${queryParam}`),
+            fetch(`/api/bookings/webinars?${queryParam}`),
+            fetch(`/api/bookings/classes?${queryParam}`),
           ]);
 
         if (
@@ -163,25 +166,35 @@ function useEventsInternal(mode: TEventQueryMode): IEventsResult {
         const webinarsData = await webinarsRes.json();
         const classesData = await classesRes.json();
 
+        if (cancelled) return;
         setConsultations(consultationsData.data);
         setSubscriptions(subscriptionsData.data);
         setWebinars(webinarsData.data);
         setClasses(classesData.data);
       } catch (err: unknown) {
         console.error("Error fetching events:", err);
+        if (cancelled) return;
         const message = err instanceof Error ? err.message : "Unknown error";
-        setError(err instanceof Error ? err : new Error(message));
+        const normalizedErr = err instanceof Error ? err : new Error(message);
+        setError(normalizedErr);
+        // Falls through to an empty-list render otherwise — indistinguishable
+        // from "this consultee genuinely has no bookings" without this.
+        reportSentryError(normalizedErr, { subsystem: "client" });
         toast({
           title: "Error fetching events",
           description: message,
           variant: "destructive",
         });
       } finally {
-        setIsLoading(false);
+        if (!cancelled) setIsLoading(false);
       }
     };
 
     fetchEvents();
+
+    return () => {
+      cancelled = true;
+    };
   }, [modeType, identifier, toast]);
 
   return { consultations, subscriptions, webinars, classes, isLoading, error };

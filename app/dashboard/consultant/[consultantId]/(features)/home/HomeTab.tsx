@@ -4,16 +4,17 @@ import { useMemo } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { useToast } from "@/components/ui/use-toast";
-import { getOrCreateAppointmentMeeting } from "@/lib/meeting";
-import { useStreamVideoClient } from "@stream-io/video-react-sdk";
+// #248: do NOT statically import the Stream SDK (useStreamVideoClient) or
+// lib/meeting (which imports the SDK) here — that would pull the heavy SDK into
+// the dashboard-HOME bundle / critical path. The video client + meeting helper
+// are acquired lazily inside the Join handler (only when a user clicks Join).
+import { useLazyJoinMeeting } from "@/hooks/scheduling/useLazyJoinMeeting";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import {
-  DashboardHeader,
   DashboardContent,
-} from "@/components/dashboard/DashboardShell";
+} from "@/components/dashboard/PageScaffold";
 import { DataCard, EmptyState } from "@/components/dashboard/DataCard";
 import {
   Calendar,
@@ -21,7 +22,10 @@ import {
   Video,
   ChevronRight,
   FileText,
+  Building2,
 } from "lucide-react";
+import { useSession } from "@/lib/auth-client";
+import { resolveSponsoringOrgName as resolveSponsoringOrgNameShared } from "@/lib/labels/session-labels";
 import {
   Tooltip,
   TooltipContent,
@@ -46,11 +50,19 @@ import {
   getRoleBadgeStyle,
 } from "../../utils/appointmentHelpers";
 
-import { getBadgeStyle } from "../../types";
+import { ActionRequiredPanel } from "@/components/dashboard/ActionRequiredPanel";
+import { deriveConsultantActionItems } from "@/lib/dashboard/action-items";
+import { StatusBadge } from "@/components/dashboard/StatusBadge";
+import {
+  eventUnionStatusBadge,
+  isConfirmedStatus,
+} from "@/lib/appointments/status";
+import { getProximityLabel } from "@/lib/appointments/slots";
+import { getAppointmentLifecycleStatus } from "@/lib/appointments/map-consultant";
 import { TAppointment } from "@/types/appointment";
 import { getJoinableSlot } from "../../utils/joinState";
 import { getInitials } from "@/utils/formatting";
-import { RequestSlotAllocationTabMini } from "../requests/RequestSlotAllocationTabMini";
+import { RequestSlotAllocationTabMini } from "@/components/dashboard/shared/requests/RequestSlotAllocationTabMini";
 import { PerformanceSnapshot } from "./PerformanceSnapshot";
 import { FinancialSummary } from "./FinancialSummary";
 import type {
@@ -61,7 +73,6 @@ import type {
 interface HomeTabProps {
   appointments: TAppointment[];
   consultantId: string;
-  consultantName?: string;
   pendingRequestsCount?: number;
   performanceSnapshot?: TPerformanceSnapshot;
   financialSummary?: TFinancialSummary;
@@ -83,48 +94,28 @@ const fadeInUp = {
 export function HomeTab({
   appointments,
   consultantId,
-  consultantName,
   pendingRequestsCount = 0,
   performanceSnapshot,
   financialSummary,
 }: Readonly<HomeTabProps>) {
   const router = useRouter();
-  const client = useStreamVideoClient();
-  const { toast } = useToast();
+  const joinMeeting = useLazyJoinMeeting();
+  const { data: session } = useSession();
+  // Sponsoring-org lookup for the indigo "Sponsored · <Org>" badge —
+  // shows on org-funded appointments only, mirroring the consultee
+  // dashboard convention. Resolution lives in session-labels so every
+  // surface renders the same name.
+  const orgMemberships = session?.user?.organizationMemberships ?? [];
+  const resolveSponsoringOrgName = (orgId: string | null | undefined) =>
+    resolveSponsoringOrgNameShared(orgId, orgMemberships);
 
-  const handleJoinMeeting = async (
+  // #248: the shared hook reads the connected client singleton at click
+  // time and lazy-imports lib/meeting, keeping the Stream SDK off the home
+  // bundle. This used to be a private copy of that pattern.
+  const handleJoinMeeting = (
     appointment: TAppointment,
     joinableSlot?: TAppointment["slotsOfAppointment"][number],
-  ) => {
-    if (!client) {
-      toast({ title: "Error", description: "Meeting client not ready." });
-      return;
-    }
-    const relevantSlot =
-      joinableSlot ?? appointment.slotsOfAppointment?.[0];
-    if (!relevantSlot) {
-      toast({
-        title: "Error",
-        description: "Slot information missing.",
-      });
-      return;
-    }
-
-    try {
-      const meetingId = await getOrCreateAppointmentMeeting(
-        client,
-        appointment,
-        relevantSlot,
-      );
-      router.push(`/meetings/${meetingId}`);
-    } catch (_error) {
-      toast({
-        title: "Error",
-        description: "Failed to join meeting.",
-        variant: "destructive",
-      });
-    }
-  };
+  ) => void joinMeeting(appointment, joinableSlot);
 
   const expandedAppointments = useMemo(() => appointments || [], [appointments]);
 
@@ -173,15 +164,34 @@ export function HomeTab({
       .slice(0, 5);
   }, [allUpcomingAppointments]);
 
-  const firstName = consultantName?.split(" ")[0];
+
+  // "Needs you now" — derived from data already on the page, so no extra
+  // fetch. The rows go over whole, ids and ends included: these are raw
+  // 30-minute slot rows, and without them a two-hour booking reported its
+  // second half as a separate session starting in 30 minutes (#1061).
+  const actionItems = useMemo(
+    () =>
+      deriveConsultantActionItems({
+        pendingApprovals: pendingRequestsCount,
+        upcomingSessions: allUpcomingAppointments.flatMap((a) =>
+          (a.slotsOfAppointment ?? []).map((slot) => ({
+            id: slot.id,
+            appointmentId: a.id,
+            startsAt: slot.startsAt,
+            endsAt: slot.endsAt,
+            title: getAppointmentTypeAndPlan(a),
+          })),
+        ),
+        basePath: `/dashboard/consultant/${consultantId}`,
+      }),
+    [allUpcomingAppointments, pendingRequestsCount, consultantId],
+  );
 
   return (
     <>
-      <DashboardHeader
-        title={firstName ? `Welcome back, ${firstName}` : "Welcome back"}
-        subtitle="Here's what's happening with your appointments today"
-      />
-
+      {/* The header is rendered by the server page, outside the Suspense
+          boundary, so it can paint as real text while this tab is still
+          waiting on data. Keeping a copy here would double it up. */}
       <DashboardContent>
         <motion.div
           variants={staggerChildren}
@@ -189,6 +199,10 @@ export function HomeTab({
           animate="visible"
           className="space-y-6"
         >
+          {/* What's actually blocked on this consultant, above everything
+              else. Renders nothing when the queue is clear. */}
+          <ActionRequiredPanel items={actionItems} className="space-y-2" />
+
           {/* Performance Snapshot */}
           {performanceSnapshot && (
             <motion.div variants={fadeInUp}>
@@ -210,14 +224,24 @@ export function HomeTab({
                   <div className="divide-y divide-zinc-100">
                     {todayAppointments.map((appointment) => {
                       const userName = getConsumeeName(appointment);
-                      const status = getAppointmentStatus(appointment);
                       const startTime = getStartTime(appointment);
                       const joinableSlot = getJoinableSlot(
                         appointment.slotsOfAppointment ?? [],
                       );
-                      const isJoinable = joinableSlot !== null;
+                      // #1270 — this row had NO status check at all: any
+                      // appointment with a slot inside the window lit up Join,
+                      // including one still awaiting payment or already
+                      // completed. The same guard the appointments adapter and
+                      // the consultee side use.
+                      const isJoinable =
+                        joinableSlot !== null &&
+                        isConfirmedStatus(
+                          getAppointmentLifecycleStatus(appointment),
+                        );
+                      // Explicit opt-in, not "any non-production build" — see
+                      // the note on the appointments adapter's own flag.
                       const isDev =
-                        process.env.NODE_ENV !== "production";
+                        process.env.NEXT_PUBLIC_ENABLE_DEV_TOOLS === "true";
 
                       return (
                         <div
@@ -235,10 +259,27 @@ export function HomeTab({
                           </Avatar>
 
                           <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
                               <h3 className="font-medium text-zinc-900 truncate text-sm">
                                 {userName}
                               </h3>
+                              {(() => {
+                                const sponsoringOrgName =
+                                  resolveSponsoringOrgName(
+                                    appointment.organizationId,
+                                  );
+                                return sponsoringOrgName ? (
+                                  <Badge
+                                    className="text-[10px] font-semibold px-2 py-0.5 bg-indigo-50 text-indigo-700 border-0 rounded-md inline-flex items-center gap-1 max-w-[200px]"
+                                    title={`Sponsored by ${sponsoringOrgName}`}
+                                  >
+                                    <Building2 className="h-3 w-3 shrink-0" />
+                                    <span className="truncate">
+                                      Sponsored · {sponsoringOrgName}
+                                    </span>
+                                  </Badge>
+                                ) : null;
+                              })()}
                               {(() => {
                                 const role = getCollaboratorRole(
                                   appointment,
@@ -267,13 +308,27 @@ export function HomeTab({
                             </span>
                           </div>
 
-                          <Badge
-                            className={`flex-shrink-0 ${getBadgeStyle(status)}`}
-                          >
-                            {status}
-                          </Badge>
+                          <div className="flex flex-col items-end gap-0.5 flex-shrink-0">
+                            <StatusBadge
+                              {...eventUnionStatusBadge(
+                                getAppointmentLifecycleStatus(appointment),
+                              )}
+                              withDot
+                              size="sm"
+                            />
+                            {(() => {
+                              const proximity = getProximityLabel(
+                                getNextUpcomingSlotTime(appointment),
+                              );
+                              return proximity ? (
+                                <span className="text-[10px] text-zinc-400">
+                                  {proximity}
+                                </span>
+                              ) : null;
+                            })()}
+                          </div>
 
-                          {(isDev || isJoinable) && (
+                          {isJoinable && (
                             <TooltipProvider>
                               <Tooltip>
                                 <TooltipTrigger asChild>
@@ -286,12 +341,9 @@ export function HomeTab({
                                     }
                                     className="flex-shrink-0 bg-zinc-900 hover:bg-zinc-800 text-white gap-1.5"
                                     size="sm"
-                                    disabled={isDev ? false : !isJoinable}
                                   >
                                     <Video className="h-3.5 w-3.5" />
-                                    {isDev
-                                      ? "Join (Dev)"
-                                      : "Join"}
+                                    Join
                                   </Button>
                                 </TooltipTrigger>
                                 <TooltipContent>
@@ -299,6 +351,29 @@ export function HomeTab({
                                 </TooltipContent>
                               </Tooltip>
                             </TooltipProvider>
+                          )}
+                          {/* #1270 — additive, never a gate replacement. The
+                              dev arm used to BE the gate here (`isDev ||
+                              isJoinable`, `disabled={isDev ? false :
+                              !isJoinable}`), which also mislabelled every
+                              genuine Join as "Join (Dev)" on a dev build. It
+                              is now a distinct button that shows only where
+                              the real one does not. */}
+                          {isDev && !isJoinable && (
+                            <Button
+                              onClick={() =>
+                                handleJoinMeeting(
+                                  appointment,
+                                  joinableSlot ?? undefined,
+                                )
+                              }
+                              variant="outline"
+                              className="flex-shrink-0 gap-1.5"
+                              size="sm"
+                            >
+                              <Video className="h-3.5 w-3.5" />
+                              Join (Dev)
+                            </Button>
                           )}
                         </div>
                       );
@@ -352,7 +427,6 @@ export function HomeTab({
                         groupKey.startsWith("class-");
                       const firstAppointment = groupAppointments[0];
                       const userName = getConsumeeName(firstAppointment);
-                      const status = getAppointmentStatus(firstAppointment);
                       const startTime = isRecurring
                         ? getNextUpcomingSlotTime(firstAppointment)
                         : getStartTime(firstAppointment);
@@ -385,10 +459,27 @@ export function HomeTab({
                           </Avatar>
 
                           <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
                               <h4 className="font-medium text-zinc-900 truncate">
                                 {userName}
                               </h4>
+                              {(() => {
+                                const sponsoringOrgName =
+                                  resolveSponsoringOrgName(
+                                    firstAppointment.organizationId,
+                                  );
+                                return sponsoringOrgName ? (
+                                  <Badge
+                                    className="text-[10px] font-semibold px-2 py-0.5 bg-indigo-50 text-indigo-700 border-0 rounded-md inline-flex items-center gap-1 max-w-[200px]"
+                                    title={`Sponsored by ${sponsoringOrgName}`}
+                                  >
+                                    <Building2 className="h-3 w-3 shrink-0" />
+                                    <span className="truncate">
+                                      Sponsored · {sponsoringOrgName}
+                                    </span>
+                                  </Badge>
+                                ) : null;
+                              })()}
                               {(() => {
                                 const role = getCollaboratorRole(
                                   firstAppointment,
@@ -423,9 +514,25 @@ export function HomeTab({
                             )}
                           </div>
 
-                          <Badge className={getBadgeStyle(status)}>
-                            {status}
-                          </Badge>
+                          <div className="flex flex-col items-end gap-0.5 flex-shrink-0">
+                            <StatusBadge
+                              {...eventUnionStatusBadge(
+                                getAppointmentLifecycleStatus(firstAppointment),
+                              )}
+                              withDot
+                              size="sm"
+                            />
+                            {(() => {
+                              const proximity = getProximityLabel(
+                                startTime ?? null,
+                              );
+                              return proximity ? (
+                                <span className="text-[10px] text-zinc-400">
+                                  {proximity}
+                                </span>
+                              ) : null;
+                            })()}
+                          </div>
 
                           <ChevronRight className="h-5 w-5 text-zinc-300 group-hover:text-zinc-500 transition-colors" />
                         </motion.div>

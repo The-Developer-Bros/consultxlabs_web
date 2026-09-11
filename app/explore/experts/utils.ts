@@ -4,6 +4,8 @@ import { ReadonlyURLSearchParams } from "next/navigation";
 
 export const CONSULTANTS_PER_PAGE = 10;
 
+export type AffiliationType = "independent" | "agency" | null;
+
 export interface IExpertFilters {
   domain: string | null;
   subdomain: string | null;
@@ -16,6 +18,7 @@ export interface IExpertFilters {
   minRating?: number;
   companies: string[];
   language?: string;
+  affiliationType: AffiliationType;
 }
 
 export const DEFAULT_EXPERT_FILTERS: IExpertFilters = {
@@ -30,6 +33,7 @@ export const DEFAULT_EXPERT_FILTERS: IExpertFilters = {
   minRating: undefined,
   companies: [],
   language: undefined,
+  affiliationType: null,
 };
 
 export interface IExpertsMetaData {
@@ -43,7 +47,14 @@ export interface IExpertsMetaData {
       name: string;
       consultantCount: number;
     }[];
+    /** Mean of the PUBLISHED per-consultant scores, 0 when none qualify. */
     averageRating: number;
+    /** Denominator behind `averageRating` — published reviews across the
+     *  directory. Gates whether the rating is shown at all (#1485). */
+    publishedReviewCount: number;
+    /** Meetings actually held across the platform — COMPLETED slots, not
+     *  appointments (#1485). */
+    completedSessions: number;
   };
   availableLanguages: string[];
   availableCompanies: string[];
@@ -112,7 +123,9 @@ export function filtersFromSearchParams(
   return {
     domain: params.get("domain"),
     subdomain: params.get("subdomain"),
-    tags: params.get("tags")?.split(",").filter(Boolean) || [],
+    // Repeated params (?tags=a&tags=b), not comma-joined, so a literal comma in
+    // a tag/company name can't split one value into two bogus filter terms.
+    tags: params.getAll("tags").filter(Boolean),
     // API uses parseInt — keep both sides aligned so a hand-edited
     // ?experience=1.5 doesn't make the UI show 1.5 while the API filters at 1.
     experience: parseIntegerParam(params.get("experience")) ?? 0,
@@ -126,8 +139,9 @@ export function filtersFromSearchParams(
     minPrice: parseNumberParam(params.get("minPrice")),
     maxPrice: parseNumberParam(params.get("maxPrice")),
     minRating: parseNumberParam(params.get("minRating")),
-    companies: params.get("companies")?.split(",").filter(Boolean) || [],
+    companies: params.getAll("companies").filter(Boolean),
     language: params.get("language") || undefined,
+    affiliationType: (params.get("affiliationType") as AffiliationType) || null,
   };
 }
 
@@ -136,7 +150,7 @@ export function filtersToSearchParams(filters: IExpertFilters): string {
   const params = new URLSearchParams();
   if (filters.domain) params.set("domain", filters.domain);
   if (filters.subdomain) params.set("subdomain", filters.subdomain);
-  if (filters.tags.length > 0) params.set("tags", filters.tags.join(","));
+  for (const tag of filters.tags) params.append("tags", tag);
   if (filters.experience > 0)
     params.set("experience", String(filters.experience));
   if (filters.search) params.set("search", filters.search);
@@ -147,7 +161,9 @@ export function filtersToSearchParams(filters: IExpertFilters): string {
     params.set("maxPrice", String(filters.maxPrice));
   if (filters.minRating !== undefined)
     params.set("minRating", String(filters.minRating));
-  if (filters.companies.length > 0) params.set("companies", filters.companies.join(","));
+  for (const company of filters.companies) params.append("companies", company);
   if (filters.language) params.set("language", filters.language);
+  if (filters.affiliationType)
+    params.set("affiliationType", filters.affiliationType);
   return params.toString();
 }

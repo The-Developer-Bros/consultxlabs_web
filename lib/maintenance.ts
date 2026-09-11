@@ -12,12 +12,7 @@ import { MaintenancePhase } from "@prisma/client";
 
 import prisma from "@/lib/prisma";
 import redis, { withCircuitBreaker } from "@/lib/redis";
-
-// Redis key constants
-const REDIS_KEYS = {
-  PHASE: "maintenance:phase",
-  CONFIG: "maintenance:config",
-} as const;
+import { REDIS_KEYS } from "@/lib/maintenance-keys";
 
 export interface MaintenanceState {
   phase: MaintenancePhase;
@@ -86,9 +81,14 @@ export async function setMaintenanceState(
     betterstackIncidentId?: string;
   } = {},
 ): Promise<void> {
-  // Write both Redis keys concurrently to minimize inconsistency window
+  // Write both Redis keys concurrently to minimize inconsistency window.
+  // #697 INF-1 — 24h TTL: an OFFLINE phase whose owner loses access must not
+  // keep the platform down forever. Every setMaintenanceState call refreshes
+  // the clock, so a tended window outlives the TTL; an abandoned one expires
+  // to OFF. Long windows need a refresh at least daily (runbook rule).
+  const MAINTENANCE_KEY_TTL_SECONDS = 24 * 60 * 60;
   await Promise.all([
-    redis.set(REDIS_KEYS.PHASE, phase),
+    redis.set(REDIS_KEYS.PHASE, phase, { ex: MAINTENANCE_KEY_TTL_SECONDS }),
     redis.set(
       REDIS_KEYS.CONFIG,
       JSON.stringify({
@@ -97,6 +97,7 @@ export async function setMaintenanceState(
         bypassSecret: config.bypassSecret ?? null,
         betterstackIncidentId: config.betterstackIncidentId ?? null,
       }),
+      { ex: MAINTENANCE_KEY_TTL_SECONDS },
     ),
   ]);
 
@@ -155,4 +156,41 @@ export async function setMaintenanceState(
       }
     }
   });
+}
+
+// ---------------------------------------------------------------------------
+// Per-org maintenance (read side only — admin write API ships separately)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the currently-active MaintenanceWindow row scoped to a single org.
+ *
+ * Per the schema comment on `MaintenanceWindow.organizationId`, NULL rows
+ * are platform-wide and non-null rows scope to a single tenant. This helper
+ * only returns the *org-specific* active window — callers should still
+ * consult `getMaintenanceState()` for the platform-wide Redis check.
+ *
+ * Returns `null` if there is no active org-specific window. "Active" means
+ * `phase !== OFF` and the most recent row by `createdAt`.
+ *
+ * Used by per-org financial jobs (payout batch, subscription invoicing)
+ * to skip an individual tenant during a planned downtime window without
+ * affecting other tenants.
+ */
+export async function getActiveOrgMaintenanceWindow(
+  organizationId: string,
+): Promise<{
+  phase: MaintenancePhase;
+  reason: string | null;
+  estimatedEnd: Date | null;
+} | null> {
+  const row = await prisma.maintenanceWindow.findFirst({
+    where: {
+      organizationId,
+      phase: { not: MaintenancePhase.OFF },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { phase: true, reason: true, estimatedEnd: true },
+  });
+  return row ?? null;
 }

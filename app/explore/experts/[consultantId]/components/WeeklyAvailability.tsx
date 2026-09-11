@@ -4,6 +4,7 @@ import { ChevronDown, ChevronUp } from "lucide-react";
 import { roundTime, timeToMinutes } from "../utils/time";
 import { mergeConsecutiveSlotsForDisplay } from "../utils/mergeSlots";
 import type { ProcessedSlot } from "../types";
+import { SLOT_STATUS_TOKENS } from "@/lib/scheduling/slot-status-tokens";
 
 type ProcessedSlotsByDay = Record<DayOfWeek, ProcessedSlot[]>;
 
@@ -53,8 +54,8 @@ export function WeeklyAvailability({ slotsByDay }: WeeklyAvailabilityProps) {
 
   // Get the date for booked slots in user timezone
   const getBookedSlotDate = (slot: ProcessedSlot) => {
-    if (!slot.slotStartTimeInUTC) return "";
-    const date = new Date(slot.slotStartTimeInUTC);
+    if (!slot.startsAt) return "";
+    const date = new Date(slot.startsAt);
     return date.toLocaleDateString(undefined, {
       month: "short",
       day: "numeric",
@@ -103,10 +104,10 @@ export function WeeklyAvailability({ slotsByDay }: WeeklyAvailabilityProps) {
                             border shadow-lg backdrop-blur-sm relative overflow-hidden
                             ${
                               isFullyBooked
-                                ? "bg-gradient-to-br from-gray-300 to-gray-400 text-gray-600 border-gray-300 shadow-gray-400/20"
+                                ? SLOT_STATUS_TOKENS.fullyBooked.className
                                 : isPartiallyBooked
-                                  ? "bg-gradient-to-br from-amber-200 to-amber-300 border-amber-400 text-amber-900 shadow-amber-400/25"
-                                  : "bg-gradient-to-br from-emerald-100 to-emerald-200 text-emerald-800 border-emerald-300 shadow-emerald-400/20"
+                                  ? SLOT_STATUS_TOKENS.partiallyBooked.className
+                                  : SLOT_STATUS_TOKENS.available.className
                             }
                           `}
                         >
@@ -140,7 +141,7 @@ export function WeeklyAvailability({ slotsByDay }: WeeklyAvailabilityProps) {
                       );
                     })
                   ) : (
-                    <div className="h-16 flex items-center justify-center text-xs text-gray-400 bg-gradient-to-br from-gray-50 to-gray-100 rounded-xl border border-gray-200 shadow-sm">
+                    <div className="h-16 flex items-center justify-center text-xs text-muted-foreground/70 bg-gradient-to-br from-gray-50 to-gray-100 rounded-xl border border-border shadow-sm">
                       No slots
                     </div>
                   )}

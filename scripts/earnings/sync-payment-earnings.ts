@@ -3,7 +3,6 @@
  *
  * Syncs ConsultantEarnings records with Payment records.
  * Finds all payments where status = SUCCEEDED but no corresponding earnings exists.
- * Creates missing earnings records for payments within the last 30 days.
  *
  * This catches cases where:
  * - App crash after payment succeeded but before earnings created
@@ -20,18 +19,35 @@
  */
 
 import prisma from "../../lib/prisma";
-import { EarningStatus, EarningRole, PaymentStatus, AppointmentsType } from "@prisma/client";
-import {
-  PAYOUT_CONSTANTS,
-  AppointmentType,
-} from "../../lib/payments/payouts/constants";
-import { calculateRevenueSplit } from "../../lib/collaborators/service";
-
-// Only sync payments within the last 30 days
-const SYNC_WINDOW_DAYS = 30;
+import { PaymentStatus, AppointmentsType } from "@prisma/client";
+import { AppointmentType } from "../../lib/payments/payouts/constants";
+import { createEarningsFromPayment } from "../../lib/payments/payouts/earnings-service";
+import { withCronLock, LONG_JOB_TTL_MS } from "@/lib/cron/with-cron-lock";
+import { recordSystemError } from "@/lib/enterprise/system-events";
 
 // Batch size for processing payments to prevent memory issues
 const BATCH_SIZE = 100;
+
+/**
+ * #1319 — the cohort has no age window any more, so the run needs a ceiling.
+ *
+ * Settlement for an org-funded checkout runs after the checkout transaction
+ * commits, and a failure there is recorded and moved past. This sweep is the
+ * only thing that repairs it — and it used to look back thirty days, so a
+ * payment that stayed unaccrued for a month left the cohort silently and the
+ * consultant was never paid for a session they had already delivered. There is
+ * no age at which money stops being owed, so there is no window here now. The
+ * ceiling bounds the runtime instead, and the ordering is oldest-first because
+ * the payments that have gone unaccrued longest are the ones somebody has been
+ * waiting on.
+ */
+const MAX_PAYMENTS_PER_RUN = 500;
+
+/**
+ * How long a SUCCEEDED payment may sit without earnings before the sweep pages
+ * a human about it. Under this the settlement may simply still be in flight.
+ */
+const UNACCRUED_ALERT_AFTER_HOURS = 24;
 
 export interface PaymentEarningSyncResult {
   success: boolean;
@@ -39,8 +55,113 @@ export interface PaymentEarningSyncResult {
   createdCount: number;
   skippedCount: number;
   errorCount: number;
+  /** #1319 — payments escalated as permanently unaccruable this run. */
+  pagedCount: number;
   errors: string[];
   timestamp: string;
+}
+
+export interface SyncPaymentEarningsOptions {
+  /** #1356 — overrides MAX_PAYMENTS_PER_RUN for the Netlify ticker; undefined
+   * keeps the 500-row GitHub Actions ceiling. */
+  limit?: number;
+}
+
+/** A payment that has a booking but no consultant anyone could ever pay. */
+type UnaccruablePayment = {
+  id: string;
+  appointmentId: string | null;
+  organizationId: string | null;
+  amountPaise: string;
+  createdAt: Date;
+};
+
+/**
+ * One alert per payment per UTC day. `SystemEvent.correlationId` is indexed and
+ * carries no meaning of its own for this category, so folding the date into it
+ * makes "have we already paged for this today?" a single indexed read for the
+ * whole batch instead of a per-payment round trip.
+ */
+function unaccruedAlertKey(paymentId: string, now: Date): string {
+  return `earnings-unaccrued:${paymentId}:${now.toISOString().slice(0, 10)}`;
+}
+
+/**
+ * Escalate the payments this sweep can never heal (#1319).
+ *
+ * `createEarningsFromPayment` returns null with a `console.warn` when it cannot
+ * resolve a consultant, and the sweep counted that as "skipped" — so a payment
+ * that no run will ever accrue was re-read every hour, forever, and said so
+ * only into a log nobody reads. A booking that exists but resolves no
+ * consultant is unambiguous: nobody can be paid for it, and the data needs a
+ * human.
+ *
+ * A payment with no appointment AT ALL is deliberately not paged here. That
+ * cohort belongs to `scripts/alerts/alert-orphaned-payments.ts`, and it legally
+ * contains rows that will never accrue by design — the overage side-charge is
+ * created with `appointmentId: null` precisely to dodge the
+ * `@@unique([userId, appointmentId])` clash.
+ */
+async function pageUnaccruablePayments(
+  candidates: UnaccruablePayment[],
+  now: Date,
+): Promise<number> {
+  if (candidates.length === 0) return 0;
+
+  const keys = candidates.map((p) => unaccruedAlertKey(p.id, now));
+  // Best-effort throughout: the sweep's money repair must never fail because
+  // its alerting could not read or write.
+  let seen: Set<string | null>;
+  try {
+    const alreadyPaged = await prisma.systemEvent.findMany({
+      where: { correlationId: { in: keys } },
+      select: { correlationId: true },
+    });
+    seen = new Set(alreadyPaged.map((e) => e.correlationId));
+  } catch (err) {
+    console.error(
+      "[sync-payment-earnings] dedupe lookup failed; skipping paging this run:",
+      err,
+    );
+    return 0;
+  }
+
+  let paged = 0;
+  for (const payment of candidates) {
+    const key = unaccruedAlertKey(payment.id, now);
+    if (seen.has(key)) continue;
+
+    const ageHours = Math.floor(
+      (now.getTime() - payment.createdAt.getTime()) / 3_600_000,
+    );
+    await recordSystemError({
+      organizationId: payment.organizationId,
+      category: "PAYMENT",
+      summary:
+        `Payment ${payment.id} has been SUCCEEDED for ${ageHours}h with no ` +
+        `consultant earnings and no consultant to accrue them to; the sync ` +
+        `sweep cannot heal it`,
+      err: new Error("EARNINGS_UNACCRUABLE_NO_CONSULTANT"),
+      context: {
+        paymentId: payment.id,
+        appointmentId: payment.appointmentId,
+        amountPaise: payment.amountPaise,
+        paymentCreatedAt: payment.createdAt.toISOString(),
+        ageHours,
+      },
+      correlationId: key,
+    })
+      .then(() => {
+        paged++;
+      })
+      .catch((err) => {
+        console.error(
+          `[sync-payment-earnings] failed to page for ${payment.id}:`,
+          err,
+        );
+      });
+  }
+  return paged;
 }
 
 /**
@@ -62,79 +183,37 @@ function mapAppointmentType(type: AppointmentsType): AppointmentType {
 }
 
 /**
- * Calculate earnings data for a payment
- */
-function calculateEarningsData(
-  payment: {
-    id: string;
-    amount: number;
-    originalAmount: number;
-    createdAt: Date;
-    appointment: {
-      appointmentType: AppointmentsType;
-    } | null;
-  },
-  consultantProfileId: string,
-) {
-  // Use original plan price (before platform-funded discounts/credits/tax) for earnings
-  // Payment.originalAmount is stored in paise (smallest unit) — same as earnings
-  const grossAmount = payment.originalAmount;
-  const platformFee = Math.round(
-    (grossAmount * PAYOUT_CONSTANTS.PLATFORM_FEE_PERCENTAGE) / 100,
-  );
-  const consultantShare = grossAmount - platformFee;
-
-  // Get appointment type for hold period
-  const appointmentType = payment.appointment?.appointmentType
-    ? mapAppointmentType(payment.appointment.appointmentType)
-    : "CONSULTATION";
-
-  // Calculate hold period
-  const holdHours =
-    PAYOUT_CONSTANTS.HOLD_PERIOD_HOURS[appointmentType] ||
-    PAYOUT_CONSTANTS.HOLD_PERIOD_HOURS.CONSULTATION;
-
-  // For old payments, check if hold period has already passed
-  const paymentAge = Date.now() - payment.createdAt.getTime();
-  const holdPeriodMs = holdHours * 60 * 60 * 1000;
-
-  // If payment is older than hold period, set holdUntil in the past (will be released immediately)
-  const holdUntil =
-    paymentAge > holdPeriodMs
-      ? new Date(payment.createdAt.getTime() + holdPeriodMs) // Past date
-      : new Date(Date.now() + holdPeriodMs); // Future date
-
-  // Determine status based on whether hold period has passed
-  const status =
-    paymentAge > holdPeriodMs
-      ? EarningStatus.READY // Old payments go straight to READY
-      : EarningStatus.PENDING; // Recent payments start as PENDING
-
-  return {
-    consultantProfileId,
-    paymentId: payment.id,
-    grossAmount,
-    platformFee,
-    consultantShare,
-    status,
-    holdUntil,
-  };
-}
-
-/**
  * Find succeeded payments without earnings and create them
  * Uses batch processing to handle large datasets efficiently
  */
-export async function syncPaymentEarnings(): Promise<PaymentEarningSyncResult> {
+// #476 — locked at the core so every entry (GH Actions / HTTP) shares one
+// mutual exclusion; fail-closed: money state must not double-run unlocked.
+export async function syncPaymentEarnings(
+  opts: SyncPaymentEarningsOptions = {},
+): Promise<PaymentEarningSyncResult> {
+  return withCronLock(
+    "sync-payment-earnings",
+    { failMode: "closed", ttlMs: LONG_JOB_TTL_MS },
+    () => syncPaymentEarningsUnlocked(opts),
+  );
+}
+
+async function syncPaymentEarningsUnlocked(
+  opts: SyncPaymentEarningsOptions = {},
+): Promise<PaymentEarningSyncResult> {
   const errors: string[] = [];
   let totalProcessed = 0;
   let createdCount = 0;
   let skippedCount = 0;
   let errorCount = 0;
+  const maxPayments = opts.limit ?? MAX_PAYMENTS_PER_RUN;
 
-  const thirtyDaysAgo = new Date(
-    Date.now() - SYNC_WINDOW_DAYS * 24 * 60 * 60 * 1000,
+  const now = new Date();
+  const alertCutoff = new Date(
+    now.getTime() - UNACCRUED_ALERT_AFTER_HOURS * 60 * 60 * 1000,
   );
+  /** Collected across batches so the whole run pages in one indexed read. */
+  const unaccruable: UnaccruablePayment[] = [];
 
   // FIX #571: Use cursor-based pagination instead of skip-based.
   // Skip-based pagination on a mutating result set (earnings: { none: {} })
@@ -142,15 +221,15 @@ export async function syncPaymentEarnings(): Promise<PaymentEarningSyncResult> {
   let cursor: string | undefined;
   let hasMore = true;
 
-  while (hasMore) {
+  while (hasMore && totalProcessed < maxPayments) {
+    const take = Math.min(BATCH_SIZE, maxPayments - totalProcessed);
     // Fetch batch with cursor-based pagination
     const payments = await prisma.payment.findMany({
       where: {
         paymentStatus: PaymentStatus.SUCCEEDED,
-        createdAt: { gte: thirtyDaysAgo },
         earnings: { none: {} }, // No linked earnings
       },
-      take: BATCH_SIZE,
+      take,
       ...(cursor
         ? { cursor: { id: cursor }, skip: 1 } // skip the cursor item itself
         : {}),
@@ -194,10 +273,13 @@ export async function syncPaymentEarnings(): Promise<PaymentEarningSyncResult> {
           },
         },
       },
-      orderBy: { id: "asc" },
+      // Oldest first: the longest-unaccrued payment is the one somebody has
+      // been waiting on. The id tie-break makes the ordering total, which is
+      // what the cursor needs to be able to resume without repeating a row.
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     });
 
-    if (payments.length < BATCH_SIZE) {
+    if (payments.length < take) {
       hasMore = false;
     }
     if (payments.length > 0) {
@@ -223,31 +305,19 @@ export async function syncPaymentEarnings(): Promise<PaymentEarningSyncResult> {
       existingEarnings.map((e) => e.paymentId),
     );
 
-    // Prepare earnings to create and revenue updates
-    const earningsToCreate: Array<{
-      consultantProfileId: string;
-      paymentId: string;
-      grossAmount: number;
-      platformFee: number;
-      consultantShare: number;
-      status: EarningStatus;
-      holdUntil: Date;
-      role?: EarningRole;
-      sharePercentage?: number;
-    }> = [];
-    const revenueUpdates: Map<string, number> = new Map();
-
+    // #773 — delegate creation to createEarningsFromPayment, the single
+    // source of truth: it resolves collaborator + HOST-org settlement, nets
+    // shares, and posts the balanced booking:<paymentId> journal txn in the
+    // same operation. The old local writer minted full-share collaborator
+    // rows with NO journal — every synced multi-party payment was born as
+    // EARNINGS_WITHOUT_BOOKING_TXN drift. Old payments get a fresh hold
+    // window (the release cron flips them READY on schedule).
     for (const payment of payments) {
-      // Skip if earnings already exist
       if (existingPaymentIds.has(payment.id)) {
-        console.log(
-          `⏭️ Skipping payment ${payment.id} - earnings already exist`,
-        );
         skippedCount++;
         continue;
       }
 
-      // Get consultant profile ID from the appointment based on type
       const appointment = payment.appointment;
       const consultantProfileId =
         appointment?.consultation?.consultationPlan?.consultantProfileId ||
@@ -255,7 +325,20 @@ export async function syncPaymentEarnings(): Promise<PaymentEarningSyncResult> {
         appointment?.webinar?.webinarPlan?.consultantProfileId ||
         appointment?.class?.classPlan?.consultantProfileId;
 
-      if (!consultantProfileId) {
+      if (!appointment || !consultantProfileId) {
+        // #1319 — a booking that resolves no consultant will not heal on the
+        // next run either, so it is escalated rather than skipped in silence.
+        // Fresh payments are left alone: settlement runs post-commit and may
+        // still be in flight.
+        if (appointment && payment.createdAt < alertCutoff) {
+          unaccruable.push({
+            id: payment.id,
+            appointmentId: payment.appointmentId,
+            organizationId: payment.organizationId,
+            amountPaise: payment.amount.toString(),
+            createdAt: payment.createdAt,
+          });
+        }
         console.log(
           `⏭️ Skipping payment ${payment.id} - no consultant profile found`,
         );
@@ -263,141 +346,39 @@ export async function syncPaymentEarnings(): Promise<PaymentEarningSyncResult> {
         continue;
       }
 
-      // FIX #572: For webinar/class payments, check for collaborator revenue splits
-      // instead of giving 100% to the plan owner.
-      const appointmentType = appointment?.appointmentType;
-      const webinarPlanId = appointment?.webinar?.webinarPlan?.id;
-      const classPlanId = appointment?.class?.classPlan?.id;
-
-      const baseEarnings = calculateEarningsData(payment, consultantProfileId);
-      const totalConsultantPool = baseEarnings.consultantShare;
-
-      let splits: Array<{
-        consultantProfileId: string;
-        share: number;
-        role: string;
-      }> = [];
-
-      if (
-        appointmentType === AppointmentsType.WEBINAR &&
-        webinarPlanId
-      ) {
-        try {
-          splits = await calculateRevenueSplit(
-            "webinar",
-            webinarPlanId,
-            totalConsultantPool,
-          );
-        } catch {
-          // Fallback to owner-only if split calculation fails
-        }
-      } else if (
-        appointmentType === AppointmentsType.CLASS &&
-        classPlanId
-      ) {
-        try {
-          splits = await calculateRevenueSplit(
-            "class",
-            classPlanId,
-            totalConsultantPool,
-          );
-        } catch {
-          // Fallback to owner-only if split calculation fails
-        }
-      }
-
-      if (splits.length > 0) {
-        // Multi-party earnings (collaborator splits)
-        // Owner gets full grossAmount/platformFee; collaborators get 0 for those fields.
-        for (const split of splits) {
-          const isOwner = split.role === "OWNER";
-          const splitBase = calculateEarningsData(payment, split.consultantProfileId);
-          const sharePercentage = totalConsultantPool > 0
-            ? Math.round((split.share / totalConsultantPool) * 10000) / 100
-            : 0;
-
-          earningsToCreate.push({
-            ...splitBase,
-            consultantShare: split.share,
-            grossAmount: isOwner ? baseEarnings.grossAmount : 0,
-            platformFee: isOwner ? baseEarnings.platformFee : 0,
-            role: isOwner ? EarningRole.OWNER : EarningRole.COLLABORATOR,
-            sharePercentage,
-          });
-
-          const currentRevenue = revenueUpdates.get(split.consultantProfileId) || 0;
-          revenueUpdates.set(
-            split.consultantProfileId,
-            currentRevenue + split.share,
-          );
-        }
-      } else {
-        // Single-party earnings (owner only, or no collaborators)
-        earningsToCreate.push({
-          ...baseEarnings,
-          role: EarningRole.OWNER,
-          sharePercentage: 100,
-        });
-
-        const currentRevenue = revenueUpdates.get(consultantProfileId) || 0;
-        revenueUpdates.set(
-          consultantProfileId,
-          currentRevenue + baseEarnings.consultantShare,
-        );
-      }
-    }
-
-    // Batch create earnings
-    if (earningsToCreate.length > 0) {
       try {
-        const result = await prisma.consultantEarnings.createMany({
-          data: earningsToCreate,
-          skipDuplicates: true,
+        const earningsId = await createEarningsFromPayment({
+          payment: {
+            ...payment,
+            appointment: {
+              consultantProfile: { id: consultantProfileId },
+              webinar: appointment.webinar
+                ? { webinarPlanId: appointment.webinar.webinarPlanId }
+                : null,
+              class: appointment.class
+                ? { classPlanId: appointment.class.classPlanId }
+                : null,
+            },
+          },
+          appointmentType: mapAppointmentType(appointment.appointmentType),
         });
-
-        createdCount += result.count;
-        console.log(`✅ Created ${result.count} earnings records in batch`);
-
-        // Update consultant revenue balances
-        const consultantIds = Array.from(revenueUpdates.keys());
-        for (const consultantProfileId of consultantIds) {
-          const amount = revenueUpdates.get(consultantProfileId)!;
-          try {
-            await prisma.consultantProfile.update({
-              where: { id: consultantProfileId },
-              data: {
-                pendingRevenue: { increment: amount },
-              },
-            });
-          } catch (updateError) {
-            const errorMessage =
-              updateError instanceof Error
-                ? updateError.message
-                : String(updateError);
-            errors.push(
-              `Revenue update for consultant ${consultantProfileId}: ${errorMessage}`,
-            );
-            console.error(
-              `❌ Error updating revenue for consultant ${consultantProfileId}:`,
-              errorMessage,
-            );
-            errorCount++;
-          }
+        if (earningsId) {
+          createdCount++;
+        } else {
+          skippedCount++;
         }
-      } catch (createError) {
-        const errorMessage =
-          createError instanceof Error
-            ? createError.message
-            : String(createError);
-        errors.push(`Batch create: ${errorMessage}`);
-        console.error(`❌ Error creating earnings batch:`, errorMessage);
-        errorCount += earningsToCreate.length;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        errors.push(`Payment ${payment.id}: ${msg}`);
+        errorCount++;
       }
     }
   }
 
+  const pagedCount = await pageUnaccruablePayments(unaccruable, now);
+
   console.log(
-    `Sync complete: ${totalProcessed} total, ${createdCount} created, ${skippedCount} skipped, ${errorCount} errors`,
+    `Sync complete: ${totalProcessed} total, ${createdCount} created, ${skippedCount} skipped, ${errorCount} errors, ${pagedCount} paged`,
   );
 
   return {
@@ -406,6 +387,7 @@ export async function syncPaymentEarnings(): Promise<PaymentEarningSyncResult> {
     createdCount,
     skippedCount,
     errorCount,
+    pagedCount,
     errors,
     timestamp: new Date().toISOString(),
   };

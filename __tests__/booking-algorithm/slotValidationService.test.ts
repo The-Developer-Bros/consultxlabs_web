@@ -22,8 +22,11 @@ jest.mock("../../lib/prisma", () => ({
   default: {},
 }));
 
-import { SlotValidationService } from "@/utils/slotAllocation/SlotValidationService";
-import { ScheduleType, DayOfWeek } from "@prisma/client";
+import {
+  SlotValidationService,
+  isOccupiedByLiveAppointment,
+} from "@/utils/slotAllocation/SlotValidationService";
+import { ScheduleType, DayOfWeek, AppointmentStatus } from "@prisma/client";
 import {
   makeConsultantData,
   makeWeeklyAvailabilitySlot,
@@ -129,10 +132,54 @@ describe("checkSlotAvailability", () => {
     expect(result.errors[0]).toContain("already booked");
   });
 
-  it("should use configurable slot duration", async () => {
-    await service.checkSlotAvailability(futureSlots(1), "user-1", 60);
-    // Verify the query was called — checking it doesn't throw with different duration
-    expect(mockPrisma.appointment.findMany).toHaveBeenCalled();
+  // AE-5/RV-6 — slot duration is no longer a parameter; it is the inlined
+  // 30-minute SLOT_DURATION_MS const. checkSlotAvailability takes (slots, userId).
+  it("uses the fixed 30-minute slot window for the conflict envelope", async () => {
+    await service.checkSlotAvailability(futureSlots(1), "user-1");
+    const where = mockPrisma.appointment.findMany.mock.calls[0][0].where;
+    const slotFilter = where.AND.find(
+      (clause: any) => clause.slotsOfAppointment,
+    ).slotsOfAppointment.some.AND;
+    const ltClause = slotFilter.find((c: any) => c.startsAt).startsAt.lt;
+    const gtClause = slotFilter.find((c: any) => c.endsAt).endsAt.gt;
+    // A single 10:00 slot must produce a [10:00, 10:30) envelope.
+    expect(ltClause.toISOString()).toBe("2025-06-01T10:30:00.000Z");
+    expect(gtClause.toISOString()).toBe("2025-06-01T10:00:00.000Z");
+  });
+
+  // Defense-in-depth: the conflict scan never trusts a tombstoned slot as a
+  // booking. (Deliberately NO completionStatus filter here — RESCHEDULED rows
+  // are a pending reschedule's live hold and must still block.)
+  it("excludes deletedAt slot tombstones from the conflict scan", async () => {
+    await service.checkSlotAvailability(futureSlots(1), "user-1");
+    const where = mockPrisma.appointment.findMany.mock.calls[0][0].where;
+    const slotFilter = where.AND.find(
+      (clause: any) => clause.slotsOfAppointment,
+    ).slotsOfAppointment.some.AND;
+    expect(slotFilter).toContainEqual({ deletedAt: null });
+    expect(JSON.stringify(slotFilter)).not.toContain("completionStatus");
+  });
+
+  // Behavior guard, stated honestly for a mocked Prisma: the DB applies the
+  // include's where, so the strongest unit-level guarantee is that the
+  // include mirrors the parent predicate EXACTLY — otherwise a qualifying
+  // appointment's tombstoned (or non-participating) child reaches the JS
+  // matcher and produces a [CONFLICT] the parent filter just excluded
+  // (CodeRabbit triage). End-to-end tombstone behavior is covered by the
+  // grid-allocator-parity suite against a real database.
+  it("mirrors the parent slot predicate into the conflict query's include", async () => {
+    await service.checkSlotAvailability(futureSlots(2), "user-1");
+    const { where, include } = mockPrisma.appointment.findMany.mock.calls[0][0];
+    const parentFilter = where.AND.find(
+      (clause: any) => clause.slotsOfAppointment,
+    ).slotsOfAppointment.some.AND;
+    const includeFilter = include.slotsOfAppointment.where.AND;
+    // Same four conditions, same order: envelope ×2, participants, tombstone.
+    expect(includeFilter).toEqual(parentFilter);
+    expect(includeFilter).toContainEqual({ deletedAt: null });
+    expect(includeFilter).toContainEqual({
+      user: { some: { id: { in: ["user-1"] } } },
+    });
   });
 
   it("should skip expired payment conflicts (consultation)", async () => {
@@ -147,10 +194,11 @@ describe("checkSlotAvailability", () => {
           },
         ],
         consultation: {
-          requestStatus: "APPROVED_PENDING_PAYMENT",
+          status: "APPROVED_PENDING_PAYMENT",
         },
         payment: [
           {
+            paymentStatus: "PENDING",
             expiresAt: new Date("2024-01-01"), // expired
           },
         ],
@@ -173,10 +221,11 @@ describe("checkSlotAvailability", () => {
           },
         ],
         subscription: {
-          requestStatus: "APPROVED_PENDING_PAYMENT",
+          status: "APPROVED_PENDING_PAYMENT",
         },
         payment: [
           {
+            paymentStatus: "PENDING",
             expiresAt: new Date("2024-01-01"), // expired
           },
         ],
@@ -199,11 +248,12 @@ describe("checkSlotAvailability", () => {
           },
         ],
         subscription: {
-          requestStatus: "APPROVED_PENDING_PAYMENT",
+          status: "APPROVED_PENDING_PAYMENT",
           requestedBy: { user: { name: "Active Sub User" } },
         },
         payment: [
           {
+            paymentStatus: "PENDING",
             expiresAt: new Date("2026-12-31"), // not expired
           },
         ],
@@ -213,6 +263,59 @@ describe("checkSlotAvailability", () => {
     const result = await service.checkSlotAvailability(slots, "user-1");
     expect(result.isValid).toBe(false);
     expect(result.errors[0]).toContain("already booked");
+  });
+});
+
+// ─── RV-2: shared live-occupancy rule ───────────────────────────────────────
+
+describe("RV-2: isOccupiedByLiveAppointment (shared by validate + allocator)", () => {
+  const NOW = new Date("2025-06-01T00:00:00Z");
+
+  it("treats an expired APPROVED_PENDING_PAYMENT hold as NOT occupied", () => {
+    expect(
+      isOccupiedByLiveAppointment(
+        {
+          consultation: {
+            status: AppointmentStatus.APPROVED_PENDING_PAYMENT,
+          },
+          payment: [
+            {
+              paymentStatus: "PENDING",
+              expiresAt: new Date("2024-01-01T00:00:00Z"),
+            },
+          ],
+        },
+        NOW,
+      ),
+    ).toBe(false);
+  });
+
+  it("treats a non-expired APPROVED_PENDING_PAYMENT hold as occupied", () => {
+    expect(
+      isOccupiedByLiveAppointment(
+        {
+          subscription: {
+            status: AppointmentStatus.APPROVED_PENDING_PAYMENT,
+          },
+          payment: [
+            {
+              paymentStatus: "PENDING",
+              expiresAt: new Date("2026-12-31T00:00:00Z"),
+            },
+          ],
+        },
+        NOW,
+      ),
+    ).toBe(true);
+  });
+
+  it("treats any non-pending-payment status as occupied regardless of payment", () => {
+    expect(
+      isOccupiedByLiveAppointment(
+        { consultation: { status: AppointmentStatus.APPROVED }, payment: [] },
+        NOW,
+      ),
+    ).toBe(true);
   });
 });
 
@@ -446,6 +549,64 @@ describe("validate: consultation event", () => {
 
 // ─── validate: webinar ──────────────────────────────────────────────────────
 
+describe("validate: per-day session cap (#898)", () => {
+  // Class cap is 2 sessions/day (subscription is 1/day). The cap was previously
+  // only enforced at allocation-selection time + the client guard; these cover
+  // the new hard server-side check in validateClass.
+  it("accepts a class at the per-day cap (2 one-hour sessions on one day)", async () => {
+    const result = await service.validate(
+      "class",
+      "class-1",
+      futureSlots(4, "2025-06-02T09:00:00Z"), // 09:00–10:00 + 10:00–11:00, Monday
+      weeklyConsultant,
+      { sessionsPerWeek: 3, sessionDurationInHours: 1 },
+    );
+    expect(result.errors.some((e) => e.includes("DAILY_LIMIT"))).toBe(false);
+  });
+
+  it("rejects a class over the per-day cap (3 sessions on one day)", async () => {
+    const result = await service.validate(
+      "class",
+      "class-1",
+      futureSlots(6, "2025-06-02T09:00:00Z"), // three 1h sessions, all Monday
+      weeklyConsultant,
+      { sessionsPerWeek: 3, sessionDurationInHours: 1 },
+    );
+    expect(result.isValid).toBe(false);
+    expect(result.errors.some((e) => e.includes("DAILY_LIMIT"))).toBe(true);
+  });
+
+  it("counts existing same-day sessions toward the cap (partial reschedule)", async () => {
+    // Two confirmed same-day sessions already exist; proposing a third on the
+    // same day pushes Monday to 3 > 2.
+    mockPrisma.appointment.findMany.mockResolvedValue([
+      {
+        id: "existing-1",
+        slotsOfAppointment: [
+          { startsAt: new Date("2025-06-02T09:00:00Z"), isTentative: false },
+          { startsAt: new Date("2025-06-02T09:30:00Z"), isTentative: false },
+        ],
+      },
+      {
+        id: "existing-2",
+        slotsOfAppointment: [
+          { startsAt: new Date("2025-06-02T11:00:00Z"), isTentative: false },
+          { startsAt: new Date("2025-06-02T11:30:00Z"), isTentative: false },
+        ],
+      },
+    ]);
+    const result = await service.validate(
+      "class",
+      "class-1",
+      futureSlots(2, "2025-06-02T14:00:00Z"), // one more session, same Monday
+      weeklyConsultant,
+      { sessionsPerWeek: 5, sessionDurationInHours: 1 },
+    );
+    expect(result.isValid).toBe(false);
+    expect(result.errors.some((e) => e.includes("DAILY_LIMIT"))).toBe(true);
+  });
+});
+
 describe("validate: webinar event", () => {
   it("should accept correct consecutive slots for 2-hour webinar", async () => {
     const result = await service.validate(
@@ -511,7 +672,7 @@ describe("validate: webinar event", () => {
 // ─── validate: class ────────────────────────────────────────────────────────
 
 describe("validate: class event", () => {
-  it("should reject when callsPerWeek is missing", async () => {
+  it("should reject when sessionsPerWeek is missing", async () => {
     const result = await service.validate(
       "class",
       "event-1",
@@ -529,7 +690,7 @@ describe("validate: class event", () => {
       "event-1",
       futureSlots(2, "2025-06-02T10:00:00Z"),
       weeklyConsultant,
-      { callsPerWeek: 2 },
+      { sessionsPerWeek: 2 },
     );
     expect(result.isValid).toBe(false);
     expect(result.errors[0]).toContain("Session duration is required");
@@ -542,7 +703,7 @@ describe("validate: class event", () => {
       "event-1",
       futureSlots(2, "2025-06-02T10:00:00Z"),
       weeklyConsultant,
-      { callsPerWeek: 2, sessionDurationInHours: 1 },
+      { sessionsPerWeek: 2, sessionDurationInHours: 1 },
     );
     expect(result.isValid).toBe(true);
   });
@@ -553,7 +714,7 @@ describe("validate: class event", () => {
       "event-1",
       futureSlots(3, "2025-06-02T10:00:00Z"),
       weeklyConsultant,
-      { callsPerWeek: 2, sessionDurationInHours: 1 },
+      { sessionsPerWeek: 2, sessionDurationInHours: 1 },
     );
     expect(result.isValid).toBe(false);
     expect(result.errors.some((e) => e.includes("incomplete session"))).toBe(
@@ -568,7 +729,7 @@ describe("validate: class event", () => {
       "event-1",
       futureSlots(6, "2025-06-02T10:00:00Z"),
       weeklyConsultant,
-      { callsPerWeek: 2, sessionDurationInHours: 1 },
+      { sessionsPerWeek: 2, sessionDurationInHours: 1 },
     );
     expect(result.isValid).toBe(false);
     expect(result.errors.some((e) => e.includes("max is 2"))).toBe(true);
@@ -604,7 +765,7 @@ describe("validate: class event", () => {
       "event-1",
       slots,
       crossMidnightConsultant,
-      { callsPerWeek: 2, sessionDurationInHours: 1 },
+      { sessionsPerWeek: 2, sessionDurationInHours: 1 },
     );
     expect(result.isValid).toBe(true);
   });
@@ -621,10 +782,72 @@ describe("validate: class event", () => {
       "event-1",
       slots,
       weeklyConsultant,
-      { callsPerWeek: 2, sessionDurationInHours: 1 },
+      { sessionsPerWeek: 2, sessionDurationInHours: 1 },
     );
     expect(result.isValid).toBe(false);
     expect(result.errors.some((e) => e.includes("consecutive"))).toBe(true);
+  });
+
+  // ── RV-5: weekly limit seeds from existing confirmed sessions ──────────────
+  describe("RV-5: weekly limit counts existing confirmed sessions", () => {
+    // Mon Jun 16 and Tue Jun 17 2025 both fall in the Sunday-week of Jun 15 and
+    // are valid Mon/Tue availability days for weeklyConsultant.
+    const session1 = futureSlots(2, "2025-06-16T10:00:00Z"); // Mon 10:00-11:00
+    const session2 = futureSlots(2, "2025-06-17T10:00:00Z"); // Tue 10:00-11:00
+
+    it("FAILS when proposed sessions plus a surviving confirmed session exceed the limit", async () => {
+      // No conflicts from the universal conflict scan…
+      mockPrisma.appointment.findMany.mockResolvedValueOnce([]);
+      // …but the class already has 1 CONFIRMED (non-tentative) session this week.
+      mockPrisma.appointment.findMany.mockResolvedValueOnce([
+        {
+          id: "confirmed-apt",
+          slotsOfAppointment: [
+            { startsAt: new Date("2025-06-18T10:00:00Z"), isTentative: false },
+            { startsAt: new Date("2025-06-18T10:30:00Z"), isTentative: false },
+          ],
+        },
+      ]);
+
+      // sessionsPerWeek = 2; reschedule proposes 2 NEW sessions in the same week.
+      // 2 proposed + 1 confirmed = 3 > 2 → must fail (matches the allocator).
+      const result = await service.validate(
+        "class",
+        "class-rv5",
+        [...session1, ...session2],
+        weeklyConsultant,
+        { sessionsPerWeek: 2, sessionDurationInHours: 1 },
+      );
+
+      expect(result.isValid).toBe(false);
+      expect(result.errors.some((e) => e.includes("WEEKLY_LIMIT"))).toBe(true);
+      expect(result.errors.some((e) => e.includes("3 sessions"))).toBe(true);
+    });
+
+    it("does NOT count the class's own tentative session being replaced", async () => {
+      mockPrisma.appointment.findMany.mockResolvedValueOnce([]);
+      // The only existing session this week is TENTATIVE (the one being
+      // rescheduled). It must be excluded from the seed, so 2 proposed + 0 = 2.
+      mockPrisma.appointment.findMany.mockResolvedValueOnce([
+        {
+          id: "tentative-apt",
+          slotsOfAppointment: [
+            { startsAt: new Date("2025-06-18T10:00:00Z"), isTentative: true },
+            { startsAt: new Date("2025-06-18T10:30:00Z"), isTentative: true },
+          ],
+        },
+      ]);
+
+      const result = await service.validate(
+        "class",
+        "class-rv5",
+        [...session1, ...session2],
+        weeklyConsultant,
+        { sessionsPerWeek: 2, sessionDurationInHours: 1 },
+      );
+
+      expect(result.isValid).toBe(true);
+    });
   });
 });
 
@@ -686,7 +909,7 @@ describe("validate: subscription slot count modulo", () => {
       schedulingPeriodStartsAt: new Date("2025-06-01T00:00:00Z"),
       schedulingPeriodEndsAt: new Date("2025-06-30T23:59:59Z"),
       subscriptionPlan: {
-        callsPerWeek: 5,
+        sessionsPerWeek: 5,
         durationInHours: 1,
       },
     });
@@ -712,7 +935,7 @@ describe("validate: subscription slot count modulo", () => {
       schedulingPeriodStartsAt: new Date("2025-06-01T00:00:00Z"),
       schedulingPeriodEndsAt: new Date("2025-06-30T23:59:59Z"),
       subscriptionPlan: {
-        callsPerWeek: 5,
+        sessionsPerWeek: 5,
         durationInHours: 0.5,
       },
     });
@@ -729,5 +952,39 @@ describe("validate: subscription slot count modulo", () => {
     if (!result.isValid) {
       expect(result.errors.every((e) => !e.includes("multiple of"))).toBe(true);
     }
+  });
+});
+
+// ─── #676 AE-1: consultee-side conflict check ───────────────────────────────
+
+describe("#676 AE-1: validate threads consulteeUserId into the conflict scan", () => {
+  it("includes the consultee in the conflict query when consulteeUserId is set", async () => {
+    await service.validate(
+      "consultation",
+      "event-1",
+      futureSlots(2, "2025-06-02T10:00:00Z"),
+      weeklyConsultant,
+      { durationInHours: 1 },
+      undefined,
+      { consulteeUserId: "consultee-ae1" },
+    );
+    // The single batched conflict query must scan the consultee's calendar too.
+    expect(
+      JSON.stringify(mockPrisma.appointment.findMany.mock.calls),
+    ).toContain("consultee-ae1");
+  });
+
+  it("does NOT add a consultee to the scan for group events", async () => {
+    mockPrisma.appointment.findMany.mockClear();
+    await service.validate(
+      "webinar",
+      "event-1",
+      futureSlots(2, "2025-06-02T10:00:00Z"),
+      weeklyConsultant,
+      { durationInHours: 1 },
+    );
+    expect(
+      JSON.stringify(mockPrisma.appointment.findMany.mock.calls),
+    ).not.toContain("consultee-ae1");
   });
 });

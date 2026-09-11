@@ -1,0 +1,88 @@
+name: Reconcile Orphaned Meeting Sessions
+
+on:
+  schedule:
+    # Every 30 minutes at :25 and :55.
+    #
+    # NOT :13/:43 — that is reconcile-orphaned-confirmations' slot
+    # (`13-59/30`), and two half-hourly jobs on the same minute start together
+    # every single time rather than occasionally. scripts/ci/check-workflow-
+    # hygiene.ts fails the build on exactly that, which is how this was caught.
+    # Of the sixty minutes, only :00, :03, :10, :15, :25 and :55 are unclaimed
+    # by an existing sub-daily schedule, and :25/:55 is the only pair thirty
+    # minutes apart.
+    #
+    # #1134 P1-1 — this job has existed since it was written and has NEVER run.
+    # Its own docstring claimed "runs every 30 minutes via cleanup API route",
+    # but no workflow invoked it and nothing called the route. It is the only
+    # backstop for a session whose `call.session_ended` webhook never landed —
+    # and since the webhook secret was missing in production, that was every
+    # session. 1,663 MeetingSession rows, 0 with endedAt, 1,417 of them more
+    # than an hour past their slot end.
+    #
+    # Downstream of an unreconciled session: SlotOfAppointment.completionStatus
+    # never leaves SCHEDULED, so the appointment never completes.
+    - cron: "25,55 * * * *"
+  workflow_dispatch:
+
+# Never overlap: the job claims rows with a cron lock, but a queued run is
+# cheaper than two racing Stream lookups over the same 100-row batch.
+concurrency:
+  group: reconcile-orphaned-sessions
+  cancel-in-progress: false
+
+# This job only reads the repo to run a script; it never writes back. Matches
+# expire-reschedule-proposals.yml, and narrows what a compromised dependency
+# could reach with the default token.
+permissions:
+  contents: read
+
+jobs:
+  reconcile-orphaned-sessions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      # #1066 — jobs run as bare Node processes, so Sentry.init only sees what
+      # the step env carries.
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      # Needed to ask Stream whether the call actually ended. Without them the
+      # job still runs but falls back to the slot end time and records every
+      # session as UNVERIFIED.
+      NEXT_PUBLIC_STREAM_API_KEY: ${{ secrets.NEXT_PUBLIC_STREAM_API_KEY }}
+      STREAM_API_KEY: ${{ secrets.STREAM_API_KEY }}
+      STREAM_API_SECRET: ${{ secrets.STREAM_API_SECRET }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        # The runner holds deploy-scoped secrets, so a compromised transitive
+        # dependency's postinstall would run with them. Nothing here needs
+        # lifecycle scripts. Same posture as expire-reschedule-proposals.yml.
+        run: npm ci --ignore-scripts
+
+      - name: Generate Prisma client
+        run: npx --no-install --ignore-scripts prisma generate
+
+      - name: Run orphaned session reconciliation
+        run: npx --yes --ignore-scripts tsx@4.23.1 jobs/meetings/reconcile-orphaned-sessions.ts
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "reconcile-orphaned-sessions"

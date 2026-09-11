@@ -22,7 +22,7 @@ export interface ClassPlanDefaults {
 export interface ClassPlan {
   title?: string;
   classesPerWeek?: number;
-  meetingsPerWeek?: number;
+  sessionsPerWeek?: number;
   durationInMonths?: number;
   sessionDurationInHours?: number;
 }
@@ -79,7 +79,7 @@ export function getClassPlanDefaults(plan: ClassPlan): ClassPlanDefaults {
   const type = detectClassPlanType(plan);
 
   // Extract values from plan
-  const classesPerWeekFromPlan = plan?.classesPerWeek ?? plan?.meetingsPerWeek;
+  const classesPerWeekFromPlan = plan?.classesPerWeek ?? plan?.sessionsPerWeek;
   const durationInMonthsFromPlan = plan?.durationInMonths;
   const sessionDurationInHours = plan?.sessionDurationInHours ?? 1;
 

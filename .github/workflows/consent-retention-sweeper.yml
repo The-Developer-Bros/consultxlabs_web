@@ -1,0 +1,65 @@
+name: Consent Retention Sweeper
+
+# DPDP ConsentArtifact retention sweep: counts (or deletes, gated by
+# DPDP_SWEEPER_DELETE) artifacts past their 7-year retention window.
+# NOT a financial cron — runs even in DEGRADED maintenance.
+
+on:
+  schedule:
+    # 21:00 UTC Sunday = 02:30 IST Monday. GitHub Actions `schedule`
+    # interprets cron in UTC. Weekly off-peak slot; deletion (when enabled)
+    # runs in capped batches so a backlog can't monopolise the pool.
+    - cron: "0 21 * * 0"
+  workflow_dispatch: # Allow manual triggering
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  consent-retention-sweeper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      # #1066 — jobs run as bare Node processes, so Sentry.init only sees
+      # what the step env carries. Without the DSN the runner initialises
+      # a disabled client and every captureException is a no-op again.
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      # The cron is observe-only when unset / "false"; flip per-environment
+      # after the archival pipeline lands. GH Actions secrets store the
+      # live value per-environment (prod / staging).
+      DPDP_SWEEPER_DELETE: ${{ secrets.DPDP_SWEEPER_DELETE }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Run consent retention sweeper job
+        run: npx --yes tsx@4.23.1 jobs/compliance/consent-retention-sweeper.ts
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          # Fallback sink — Slack has never been provisioned, so this is
+          # what actually pages today. See 07-required-secrets.md.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "consent-retention-sweeper"

@@ -7,7 +7,7 @@ import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { CompanyLogo } from "@/components/ui/company-logo";
 import { useCurrency } from "@/hooks/useCurrency";
-import { isClassProgram, Program } from "../utils";
+import { isClassProgram, Program } from "@/lib/explore/programs";
 
 interface FeaturedCarouselProps {
   programs: Program[];
@@ -16,15 +16,15 @@ interface FeaturedCarouselProps {
 
 function SkeletonSlide() {
   return (
-    <div className="flex-shrink-0 w-full rounded-2xl overflow-hidden border border-zinc-200 bg-zinc-100 animate-pulse">
+    <div className="flex-shrink-0 w-full rounded-2xl overflow-hidden border border-border bg-muted animate-pulse">
       <div className="flex flex-col md:flex-row h-[320px] md:h-[280px]">
-        <div className="md:w-[400px] bg-zinc-200 flex-shrink-0 h-[160px] md:h-full" />
+        <div className="md:w-[400px] bg-muted flex-shrink-0 h-[160px] md:h-full" />
         <div className="flex-1 p-6 md:p-8 space-y-4">
-          <div className="h-4 bg-zinc-200 rounded w-20" />
-          <div className="h-7 bg-zinc-200 rounded w-3/4" />
-          <div className="h-4 bg-zinc-200 rounded w-full" />
-          <div className="h-4 bg-zinc-200 rounded w-2/3" />
-          <div className="h-10 bg-zinc-200 rounded w-32 mt-4" />
+          <div className="h-4 bg-muted rounded w-20" />
+          <div className="h-7 bg-muted rounded w-3/4" />
+          <div className="h-4 bg-muted rounded w-full" />
+          <div className="h-4 bg-muted rounded w-2/3" />
+          <div className="h-10 bg-muted rounded w-32 mt-4" />
         </div>
       </div>
     </div>
@@ -83,7 +83,7 @@ function FeaturedCarouselImpl({
   return (
     <div className="relative">
       <div
-        className="group bg-white rounded-2xl overflow-hidden border border-zinc-200 hover:border-zinc-300 hover:shadow-xl transition-all duration-300 cursor-pointer"
+        className="group bg-card rounded-2xl overflow-hidden border border-border hover:border-border hover:shadow-xl transition-all duration-300 cursor-pointer"
         onClick={handleClick}
         role="button"
         tabIndex={0}
@@ -110,8 +110,8 @@ function FeaturedCarouselImpl({
               <span
                 className={`px-3 py-1 rounded-full text-xs font-medium ${
                   program.type === "class"
-                    ? "bg-zinc-900 text-white"
-                    : "bg-white text-zinc-900"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-card text-foreground"
                 }`}
               >
                 {program.type === "class" ? "Class" : "Webinar"}
@@ -124,15 +124,15 @@ function FeaturedCarouselImpl({
           </div>
 
           {/* Content */}
-          <div className="flex-1 p-6 md:p-8 flex flex-col justify-center">
-            <h3 className="text-xl md:text-2xl font-bold text-zinc-900 mb-3 line-clamp-2 group-hover:text-zinc-700 transition-colors">
+          <div className="flex-1 p-6 md:p-8 flex flex-col justify-center min-w-0">
+            <h3 className="text-xl md:text-2xl font-bold text-foreground mb-3 line-clamp-2 group-hover:text-muted-foreground transition-colors">
               {program.title}
             </h3>
-            <p className="text-sm md:text-base text-zinc-500 mb-6 line-clamp-3">
+            <p className="text-sm md:text-base text-muted-foreground mb-6 line-clamp-3">
               {program.description}
             </p>
             <div className="flex items-center gap-4">
-              <span className="text-2xl font-bold text-zinc-900">
+              <span className="text-2xl font-bold text-foreground">
                 {formatPrice(program.price)}
               </span>
               {workExperiences.length > 0 && (
@@ -143,12 +143,12 @@ function FeaturedCarouselImpl({
                       companyName={exp.company}
                       companyDomain={exp.companyDomain ?? undefined}
                       size={24}
-                      className="border-zinc-200"
+                      className="border-border"
                     />
                   ))}
                 </div>
               )}
-              <span className="inline-flex items-center gap-1.5 text-sm font-medium text-zinc-500 group-hover:text-zinc-900 transition-colors">
+              <span className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground group-hover:text-foreground transition-colors">
                 View Details
                 <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
               </span>
@@ -165,20 +165,20 @@ function FeaturedCarouselImpl({
               e.stopPropagation();
               prev();
             }}
-            className="absolute left-3 top-1/2 -translate-y-1/2 z-10 w-9 h-9 rounded-full bg-white/90 backdrop-blur border border-zinc-200 shadow-md flex items-center justify-center hover:bg-white transition-colors"
+            className="absolute left-3 top-1/2 -translate-y-1/2 z-10 w-9 h-9 rounded-full bg-card/90 backdrop-blur border border-border shadow-md flex items-center justify-center hover:bg-card transition-colors"
             aria-label="Previous"
           >
-            <ChevronLeft className="w-4 h-4 text-zinc-700" />
+            <ChevronLeft className="w-4 h-4 text-muted-foreground" />
           </button>
           <button
             onClick={(e) => {
               e.stopPropagation();
               next();
             }}
-            className="absolute right-3 top-1/2 -translate-y-1/2 z-10 w-9 h-9 rounded-full bg-white/90 backdrop-blur border border-zinc-200 shadow-md flex items-center justify-center hover:bg-white transition-colors"
+            className="absolute right-3 top-1/2 -translate-y-1/2 z-10 w-9 h-9 rounded-full bg-card/90 backdrop-blur border border-border shadow-md flex items-center justify-center hover:bg-card transition-colors"
             aria-label="Next"
           >
-            <ChevronRight className="w-4 h-4 text-zinc-700" />
+            <ChevronRight className="w-4 h-4 text-muted-foreground" />
           </button>
 
           {/* Dots */}
@@ -192,8 +192,8 @@ function FeaturedCarouselImpl({
                 }}
                 className={`w-2 h-2 rounded-full transition-all duration-200 ${
                   i === currentIndex
-                    ? "bg-zinc-900 w-6"
-                    : "bg-zinc-300 hover:bg-zinc-400"
+                    ? "bg-primary w-6"
+                    : "bg-muted-foreground/30 hover:bg-muted-foreground/50"
                 }`}
                 aria-label={`Go to slide ${i + 1}`}
               />

@@ -1,370 +1,249 @@
 # Cron Jobs Reference
 
-All 27 scheduled jobs run as GitHub Actions workflows, executing standalone Node.js scripts that connect directly to PostgreSQL via Prisma. **None of these jobs are aware of maintenance mode** -- they bypass the Next.js middleware entirely.
-
-## Summary by Category
-
-| Category     | Count | Most Critical                                        |
-| ------------ | ----- | ---------------------------------------------------- |
-| Appointments | 6     | Reconcile Slot Availability, Cleanup Tentative Slots |
-| Payments     | 3     | Cleanup Abandoned Payments, Reconcile Payment Status |
-| Payouts      | 4     | Process Payouts, Create Payout Batch                 |
-| Disputes     | 3     | Handle Lost Disputes                                 |
-| Refunds      | 2     | Reconcile Pending Refunds                            |
-| Earnings     | 2     | Sync Payment-Earning                                 |
-| Cleanup      | 4     | Document Storage Reconciliation                      |
-| Stream       | 1     | Stream User Sync                                     |
-| Waitlist     | 2     | Process Waitlist Expirations                         |
-
-## Appointments
-
-### 1. Auto-Complete Appointments
-
-| Field                | Value                                                                                                  |
-| -------------------- | ------------------------------------------------------------------------------------------------------ |
-| **Schedule**         | `0 * * * *` (hourly, at :00)                                                                           |
-| **Script**           | `jobs/appointments/auto-complete-appointments.ts`                                                      |
-| **Description**      | Marks webinars, classes, consultations, and subscriptions as COMPLETED when their end time has passed. |
-| **DB Connection**    | Yes (Prisma)                                                                                           |
-| **External APIs**    | None                                                                                                   |
-| **Maintenance Risk** | MEDIUM -- Running during migration could mark incomplete events as completed                           |
-| **Safe to skip?**    | Yes -- catch-up on next run. Events will be completed on the next hourly cycle.                        |
-
-### 2. Cleanup Invalid Appointments
-
-| Field                | Value                                                                                                                                |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| **Schedule**         | `0 * * * *` (hourly, at :00)                                                                                                         |
-| **Script**           | `jobs/appointments/cleanup-invalid-appointments.ts`                                                                                  |
-| **Description**      | Cancels duplicate appointments and appointments with invalid durations (consultations/subscriptions). Cleans up conflicting records. |
-| **DB Connection**    | Yes (Prisma)                                                                                                                         |
-| **External APIs**    | None                                                                                                                                 |
-| **Maintenance Risk** | HIGH -- Could incorrectly identify valid records as invalid if schema is changing                                                    |
-| **Safe to skip?**    | Yes -- duplicates accumulate but don't cause harm until next run.                                                                    |
-
-### 3. Cleanup Stale Pending Consultations
-
-| Field                | Value                                                                                       |
-| -------------------- | ------------------------------------------------------------------------------------------- |
-| **Schedule**         | `30 * * * *` (hourly, at :30)                                                               |
-| **Script**           | `jobs/appointments/cleanup-stale-pending-consultations.ts`                                  |
-| **Description**      | Cancels consultations stuck in PENDING state for >24 hours. Releases their reserved slots.  |
-| **DB Connection**    | Yes (Prisma)                                                                                |
-| **External APIs**    | None                                                                                        |
-| **Maintenance Risk** | MEDIUM -- May release slots that are legitimately pending due to delayed webhook processing |
-| **Safe to skip?**    | Yes -- stale consultations will be caught on next run. 24-hour window provides buffer.      |
-
-### 4. Cleanup Tentative Slots
-
-| Field                | Value                                                                                             |
-| -------------------- | ------------------------------------------------------------------------------------------------- |
-| **Schedule**         | `0 */2 * * *` (every 2 hours)                                                                     |
-| **Script**           | `jobs/appointments/cleanup-tentative-slots.ts`                                                    |
-| **Description**      | Releases tentative (reserved but unconfirmed) slot reservations older than 30 minutes.            |
-| **DB Connection**    | Yes (Prisma)                                                                                      |
-| **External APIs**    | None                                                                                              |
-| **Maintenance Risk** | MEDIUM -- Could release slots that are tentative due to in-flight payments delayed by maintenance |
-| **Safe to skip?**    | Yes -- tentative slots will accumulate but next run catches up.                                   |
-
-### 5. Expire Stale Requests
-
-| Field                | Value                                                                                                                |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| **Schedule**         | `0 1 * * *` (daily at 1 AM UTC)                                                                                      |
-| **Script**           | `jobs/appointments/expire-stale-requests.ts`                                                                         |
-| **Description**      | Expires old consultation/subscription requests and payment-pending requests that have exceeded their timeout period. |
-| **DB Connection**    | Yes (Prisma)                                                                                                         |
-| **External APIs**    | None                                                                                                                 |
-| **Maintenance Risk** | LOW -- Daily job, unlikely to conflict with short maintenance windows                                                |
-| **Safe to skip?**    | Yes -- stale requests persist one extra day.                                                                         |
-
-### 6. Reconcile Slot Availability
-
-| Field                | Value                                                                                                                |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| **Schedule**         | `15 * * * *` (hourly, at :15)                                                                                        |
-| **Script**           | `jobs/appointments/reconcile-slot-availability.ts`                                                                   |
-| **Description**      | Clears tentative flags on confirmed slots and detects double bookings. Critical for maintaining slot data integrity. |
-| **DB Connection**    | Yes (Prisma)                                                                                                         |
-| **External APIs**    | None                                                                                                                 |
-| **Maintenance Risk** | **CRITICAL** -- Running during migration may detect false anomalies and "fix" them, corrupting slot state            |
-| **Safe to skip?**    | Yes, but run manually post-maintenance. Slot integrity depends on this job.                                          |
-
-## Payments
-
-### 7. Alert Orphaned Payments
-
-| Field                | Value                                                                                                                            |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| **Schedule**         | `30 */6 * * *` (every 6 hours, at :30)                                                                                           |
-| **Script**           | `jobs/alerts/alert-orphaned-payments.ts`                                                                                         |
-| **Description**      | Detects payments recorded in payment gateways but with no corresponding appointment created. Sends alerts for orphaned payments. |
-| **DB Connection**    | Yes (Prisma)                                                                                                                     |
-| **External APIs**    | Stripe, Razorpay, Lemon Squeezy, Xflow                                                                                           |
-| **Maintenance Risk** | LOW -- Read-only detection, but may generate false alerts during maintenance                                                     |
-| **Safe to skip?**    | Yes -- alerts delayed but no data corruption.                                                                                    |
-
-### 8. Cleanup Abandoned Payments
-
-| Field                | Value                                                                                                                        |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| **Schedule**         | `*/15 * * * *` (every 15 minutes)                                                                                            |
-| **Script**           | `jobs/payments/cleanup-abandoned-payments.ts`                                                                                |
-| **Description**      | Cancels payment intents abandoned >30 min with no confirmed appointment. Also resets approval-pending consultation requests. |
-| **DB Connection**    | Yes (Prisma)                                                                                                                 |
-| **External APIs**    | Stripe, Razorpay, Lemon Squeezy, Xflow                                                                                       |
-| **Maintenance Risk** | **CRITICAL** -- May cancel valid payment intents where appointment creation was delayed by maintenance downtime              |
-| **Safe to skip?**    | Must skip during maintenance. Run post-maintenance catch-up after confirming no in-flight payments.                          |
-
-### 9. Reconcile Payment Status
-
-| Field                | Value                                                                                                |
-| -------------------- | ---------------------------------------------------------------------------------------------------- |
-| **Schedule**         | `*/30 * * * *` (every 30 minutes)                                                                    |
-| **Script**           | `jobs/payments/reconcile-payment-status.ts`                                                          |
-| **Description**      | Checks payment gateways for status updates. Flags succeeded payments that need appointment creation. |
-| **DB Connection**    | Yes (Prisma)                                                                                         |
-| **External APIs**    | Stripe, Razorpay                                                                                     |
-| **Maintenance Risk** | HIGH -- May attempt to create appointments against a migrating schema                                |
-| **Safe to skip?**    | Yes, but run manually post-maintenance to catch missed payments.                                     |
-
-## Payouts
-
-### 10. Create Payout Batch
-
-| Field                | Value                                                                                                   |
-| -------------------- | ------------------------------------------------------------------------------------------------------- |
-| **Schedule**         | `0 20 * * 1` (Monday 8 PM UTC)                                                                          |
-| **Script**           | `jobs/payouts/create-payout-batch.ts`                                                                   |
-| **Description**      | Creates weekly payout batch from available consultant earnings. Auto-approves small payouts (<INR 10K). |
-| **DB Connection**    | Yes (Prisma)                                                                                            |
-| **External APIs**    | None                                                                                                    |
-| **Maintenance Risk** | HIGH -- May create batch from incomplete/corrupted earnings data                                        |
-| **Safe to skip?**    | Yes -- batch creation can be triggered manually. Payouts delayed by one week if missed.                 |
-
-### 11. Process Payouts
-
-| Field                | Value                                                                                |
-| -------------------- | ------------------------------------------------------------------------------------ |
-| **Schedule**         | `0 21 * * 1` (Monday 9 PM UTC)                                                       |
-| **Script**           | `jobs/payouts/process-payouts.ts`                                                    |
-| **Description**      | Processes approved payouts to consultants via Razorpay and Stripe Connect.           |
-| **DB Connection**    | Yes (Prisma)                                                                         |
-| **External APIs**    | Razorpay, Stripe Connect                                                             |
-| **Maintenance Risk** | **CRITICAL** -- May send incorrect amounts or process payouts based on stale data    |
-| **Safe to skip?**    | Must skip during maintenance. Payouts are irreversible once sent to payment gateway. |
-
-### 12. Handle Stuck Payouts
-
-| Field                | Value                                                                                                 |
-| -------------------- | ----------------------------------------------------------------------------------------------------- |
-| **Schedule**         | `0 */4 * * *` (every 4 hours)                                                                         |
-| **Script**           | `jobs/payouts/handle-stuck-payouts.ts`                                                                |
-| **Description**      | Retries failed payouts and checks gateway status. Flags permanently failed payouts after max retries. |
-| **DB Connection**    | Yes (Prisma)                                                                                          |
-| **External APIs**    | Stripe, Razorpay                                                                                      |
-| **Maintenance Risk** | MEDIUM -- May retry payouts that should remain paused during maintenance                              |
-| **Safe to skip?**    | Yes -- stuck payouts will be retried on next cycle.                                                   |
-
-### 13. Reconcile Payout Status
-
-| Field                | Value                                                                                        |
-| -------------------- | -------------------------------------------------------------------------------------------- |
-| **Schedule**         | `0 */6 * * *` (every 6 hours)                                                                |
-| **Script**           | `jobs/payouts/reconcile-payout-status.ts`                                                    |
-| **Description**      | Syncs payout status from gateways. Detects discrepancies between DB state and gateway state. |
-| **DB Connection**    | Yes (Prisma)                                                                                 |
-| **External APIs**    | Stripe, Razorpay                                                                             |
-| **Maintenance Risk** | LOW -- Read-heavy reconciliation, but may flag false discrepancies                           |
-| **Safe to skip?**    | Yes -- reconciliation delayed but no data corruption.                                        |
-
-## Disputes
-
-### 14. Alert Dispute Deadlines
-
-| Field                | Value                                                                                                        |
-| -------------------- | ------------------------------------------------------------------------------------------------------------ |
-| **Schedule**         | `0 * * * *` (hourly)                                                                                         |
-| **Script**           | `jobs/disputes/alert-dispute-deadlines.ts`                                                                   |
-| **Description**      | Identifies disputes approaching response deadline. Sends alerts for urgent (>48h) and critical (<12h) cases. |
-| **DB Connection**    | Yes (Prisma)                                                                                                 |
-| **External APIs**    | Stripe (optional)                                                                                            |
-| **Maintenance Risk** | LOW -- Alert-only, no state changes                                                                          |
-| **Safe to skip?**    | Yes -- alerts delayed but dispute deadlines are external.                                                    |
-
-### 15. Handle Lost Disputes
-
-| Field                | Value                                                                                                          |
-| -------------------- | -------------------------------------------------------------------------------------------------------------- |
-| **Schedule**         | `0 */6 * * *` (every 6 hours)                                                                                  |
-| **Script**           | `jobs/disputes/handle-lost-disputes.ts`                                                                        |
-| **Description**      | Processes disputes marked as lost. Now uses canonical `refundEarnings(paymentId, { forceRefund: true })` instead of manual logic (Mar 2026). Correctly creates TDS reversal records and decrements `totalRevenue` for PAID earnings. |
-| **DB Connection**    | Yes (Prisma)                                                                                                   |
-| **External APIs**    | Stripe                                                                                                         |
-| **Maintenance Risk** | HIGH -- May incorrectly process earnings if data is in flux                                                    |
-| **Safe to skip?**    | Yes -- lost disputes can wait 6 hours. Run manually if urgent.                                                 |
-
-### 16. Reconcile Disputes
-
-| Field                | Value                                                                                 |
-| -------------------- | ------------------------------------------------------------------------------------- |
-| **Schedule**         | `0 */6 * * *` (every 6 hours)                                                         |
-| **Script**           | `jobs/disputes/reconcile-disputes.ts`                                                 |
-| **Description**      | Syncs dispute status from payment gateways. Flags urgent cases needing manual review. |
-| **DB Connection**    | Yes (Prisma)                                                                          |
-| **External APIs**    | Stripe                                                                                |
-| **Maintenance Risk** | LOW -- Read-heavy reconciliation                                                      |
-| **Safe to skip?**    | Yes -- reconciliation delayed but no data corruption.                                 |
-
-## Refunds
-
-### 17. Cascade Refund to Earnings
-
-| Field                | Value                                                                                                          |
-| -------------------- | -------------------------------------------------------------------------------------------------------------- |
-| **Schedule**         | `*/15 * * * *` (every 15 minutes)                                                                              |
-| **Script**           | `jobs/refunds/cascade-refund-earnings.ts`                                                                      |
-| **Description**      | Cascades completed refunds to consultant earnings records. Updates earnings status when refunds are processed. |
-| **DB Connection**    | Yes (Prisma)                                                                                                   |
-| **External APIs**    | None                                                                                                           |
-| **Maintenance Risk** | HIGH -- May incorrectly adjust earnings if refund/earnings tables are being migrated                           |
-| **Safe to skip?**    | Yes -- earnings adjustments delayed but caught on next run.                                                    |
-
-### 18. Reconcile Pending Refunds
-
-| Field                | Value                                                                                          |
-| -------------------- | ---------------------------------------------------------------------------------------------- |
-| **Schedule**         | `*/15 * * * *` (every 15 minutes)                                                              |
-| **Script**           | `jobs/refunds/reconcile-pending-refunds.ts`                                                    |
-| **Description**      | Checks payment gateways for refund status updates. Syncs refund completion status to database. |
-| **DB Connection**    | Yes (Prisma)                                                                                   |
-| **External APIs**    | Stripe, Razorpay                                                                               |
-| **Maintenance Risk** | MEDIUM -- May sync incorrect status if DB schema has changed                                   |
-| **Safe to skip?**    | Yes -- pending refunds will be reconciled on next run.                                         |
-
-## Earnings
-
-### 19. Sync Payment-Earning
-
-| Field                | Value                                                                                          |
-| -------------------- | ---------------------------------------------------------------------------------------------- |
-| **Schedule**         | `0 * * * *` (hourly)                                                                           |
-| **Script**           | `jobs/earnings/sync-payment-earnings.ts`                                                       |
-| **Description**      | Matches confirmed payments with consultant earnings records. Creates missing earnings entries. Uses cursor-based pagination (Mar 2026, replacing skip-based). For WEBINAR/CLASS payments, calls `calculateRevenueSplit()` to create multi-party earnings with proper role/sharePercentage for collaborators. |
-| **DB Connection**    | Yes (Prisma)                                                                                   |
-| **External APIs**    | None                                                                                           |
-| **Maintenance Risk** | HIGH -- May create incorrect earnings if payment/earnings tables are being migrated            |
-| **Safe to skip?**    | Yes -- earnings sync delayed but caught on next run.                                           |
-
-### 20. Release Earnings from Hold
-
-| Field                | Value                                                                                                 |
-| -------------------- | ----------------------------------------------------------------------------------------------------- |
-| **Schedule**         | `0 * * * *` (hourly)                                                                                  |
-| **Script**           | `jobs/earnings/release-earnings.ts`                                                                   |
-| **Description**      | Releases consultant earnings from dispute/refund hold after the hold period expires (7 days default). |
-| **DB Connection**    | Yes (Prisma)                                                                                          |
-| **External APIs**    | None                                                                                                  |
-| **Maintenance Risk** | MEDIUM -- May release earnings prematurely if hold dates are corrupted during migration               |
-| **Safe to skip?**    | Yes -- hold period provides buffer. Earnings released on next cycle.                                  |
-
-## Cleanup
-
-### 21. Deactivate Expired Discounts
-
-| Field                | Value                                                                                      |
-| -------------------- | ------------------------------------------------------------------------------------------ |
-| **Schedule**         | `0 0 * * *` (daily at midnight UTC)                                                        |
-| **Script**           | `jobs/cleanup/deactivate-expired-discounts.ts`                                             |
-| **Description**      | Deactivates discount codes that have expired by date or reached their maximum usage limit. |
-| **DB Connection**    | Yes (Prisma)                                                                               |
-| **External APIs**    | None                                                                                       |
-| **Maintenance Risk** | LOW -- Simple status update, unlikely to conflict                                          |
-| **Safe to skip?**    | Yes -- expired discounts persist one extra day. Minimal impact.                            |
-
-### 22. Document Storage Reconciliation
-
-| Field                | Value                                                                                                   |
-| -------------------- | ------------------------------------------------------------------------------------------------------- |
-| **Schedule**         | `0 2 * * *` (daily at 2 AM UTC)                                                                         |
-| **Script**           | `jobs/cleanup/reconcile-document-storage.ts`                                                            |
-| **Description**      | Reconciles Supabase storage with database records. Deletes orphaned files and identifies missing files. |
-| **DB Connection**    | Yes (Prisma)                                                                                            |
-| **External APIs**    | Supabase Storage API                                                                                    |
-| **Maintenance Risk** | MEDIUM -- May incorrectly identify files as orphaned if document table is being migrated                |
-| **Safe to skip?**    | Yes -- orphaned files persist one extra day. Run manually post-maintenance.                             |
-
-### 23. Archive Webhook Events
-
-| Field                | Value                                                                                             |
-| -------------------- | ------------------------------------------------------------------------------------------------- |
-| **Schedule**         | `0 0 * * 0` (weekly, Sunday midnight UTC)                                                         |
-| **Script**           | `jobs/cleanup/archive-webhook-events.ts`                                                          |
-| **Description**      | Removes old webhook events from database. Deletes processed and failed events older than 30 days. |
-| **DB Connection**    | Yes (Prisma)                                                                                      |
-| **External APIs**    | None                                                                                              |
-| **Maintenance Risk** | LOW -- Cleanup of old data, not time-sensitive                                                    |
-| **Safe to skip?**    | Yes -- old events persist one extra week.                                                         |
-
-### 24. Cleanup Auth Tokens
-
-| Field                | Value                                                                                              |
-| -------------------- | -------------------------------------------------------------------------------------------------- |
-| **Schedule**         | `0 0 * * *` (daily at midnight UTC)                                                                |
-| **Script**           | `jobs/cleanup/cleanup-auth-tokens.ts`                                                              |
-| **Description**      | Cleans up expired verification tokens, sessions, and password reset tokens from BetterAuth tables. |
-| **DB Connection**    | Yes (Prisma)                                                                                       |
-| **External APIs**    | None                                                                                               |
-| **Maintenance Risk** | LOW -- Cleanup of expired tokens, minimal risk                                                     |
-| **Safe to skip?**    | Yes -- expired tokens accumulate but don't affect functionality.                                   |
-
-## Stream
-
-### 25. Stream User Sync
-
-| Field                | Value                                                                                                                         |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| **Schedule**         | `0 3 * * 0` (weekly, Sunday 3 AM UTC)                                                                                         |
-| **Script**           | `jobs/stream/stream-sync.ts`                                                                                                  |
-| **Description**      | Cleans up Stream.io users. Identifies and deletes stale users not associated with active consultations, classes, or webinars. |
-| **DB Connection**    | Yes (Prisma)                                                                                                                  |
-| **External APIs**    | Stream.io API                                                                                                                 |
-| **Maintenance Risk** | MEDIUM -- May incorrectly identify active users as stale if appointment tables are being migrated                             |
-| **Safe to skip?**    | Yes -- stale users persist one extra week. Run manually post-maintenance if concerned.                                        |
-
-## Waitlist
-
-### 26. Send Waitlist Expiration Reminders
-
-| Field                | Value                                                                                                            |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| **Schedule**         | `30 * * * *` (hourly, at :30)                                                                                    |
-| **Script**           | `jobs/waitlist/send-expiration-reminders.ts`                                                                     |
-| **Description**      | Sends 12-hour reminder email to users whose waitlist spot offers are about to expire. Marks entries as reminded. |
-| **DB Connection**    | Yes (Prisma)                                                                                                     |
-| **External APIs**    | Resend (email)                                                                                                   |
-| **Maintenance Risk** | LOW -- Email sending, DB reads for waitlist entries                                                              |
-| **Safe to skip?**    | Yes -- users miss one reminder but have 24h total offer window.                                                  |
-
-### 27. Process Waitlist Expirations
-
-| Field                | Value                                                                                                           |
-| -------------------- | --------------------------------------------------------------------------------------------------------------- |
-| **Schedule**         | `0 * * * *` (hourly)                                                                                            |
-| **Script**           | `jobs/waitlist/process-expired-notifications.ts`                                                                |
-| **Description**      | Marks expired waitlist notifications as EXPIRED, sends expiration email, and notifies the next person in queue. |
-| **DB Connection**    | Yes (Prisma)                                                                                                    |
-| **External APIs**    | Resend (email)                                                                                                  |
-| **Maintenance Risk** | LOW -- Waitlist management, not payment-critical                                                                |
-| **Safe to skip?**    | Yes -- expired notifications processed on next run. Next-in-queue notification delayed.                         |
-
-## Post-Maintenance Catch-Up Priority
-
-After ending maintenance, manually trigger these jobs in order:
-
-1. **Reconcile Payment Status** -- Catch any payments that succeeded during downtime
-2. **Reconcile Slot Availability** -- Fix any slot inconsistencies
-3. **Sync Payment-Earning** -- Ensure earnings match payments
-4. **Cleanup Tentative Slots** -- Release any stale tentative reservations
-5. **Reconcile Pending Refunds** -- Sync refund statuses
-6. **Reconcile Payout Status** -- Sync payout statuses (if payout window passed)
+The platform runs **67 scheduled GitHub Actions workflows**. Each one boots a bare Node process with `tsx`, connects straight to PostgreSQL through Prisma, and exits — no Next.js server, no middleware, and therefore none of the protections the request path takes for granted. Everything a cron job needs, it has to arrange for itself.
+
+This page is the inventory of that fleet. It was regenerated on **2026-08-14** and last re-verified on **2026-09-02** directly from `.github/workflows/`, the entrypoints those workflows execute, and `lib/maintenance-cron.ts`, replacing a hand-written version that had drifted badly: it described 28 jobs and asserted that all of them called `abortIfMaintenance()`. Both claims were wrong, and the second one was wrong in the direction that gets a database corrupted during a migration.
+
+## What changed in #1169
+
+Cron locking is now universal. Before PR 6 of that train, one scheduled job ran with no mutual exclusion of any kind, and nothing in the repository could tell you that. Today every scheduled workflow either takes a `withCronLock` lock or holds a documented bespoke lock, and `__tests__/maintenance/cron-lock-registry.test.ts` re-derives that claim from source on every CI run, so the next unlocked job fails the build instead of quietly double-running for a year.
+
+The same PR gave the fleet a way to notice its own death. Every locked run refreshes a single Redis key, `cron:heartbeat:last`, and `GET /api/health` reports its age under `cron`. If that key goes stale for more than six hours the scheduled fleet has stopped — the one failure the Actions-API heartbeat below cannot report, because it would have stopped too.
+
+## What changed in #1270
+
+Running is not the same as being importable, and until #1270 nothing checked the difference. Five of these workflows had never completed a single run: their entrypoints reached `lib/supabase.ts`, which opens with `import "server-only"` — a marker package whose main entry does nothing but throw. Next resolves it to an empty module under the `react-server` export condition, and every other resolver, including the bare Node process a workflow runs, gets the throw. Each of those jobs therefore died during module evaluation, before a line of its own code ran, on every run it had ever had.
+
+Nothing surfaced it. The workflows went red, but they are low-traffic housekeeping jobs that nobody watches, and the consequences accumulate silently rather than breaking a user-facing path: recordings past their organization's retention window were never tombstoned and their Supabase objects were never deleted, which is a DPDP erasure gap; permanent-storage transfers never ran, so `STREAM_ONLY` recordings simply lapsed when Stream's fourteen-day URL expired; soft-deleted documents were never purged from storage; and the sweep that re-drives stuck webhook events was itself stuck.
+
+Building that guard immediately turned up a second, larger instance of the same class, which this PR records rather than fixes because the remedy belongs to the money and auth subsystems. Eight further workflows — `process-payouts`, `handle-stuck-payouts`, `reconcile-payout-status`, `reconcile-payment-status`, `sync-payment-earnings`, `handle-lost-disputes`, `reconcile-orphaned-confirmations` and `sweep-stuck-webhook-events` — reach `lib/auth-server.ts`, which calls React's `cache()` at module scope. The version of React this repository actually pins, 18.3.1, has no `cache` export at all; the call resolves inside the application only because Next aliases `react` to its own vendored React 19 in the RSC layer, which `lib/auth-server.ts` already documents. A bare Node process gets the declared React and a `TypeError`, so every one of those eight jobs dies during module evaluation exactly as the five above did. Seven arrive there through `lib/payments/payouts/earnings-service` → `lib/collaborators/service` → `actions/stream/chat/event-channel.action`, and the eighth through the Razorpay webhook dispatcher. Closing it means either making `getSessionCached` lazy so the `cache()` call happens on first use inside a request, or cutting the server actions out of the service layer the crons share. Until then the eight are listed in `KNOWN_UNRUNNABLE` in `__tests__/maintenance/workflow-import-env.test.ts`, which also fails if one of them quietly starts working, so the register cannot outlive the defect.
+
+Two things now prevent a repeat. The Supabase clients and storage primitives a job needs live in `lib/supabase-storage-core.ts`, which carries no marker, and `lib/supabase.ts` re-exports them so application code is unchanged and still gets its client-import guard. And `__tests__/maintenance/workflow-import-env.test.ts` re-derives every scheduled workflow's import graph on each CI run, failing when one reaches a `server-only` module or when a job that reaches the Supabase client module is not given the two environment variables that module throws without.
+
+## What changed in #1356
+
+The 2026-09-03 financial audit re-measured GitHub Actions' sub-hourly schedules and confirmed the finding ADR 22 first recorded: an every-minute schedule delivers roughly once every hundred minutes rather than once a minute, because GitHub throttles scheduled workflows rather than dropping them outright. `netlify/functions/cron-tick.mts` closes that gap for the ten sweeps where the delay matters most. It is a Netlify scheduled function that fires every five minutes and POSTs each of the following, relative to `/api/cleanup/`, with a `CRON_SECRET` bearer token and a six-second per-target timeout: `sweep-stuck-webhook-events`, `cascade-refund-earnings`, `reconcile-refunds`, `abandoned-payments`, `reconcile-payment-status`, `reconcile-orphaned-confirmations`, `sweep-orphaned-topup-captures`, `dispatch-outbound-webhooks`, `sync-payment-earnings`, and `release-earnings`. ADR 27 records why this is a scheduler fix rather than a new outbox table: the durable state an outbox exists to provide already lives on the domain rows — `Payment`, `Appointment`, `Refund`, `WalletTopUp`, `WebhookEvent`, `OutboundWebhookDelivery`, `FailedEmail` — that these sweeps already walk.
+
+Every tick request carries a `?limit=`, and all ten routes above read it as an optional cap on the batch a single run may touch, defaulting to today's unbounded behaviour when the parameter is absent, so a nightly GitHub Actions run still processes the whole backlog while a five-minute tick stays inside its own budget. The default the ticker sends is fifty, but a target may override it: `abandoned-payments` is sent ten, because its per-row cost includes a gateway cancel round trip rather than a database write alone, and at fifty it could not finish inside the six-second per-target timeout (#1459). Whatever a smaller bite leaves behind is picked up by the unbounded GitHub Actions run.
+
+A tick and a GitHub Actions run of the same job cannot both proceed: both go through the same `withCronLock` every entrypoint already shares, so the loser answers 409. The ticker records a 409 as `lockHeld`, not a failure, because the run that lost the lock is a run that did not need to happen — the winner is already doing the same work. Only a response outside `200`, `207` and `409` counts as `failed`. `docs/guides/cron-setup.md` covers running the ticker locally.
+
+GitHub Actions is unchanged by this: it still owns every daily and weekly business cron, and for the ten sweeps above it becomes the backstop that runs regardless of ticker health rather than the primary schedule.
+
+## The fleet at a glance
+
+| Property                                | Count |
+| --------------------------------------- | ----- |
+| Scheduled workflows                     | 67    |
+| Locked via `withCronLock`               | 63    |
+| — fail-closed                           | 29    |
+| — fail-open                             | 34    |
+| Locked by a bespoke Redis lock          | 2     |
+| Deliberately unlocked                   | 2     |
+| On the financial list                   | 24    |
+| Without an `abortIfMaintenance()` guard | 3     |
+
+## How to read the tables
+
+Every scheduled workflow appears exactly once, grouped by the part of the product it serves. The columns mean the following.
+
+**Schedule** is the raw cron expression in UTC, exactly as GitHub receives it. Treat it as an upper bound rather than a promise, not the delivered cadence (ADR 22): GitHub throttles scheduled workflows under load, and a job asking for every minute has been measured delivering roughly once every hundred minutes. For the ten money sweeps the Netlify ticker drives — see [What changed in #1356](#what-changed-in-1356) below — the schedule column is no longer the cadence that actually holds; the ticker's five-minute interval is (ADR 27). Minutes are deliberately staggered across the fleet so that simultaneous starts do not stampede the Supavisor connection pool, which `scripts/ci/check-workflow-hygiene.ts` enforces.
+
+**Entrypoint** is the file the workflow executes. Where a second path appears beneath it, the first is a thin `jobs/**` wrapper holding the GitHub Actions plumbing — output variables, notice annotations, Sentry bootstrap — and the second is the `scripts/**` core holding the actual logic. The lock normally lives on the core so that every entry point inherits it, including the HTTP routes under `app/api/cleanup/`.
+
+**Lock** records how the job behaves when Redis cannot be reached. A **closed** job refuses to run and pages, on the reasoning that a missed money run is recoverable and a silent unlocked double-run is not. An **open** job runs unlocked with a warning, which is correct for work whose side effects are harmless to repeat. **bespoke** means a hand-rolled `acquireLock` predating the wrapper, and **none** means deliberately unlocked; both are enumerated and justified under [Locking](#locking) below.
+
+**Financial** reflects membership of `FINANCIAL_JOB_NAMES` in `lib/maintenance-cron.ts`. These jobs create or cancel financial objects through an external API, or mutate earnings, payouts and refunds, so a partial deployment can leave them inconsistent.
+
+**During maintenance** is derived, not asserted. A job that calls `abortIfMaintenance()` exits cleanly when the maintenance phase is OFFLINE, and a financial job additionally exits when the phase is DEGRADED. A job that never calls it runs regardless of the phase, and is marked **Runs anyway** — see [Jobs that ignore maintenance mode](#jobs-that-ignore-maintenance-mode).
+
+## Appointments and sessions
+
+These jobs move bookings through their lifecycle and hand back the slots that nobody paid for. They are the fleet's most visible half: when one of them stops, consultees see availability that does not exist and consultants see sessions that never close.
+
+| Workflow                                                                         | Schedule (UTC)  | Entrypoint                                                                                                                    | Lock   | Financial | Mutates                                                                                                                                                                                               | During maintenance        |
+| -------------------------------------------------------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------ | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| **Auto-Complete Appointments**<br>`auto-complete-appointments`                   | `7 * * * *`     | `jobs/appointments/auto-complete-appointments.ts`<br>→ `scripts/appointments/auto-complete-appointments.ts`                   | open   | no        | `Consultation`, `Subscription`, `Class`, `TrialSession` → COMPLETED; `ActivityLog`; Novu. A consultation the consultant never joined is deferred to the no-show detector instead of completed (#1504) | Skips: OFFLINE            |
+| **Cleanup Invalid Appointments**<br>`cleanup-invalid-appointments`               | `12 * * * *`    | `jobs/appointments/cleanup-invalid-appointments.ts`<br>→ `scripts/appointments/cleanup-invalid-appointments.ts`               | open   | no        | Duplicate and invalid `Consultation`/`Subscription` cancelled, their slots released                                                                                                                   | Skips: OFFLINE            |
+| **Cleanup Stale Pending Consultations**<br>`cleanup-stale-pending-consultations` | `37 * * * *`    | `jobs/appointments/cleanup-stale-pending-consultations.ts`<br>→ `scripts/appointments/cleanup-stale-pending-consultations.ts` | open   | no        | Stale PENDING `Consultation` cancelled, reserved slots released                                                                                                                                       | Skips: OFFLINE            |
+| **Cleanup Tentative Slots**<br>`cleanup-tentative-slots`                         | `38 */2 * * *`  | `jobs/appointments/cleanup-tentative-slots.ts`<br>→ `scripts/appointments/cleanup-tentative-slots.ts`                         | open   | no        | Tentative `SlotOfAppointment` reservations released                                                                                                                                                   | Skips: OFFLINE            |
+| **Detect Consultant No-Shows**<br>`detect-consultant-no-shows`                   | `57 * * * *`    | `jobs/appointments/detect-consultant-no-shows.ts`<br>→ `scripts/appointments/detect-consultant-no-shows.ts`                   | closed | yes       | `Consultation` cancelled and refunded in full through `refundBookingPayment`, slot release, Novu notifications. Auto-complete hands these bookings over rather than racing it (#1504)                 | Skips: OFFLINE + DEGRADED |
+| **Expire Reschedule Proposals**<br>`expire-reschedule-proposals`                 | `45 * * * *`    | `jobs/appointments/expire-reschedule-proposals.ts`<br>→ `scripts/appointments/expire-reschedule-proposals.ts`                 | open   | no        | Expired `RescheduleRequest` proposals                                                                                                                                                                 | Skips: OFFLINE            |
+| **Expire Stale Requests**<br>`expire-stale-requests`                             | `20 1 * * *`    | `jobs/appointments/expire-stale-requests.ts`<br>→ `scripts/appointments/expire-stale-requests.ts`                             | closed | yes       | Stale `Consultation` and `Subscription` requests expired, refunding SUCCEEDED payments through the refund front door                                                                                  | Skips: OFFLINE + DEGRADED |
+| **Expire Unpaid Trials**<br>`expire-unpaid-trials`                               | `40 * * * *`    | `jobs/trials/expire-unpaid-trials.ts`<br>→ `scripts/trials/expire-unpaid-trials.ts`                                           | open   | no        | `TrialSession` expiry, which frees the held trial slot                                                                                                                                                | Skips: OFFLINE            |
+| **Reconcile Orphaned Meeting Sessions**<br>`reconcile-orphaned-sessions`         | `25,55 * * * *` | `jobs/meetings/reconcile-orphaned-sessions.ts`                                                                                | open   | no        | `MeetingSession` closure and slot state, reconciled against Stream calls                                                                                                                              | Skips: OFFLINE            |
+| **Reconcile Slot Availability**<br>`reconcile-slot-availability`                 | `32 * * * *`    | `jobs/appointments/reconcile-slot-availability.ts`<br>→ `scripts/appointments/reconcile-slot-availability.ts`                 | open   | no        | `SlotOfAppointment` availability re-derived from live bookings                                                                                                                                        | Skips: OFFLINE            |
+| **Send Appointment Reminders**<br>`send-appointment-reminders`                   | `47 * * * *`    | `jobs/appointments/send-appointment-reminders.ts`<br>→ `scripts/appointments/send-appointment-reminders.ts`                   | open   | no        | Reads only; sends Novu reminders behind a Redis dedup key                                                                                                                                             | Skips: OFFLINE            |
+
+Two of these jobs read the same cohort and must not race. **Auto-Complete Appointments** at :07 and **Detect Consultant No-Shows** at :57 both scan `APPROVED` and `SCHEDULED` consultations whose slots have ended, and only the detector can cancel and refund a session the consultant never joined. Since #1504 they share one attendance predicate in `lib/booking/attendance.ts`: auto-complete defers a booking in the no-show shape until the detector has had its runs, and completes it after `NO_SHOW_HANDOFF_MINUTES` so that a booking the detector declined is never left live forever.
+
+## Money in
+
+Everything that reconciles what a consultee paid against what the gateway believes. Every job here that changes state is fail-closed, because the gateway is the authority and acting twice on its record is how a refund gets issued twice; the deadline alerter is the one exception, and it only reads.
+
+| Workflow                                                                   | Schedule (UTC)     | Entrypoint                                                                                                      | Lock   | Financial | Mutates                                                                                                                | During maintenance        |
+| -------------------------------------------------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------- | ------ | --------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| **Alert Dispute Deadlines**<br>`alert-dispute-deadlines`                   | `2 * * * *`        | `jobs/disputes/alert-dispute-deadlines.ts`<br>→ `scripts/disputes/alert-dispute-deadlines.ts`                   | open   | no        | Reads only; logs deadline alerts                                                                                       | Skips: OFFLINE            |
+| **Cascade Refund to Earnings**<br>`cascade-refund-earnings`                | `1-59/15 * * * *`  | `jobs/refunds/cascade-refund-earnings.ts`<br>→ `scripts/refunds/cascade-refund-earnings.ts`                     | closed | yes       | `Refund.cascadedAt`, `PaymentLeg`, consultant and org earnings, payout clawback, ledger                                | Skips: OFFLINE + DEGRADED |
+| **Cleanup Abandoned Payments**<br>`cleanup-abandoned-payments`             | `6-59/15 * * * *`  | `jobs/payments/cleanup-abandoned-payments.ts`<br>→ `scripts/payments/cleanup-abandoned-payments.ts`             | closed | yes       | `Payment` → EXPIRED, tentative slots released, `Consultation`/`Subscription` deleted, referral credits restored        | Skips: OFFLINE + DEGRADED |
+| **Handle Lost Disputes**<br>`handle-lost-disputes`                         | `8 */6 * * *`      | `jobs/disputes/handle-lost-disputes.ts`<br>→ `scripts/disputes/handle-lost-disputes.ts`                         | closed | yes       | Consultant and org earnings refund amounts, `TDSRecord` reversals                                                      | Skips: OFFLINE + DEGRADED |
+| **Reconcile Disputes**<br>`reconcile-disputes`                             | `28 */6 * * *`     | `jobs/disputes/reconcile-disputes.ts`<br>→ `scripts/disputes/reconcile-disputes.ts`                             | closed | yes       | `Dispute` status reconciled against gateway records                                                                    | Skips: OFFLINE + DEGRADED |
+| **Reconcile Orphaned Confirmations**<br>`reconcile-orphaned-confirmations` | `13-59/30 * * * *` | `jobs/payments/reconcile-orphaned-confirmations.ts`<br>→ `scripts/payments/reconcile-orphaned-confirmations.ts` | closed | no        | `SlotOfAppointment.isTentative`, `Consultation`/`Subscription` approval status, and `Appointment.chatChannelEnsuredAt` | Skips: OFFLINE            |
+| **Reconcile Payment Status**<br>`reconcile-payment-status`                 | `18-59/30 * * * *` | `jobs/payments/reconcile-payment-status.ts`<br>→ `scripts/payments/reconcile-payment-status.ts`                 | closed | yes       | `Payment` status reconciled against gateway records                                                                    | Skips: OFFLINE + DEGRADED |
+| **Reconcile Pending Refunds**<br>`reconcile-pending-refunds`               | `11-59/15 * * * *` | `jobs/refunds/reconcile-pending-refunds.ts`<br>→ `scripts/refunds/reconcile-pending-refunds.ts`                 | closed | yes       | `Refund` status reconciled against the gateway; Novu notices                                                           | Skips: OFFLINE + DEGRADED |
+
+`cleanup-abandoned-payments` cancels each abandoned payment's gateway intent before it expires the row, and the expiry no longer waits on that cancel succeeding. A cancel that fails is recorded in `errors` and counted in `errorCount`, so the run reports `success: false` and the HTTP twin at `/api/cleanup/abandoned-payments` answers 500 rather than the 200 it used to force; the payment still moves PENDING→EXPIRED through its CAS in the same transaction that hands back the referral credits and releases the hold. Skipping that write was how a Payment came to sit PENDING for ever beside a slot that had already been released — a row no later sweep could see, because nothing about it still looked abandoned (#1464). The Stripe arm also respects the #1386 fence: with `STRIPE_ENABLED` set to anything other than `true` the sweep makes no gateway call at all and logs one line per run saying so, and when the fence is open an intent Stripe cannot find, or one that is already terminal, counts as nothing to cancel rather than as a failure.
+
+`reconcile-disputes` only reaches a gateway for Stripe disputes, and Stripe is fenced off in production, so when `STRIPE_ENABLED` is anything other than `true` the sweep leaves those disputes alone and counts them as `skippedFenced` rather than failing the run on a gateway we deliberately turned off (#1459); Razorpay disputes were already routed to manual dashboard review and are counted separately. Its HTTP twin no longer forces a 200 either, so a run that genuinely failed now answers 500 like every other sweep.
+
+`reconcile-orphaned-confirmations` runs two passes per invocation, because a capture can fail in two independent places. The first is the original #830 sweep: it finds `SUCCEEDED` payments whose slots are still tentative and re-runs the confirmation under the webhook's own Serializable discipline. The second, added by #1356, repairs the post-capture chat leg — appointments that are paid and confirmed but whose `chatChannelEnsuredAt` is still `NULL`, limited to the last seven days and processed oldest first. It calls the same `ensureChannelsForAppointment` the live pipeline calls, so the two cannot drift, and it reports `channelsEnsured` and `channelsFailed` alongside the existing counters. A run in which any channel failed answers 207 rather than 200: the next run will retry it, but an operator should see that a buyer is currently without a conversation.
+
+That job also has an HTTP twin at `/api/cleanup/reconcile-orphaned-confirmations`, which accepts an optional `?limit=` (a positive integer up to 500) and applies it to both passes. The GitHub Actions entrypoint has minutes to spend and uses the defaults; a Netlify ticker calling the route on a short schedule does not, and passing a small limit lets it take a bounded bite of each backlog per invocation instead of exhausting the function budget on one of them. An unparseable value is refused with a `400 INVALID_LIMIT` and a value above the cap is clamped to it, which is the shared `parseLimitParam` behaviour every other ticker target already had; the route used to swallow a malformed bound and sweep the defaults instead, which hid a broken caller behind a run that looked healthy (#1459).
+
+## Money out
+
+The payout and earnings pipeline, which turns completed sessions into money leaving the platform. This is the only group where a double-run can disburse the same rupee twice, which is why the two payout jobs carry their own dedicated locks on top of everything else.
+
+| Workflow                                                               | Schedule (UTC) | Entrypoint                                                                                  | Lock    | Financial | Mutates                                                                                                           | During maintenance        |
+| ---------------------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------- | ------- | --------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| **Create Payout Batch**<br>`create-payout-batch`                       | `0 20 * * 1`   | `jobs/payouts/create-payout-batch.ts`<br>→ `scripts/payouts/create-payout-batch.ts`         | bespoke | yes       | `ConsultantPayout` batch rows created, `ConsultantEarnings` claimed                                               | Skips: OFFLINE + DEGRADED |
+| **Handle Stuck Payouts**<br>`handle-stuck-payouts`                     | `52 */4 * * *` | `jobs/payouts/handle-stuck-payouts.ts`<br>→ `scripts/payouts/handle-stuck-payouts.ts`       | closed  | yes       | `ConsultantPayout` stuck-state recovery, `SystemEvent`; queries RazorpayX and Stripe                              | Skips: OFFLINE + DEGRADED |
+| **Process Payouts**<br>`process-payouts`                               | `0 21 * * 1`   | `jobs/payouts/process-payouts.ts`                                                           | bespoke | yes       | Consultant and org payout status, `ConsultantEarnings`, `TDSRecord`, ledger; submits RazorpayX and Stripe payouts | Skips: OFFLINE + DEGRADED |
+| **Reconcile Payout Status**<br>`reconcile-payout-status`               | `33 */6 * * *` | `jobs/payouts/reconcile-payout-status.ts`<br>→ `scripts/payouts/reconcile-payout-status.ts` | closed  | yes       | `ConsultantPayout` status and TDS fields, `ConsultantEarnings`, `TDSRecord`, ledger entries                       | Skips: OFFLINE + DEGRADED |
+| **Release Earnings from Hold**<br>`release-earnings`                   | `17 * * * *`   | `jobs/earnings/release-earnings.ts`<br>→ `scripts/earnings/release-earnings.ts`             | closed  | yes       | `ConsultantEarnings` and `OrganizationEarnings` released from hold                                                | Skips: OFFLINE + DEGRADED |
+| **Release PENDING_TRUST Earnings**<br>`release-pending-trust-earnings` | `42 * * * *`   | `jobs/cleanup/release-pending-trust-earnings.ts`                                            | closed  | yes       | Consultant and org earnings released from PENDING_TRUST                                                           | Skips: OFFLINE, DEGRADED  |
+| **Sync Payment to Earnings**<br>`sync-payment-earnings`                | `22 * * * *`   | `jobs/earnings/sync-payment-earnings.ts`<br>→ `scripts/earnings/sync-payment-earnings.ts`   | closed  | yes       | Creates consultant and org earnings plus the booking ledger rows                                                  | Skips: OFFLINE + DEGRADED |
+
+`release-earnings` walks both earnings tables in one run. It moves `ConsultantEarnings` and `OrganizationEarnings` rows that are still `PENDING` and whose `holdUntil` has passed to `READY`, which is the status the two batch builders select on, and it does each table in its own Serializable transaction so a serialization conflict on one cannot discard a claim the other has already made. The claim restates `status: PENDING` in its `WHERE`, so a row that a dispute freeze or a refund cascade moved between the read and the update is skipped rather than dragged forward. When the HTTP twin at `/api/cleanup/release-earnings` is called with `?limit=`, that bound applies to each table separately — a run capped at two hundred may release up to two hundred consultant rows and up to two hundred organisation rows — which is the same per-target budgeting the Netlify ticker uses elsewhere. The result reports the two counts separately: `releasedCount` keeps its original meaning of consultant earnings released, and `organizationEarningsReleased` carries the host-organisation figure, so the GitHub Actions outputs and dashboards that already read the first number are not silently re-based. Until #1471 the organisation arm was missing entirely, and because every scheduled entry point imports this one module, a hosting organisation's retained share could never reach a payout batch.
+
+## Billing and contracts
+
+Organisation billing runs on its own cycle engine, and these jobs advance it. They were the newest part of the fleet, and until the wave-5 sweep it showed in the maintenance column: six of the eight were self-contained `jobs/**` entrypoints written after the `abortIfMaintenance()` convention was established, and none of them had adopted it. All eight now call the guard.
+
+| Workflow                                                               | Schedule (UTC) | Entrypoint                                       | Lock   | Financial | Mutates                                                                                | During maintenance        |
+| ---------------------------------------------------------------------- | -------------- | ------------------------------------------------ | ------ | --------- | -------------------------------------------------------------------------------------- | ------------------------- |
+| **Advance Program Cycles**<br>`advance-program-cycles`                 | `15 2 * * *`   | `jobs/billing/advance-program-cycles.ts`         | closed | yes       | `ProgramAssignment` cycle advancement, `OrgAuditLog`                                   | Skips: OFFLINE, DEGRADED  |
+| **Auto-Renew Contracts**<br>`auto-renew-contracts`                     | `30 2 * * *`   | `jobs/contracts/auto-renew-contracts.ts`         | closed | yes       | `Contract` renewal dates, `Program` rollover, `OrgAuditLog`                            | Skips: OFFLINE, DEGRADED  |
+| **Dunning**<br>`dunning`                                               | `30 23 * * *`  | `jobs/billing/dunning.ts`                        | closed | yes       | `OrganizationInvoice` dunning state, `OrgAuditLog`, Novu overdue notices               | Skips: OFFLINE, DEGRADED  |
+| **Expire Contracts**<br>`expire-contracts`                             | `10 3 * * *`   | `jobs/contracts/expire-contracts.ts`             | closed | yes       | `Contract`, `Program` and `ProgramAssignment` expiry, `OrgAuditLog`                    | Skips: OFFLINE, DEGRADED  |
+| **Generate Subscription Invoices**<br>`generate-subscription-invoices` | `0 1 * * *`    | `jobs/billing/generate-subscription-invoices.ts` | closed | yes       | `OrganizationInvoice` creation, `OrgInvoiceCounter`, `BillingSubscription` period roll | Skips: OFFLINE + DEGRADED |
+| **Settle Invoice Accruals**<br>`settle-invoice-accruals`               | `0 4 1 * *`    | `jobs/billing/settle-invoice-accruals.ts`        | closed | yes       | `OrganizationInvoice` accrual settlement, `Payment` rows                               | Skips: OFFLINE + DEGRADED |
+| **Timeout Member Overages**<br>`timeout-member-overages`               | `0 23 * * *`   | `jobs/billing/timeout-member-overages.ts`        | closed | yes       | `OverageEvent` timeout, `Payment`/`PaymentLeg` restore, `SystemEvent`                  | Skips: OFFLINE, DEGRADED  |
+| **Wallet Low Balance**<br>`wallet-low-balance`                         | `45 23 * * *`  | `jobs/billing/wallet-low-balance.ts`             | open   | no        | `BillingAccount` low-balance flag; Novu wallet alerts                                  | Skips: OFFLINE            |
+
+## Compliance
+
+These jobs exist because a statute or a regulator says they must, and their deadlines are external. Skipping one for a maintenance window is cheap; skipping one for a week is not.
+
+| Workflow                                                                  | Schedule (UTC)      | Entrypoint                                       | Lock   | Financial | Mutates                                                                                                                        | During maintenance       |
+| ------------------------------------------------------------------------- | ------------------- | ------------------------------------------------ | ------ | --------- | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------ |
+| **Consent Retention Sweeper**<br>`consent-retention-sweeper`              | `0 21 * * 0`        | `jobs/compliance/consent-retention-sweeper.ts`   | open   | no        | Expired `ConsentArtifact` rows deleted, and only when `DPDP_SWEEPER_DELETE=true`                                               | Skips: OFFLINE           |
+| **DPDP DataBreach 72h Deadline Alerts**<br>`databreach-deadline-alerts`   | `27 * * * *`        | `jobs/compliance/databreach-deadline-alerts.ts`  | open   | no        | Reads only; emails the DPDP officer inbox                                                                                      | Skips: OFFLINE           |
+| **IRP IRN Uploader**<br>`irp-uploader`                                    | `50 2 * * *`        | `jobs/compliance/irp-uploader.ts`                | closed | yes       | `OrganizationInvoice` IRN fields; uploads invoices to the IRP                                                                  | Skips: OFFLINE, DEGRADED |
+| **GST Outward-Supplies Register Export**<br>`gst-outward-register-export` | `40 1 3 * *`        | `jobs/compliance/gst-outward-register-export.ts` | closed | yes       | Mints any missing `ConsumerInvoice` for the period, then stamps `gstr1ExportedAt` on the invoices and credit notes it reported | Skips: OFFLINE, DEGRADED |
+| **MSME Section 43B(h) Payment Alerts**<br>`msme-payment-alerts`           | `30 4 * * *`        | `jobs/compliance/msme-payment-alerts.ts`         | open   | no        | Reads only; emails the finance inbox                                                                                           | Skips: OFFLINE           |
+| **TDS quarterly return draft**<br>`tds-return-draft`                      | `20 1 5 1,4,7,10 *` | `jobs/compliance/tds-26q-draft-export.ts`        | open   | no        | Reads only; writes the return CSV to the private `org-invoices` bucket                                                         | Skips: OFFLINE           |
+
+## Stream and recordings
+
+Chat channels, video sessions and the recordings they produce all live in Stream's systems as well as ours, so these jobs reconcile two sources of truth and move recording files into our own storage before Stream expires them.
+
+| Workflow                                                             | Schedule (UTC) | Entrypoint                                                                                              | Lock   | Financial | Mutates                                                                             | During maintenance |
+| -------------------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------- | ------ | --------- | ----------------------------------------------------------------------------------- | ------------------ |
+| **Cleanup Old Stream Recordings**<br>`cleanup-old-stream-recordings` | `0 3 * * *`    | `jobs/cleanup/cleanup-old-stream-recordings.ts`<br>→ `scripts/cleanup/cleanup-old-stream-recordings.ts` | open   | no        | `Recording` rows and Supabase objects deleted past org retention                    | Skips: OFFLINE     |
+| **Expire Event Chat Channels**<br>`expire-event-channels`            | `35 4 * * *`   | `jobs/stream/expire-event-channels.ts`                                                                  | open   | no        | Stream channels frozen then deleted; no DB writes                                   | Skips: OFFLINE     |
+| **Mark Expired Recordings**<br>`mark-expired-recordings`             | `20 3 * * *`   | `jobs/stream/mark-expired-recordings.ts`                                                                | open   | no        | `Recording` → EXPIRED past retention                                                | Skips: OFFLINE     |
+| **Stream User Sync**<br>`stream-sync`                                | `40 3 * * *`   | `jobs/stream/stream-sync.ts`<br>→ `scripts/stream/stream-sync.ts`                                       | closed | no        | Stream Chat users soft-deleted; no DB writes                                        | Skips: OFFLINE     |
+| **Transfer Expiring Recordings**<br>`transfer-expiring-recordings`   | `58 */6 * * *` | `jobs/stream/transfer-expiring-recordings.ts`                                                           | open   | no        | `Recording` storage path; copies Stream recordings into Supabase                    | Skips: OFFLINE     |
+| **Reconcile Orphaned Recordings**<br>`reconcile-orphaned-recordings` | `0 5 * * *`    | `jobs/stream/reconcile-orphaned-recordings.ts`<br>→ `scripts/stream/reconcile-orphaned-recordings.ts`   | open   | no        | Creates `Recording` rows for sessions whose `call.recording_ready` webhook was lost | Skips: OFFLINE     |
+| **Stream Webhook Drift**<br>`stream-webhook-drift`                   | `15 5 * * *`   | `scripts/stream/ensure-webhook-subscription.ts --check`                                                 | none   | no        | Nothing. Reads Stream's app settings and fails the job on drift                     | **Runs anyway**    |
+
+## Housekeeping and platform hygiene
+
+The long tail: janitors, sweepers, retry drains and the watchdog. Individually none of them is urgent, which is exactly why they are the ones that can stop firing for a month before anyone notices — the failure this PR's heartbeat exists to catch.
+
+| Workflow                                                                 | Schedule (UTC)     | Entrypoint                                                                                                  | Lock   | Financial | Mutates                                                                                                | During maintenance |
+| ------------------------------------------------------------------------ | ------------------ | ----------------------------------------------------------------------------------------------------------- | ------ | --------- | ------------------------------------------------------------------------------------------------------ | ------------------ |
+| **Purge Deleted Documents**<br>`purge-deleted-documents`                 | `34 3 * * *`       | `jobs/cleanup/purge-deleted-documents.ts`                                                                   | open   | no        | Storage objects + rows hard-deleted past the 7-day soft-delete grace window                            | Skips: OFFLINE     |
+| **Alert Orphaned Payments**<br>`alert-orphaned-payments`                 | `30 */6 * * *`     | `jobs/alerts/alert-orphaned-payments.ts`<br>→ `scripts/alerts/alert-orphaned-payments.ts`                   | open   | no        | Reads only; logs CRITICAL alerts                                                                       | Skips: OFFLINE     |
+| **Archive Webhook Events**<br>`archive-webhook-events`                   | `25 0 * * 0`       | `jobs/cleanup/archive-webhook-events.ts`<br>→ `scripts/cleanup/archive-webhook-events.ts`                   | open   | no        | `WebhookEvent` rows archived and pruned                                                                | Skips: OFFLINE     |
+| **Cleanup Abandoned Org Top-Ups**<br>`cleanup-abandoned-org-top-ups`     | `0 2 * * *`        | `jobs/cleanup/cleanup-abandoned-org-top-ups.ts`<br>→ `scripts/cleanup/cleanup-abandoned-org-top-ups.ts`     | closed | no        | `WalletTopUp` cancellation; cancels the Razorpay order                                                 | Skips: OFFLINE     |
+| **Cleanup Auth Tokens**<br>`cleanup-auth-tokens`                         | `3 0 * * *`        | `jobs/cleanup/cleanup-auth-tokens.ts`<br>→ `scripts/cleanup/cleanup-auth-tokens.ts`                         | open   | no        | Expired `Session`, `Verification` and `IdempotencyRecord` rows deleted                                 | Skips: OFFLINE     |
+| **Cleanup Empty Folders**<br>`cleanup-empty-folders`                     | `30 3 * * *`       | `scripts/utils/cleanup-empty-folders.ts`                                                                    | open   | no        | Supabase storage objects only; removes empty document folders                                          | **Runs anyway**    |
+| **Cleanup Stale Invitations**<br>`cleanup-stale-invitations`             | `40 2 * * *`       | `jobs/cleanup/cleanup-stale-invitations.ts`<br>→ `scripts/cleanup/cleanup-stale-invitations.ts`             | open   | no        | Expired `Invitation` rows, `OrgAuditLog`                                                               | Skips: OFFLINE     |
+| **Cron Heartbeat**<br>`cron-heartbeat`                                   | `40 4 * * *`       | `scripts/ci/check-cron-heartbeat.ts`                                                                        | none   | no        | Nothing; reads the Actions API and refreshes `cron:heartbeat:last`                                     | **Runs anyway**    |
+| **Deactivate Expired Discounts**<br>`deactivate-expired-discounts`       | `15 0 * * *`       | `jobs/cleanup/deactivate-expired-discounts.ts`<br>→ `scripts/cleanup/deactivate-expired-discounts.ts`       | open   | no        | `DiscountCode` deactivated past its expiry                                                             | Skips: OFFLINE     |
+| **Dispatch Outbound Webhooks**<br>`dispatch-outbound-webhooks`           | `* * * * *`        | `jobs/cleanup/dispatch-outbound-webhooks.ts`<br>→ `scripts/cleanup/dispatch-outbound-webhooks.ts`           | open   | no        | `OutboundWebhookDelivery` status and attempts, `WebhookEndpoint.lastSuccessAt`; POSTs to org endpoints | Skips: OFFLINE     |
+| **Process Data Exports**<br>`process-data-exports`                       | `9-59/10 * * * *`  | `jobs/cleanup/process-data-exports.ts`<br>→ `scripts/cleanup/process-data-exports.ts`                       | open   | no        | `OrgDataExportJob` status; writes export archives to Supabase                                          | Skips: OFFLINE     |
+| **Prune Audit Logs**<br>`prune-audit-logs`                               | `15 3 * * *`       | `jobs/cleanup/prune-audit-logs.ts`<br>→ `scripts/cleanup/prune-audit-logs.ts`                               | open   | no        | `OrgAuditLog` rows pruned past the retention floor                                                     | Skips: OFFLINE     |
+| **Prune System Job Executions**<br>`prune-system-job-executions`         | `26 3 * * *`       | `jobs/cleanup/prune-system-job-executions.ts`<br>→ `scripts/cleanup/prune-system-job-executions.ts`         | open   | no        | `SystemJobExecution` rows past 90 days pruned; runs stuck in RUNNING for 6+ hours closed as stranded   | Skips: OFFLINE     |
+| **Reconcile Document Storage**<br>`reconcile-document-storage`           | `35 2 * * *`       | `jobs/cleanup/reconcile-document-storage.ts`<br>→ `scripts/cleanup/reconcile-document-storage.ts`           | open   | no        | `AppointmentDocument.isStorageMissing`, reconciled against Supabase objects                            | Skips: OFFLINE     |
+| **Reconcile Ledgers**<br>`reconcile-ledgers`                             | `45 3 * * *`       | `jobs/reconcile/reconcile-ledgers.ts`<br>→ `scripts/reconcile/reconcile-ledgers.ts`                         | open   | no        | Reads every financial table; writes `LedgerReconciliationReport` findings                              | Skips: OFFLINE     |
+| **Retry Failed Emails**<br>`retry-failed-emails`                         | `5-59/15 * * * *`  | `jobs/email/retry-failed-emails.ts`                                                                         | open   | no        | `FailedEmail` retry state; re-sends the queued mail                                                    | Skips: OFFLINE     |
+| **SSO Cert Expiry Alert**<br>`sso-cert-expiry-alert`                     | `25 3 * * *`       | `jobs/cleanup/sso-cert-expiry-alert.ts`<br>→ `scripts/cleanup/sso-cert-expiry-alert.ts`                     | open   | no        | `OrgAuditLog`; Novu alerts for expiring SSO certificates                                               | Skips: OFFLINE     |
+| **Sweep Abandoned Overage Charges**<br>`sweep-abandoned-overage-charges` | `55 2 * * *`       | `jobs/cleanup/sweep-abandoned-overage-charges.ts`<br>→ `scripts/cleanup/sweep-abandoned-overage-charges.ts` | closed | no        | `OverageEvent.chargeStatus` → FAILED, parent `Payment.amount`, `PaymentLeg` restore                    | Skips: OFFLINE     |
+| **Sweep Orphaned Top-up Captures**<br>`sweep-orphaned-topup-captures`    | `23-59/30 * * * *` | `jobs/cleanup/sweep-orphaned-topup-captures.ts`<br>→ `scripts/cleanup/sweep-orphaned-topup-captures.ts`     | closed | no        | `WalletTopUp` status, `BillingAccount.walletBalance`, TOPUP ledger entries                             | Skips: OFFLINE     |
+| **Sweep Stuck Webhook Events**<br>`sweep-stuck-webhook-events`           | `4-59/10 * * * *`  | `jobs/cleanup/sweep-stuck-webhook-events.ts`<br>→ `scripts/cleanup/sweep-stuck-webhook-events.ts`           | closed | no        | `WebhookEvent.processed` and `error`, plus whatever the replayed events mutate                         | Skips: OFFLINE     |
+
+## Jobs that ignore maintenance mode
+
+Three of the 67 scheduled jobs never call `abortIfMaintenance()`. It used to be twelve, and the twelve included six jobs that move money or rewrite the org entitlement state the checkout resolver reads — `dunning`, `advance-program-cycles`, `auto-renew-contracts`, `expire-contracts`, `timeout-member-overages` and `release-pending-trust-earnings` — as well as `wallet-low-balance`, which only flags a low wallet and sends the alert. All of them now carry the guard. The six that move money joined `FINANCIAL_JOB_NAMES` at the same time, so they exit on DEGRADED as well as OFFLINE; `wallet-low-balance` did not, so it exits on OFFLINE only. `auto-renew-contracts` and `expire-contracts` were additionally flipped from fail-open to fail-closed locks, because a financial job that keeps running while Redis is unreachable is exactly the window in which two runners both believe they hold the lock.
+
+The three that remain are deliberate.
+
+- `cleanup-empty-folders` — scripts/utils/cleanup-empty-folders.ts. Touches Supabase storage objects only and never opens a database connection, so a migration cannot catch it mid-write.
+- `cron-heartbeat` — scripts/ci/check-cron-heartbeat.ts. The dead-man switch itself. Silencing the watchdog during maintenance would mean the one window in which the fleet is most likely to stop is also the window in which nobody would notice.
+- `stream-webhook-drift` — scripts/stream/ensure-webhook-subscription.ts. A read-only drift check against Stream's app settings; the whole run is one API read.
+
+The same sweep closed the other half of the hole. The forty-odd HTTP twins under `app/api/cleanup/` import these job cores directly and had no guard at all, so an ops trigger ran the job straight through an OFFLINE window. They cannot call `abortIfMaintenance()`, whose `process.exit(0)` would take the Next instance down with the request, so they call `assertNotInMaintenance()` instead: the same phase rule, surfaced as a `MaintenanceActiveError` the handler answers with 503.
+
+The GST outward-supplies register export joined that cohort in #1370. Its twin lives at `app/api/cleanup/gst-outward-register-export` and imports `runGstOutwardRegisterExport` from the job module, which is where the fail-closed `gst-outward-register-export` lock is taken, so an HTTP call that overlaps the scheduled run answers 409 instead of racing the gapless invoice series. The one thing the twin does differently is that it does not write the CSV: a serverless filesystem is read-only and nothing would collect the file, so the HTTP path heals the missing invoices, stamps `gstr1ExportedAt` and reports the counts, while the Actions run remains the way a CA actually obtains the file.
+
+Two more joined it in #1407, closing the last gaps in the "every job has an HTTP twin" rule. `app/api/cleanup/settle-invoice-accruals` imports `runSettleInvoiceAccruals` from `jobs/billing/settle-invoice-accruals.ts`, and `app/api/cleanup/tds-return-draft` imports `runTdsReturnDraftExport` from `jobs/compliance/tds-26q-draft-export.ts`. In both cases the exported function is where the cron lock is taken — fail-closed on the accrual rollup, because two overlapping runs would each roll the same accrual set into an invoice, and fail-open on the return draft, because that export only reads. Neither exported core calls `abortIfMaintenance()`; the maintenance guard stays on the entry points, so the Actions run exits the process and the route answers 503.
+
+The TDS job needed one structural change to make this possible. Its `main()` used to run at import, which meant that merely importing the module from a route would have fired the quarterly export; it is now behind the usual `require.main === module` guard, the shape the other ten job modules already use. The twin runs with the same defaults as the schedule — the quarter that closed, not the quarter containing today — writes the same full-PAN CSV to the private finance bucket, and returns the storage path instead of a GitHub artifact, since there is no artifact store on the HTTP path.
+
+## Locking
+
+`withCronLock` (`lib/cron/with-cron-lock.ts`) provides distributed mutual exclusion keyed `cron:lock:<jobName>`, with a fifteen-minute TTL by default and thirty-five minutes for the payout and reconcile family. It exists because the same job can be entered three ways — the schedule, a manual `workflow_dispatch`, and an authenticated HTTP call — and jobs whose side effects are only partially idempotent must not run twice concurrently.
+
+It is a mutual-exclusion tool and nothing more. Data correctness comes from compare-and-set transitions and unique constraints, never from this lock, because Redis and PostgreSQL are separate failure domains and the lock can be lost without the database noticing. ADR 13 records that reasoning in full.
+
+Every scheduled workflow also declares a workflow-level `concurrency: { group: ${{ github.workflow }}, cancel-in-progress: false }`, a second and redundant guard at the Actions layer that queues an overlapping run rather than killing one mid-flight; `withCronLock` remains the correctness guard, and `__tests__/maintenance/cron-lock-registry.test.ts` asserts the concurrency block is present on every scheduled entry so the two guards cannot drift apart. GitHub Actions allows one running and one pending run per concurrency group by default, and a newer run replaces the pending one rather than queuing behind it; the twelve workflows that also accept `workflow_dispatch` add `queue: max` so a second manual trigger cannot silently displace one already waiting, up to a hundred pending runs.
+
+Four scheduled workflows do not use it, each for a stated reason.
+
+| Workflow               | Mechanism                    | Why not `withCronLock`                                                                                                                                                                                                                 |
+| ---------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `process-payouts`      | `lock:payout_processing`     | Predates the wrapper and additionally guards the HTTP approval path, which the `cron:lock:` key shape does not reach.                                                                                                                  |
+| `create-payout-batch`  | `lock:payout_batch_creation` | Same lock family as above, held across a batch that outlives the default TTL.                                                                                                                                                          |
+| `cron-heartbeat`       | None, deliberately           | Locking the dead-man switch through Redis would make the watchdog depend on the infrastructure it exists to report on. The check is read-only, so a double-run costs nothing.                                                          |
+| `stream-webhook-drift` | None, deliberately           | A read-only drift check rather than a job. The whole run is one `getAppSettings` call, so a concurrent second run costs one extra API request, and a lock would give a guard a hard dependency on the infrastructure it does not need. |
+
+Each entry is mirrored in `LOCK_EXEMPT` in `__tests__/maintenance/cron-lock-registry.test.ts`. That test fails both when a new workflow appears without a lock and when an exempt workflow grows a real one, so the table above cannot rot without CI saying so.
+
+## Watchdogs
+
+Two independent mechanisms answer "is the fleet still alive", and they are independent on purpose.
+
+The first is `cron-heartbeat`, which runs daily and queries the GitHub Actions API for the last run of every scheduled workflow, failing when any of them has gone quiet for longer than its cadence allows. It catches the common case, including GitHub automatically disabling schedules after sixty days of repository inactivity. It cannot, however, report the case where schedules stop fleet-wide, because it is itself a scheduled workflow and would stop with them.
+
+The second closes that gap from the other side. Every locked run refreshes `cron:heartbeat:last` in Redis, the daily heartbeat check refreshes it too, and `GET /api/health` exposes its age:
+
+```json
+{
+  "cron": {
+    "configured": true,
+    "lastRunAt": "2026-08-14T04:40:12.000Z",
+    "stale": false
+  }
+}
+```
+
+`stale` turns true once the key is older than six hours, and is `null` before the fleet has ever written one, when Redis is not configured, or when the stored timestamp will not parse — the last of those is a heartbeat we cannot date, which the probe treats exactly like one that was never written rather than guessing at an age. When the probe itself fails, `stale` is the string `"unknown"` and a `probeError: true` field appears alongside it. Those two cases used to be indistinguishable: an unreadable Redis returned exactly the same body as a fleet that had never run, so a monitor watching the field could not tell an outage from a cold start. Because this is an ordinary HTTP field, an external uptime monitor can watch it with no dependency on GitHub at all. Both the heartbeat write and this probe are fail-open: neither may ever be the reason a job fails or a health check errors.
+
+## Keeping this page true
+
+This page is generated from the repository, so it is only as current as its last regeneration. The mechanical claims — how many workflows exist, which are locked, which are fail-closed, which are financial — are additionally asserted by `__tests__/maintenance/cron-lock-registry.test.ts`, so those cannot drift silently even between regenerations. The prose, the **Mutates** column and the group headings are hand-written and need a human to revisit them when a job's purpose changes.
+
+When adding a scheduled job, the checklist is: give it a `jobs/**` wrapper and a `scripts/**` or `lib/**` core, wrap the core in `withCronLock` with a deliberate `failMode` stated as a string literal rather than computed, call `abortIfMaintenance()` in the wrapper, add the job name to `FINANCIAL_JOB_NAMES` if it touches money, pick a cron minute no other job already uses, keep every module in the entrypoint's import graph free of `server-only`, give the workflow every environment variable those modules read at import time, add the failure-notification step, and add a row here.

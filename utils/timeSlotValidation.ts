@@ -1,9 +1,17 @@
 import type { SlotType } from "@/utils/schedule/types";
+import { resolveOvernightStatus } from "@/utils/schedule/overnight";
+
+/**
+ * The longest a single availability row may span. Exported because the
+ * merge-on-save helpers must fold to the same bound this validator enforces —
+ * a longer row is dropped by the settings loader and deleted by the next save.
+ */
+export const MAX_DURATION_MINUTES = 12 * 60;
 
 // Configuration constants
 const VALIDATION_CONFIG = {
   MIN_DURATION_MINUTES: 30,
-  MAX_DURATION_MINUTES: 12 * 60, // 12 hours max
+  MAX_DURATION_MINUTES,
   TIME_INCREMENT_MINUTES: 15,
   SESSION_INCREMENT_MINUTES: 30,
 } as const;
@@ -22,10 +30,10 @@ const getMinutes = (time: string): number | null => {
     : null;
 };
 
-// Helper to check if a slot spans midnight
-const isOvernightSlot = (startMinutes: number, endMinutes: number): boolean => {
-  return endMinutes <= startMinutes;
-};
+// Helper to check if a slot spans midnight — #503 item 2, canonical rule
+const isOvernightSlot = (startMinutes: number, endMinutes: number): boolean =>
+  resolveOvernightStatus({ startTimeUtc: startMinutes, endTimeUtc: endMinutes })
+    .isOvernight;
 
 // Calculate slot duration handling overnight slots
 const calculateSlotDuration = (

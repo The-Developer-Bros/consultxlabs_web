@@ -10,8 +10,8 @@ import Image from "next/image";
 
 export default function Feed() {
   return (
-    <div className="flex px-4  md:px-6 py-20 md:py-30 lg:py-30 xl:py-40 max-w-7xl mx-auto">
-      <aside className="w-1/5 space-y-6">
+    <div className="flex flex-col lg:flex-row gap-6 px-4 md:px-6 py-20 md:py-30 lg:py-30 xl:py-40 max-w-7xl mx-auto">
+      <aside className="w-full lg:w-1/5 space-y-6">
         <Card>
           <CardHeader>
             <h2 className="text-lg font-bold">Action Items</h2>
@@ -31,7 +31,7 @@ export default function Feed() {
           </CardContent>
         </Card>
       </aside>
-      <main className="w-3/5 px-4 space-y-6">
+      <main className="w-full lg:w-3/5 space-y-6">
         <Card>
           <CardHeader>
             <div className="flex items-center gap-3">
@@ -41,7 +41,7 @@ export default function Feed() {
               </Avatar>
               <div className="grid gap-0.5 text-xs">
                 <div className="font-medium">John Doe</div>
-                <div className="text-gray-500 dark:text-gray-400">
+                <div className="text-muted-foreground dark:text-gray-400">
                   Posted on December 12, 2023
                 </div>
               </div>
@@ -60,7 +60,7 @@ export default function Feed() {
               width="500"
             />
             <h2 className="text-xl font-bold">The Future of Consultancy</h2>
-            <p className="mt-2 text-gray-500">
+            <p className="mt-2 text-muted-foreground">
               Consultancy has always been about helping businesses make better
               decisions...
             </p>
@@ -80,7 +80,7 @@ export default function Feed() {
               </Avatar>
               <div className="grid gap-0.5 text-xs">
                 <div className="font-medium">Jane Smith</div>
-                <div className="text-gray-500 dark:text-gray-400">
+                <div className="text-muted-foreground dark:text-gray-400">
                   Posted on December 15, 2023
                 </div>
               </div>
@@ -88,7 +88,7 @@ export default function Feed() {
           </CardHeader>
           <CardContent>
             <h2 className="text-xl font-bold">Consultancy in the Age of AI</h2>
-            <p className="mt-2 text-gray-500">
+            <p className="mt-2 text-muted-foreground">
               As AI continues to evolve, what does this mean for the consultancy
               industry...
             </p>
@@ -100,7 +100,7 @@ export default function Feed() {
           </CardContent>
         </Card>
       </main>
-      <aside className="w-1/5 space-y-6">
+      <aside className="w-full lg:w-1/5 space-y-6">
         <Card>
           <CardHeader>
             <h2 className="text-lg font-bold">More Actions</h2>

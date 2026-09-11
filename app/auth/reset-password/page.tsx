@@ -1,5 +1,6 @@
 "use client";
 
+import * as Sentry from "@sentry/nextjs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -8,16 +9,11 @@ import { authClient } from "@/lib/auth-client";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState, Suspense } from "react";
+import { AuthCardSkeleton } from "../AuthCardSkeleton";
 
 export default function ResetPasswordPage() {
   return (
-    <Suspense
-      fallback={
-        <div className="min-h-screen flex items-center justify-center bg-gray-900">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white" />
-        </div>
-      }
-    >
+    <Suspense fallback={<AuthCardSkeleton />}>
       <ResetPasswordContent />
     </Suspense>
   );
@@ -87,6 +83,7 @@ function ResetPasswordContent() {
         setTimeout(() => router.push("/auth/signin"), 3000);
       }
     } catch (err: unknown) {
+      Sentry.captureException(err instanceof Error ? err : new Error(String(err)), { tags: { subsystem: "auth" } });
       console.error("Reset password error:", err);
       const errorMessage = err instanceof Error ? err.message : "An unexpected error occurred.";
       setError(errorMessage);
@@ -101,8 +98,8 @@ function ResetPasswordContent() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-100 dark:bg-gray-950">
-      <div className="w-full max-w-md p-8 space-y-6 bg-white rounded-lg shadow-md dark:bg-gray-900">
+    <div className="flex min-h-screen items-center justify-center bg-neutral-950 p-6 text-white">
+      <div className="mx-auto flex w-full max-w-md flex-col">
         <div className="text-center">
           {/* Reusing GlobeIcon style from SignIn */}
           <svg
@@ -115,23 +112,23 @@ function ResetPasswordContent() {
             strokeWidth="2"
             strokeLinecap="round"
             strokeLinejoin="round"
-            className="mx-auto h-12 w-auto text-gray-900 dark:text-gray-100"
+            className="mx-auto h-10 w-auto text-white"
           >
             <circle cx="12" cy="12" r="10" />
             <line x1="2" x2="22" y1="12" y2="12" />
             <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
           </svg>
-          <h2 className="mt-6 text-3xl font-extrabold text-gray-900 dark:text-white">
-            Reset Your Password
+          <h2 className="mt-6 text-fluid-3xl font-semibold tracking-tight">
+            Reset your password
           </h2>
-          <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+          <p className="mt-2 text-sm text-zinc-400 md:text-base">
             Enter your new password below.
           </p>
         </div>
 
         {error && !token && (
           <div
-            className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative"
+            className="relative mt-8 rounded border border-red-400 bg-red-100 px-4 py-3 text-red-700"
             role="alert"
           >
             <strong className="font-bold">Error!</strong>
@@ -150,15 +147,14 @@ function ResetPasswordContent() {
         )}
 
         {token && (
-          <form className="space-y-6" onSubmit={handleResetPassword}>
-            <div>
+          <form className="mt-8 space-y-6" onSubmit={handleResetPassword}>
+            <div className="grid gap-2">
               <Label htmlFor="password">New Password</Label>
               <Input
                 id="password"
                 name="password"
                 type="password"
                 required
-                className="mt-1 appearance-none rounded-md relative block w-full px-3 py-2 border border-gray-300 dark:border-gray-700 placeholder-gray-500 dark:placeholder-gray-400 text-gray-900 dark:text-white focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
                 placeholder="New password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -166,14 +162,13 @@ function ResetPasswordContent() {
               />
             </div>
 
-            <div>
+            <div className="grid gap-2">
               <Label htmlFor="confirm-password">Confirm New Password</Label>
               <Input
                 id="confirm-password"
                 name="confirm-password"
                 type="password"
                 required
-                className="mt-1 appearance-none rounded-md relative block w-full px-3 py-2 border border-gray-300 dark:border-gray-700 placeholder-gray-500 dark:placeholder-gray-400 text-gray-900 dark:text-white focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
                 placeholder="Confirm new password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
@@ -181,31 +176,23 @@ function ResetPasswordContent() {
               />
             </div>
 
-            {error && (
-              <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
-            )}
-            {message && (
-              <p className="text-sm text-green-600 dark:text-green-400">
-                {message}
-              </p>
-            )}
+            {error && <p className="text-sm text-red-400">{error}</p>}
+            {message && <p className="text-sm text-green-400">{message}</p>}
 
-            <div>
-              <Button
-                type="submit"
-                className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-600"
-                disabled={isLoading || !!message} // Disable button after success message
-              >
-                {isLoading ? "Resetting..." : "Reset Password"}
-              </Button>
-            </div>
+            <Button
+              type="submit"
+              className="w-full bg-white text-black hover:bg-white/90"
+              disabled={isLoading || !!message} // Disable button after success message
+            >
+              {isLoading ? "Resetting..." : "Reset Password"}
+            </Button>
           </form>
         )}
 
-        <div className="text-sm text-center">
+        <div className="mt-6 text-center text-sm">
           <Link
             href="/auth/signin"
-            className="font-medium text-indigo-600 hover:text-indigo-500 dark:text-indigo-400 dark:hover:text-indigo-300"
+            className="font-medium text-zinc-300 underline-offset-4 hover:text-white hover:underline"
           >
             Back to Sign in
           </Link>

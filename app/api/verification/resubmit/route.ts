@@ -13,6 +13,7 @@ const resubmitSchema = z.object({
   notes: z.string().optional(),
 });
 
+import * as Sentry from "@sentry/nextjs";
 import { getSession } from "@/lib/auth-server";
 export async function POST(req: NextRequest) {
   try {
@@ -125,6 +126,7 @@ export async function POST(req: NextRequest) {
     });
   } catch (error) {
     console.error("Error resubmitting verification:", error);
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "auth" } });
     return NextResponse.json(
       { error: "Failed to resubmit verification" },
       { status: 500 },

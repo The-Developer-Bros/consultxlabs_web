@@ -1,6 +1,11 @@
+import * as Sentry from "@sentry/nextjs";
 import prisma from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
+import {
+  planCollaboratorConsultantSelect,
+  planConsultantSelect,
+} from "@/lib/api/plans/consultant-projection";
 import {
   parsePlanFilters,
   buildPlanWhereClause,
@@ -29,54 +34,12 @@ export async function GET(request: NextRequest) {
 
     // Build include object based on whether registration data is requested
     const include: Record<string, unknown> = {
-      consultantProfile: {
-        include: {
-          user: {
-            select: {
-              name: true,
-              image: true,
-              workExperiences: {
-                select: {
-                  company: true,
-                  companyDomain: true,
-                  isCurrent: true,
-                },
-                orderBy: [
-                  { isCurrent: "desc" as const },
-                  { startDate: "desc" as const },
-                ],
-                take: 3,
-              },
-            },
-          },
-        },
-      },
+      consultantProfile: { select: planConsultantSelect },
       topics: true,
       collaborators: {
         where: { status: "ACCEPTED" },
         include: {
-          consultantProfile: {
-            include: {
-              user: {
-                select: {
-                  name: true,
-                  image: true,
-                  workExperiences: {
-                    select: {
-                      company: true,
-                      companyDomain: true,
-                      isCurrent: true,
-                    },
-                    orderBy: [
-                      { isCurrent: "desc" as const },
-                      { startDate: "desc" as const },
-                    ],
-                    take: 3,
-                  },
-                },
-              },
-            },
-          },
+          consultantProfile: { select: planCollaboratorConsultantSelect },
         },
       },
     };
@@ -159,6 +122,10 @@ export async function GET(request: NextRequest) {
 
     return paginatedResponse(webinarPlans, total, page, limit);
   } catch (error) {
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "bookings" } },
+    );
     console.error("Error fetching webinar plans:", error);
     return NextResponse.json(
       { error: "An error occurred while fetching webinar plans" },
@@ -264,6 +231,10 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ data: newWebinarPlan }, { status: 201 });
   } catch (error) {
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "bookings" } },
+    );
     console.error("Error creating webinar plan:", error);
     return NextResponse.json(
       { error: "An error occurred while creating the webinar plan" },

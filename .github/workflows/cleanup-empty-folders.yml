@@ -1,14 +1,38 @@
 name: Cleanup Empty Folders
 
+# Storage-only hygiene: removes empty appointment-document folders from
+# Supabase storage. No Prisma — the script talks to the storage API with the
+# service-role key, so this workflow carries the two Supabase secrets plus
+# the Redis pair for the #1169 cron lock (the old base64 ENV_FILE blob
+# materialized every secret in the runner for no reason). Was silently red:
+# package.json pointed at the script's pre-move path and this was the one
+# cron without a failure pager.
+
 on:
   schedule:
     # Runs daily at 9:00 AM IST (3:30 AM UTC)
     - cron: "30 3 * * *"
   workflow_dispatch: # Allows manual triggering
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+  # A second workflow_dispatch while one is already pending would replace it
+  # under the default single-pending-run policy; queue: max keeps every
+  # trigger instead of silently dropping one.
+  queue: max
+
 jobs:
   cleanup:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      # #1169 — cron lock (fail-open; without these the run is unlocked, warned).
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
 
     steps:
       - name: Checkout code
@@ -23,8 +47,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Create .env file from secret
-        run: echo "${{ secrets.ENV_FILE }}" | base64 -d > .env
-
       - name: Run cleanup script
         run: npm run scripts:cleanup-empty-folders
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          # Fallback sink — Slack has never been provisioned, so this is
+          # what actually pages today. See 07-required-secrets.md.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "cleanup-empty-folders"

@@ -17,6 +17,7 @@
  */
 
 import prisma from "../../lib/prisma";
+import { withCronLock } from "@/lib/cron/with-cron-lock";
 
 // Delete processed events older than this
 const PROCESSED_RETENTION_DAYS = 30;
@@ -36,7 +37,15 @@ export interface WebhookArchiveResult {
 /**
  * Archive (delete) old webhook events
  */
+// #476 — locked at the core so every entry (GH Actions / HTTP) shares one
+// mutual exclusion; fail-open: repeat-safe side effects, lock is belt-and-braces.
 export async function archiveWebhookEvents(): Promise<WebhookArchiveResult> {
+  return withCronLock("archive-webhook-events", { failMode: "open" }, () =>
+    archiveWebhookEventsUnlocked(),
+  );
+}
+
+async function archiveWebhookEventsUnlocked(): Promise<WebhookArchiveResult> {
   const errors: string[] = [];
   let processedEventsDeleted = 0;
   let failedEventsDeleted = 0;

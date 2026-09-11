@@ -22,6 +22,9 @@ interface NotificationPreferences {
   trialNotifications: boolean;
   subscriptionAlerts: boolean;
   marketingEmails: boolean;
+  orgBillingAlerts: boolean;
+  orgMembershipAlerts: boolean;
+  orgProgramAlerts: boolean;
   quietHoursEnabled: boolean;
   quietHoursStart: string | null;
   quietHoursEnd: string | null;
@@ -97,10 +100,43 @@ const CATEGORY_FIELDS: ToggleField[] = [
   },
 ];
 
+/**
+ * ADR 23 — the seven categories above are all B2C-shaped, so every ORG_*
+ * workflow was unmutable. Rendered only for someone who actually belongs to an
+ * organization; a purely B2C user has nothing behind these switches.
+ */
+const ORG_CATEGORY_FIELDS: ToggleField[] = [
+  {
+    key: "orgBillingAlerts",
+    label: "Billing & Payouts",
+    description: "Invoices, dunning, wallet balance, payouts, and overages",
+  },
+  {
+    key: "orgMembershipAlerts",
+    label: "Membership",
+    description: "Invitations, roster changes, and role updates",
+  },
+  {
+    key: "orgProgramAlerts",
+    label: "Programs",
+    description: "Cap warnings, exhausted programs, and renewals",
+  },
+];
+
 export function NotificationPreferencesPanel() {
   const { data: session } = useSession();
   const queryClient = useQueryClient();
   const { toast } = useToast();
+
+  // Same predicate the Inbox tabs use, so the two surfaces agree on whether
+  // this user has an org context at all.
+  const hasOrgMembership = Array.isArray(
+    (session?.user as Record<string, unknown> | undefined)
+      ?.organizationMemberships,
+  )
+    ? ((session?.user as Record<string, unknown>)
+        .organizationMemberships as unknown[]).length > 0
+    : false;
 
   const {
     data: preferences,
@@ -188,6 +224,9 @@ export function NotificationPreferencesPanel() {
     trialNotifications: true,
     subscriptionAlerts: true,
     marketingEmails: false,
+    orgBillingAlerts: true,
+    orgMembershipAlerts: true,
+    orgProgramAlerts: true,
     quietHoursEnabled: false,
     quietHoursStart: null,
     quietHoursEnd: null,
@@ -255,6 +294,34 @@ export function NotificationPreferencesPanel() {
           </CardHeader>
           <CardContent className="space-y-4">
             {CATEGORY_FIELDS.map((field, index) => (
+              <div key={field.key}>
+                {index > 0 && <Separator className="mb-4" />}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label className="text-sm font-medium">{field.label}</Label>
+                    <p className="text-xs text-zinc-500">{field.description}</p>
+                  </div>
+                  <Switch
+                    checked={prefs[field.key]}
+                    onCheckedChange={(checked) =>
+                      handleToggle(field.key, checked)
+                    }
+                  />
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Organization categories — hidden for users with no membership */}
+      {prefs.allNotifications && hasOrgMembership && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">Organization</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {ORG_CATEGORY_FIELDS.map((field, index) => (
               <div key={field.key}>
                 {index > 0 && <Separator className="mb-4" />}
                 <div className="flex items-center justify-between">

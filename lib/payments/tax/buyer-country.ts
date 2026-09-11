@@ -6,77 +6,6 @@
  */
 
 // Maps locale strings to ISO 3166-1 alpha-2 country codes
-const LOCALE_COUNTRY_MAP: Record<string, string> = {
-  "en-US": "US",
-  "en-GB": "GB",
-  "en-AU": "AU",
-  "en-CA": "CA",
-  "en-IN": "IN",
-  "hi-IN": "IN",
-  hi: "IN",
-  "de-DE": "DE",
-  de: "DE",
-  "fr-FR": "FR",
-  fr: "FR",
-  "es-ES": "ES",
-  es: "ES",
-  "it-IT": "IT",
-  it: "IT",
-  "pt-BR": "BR",
-  pt: "PT",
-  "ja-JP": "JP",
-  ja: "JP",
-  "zh-CN": "CN",
-  zh: "CN",
-  "ko-KR": "KR",
-  ko: "KR",
-  "ar-AE": "AE",
-  "ar-SA": "SA",
-  "ru-RU": "RU",
-  ru: "RU",
-  "nl-NL": "NL",
-  nl: "NL",
-  "sv-SE": "SE",
-  sv: "SE",
-  "pl-PL": "PL",
-  pl: "PL",
-  "tr-TR": "TR",
-  tr: "TR",
-  "th-TH": "TH",
-  th: "TH",
-  "id-ID": "ID",
-  "ms-MY": "MY",
-  "en-SG": "SG",
-  "en-NZ": "NZ",
-  "da-DK": "DK",
-  da: "DK",
-  "nb-NO": "NO",
-  nb: "NO",
-  "fi-FI": "FI",
-  fi: "FI",
-  "en-ZA": "ZA",
-  "en-NG": "NG",
-  "en-KE": "KE",
-  "en-GH": "GH",
-};
-
-/**
- * Detect country from Accept-Language header
- */
-function detectCountryFromLocale(acceptLanguage: string): string | null {
-  // Parse Accept-Language: "en-US,en;q=0.9,hi-IN;q=0.8"
-  const locales = acceptLanguage
-    .split(",")
-    .map((part) => part.split(";")[0].trim());
-
-  for (const locale of locales) {
-    if (LOCALE_COUNTRY_MAP[locale]) return LOCALE_COUNTRY_MAP[locale];
-    const base = locale.split("-")[0];
-    if (LOCALE_COUNTRY_MAP[base]) return LOCALE_COUNTRY_MAP[base];
-  }
-
-  return null;
-}
 
 /**
  * Detect buyer country using a cascading strategy.
@@ -106,13 +35,24 @@ export function detectBuyerCountry(params: {
     return params.cfIpCountry.toUpperCase();
   }
 
-  // 3. Accept-Language header
-  if (params.acceptLanguage) {
-    const detected = detectCountryFromLocale(params.acceptLanguage);
-    if (detected) return detected;
-  }
-
-  // 4. Conservative fallback — assume India (charge GST rather than miss it)
+  // 3. Accept-Language is deliberately NOT a tax signal.
+  //
+  // It used to be, and it decided the GST outcome in practice, because the two
+  // signals above are both dead in this deployment: `User.country` is a
+  // free-text onboarding field ("e.g., United States") that can never satisfy
+  // the `.length === 2` check above it, and `cf-ipcountry` never arrives —
+  // production is served by Netlify with no Cloudflare in front of it. So the
+  // deciding input for whether Indian GST was charged was the browser's
+  // language header, and `en-US` — a very common default in India — mapped to
+  // "US" and zero-rated the sale as an export. Every payment ever created
+  // through the real checkout path in the dev database is recorded as
+  // buyerCountry="US", isInternational=true, taxAmount=0.
+  //
+  // A browser locale is not evidence of anything a tax authority recognises,
+  // and it silently defeated the conservative fallback below. Zero-rating now
+  // requires a signal someone actually asserted.
+  //
+  // 4. Conservative fallback — assume India (charge GST rather than miss it).
   return "IN";
 }
 

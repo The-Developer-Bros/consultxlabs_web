@@ -14,6 +14,8 @@ import {
 } from "../../scripts/payouts/reconcile-payout-status";
 import fs from "fs";
 import { abortIfMaintenance } from "../../lib/maintenance-cron";
+import * as Sentry from "@sentry/nextjs";
+import { runJob } from "../../lib/observability/job-sentry";
 
 /**
  * Output results to GitHub Actions
@@ -36,7 +38,11 @@ function outputToGitHubActions(result: PayoutReconciliationResult): void {
     fs.appendFileSync(outputFile, outputs + "\n");
   }
 
-  if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+  // #677 PM-1 — match the canonical name the underlying script reads
+  if (
+    !process.env.RAZORPAY_KEY_ID ||
+    !(process.env.RAZORPAY_SECRET ?? process.env.RAZORPAY_KEY_SECRET)
+  ) {
     console.log(
       `::warning::Razorpay credentials not configured — Razorpay records were skipped`,
     );
@@ -72,6 +78,7 @@ function outputToGitHubActions(result: PayoutReconciliationResult): void {
  */
 async function main(): Promise<void> {
   await abortIfMaintenance("reconcile-payout-status");
+  Sentry.logger.info("job:reconcile-payout-status started");
   console.log("🔄 Starting payout status reconciliation job...");
   console.log(`Timestamp: ${new Date().toISOString()}`);
 
@@ -99,15 +106,22 @@ async function main(): Promise<void> {
 
     outputToGitHubActions(result);
 
+    Sentry.logger.info("job:reconcile-payout-status finished", {
+      totalProcessed: result.totalProcessed,
+      reconciledCount: result.reconciledCount,
+      completedCount: result.completedCount,
+      failedCount: result.failedCount,
+      skippedCount: result.skippedCount,
+      discrepanciesCount: result.discrepancies.length,
+      success: result.success,
+    });
+
     if (!result.success) {
-      process.exit(1);
+      process.exitCode = 1;
     }
-  } catch (error) {
-    console.error("❌ Fatal error in payout reconciliation:", error);
-    process.exit(1);
   } finally {
     await disconnectDatabase();
   }
 }
 
-main();
+runJob("reconcile-payout-status", main);

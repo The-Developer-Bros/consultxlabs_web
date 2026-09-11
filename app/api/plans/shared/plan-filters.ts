@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { Prisma } from "@prisma/client";
+import { Prisma, type OrgPlanVisibility } from "@prisma/client";
+import { MARKETPLACE_VISIBILITY } from "@/lib/api/plans/visibility";
 
 export interface PlanFilterParams {
   consultantId: string | null;
@@ -10,6 +11,7 @@ export interface PlanFilterParams {
   minPrice: number | undefined;
   maxPrice: number | undefined;
   search: string | null;
+  level: string | null;
   page: number;
   limit: number;
   skip: number;
@@ -41,6 +43,9 @@ export function parsePlanFilters(
     maxPrice:
       parsedMax !== undefined && !isNaN(parsedMax) ? parsedMax : undefined,
     search: searchParams.get("search"),
+    // "all" is the UI's no-op sentinel, not a stored level value.
+    level:
+      searchParams.get("level") === "all" ? null : searchParams.get("level"),
     page,
     limit,
     skip,
@@ -54,10 +59,14 @@ export function parsePlanFilters(
 export interface PlanWhereClause {
   consultantProfileId?: string;
   language?: string;
+  level?: string;
   price?: { gte?: number; lte?: number };
   title?: { contains: string; mode: "insensitive" };
   topics?: { some: { id: { in: string[] } } };
   consultantProfile?: { domainId: string };
+  visibility?: { in: OrgPlanVisibility[] };
+  /** #catalog-archive — `null` keeps withdrawn plans out of public lists. */
+  archivedAt?: null;
 }
 
 /**
@@ -68,13 +77,30 @@ export interface PlanWhereClause {
 export function buildPlanWhereClause(
   filters: PlanFilterParams,
 ): PlanWhereClause {
-  const where: PlanWhereClause = {};
+  // #726 — public marketplace must not surface ORG_ONLY plans. The filter
+  // is applied unconditionally here because every caller of this helper
+  // is a public surface; org-internal catalog endpoints have their own
+  // where-builders.
+  // #catalog-archive — an archived plan is withdrawn from sale. It is kept
+  // rather than deleted because the row carries the terms of every booking made
+  // against it (and the FK chain cascades to Payment), so discovery has to
+  // filter it out explicitly. Same reasoning as the visibility gate above: every
+  // caller here is a public surface.
+  const where: PlanWhereClause = {
+    visibility: { in: MARKETPLACE_VISIBILITY },
+    archivedAt: null,
+  };
 
   if (filters.consultantId) {
     where.consultantProfileId = filters.consultantId;
   }
   if (filters.language) {
     where.language = filters.language;
+  }
+  // Level used to be filtered client-side over the already-loaded infinite-scroll
+  // page, so a matching program on a later page simply never appeared.
+  if (filters.level) {
+    where.level = filters.level;
   }
   if (filters.minPrice !== undefined || filters.maxPrice !== undefined) {
     const price: { gte?: number; lte?: number } = {};

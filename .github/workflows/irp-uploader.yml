@@ -1,0 +1,71 @@
+name: IRP IRN Uploader
+
+on:
+  schedule:
+    # 02:50 UTC = 08:20 IST. #709 — moved off the 02:30 4-way pile-up
+    # (auto-renew / stale-invitations / overage-sweep) onto its own minute.
+    # Daily cadence matches the CBIC 30-day retroactive IRN window.
+    - cron: "50 2 * * *"
+  workflow_dispatch: # Allow manual triggering
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  irp-uploader:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Gated on the ENABLE_IRP_UPLOADER repo variable (see
+    # lib/feature-flags.ts). On scheduled runs the job exits without
+    # work when the variable is unset, so we don't burn CI minutes on a
+    # stubbed connector. Manual workflow_dispatch still runs so an
+    # operator can validate the pipeline before flipping the flag on.
+    if: ${{ vars.ENABLE_IRP_UPLOADER == 'true' || github.event_name == 'workflow_dispatch' }}
+
+    env:
+      # #1066 — jobs run as bare Node processes, so Sentry.init only sees
+      # what the step env carries. Without the DSN the runner initialises
+      # a disabled client and every captureException is a no-op again.
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # #476 cron locks load lib/redis at import — every job entry needs these
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      # ClearTax GSP credentials. When absent the underlying connector
+      # returns { status: "FAILED", reason: "STUB" } and the uploader
+      # treats that as a normal retry — the cron does not crash.
+      CLEARTAX_API_KEY: ${{ secrets.CLEARTAX_API_KEY }}
+      CLEARTAX_GSP_TOKEN: ${{ secrets.CLEARTAX_GSP_TOKEN }}
+      CLEARTAX_GSTIN: ${{ secrets.CLEARTAX_GSTIN }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Run IRP uploader
+        run: npx --yes tsx@4.23.1 jobs/compliance/irp-uploader.ts
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          # Fallback sink — Slack has never been provisioned, so this is
+          # what actually pages today. See 07-required-secrets.md.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "irp-uploader"

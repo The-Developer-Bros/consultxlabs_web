@@ -152,7 +152,7 @@ At 100K rows, each count takes 100-500ms. The analytics page becomes unusable (2
 @@index([paymentStatus])   // on Payment model
 @@index([refundStatus])     // on PaymentRefund model
 @@index([disputeStatus])    // on PaymentDispute model
-@@index([requestStatus])    // on Consultation model
+@@index([status])    // on Consultation model
 @@index([status])           // on Appointment model
 @@index([createdAt])        // on User model (for date-range counts)
 ```
@@ -493,11 +493,11 @@ At 10,000 concurrent users:
 
 ### The Problem
 
-Our 28+ cron jobs run via GitHub Actions scheduled workflows. Known issues:
+Our 61 cron jobs run via GitHub Actions scheduled workflows. Known issues:
 
 1. **Scheduling delays**: 15-60 minutes common during peak GitHub load
 2. **Silent disabling**: Repositories with no activity for 60 days have scheduled workflows **automatically disabled** without notification
-3. **Connection storms**: 28 cron jobs potentially hitting the database simultaneously. If 5 cron jobs fire within a 1-minute window, each opening 5 connections = 25 connections consumed just by cron
+3. **Connection storms**: 61 cron jobs potentially hitting the database simultaneously. If 5 cron jobs fire within a 1-minute window, each opening 5 connections = 25 connections consumed just by cron
 
 ### Approaches
 
@@ -650,8 +650,8 @@ Based on the codebase audit, these columns are frequently queried/filtered but l
 @@index([disputeStatus])
 
 // Consultation model
-@@index([requestStatus])
-@@index([consultantProfileId, requestStatus])
+@@index([status])
+@@index([consultantProfileId, status])
 
 // Appointment model
 @@index([status])

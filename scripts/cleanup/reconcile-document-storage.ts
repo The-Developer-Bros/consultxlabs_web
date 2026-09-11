@@ -22,6 +22,7 @@
 
 import prisma from "../../lib/prisma";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import { withCronLock, LONG_JOB_TTL_MS } from "@/lib/cron/with-cron-lock";
 
 // Grace period before deleting orphaned files (days)
 const ORPHAN_GRACE_PERIOD_DAYS = 7;
@@ -145,46 +146,91 @@ async function findOrphanedDocuments(
   return orphanedFiles;
 }
 
+interface MissingFile {
+  id: string;
+  storagePath: string;
+  isStorageMissing: boolean; // #694 — prior flag state, to skip redundant updates
+}
+
 /**
- * Find missing files (in DB but not in storage)
+ * Find missing files (in DB but not in storage), plus rows previously flagged
+ * as missing whose file is present again (recovered) so the flag can be cleared.
  */
 async function findMissingFiles(
   supabase: SupabaseClient,
-): Promise<{ id: string; storagePath: string }[]> {
-  const missingFiles: { id: string; storagePath: string }[] = [];
+): Promise<{ missingFiles: MissingFile[]; recoveredIds: string[] }> {
+  const missingFiles: MissingFile[] = [];
+  const recoveredIds: string[] = [];
 
   console.log("\n🔍 Checking for missing files...");
 
   // Get all document records with storage paths
   const dbDocuments = await prisma.appointmentDocument.findMany({
-    select: { id: true, storagePath: true },
+    select: { id: true, storagePath: true, isStorageMissing: true },
   });
 
   console.log(`   Checking ${dbDocuments.length} document records...`);
 
   // Check each file exists in storage
   for (const doc of dbDocuments) {
+    let present = false;
     try {
       const { data, error } = await supabase.storage
         .from("documents")
         .download(doc.storagePath);
-
-      if (error || !data) {
-        missingFiles.push({
-          id: doc.id,
-          storagePath: doc.storagePath,
-        });
-      }
+      present = !error && !!data;
     } catch {
+      present = false;
+    }
+
+    if (present) {
+      // #694 — file is back; clear a stale missing flag if one was set.
+      if (doc.isStorageMissing) recoveredIds.push(doc.id);
+    } else {
       missingFiles.push({
         id: doc.id,
         storagePath: doc.storagePath,
+        isStorageMissing: doc.isStorageMissing,
       });
     }
   }
 
   console.log(`   Found ${missingFiles.length} missing files`);
-  return missingFiles;
+  return { missingFiles, recoveredIds };
+}
+
+/**
+ * #694 — persist the missing-storage state: flag newly-missing rows and clear
+ * the flag on recovered rows. Returns the count of rows freshly marked missing.
+ */
+async function persistMissingState(
+  missingFiles: MissingFile[],
+  recoveredIds: string[],
+): Promise<number> {
+  // Only flag (and count) rows whose flag flips false → true. Batch the writes
+  // into two updateMany calls instead of one query per row (avoids the N+1).
+  const newlyMissingIds = missingFiles
+    .filter((doc) => !doc.isStorageMissing)
+    .map((doc) => doc.id);
+
+  if (newlyMissingIds.length > 0) {
+    await prisma.appointmentDocument.updateMany({
+      where: { id: { in: newlyMissingIds } },
+      data: { isStorageMissing: true, missingDetectedAt: new Date() },
+    });
+  }
+
+  if (recoveredIds.length > 0) {
+    await prisma.appointmentDocument.updateMany({
+      where: { id: { in: recoveredIds } },
+      data: { isStorageMissing: false, missingDetectedAt: null },
+    });
+    console.log(
+      `   ♻️ Cleared missing flag on ${recoveredIds.length} recovered files`,
+    );
+  }
+
+  return newlyMissingIds.length;
 }
 
 /**
@@ -248,12 +294,20 @@ async function deleteOrphanedFiles(
 /**
  * Main function to reconcile document storage
  */
+// #476 — locked at the core so every entry (GH Actions / HTTP) shares one
+// mutual exclusion; fail-open: repeat-safe side effects, lock is belt-and-braces.
 export async function reconcileDocumentStorage(): Promise<DocumentReconciliationResult> {
+  return withCronLock("reconcile-document-storage", { failMode: "open", ttlMs: LONG_JOB_TTL_MS }, () =>
+    reconcileDocumentStorageUnlocked(),
+  );
+}
+
+async function reconcileDocumentStorageUnlocked(): Promise<DocumentReconciliationResult> {
   const errors: string[] = [];
   let orphanedFilesFound = 0;
   let orphanedFilesDeleted = 0;
   let missingFilesFound = 0;
-  const missingFilesMarked = 0;
+  let missingFilesMarked = 0;
 
   console.log("📂 Starting document storage reconciliation...");
   console.log(`   Buckets to check: ${BUCKETS_TO_CHECK.join(", ")}`);
@@ -335,9 +389,17 @@ export async function reconcileDocumentStorage(): Promise<DocumentReconciliation
       );
     }
 
-    // Find missing files
-    const missingDocuments = await findMissingFiles(supabase);
+    // Find missing files (and rows whose file has returned)
+    const { missingFiles: missingDocuments, recoveredIds } =
+      await findMissingFiles(supabase);
     missingFilesFound = missingDocuments.length;
+
+    // #694 — persist the missing-storage flag instead of only logging it, so
+    // the UI/ops can surface broken downloads; clears the flag on recovery.
+    missingFilesMarked = await persistMissingState(
+      missingDocuments,
+      recoveredIds,
+    );
 
     if (missingDocuments.length > 0) {
       console.log("\n⚠️ Missing files (in DB but not in storage):");
@@ -363,6 +425,7 @@ export async function reconcileDocumentStorage(): Promise<DocumentReconciliation
   console.log(`   Orphaned files found: ${orphanedFilesFound}`);
   console.log(`   Orphaned files deleted: ${orphanedFilesDeleted}`);
   console.log(`   Missing files found: ${missingFilesFound}`);
+  console.log(`   Missing files newly marked: ${missingFilesMarked}`);
 
   if (missingFilesFound > 0) {
     console.log("\n⚠️ ACTION REQUIRED:");

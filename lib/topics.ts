@@ -6,7 +6,7 @@
  * - Transforming topic objects to strings for API responses
  */
 
-import prisma from "@/lib/prisma";
+import prisma, { type Tx } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 
 /**
@@ -15,7 +15,7 @@ import { Prisma } from "@prisma/client";
  */
 export async function findOrCreateTopics(
   topicNames: string[],
-  db: Prisma.TransactionClient | typeof prisma = prisma,
+  db: Tx | typeof prisma = prisma,
 ): Promise<string[]> {
   if (!topicNames || topicNames.length === 0) {
     return [];

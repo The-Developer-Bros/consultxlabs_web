@@ -2,7 +2,7 @@
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { format } from "date-fns";
-import { useState, useRef, useEffect } from "react";
+import { useState } from "react";
 import {
   Attachment,
   useChatContext,
@@ -22,6 +22,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import { useMediaQuery } from "@/hooks/use-media-query";
+import { cn } from "@/utils/tailwind";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -32,6 +34,17 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 
 export const CustomMessage = () => {
   const { message } = useMessageContext();
@@ -44,34 +57,20 @@ export const CustomMessage = () => {
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(message.text || "");
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-
-  // Refs for click-outside detection
-  const emojiPickerRef = useRef<HTMLDivElement>(null);
-  const moreOptionsRef = useRef<HTMLDivElement>(null);
-
-  // Close dropdowns when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (
-        emojiPickerRef.current &&
-        !emojiPickerRef.current.contains(event.target as Node)
-      ) {
-        setShowEmojiPicker(false);
-      }
-      if (
-        moreOptionsRef.current &&
-        !moreOptionsRef.current.contains(event.target as Node)
-      ) {
-        setShowMoreOptions(false);
-      }
-    };
-
-    if (showEmojiPicker || showMoreOptions) {
-      document.addEventListener("mousedown", handleClickOutside);
-      return () =>
-        document.removeEventListener("mousedown", handleClickOutside);
-    }
-  }, [showEmojiPicker, showMoreOptions]);
+  // Hover is the ONLY way these actions were reachable, so on a touch device
+  // react/reply/edit/delete/report did not exist at all (#1134). Default to
+  // the hover shape on the server so desktop hydrates without a flash.
+  //
+  // Both halves are needed. `(pointer: fine)` alone matches devices with a
+  // precise pointer and NO hover — a stylus, some TV remotes — where
+  // `group-hover` can never fire, so the floating toolbar would stay
+  // transparent and the actions would be unreachable all over again. Hover
+  // capability is the thing actually being branched on; pointer precision only
+  // decides whether the small hit targets are usable.
+  const isFinePointer = useMediaQuery(
+    "(hover: hover) and (pointer: fine)",
+    true,
+  );
 
   // Map Stream reaction types to actual emoji characters
   const reactionTypeToEmoji: Record<string, string> = {
@@ -130,17 +129,17 @@ export const CustomMessage = () => {
       <div
         className={`flex items-end ${isMyMessage ? "justify-end" : "justify-start"} mb-4`}
       >
-        <div className="italic text-gray-400 text-sm px-3 py-2">
+        <div className="italic text-muted-foreground text-sm px-3 py-2">
           This message was deleted
         </div>
       </div>
     );
   }
 
+  // The menu closes itself on select, so these handlers only do their own work.
   const handleEditClick = () => {
     setIsEditing(true);
     setEditText(message.text || "");
-    setShowMoreOptions(false);
   };
 
   const handleEditSave = async () => {
@@ -167,7 +166,6 @@ export const CustomMessage = () => {
 
   const handleDeleteClick = () => {
     setShowDeleteDialog(true);
-    setShowMoreOptions(false);
   };
 
   const handleDeleteConfirm = async () => {
@@ -219,6 +217,11 @@ export const CustomMessage = () => {
           reason: "Reported message",
           targetUserId: message.user.id,
           contentText: message.text?.substring(0, 500),
+          // #1270 — without the message identity, CONTENT_REMOVED had nothing
+          // to delete and every report against this author folded into one row
+          // whose excerpt was whichever message was reported first.
+          streamMessageId: message.id,
+          streamChannelCid: channel?.cid,
         }),
       });
 
@@ -238,8 +241,100 @@ export const CustomMessage = () => {
         variant: "destructive",
       });
     }
-    setShowMoreOptions(false);
   };
+
+  // One toolbar, two placements: floating on hover for a mouse, inline and
+  // permanent for touch. Both are Radix now, which brings Escape, a focus trap
+  // and focus return that the hand-rolled mousedown-only dropdowns never had.
+  const actionToolbar = (
+    <div className="flex items-center gap-0.5 rounded-lg border border-border bg-popover shadow-lg">
+      {/* React with Emoji */}
+      <Popover open={showEmojiPicker} onOpenChange={setShowEmojiPicker}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            aria-label="React to message"
+            title="React"
+            className="rounded-l-lg p-1.5 transition-colors hover:bg-muted"
+          >
+            <SmileIcon className="h-4 w-4 text-muted-foreground" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent
+          align={isMyMessage ? "end" : "start"}
+          className="w-auto p-2"
+        >
+          <div className="flex gap-1">
+            {quickReactions.map((reactionType) => (
+              <button
+                key={reactionType}
+                type="button"
+                aria-label={`React with ${reactionType}`}
+                title={reactionType}
+                onClick={() => {
+                  handleReactionClick(reactionType);
+                  setShowEmojiPicker(false);
+                }}
+                className="rounded p-1 text-xl transition-colors hover:bg-muted"
+              >
+                {reactionTypeToEmoji[reactionType]}
+              </button>
+            ))}
+          </div>
+        </PopoverContent>
+      </Popover>
+
+      {/* Reply (WhatsApp/Telegram style) */}
+      <button
+        type="button"
+        onClick={handleReplyClick}
+        aria-label="Reply to message"
+        title="Reply"
+        className="p-1.5 transition-colors hover:bg-muted"
+      >
+        <ReplyIcon className="h-4 w-4 text-muted-foreground" />
+      </button>
+
+      {/* More Options (Edit, Delete for own; Report for others) */}
+      <DropdownMenu open={showMoreOptions} onOpenChange={setShowMoreOptions}>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            aria-label="More message options"
+            title="More options"
+            className="rounded-r-lg p-1.5 transition-colors hover:bg-muted"
+          >
+            <MoreHorizontalIcon className="h-4 w-4 text-muted-foreground" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="min-w-[140px]">
+          {isMyMessage ? (
+            <>
+              <DropdownMenuItem onSelect={handleEditClick}>
+                <EditIcon className="mr-2 h-4 w-4" />
+                Edit
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={handleDeleteClick}
+                className="text-destructive focus:text-destructive"
+              >
+                <Trash2Icon className="mr-2 h-4 w-4" />
+                Delete
+              </DropdownMenuItem>
+            </>
+          ) : (
+            <DropdownMenuItem
+              onSelect={() => handleReportMessage()}
+              className="text-destructive focus:text-destructive"
+            >
+              <FlagIcon className="mr-2 h-4 w-4" />
+              Report Message
+            </DropdownMenuItem>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
 
   return (
     <div
@@ -257,121 +352,57 @@ export const CustomMessage = () => {
         </Avatar>
       )}
 
+      {/* Touch placement: outside the bubble, on the side away from the edge. */}
+      {!isFinePointer && isMyMessage && (
+        <div className="mr-1 shrink-0">{actionToolbar}</div>
+      )}
+
       {/* Message wrapper with hover actions */}
-      <div className="relative max-w-[85%]">
-        {/* Action Toolbar - appears on hover */}
-        <div
-          className={`absolute ${isMyMessage ? "right-0" : "left-0"} bottom-full mb-1 opacity-0 group-hover:opacity-100 transition-opacity z-20`}
-        >
-          <div className="flex items-center gap-0.5 bg-white rounded-lg shadow-lg border">
-            {/* React with Emoji */}
-            <div className="relative" ref={emojiPickerRef}>
-              <button
-                onClick={() => setShowEmojiPicker(!showEmojiPicker)}
-                className="p-1.5 hover:bg-gray-100 rounded-l-lg transition-colors"
-                title="React"
-              >
-                <SmileIcon className="w-4 h-4 text-gray-600" />
-              </button>
-              {/* Custom Emoji Picker Dropdown - positioned right for user's messages */}
-              {showEmojiPicker && (
-                <div
-                  className={`absolute top-full mt-1 z-30 bg-white rounded-lg shadow-lg border p-2 ${isMyMessage ? "right-0" : "left-0"}`}
-                >
-                  <div className="flex gap-1">
-                    {quickReactions.map((reactionType) => (
-                      <button
-                        key={reactionType}
-                        onClick={() => {
-                          handleReactionClick(reactionType);
-                          setShowEmojiPicker(false);
-                        }}
-                        className="text-xl hover:bg-gray-100 rounded p-1 transition-colors"
-                        title={reactionType}
-                      >
-                        {reactionTypeToEmoji[reactionType]}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Reply (WhatsApp/Telegram style) */}
-            <button
-              onClick={handleReplyClick}
-              className="p-1.5 hover:bg-gray-100 transition-colors"
-              title="Reply"
-            >
-              <ReplyIcon className="w-4 h-4 text-gray-600" />
-            </button>
-
-            {/* More Options (Edit, Delete for own; Report for others) */}
-            <div className="relative" ref={moreOptionsRef}>
-              <button
-                onClick={() => setShowMoreOptions(!showMoreOptions)}
-                className="p-1.5 hover:bg-gray-100 rounded-r-lg transition-colors"
-                title="More options"
-              >
-                <MoreHorizontalIcon className="w-4 h-4 text-gray-600" />
-              </button>
-              {/* More Options Dropdown */}
-              {showMoreOptions && (
-                <div className="absolute top-full right-0 mt-1 bg-white rounded-lg shadow-lg border py-1 min-w-[120px] z-30">
-                  {isMyMessage ? (
-                    <>
-                      <button
-                        onClick={handleEditClick}
-                        className="w-full px-3 py-1.5 text-left text-sm hover:bg-gray-100 flex items-center gap-2"
-                      >
-                        <EditIcon className="w-4 h-4" />
-                        Edit
-                      </button>
-                      <button
-                        onClick={handleDeleteClick}
-                        className="w-full px-3 py-1.5 text-left text-sm hover:bg-gray-100 text-red-600 flex items-center gap-2"
-                      >
-                        <Trash2Icon className="w-4 h-4" />
-                        Delete
-                      </button>
-                    </>
-                  ) : (
-                    <button
-                      onClick={handleReportMessage}
-                      className="w-full px-3 py-1.5 text-left text-sm hover:bg-gray-100 text-red-600 flex items-center gap-2"
-                    >
-                      <FlagIcon className="w-4 h-4" />
-                      Report Message
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
+      <div
+        className={cn(
+          "relative min-w-0",
+          isFinePointer ? "max-w-[85%]" : "max-w-[75%]",
+        )}
+      >
+        {/* Action Toolbar - appears on hover or keyboard focus. `focus-within`
+            matters: the buttons stay in the tab order while transparent, so
+            without it a keyboard user tabs through invisible controls. */}
+        {isFinePointer && (
+          <div
+            className={cn(
+              "absolute bottom-full z-20 mb-1 transition-opacity",
+              isMyMessage ? "right-0" : "left-0",
+              showEmojiPicker || showMoreOptions
+                ? "opacity-100"
+                : "opacity-0 focus-within:opacity-100 group-hover:opacity-100",
+            )}
+          >
+            {actionToolbar}
           </div>
-        </div>
+        )}
 
         {/* Message Bubble */}
         <div
-          className={`${isMyMessage ? "bg-blue-500 text-white" : "bg-gray-100 text-gray-800"} rounded-lg px-3 py-2`}
+          className={`${isMyMessage ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"} rounded-lg px-3 py-2`}
         >
           {/* Quoted/Replied Message (WhatsApp/Telegram style) */}
           {hasQuotedMessage && message.quoted_message && (
             <div
               className={`mb-2 p-2 rounded-md border-l-4 ${
                 isMyMessage
-                  ? "bg-blue-600/40 border-blue-300"
-                  : "bg-gray-300/60 border-gray-500"
+                  ? "bg-primary-foreground/15 border-primary-foreground/50"
+                  : "bg-background/70 border-border"
               }`}
             >
               <div
-                className={`text-xs font-semibold mb-0.5 ${isMyMessage ? "text-blue-100" : "text-gray-700"}`}
+                className={`text-xs font-semibold mb-0.5 ${isMyMessage ? "text-primary-foreground/90" : "text-foreground"}`}
               >
                 {message.quoted_message.user?.name ||
                   message.quoted_message.user?.id ||
                   "Unknown"}
               </div>
               <div
-                className={`text-xs truncate max-w-[250px] ${isMyMessage ? "text-blue-100/80" : "text-gray-600"}`}
+                className={`text-xs truncate max-w-[250px] ${isMyMessage ? "text-primary-foreground/70" : "text-muted-foreground"}`}
               >
                 {message.quoted_message.text || "[Attachment]"}
               </div>
@@ -405,7 +436,7 @@ export const CustomMessage = () => {
               <Input
                 value={editText}
                 onChange={(e) => setEditText(e.target.value)}
-                className={`w-full min-w-[200px] ${isMyMessage ? "bg-blue-400 text-white placeholder-blue-200 border-blue-300" : "bg-white text-gray-800"}`}
+                className={`w-full min-w-[200px] ${isMyMessage ? "bg-primary-foreground/10 text-primary-foreground placeholder:text-primary-foreground/60 border-primary-foreground/30" : "bg-background text-foreground"}`}
                 autoFocus
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
@@ -422,7 +453,7 @@ export const CustomMessage = () => {
                   size="sm"
                   variant="ghost"
                   onClick={handleEditCancel}
-                  className={`h-6 px-2 ${isMyMessage ? "text-blue-100 hover:bg-blue-400" : "text-gray-600 hover:bg-gray-200"}`}
+                  className={`h-6 px-2 ${isMyMessage ? "text-primary-foreground hover:bg-primary-foreground/20" : "text-muted-foreground hover:bg-background"}`}
                 >
                   <XIcon className="w-3 h-3 mr-1" />
                   Cancel
@@ -430,7 +461,7 @@ export const CustomMessage = () => {
                 <Button
                   size="sm"
                   onClick={handleEditSave}
-                  className={`h-6 px-2 ${isMyMessage ? "bg-blue-300 text-blue-900 hover:bg-blue-200" : "bg-blue-500 text-white hover:bg-blue-600"}`}
+                  className={`h-6 px-2 ${isMyMessage ? "bg-primary-foreground text-primary hover:bg-primary-foreground/90" : "bg-primary text-primary-foreground hover:bg-primary/90"}`}
                 >
                   <CheckIcon className="w-3 h-3 mr-1" />
                   Save
@@ -452,30 +483,38 @@ export const CustomMessage = () => {
                     const emoji =
                       reactionTypeToEmoji[reactionType] || reactionType;
                     return (
-                      <span
+                      <button
                         key={reactionType}
-                        className={`text-sm px-2 py-0.5 rounded-full cursor-pointer hover:opacity-80 ${
-                          isMyMessage ? "bg-blue-400/50" : "bg-gray-200"
+                        type="button"
+                        className={`text-sm px-2 py-0.5 rounded-full hover:opacity-80 ${
+                          isMyMessage ? "bg-primary-foreground/20" : "bg-background"
                         }`}
                         onClick={() => handleReactionClick(reactionType)}
+                        aria-label={`React with ${reactionType} (${count} so far)`}
                         title={`${reactionType} (click to react)`}
                       >
                         {emoji} {count}
-                      </span>
+                      </button>
                     );
                   },
                 )}
               </div>
             )}
 
-          {/* Timestamp */}
+          {/* Timestamp — always visible. Hover-revealing it meant a message on
+              a touch device never showed a time at all, unlike the WhatsApp
+              model this UI copies. */}
           <div
-            className={`text-xs mt-1 text-right ${isMyMessage ? "text-blue-100 opacity-80" : "text-gray-500"} opacity-0 group-hover:opacity-100 transition-opacity`}
+            className={`text-xs mt-1 text-right ${isMyMessage ? "text-primary-foreground/80" : "text-muted-foreground"}`}
           >
             {message.created_at && format(new Date(message.created_at), "p")}
           </div>
         </div>
       </div>
+
+      {!isFinePointer && !isMyMessage && (
+        <div className="ml-1 shrink-0">{actionToolbar}</div>
+      )}
 
       {/* Delete Confirmation Dialog */}
       <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
@@ -491,7 +530,7 @@ export const CustomMessage = () => {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleDeleteConfirm}
-              className="bg-red-600 hover:bg-red-700 text-white"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Yes, Delete
             </AlertDialogAction>

@@ -3,8 +3,15 @@
 /**
  * Release Earnings Script
  *
- * Releases consultant earnings from hold period to READY status.
- * Earnings are held for a period after payment to handle refunds/disputes.
+ * Releases both consultant AND host-organization earnings from their hold
+ * period to READY status. Earnings are held for a period after payment so a
+ * refund or dispute lands before the money is payable.
+ *
+ * #1471 — the organization arm used to be missing here, and because every
+ * scheduled entry point (the GitHub Actions job, the cleanup HTTP twin, the
+ * admin system-jobs runner) imports THIS module, `OrganizationEarnings` rows
+ * never left PENDING and a host org's retained share could never be picked up
+ * by `createOrgPayoutBatch`, which only selects READY rows.
  *
  * This module exports functions that can be used by:
  * - Local development: `npm run scripts:release-earnings`
@@ -14,17 +21,37 @@
  * Schedule: Runs hourly via GitHub Actions
  */
 
-import { EarningStatus } from "@prisma/client";
+import { EarningStatus, Prisma } from "@prisma/client";
 import prisma from "@/lib/prisma";
+import { sumPaise } from "@/lib/payments/utils/money";
+import { withCronLock } from "@/lib/cron/with-cron-lock";
 
 /**
  * Result structure for release operations
  */
 export interface ReleaseResult {
   success: boolean;
+  /** Consultant earnings moved PENDING → READY. Unchanged in meaning (#1471). */
   releasedCount: number;
+  /**
+   * #1471 — host-organization earnings moved PENDING → READY. A separate
+   * field rather than a widened `releasedCount`, so every existing consumer
+   * (GitHub Actions outputs, the cleanup summary, the admin runner) keeps
+   * reporting the number it always reported.
+   */
+  organizationEarningsReleased: number;
   errorCount: number;
   errors: string[];
+}
+
+export interface ReleaseEarningsOptions {
+  /** #1356 — caps the batch for the Netlify ticker; undefined releases the
+   * whole PENDING/past-hold set, as today.
+   *
+   * #1471 — the cap applies to EACH table independently, matching the #1390
+   * decision for the ticker: a run bounded at 200 may release up to 200
+   * consultant rows and up to 200 organization rows. */
+  limit?: number;
 }
 
 /**
@@ -38,12 +65,25 @@ export interface ReleaseResult {
  *
  * @returns ReleaseResult with counts and error details
  */
-export async function releaseEarningsFromHold(): Promise<ReleaseResult> {
+// #476 — locked at the core so every entry (GH Actions / HTTP) shares one
+// mutual exclusion; fail-closed: money state must not double-run unlocked.
+export async function releaseEarningsFromHold(
+  opts: ReleaseEarningsOptions = {},
+): Promise<ReleaseResult> {
+  return withCronLock("release-earnings", { failMode: "closed" }, () =>
+    releaseEarningsFromHoldUnlocked(opts),
+  );
+}
+
+async function releaseEarningsFromHoldUnlocked(
+  opts: ReleaseEarningsOptions = {},
+): Promise<ReleaseResult> {
   console.log("💰 Starting earnings release from hold...");
 
   const result: ReleaseResult = {
     success: false,
     releasedCount: 0,
+    organizationEarningsReleased: 0,
     errorCount: 0,
     errors: [],
   };
@@ -51,49 +91,121 @@ export async function releaseEarningsFromHold(): Promise<ReleaseResult> {
   try {
     const now = new Date();
 
-    // Find all earnings that are past their hold period
-    const earningsToRelease = await prisma.consultantEarnings.findMany({
-      where: {
-        status: EarningStatus.PENDING,
-        holdUntil: { lte: now },
-      },
-      include: {
-        consultantProfile: {
-          include: {
-            user: { select: { name: true, email: true } },
+    // #776 — read the snapshot and claim the rows inside one Serializable tx so an
+    // overlapping cron run can't observe the same PENDING set and double-count the
+    // release in logs/metrics. The updateMany predicate is the real money guard
+    // (already-READY rows are skipped); the transaction keeps the logged snapshot
+    // equal to what was actually transitioned. A serialization conflict aborts this
+    // run; the next hourly run reaps the rows.
+    //
+    // #1356 — the read is capped with `take: opts.limit` for the Netlify
+    // ticker, so the claim below updates by the same id set the read
+    // returned rather than repeating the open-ended predicate; otherwise a
+    // capped read would under-report a release that actually touched every
+    // matching row.
+    const { earningsToRelease, releasedCount } = await prisma.$transaction(
+      async (tx) => {
+        const rows = await tx.consultantEarnings.findMany({
+          where: {
+            status: EarningStatus.PENDING,
+            holdUntil: { lte: now },
           },
-        },
-        payment: { select: { id: true, amount: true } },
-      },
-    });
+          include: {
+            consultantProfile: {
+              include: {
+                user: { select: { name: true, email: true } },
+              },
+            },
+            payment: { select: { id: true, amount: true } },
+          },
+          take: opts.limit,
+        });
 
-    console.log(
-      `📊 Found ${earningsToRelease.length} earnings ready for release`,
+        const updated = await tx.consultantEarnings.updateMany({
+          where: {
+            id: { in: rows.map((r) => r.id) },
+            status: EarningStatus.PENDING,
+          },
+          data: {
+            status: EarningStatus.READY,
+          },
+        });
+
+        return { earningsToRelease: rows, releasedCount: updated.count };
+      },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        maxWait: 10_000,
+        timeout: 15_000,
+      },
     );
 
-    if (earningsToRelease.length === 0) {
-      console.log("✅ No earnings to release at this time");
-      result.success = true;
-      return result;
-    }
+    console.log(
+      `📊 Found ${earningsToRelease.length} consultant earnings ready for release`,
+    );
+    result.releasedCount = releasedCount;
 
-    // Update all eligible earnings to READY status
-    const updateResult = await prisma.consultantEarnings.updateMany({
-      where: {
-        status: EarningStatus.PENDING,
-        holdUntil: { lte: now },
-      },
-      data: {
-        status: EarningStatus.READY,
-      },
-    });
-
-    result.releasedCount = updateResult.count;
-
-    // Log details for each released earning
     for (const earning of earningsToRelease) {
       console.log(
-        `✅ Released earning ${earning.id}: ₹${(earning.consultantShare / 100).toFixed(2)} for ${earning.consultantProfile.user.name || "Unknown"}`,
+        `✅ Released consultant earning ${earning.id}: ₹${(earning.consultantSharePaise / 100).toFixed(2)} for ${earning.consultantProfile.user.name || "Unknown"}`,
+      );
+    }
+
+    // #1471 — the host-organization arm, deliberately a SEPARATE Serializable
+    // transaction rather than a widened one. The two tables share nothing but
+    // the predicate, and a serialization conflict on one should not throw away
+    // a release the other already claimed. The `limit` is applied again here so
+    // each table gets its own full budget (#1390).
+    const { orgEarningsToRelease, orgReleasedCount } =
+      await prisma.$transaction(
+        async (tx) => {
+          const rows = await tx.organizationEarnings.findMany({
+            where: {
+              status: EarningStatus.PENDING,
+              holdUntil: { lte: now },
+            },
+            select: {
+              id: true,
+              orgSharePaise: true,
+              organization: { select: { name: true } },
+            },
+            orderBy: { holdUntil: "asc" },
+            take: opts.limit,
+          });
+
+          // CAS-in-WHERE: `status: PENDING` is re-stated on the claim so a row
+          // another writer moved (a dispute freeze, a refund cascade) between
+          // the read and the update is skipped rather than dragged to READY.
+          const updated = await tx.organizationEarnings.updateMany({
+            where: {
+              id: { in: rows.map((r) => r.id) },
+              status: EarningStatus.PENDING,
+            },
+            data: {
+              status: EarningStatus.READY,
+            },
+          });
+
+          return {
+            orgEarningsToRelease: rows,
+            orgReleasedCount: updated.count,
+          };
+        },
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 10_000,
+          timeout: 15_000,
+        },
+      );
+
+    console.log(
+      `📊 Found ${orgEarningsToRelease.length} organization earnings ready for release`,
+    );
+    result.organizationEarningsReleased = orgReleasedCount;
+
+    for (const earning of orgEarningsToRelease) {
+      console.log(
+        `✅ Released organization earning ${earning.id}: ₹${(earning.orgSharePaise / 100).toFixed(2)} for ${earning.organization.name}`,
       );
     }
 
@@ -101,9 +213,15 @@ export async function releaseEarningsFromHold(): Promise<ReleaseResult> {
 
     // Summary
     console.log(`\n📈 Release Summary:`);
-    console.log(`   ✅ Released: ${result.releasedCount} earnings`);
+    console.log(`   ✅ Released: ${result.releasedCount} consultant earnings`);
     console.log(
-      `   💰 Total amount: ₹${(earningsToRelease.reduce((sum, e) => sum + e.consultantShare, 0) / 100).toFixed(2)}`,
+      `   💰 Consultant total: ₹${(earningsToRelease.reduce((sum, e) => sum + e.consultantSharePaise, 0) / 100).toFixed(2)}`,
+    );
+    console.log(
+      `   ✅ Released: ${result.organizationEarningsReleased} organization earnings`,
+    );
+    console.log(
+      `   💰 Organization total: ₹${(orgEarningsToRelease.reduce((sum, e) => sum + e.orgSharePaise, 0) / 100).toFixed(2)}`,
     );
   } catch (error) {
     const errorMessage =
@@ -129,21 +247,21 @@ export async function getPendingEarningsStats(): Promise<{
   const [pending, ready] = await Promise.all([
     prisma.consultantEarnings.aggregate({
       where: { status: EarningStatus.PENDING },
-      _sum: { consultantShare: true },
+      _sum: { consultantSharePaise: true },
       _count: true,
     }),
     prisma.consultantEarnings.aggregate({
       where: { status: EarningStatus.READY },
-      _sum: { consultantShare: true },
+      _sum: { consultantSharePaise: true },
       _count: true,
     }),
   ]);
 
   return {
     pendingCount: pending._count,
-    pendingAmount: pending._sum.consultantShare || 0,
+    pendingAmount: sumPaise(pending._sum.consultantSharePaise),
     readyCount: ready._count,
-    readyAmount: ready._sum.consultantShare || 0,
+    readyAmount: sumPaise(ready._sum.consultantSharePaise),
   };
 }
 

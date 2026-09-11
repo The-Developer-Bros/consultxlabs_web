@@ -3,6 +3,7 @@
  */
 
 import { faker } from "@faker-js/faker";
+import { prorate } from "../../lib/payments/utils/money";
 
 /**
  * Sanitizes a string by removing null bytes and control characters that can cause PostgreSQL errors
@@ -855,7 +856,9 @@ export const CONSULTANT_SHARE_PERCENTAGE = 0.8;
  * @param grossAmount Amount in smallest currency unit (paise/cents)
  */
 export function calculatePlatformFee(grossAmount: number): number {
-  return Math.round(grossAmount * PLATFORM_FEE_PERCENTAGE);
+  // #778 §C-2 — same integer floor as createEarningsFromPayment (prorate);
+  // the consultant share absorbs the remainder.
+  return prorate(grossAmount, PLATFORM_FEE_PERCENTAGE * 100, 100);
 }
 
 /**
@@ -863,7 +866,9 @@ export function calculatePlatformFee(grossAmount: number): number {
  * @param grossAmount Amount in smallest currency unit (paise/cents)
  */
 export function calculateConsultantShare(grossAmount: number): number {
-  return Math.round(grossAmount * CONSULTANT_SHARE_PERCENTAGE);
+  // Complement of the fee — two independent roundings could miss gross by a
+  // paisa and unbalance the seeded booking journal (#773).
+  return grossAmount - calculatePlatformFee(grossAmount);
 }
 
 /**

@@ -11,44 +11,44 @@ import Image from "next/image";
 export default function Programs() {
   return (
     <>
-      {/* <div className="bg-white xl:py-40 lg:py-32 md:py-24 sm:py-16 py-12"> */}
-      <div className="bg-white mt-20 sm:mt-30 md:mt-30 lg:mt-30 xl:mt-40">
+      {/* <div className="bg-card xl:py-40 lg:py-32 md:py-24 sm:py-16 py-12"> */}
+      <div className="bg-card mt-20 sm:mt-30 md:mt-30 lg:mt-30 xl:mt-40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex flex-col">
-            <div className="flex justify-between border-b border-gray-200 py-6">
-              <div className="flex space-x-4">
-                <Button className="bg-gray-100 text-gray-900" variant="ghost">
+            <div className="flex flex-col gap-4 sm:flex-row sm:justify-between sm:items-center border-b border-border py-6">
+              <div className="flex flex-wrap gap-2 sm:space-x-4 sm:gap-0">
+                <Button className="bg-muted text-foreground" variant="ghost">
                   Home
                 </Button>
-                <Button className="text-gray-900" variant="ghost">
+                <Button className="text-foreground" variant="ghost">
                   Events
                 </Button>
-                <Button className="text-gray-900" variant="ghost">
+                <Button className="text-foreground" variant="ghost">
                   Hackathons
                 </Button>
-                <Button className="text-gray-900" variant="ghost">
+                <Button className="text-foreground" variant="ghost">
                   Webinars
                 </Button>
-                <Button className="text-gray-900" variant="ghost">
+                <Button className="text-foreground" variant="ghost">
                   Community
                 </Button>
               </div>
               <div>
-                <Input className="border-gray-300" placeholder="Search" />
+                <Input className="w-full sm:w-auto border-border" placeholder="Search" />
               </div>
             </div>
-            <div className="flex space-x-2 py-4">
-              <Button className="bg-gray-100 text-gray-900" variant="ghost">
+            <div className="flex flex-wrap gap-2 sm:space-x-2 sm:gap-0 py-4">
+              <Button className="bg-muted text-foreground" variant="ghost">
                 Upcoming
               </Button>
-              <Button className="text-gray-900" variant="ghost">
+              <Button className="text-foreground" variant="ghost">
                 Past Events
               </Button>
-              <Button className="text-gray-900" variant="ghost">
+              <Button className="text-foreground" variant="ghost">
                 Popular
               </Button>
             </div>
-            <div className="grid grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
               <Card className="w-full">
                 <Image
                   alt="Event thumbnail"
@@ -59,7 +59,7 @@ export default function Programs() {
                 />
                 <div className="p-4">
                   <h3 className="text-lg font-semibold">AI Hackathon 2024</h3>
-                  <p className="text-gray-500">Starts in 3 days</p>
+                  <p className="text-muted-foreground">Starts in 3 days</p>
                 </div>
               </Card>
               <Card className="w-full">
@@ -74,7 +74,7 @@ export default function Programs() {
                   <h3 className="text-lg font-semibold">
                     Online Web Development Workshop
                   </h3>
-                  <p className="text-gray-500">Starts in 1 week</p>
+                  <p className="text-muted-foreground">Starts in 1 week</p>
                 </div>
               </Card>
               <Card className="w-full">
@@ -89,7 +89,7 @@ export default function Programs() {
                   <h3 className="text-lg font-semibold">
                     Data Science Seminar
                   </h3>
-                  <p className="text-gray-500">Starts in 2 weeks</p>
+                  <p className="text-muted-foreground">Starts in 2 weeks</p>
                 </div>
               </Card>
               <Card className="w-full">
@@ -104,7 +104,7 @@ export default function Programs() {
                   <h3 className="text-lg font-semibold">
                     Blockchain Hackathon 2024
                   </h3>
-                  <p className="text-gray-500">Starts in 3 weeks</p>
+                  <p className="text-muted-foreground">Starts in 3 weeks</p>
                 </div>
               </Card>
               <Card className="w-full">
@@ -119,7 +119,7 @@ export default function Programs() {
                   <h3 className="text-lg font-semibold">
                     Offline Networking Event
                   </h3>
-                  <p className="text-gray-500">Starts in 1 month</p>
+                  <p className="text-muted-foreground">Starts in 1 month</p>
                 </div>
               </Card>
               <Card className="w-full">
@@ -134,7 +134,7 @@ export default function Programs() {
                   <h3 className="text-lg font-semibold">
                     Online Consultation with Industry Experts
                   </h3>
-                  <p className="text-gray-500">Available now</p>
+                  <p className="text-muted-foreground">Available now</p>
                 </div>
               </Card>
             </div>

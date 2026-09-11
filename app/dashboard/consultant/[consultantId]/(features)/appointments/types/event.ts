@@ -1,22 +1,22 @@
-export interface User {
+interface User {
   id: string;
   name?: string;
   email?: string;
 }
 
-export interface SlotOfAppointment {
+interface SlotOfAppointment {
   id: string;
   startsAt: Date;
   endsAt: Date;
   user: User[];
 }
 
-export interface Appointment {
+interface Appointment {
   id: string;
   slotsOfAppointment: SlotOfAppointment[];
 }
 
-export interface ClassPlan {
+interface ClassPlan {
   id: string;
   title: string;
   maxParticipants: number;
@@ -24,11 +24,13 @@ export interface ClassPlan {
 
 export interface ClassEvent {
   id: string;
+  /** Per-instance capacity; null inherits the plan's value. */
+  maxParticipants: number | null;
   classPlan: ClassPlan;
   appointments: Appointment[];
 }
 
-export interface WebinarPlan {
+interface WebinarPlan {
   id: string;
   title: string;
   maxParticipants: number;
@@ -36,6 +38,8 @@ export interface WebinarPlan {
 
 export interface WebinarEvent {
   id: string;
+  /** Per-instance capacity; null inherits the plan's value. */
+  maxParticipants: number | null;
   webinarPlan: WebinarPlan;
   appointment: Appointment | null;
 }

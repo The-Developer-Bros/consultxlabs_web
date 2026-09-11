@@ -1,12 +1,12 @@
 "use client";
 
 import { User } from "@prisma/client";
-import type { TConsultantDetailData } from "@/types/consultant";
+import type { ConsultantDetailData } from "../types";
 import { User2, GraduationCap, Sparkles } from "lucide-react";
 
 interface AboutSectionProps {
   userDetails: User;
-  consultantDetails: TConsultantDetailData;
+  consultantDetails: ConsultantDetailData;
 }
 
 /**
@@ -27,16 +27,16 @@ export function AboutSection({
   consultantDetails,
 }: AboutSectionProps) {
   return (
-    <div className="bg-white rounded-2xl border border-zinc-200 p-6 md:p-8 space-y-6">
+    <div className="bg-card rounded-2xl border border-border p-6 md:p-8 space-y-6">
       {/* About */}
       <div>
         <div className="flex items-center gap-2 mb-3">
-          <div className="w-8 h-8 rounded-lg bg-zinc-100 flex items-center justify-center">
-            <User2 className="w-4 h-4 text-zinc-600" />
+          <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center">
+            <User2 className="w-4 h-4 text-muted-foreground" />
           </div>
-          <h3 className="text-lg font-semibold text-zinc-900">About</h3>
+          <h3 className="text-lg font-semibold text-foreground">About</h3>
         </div>
-        <p className="text-zinc-600 leading-relaxed">
+        <p className="text-muted-foreground leading-relaxed">
           {isRealDescription(consultantDetails.description) ? (
             consultantDetails.description.trim()
           ) : (
@@ -55,14 +55,14 @@ export function AboutSection({
       {/* Education & Background */}
       <div>
         <div className="flex items-center gap-2 mb-3">
-          <div className="w-8 h-8 rounded-lg bg-zinc-100 flex items-center justify-center">
-            <GraduationCap className="w-4 h-4 text-zinc-600" />
+          <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center">
+            <GraduationCap className="w-4 h-4 text-muted-foreground" />
           </div>
-          <h3 className="text-lg font-semibold text-zinc-900">
+          <h3 className="text-lg font-semibold text-foreground">
             Education & Background
           </h3>
         </div>
-        <p className="text-zinc-600 leading-relaxed">
+        <p className="text-muted-foreground leading-relaxed">
           {userDetails.name} has extensive experience across multiple
           industries, with a particular focus on{" "}
           {consultantDetails?.subDomains
@@ -76,10 +76,10 @@ export function AboutSection({
       {/* Skills & Specialties */}
       <div>
         <div className="flex items-center gap-2 mb-3">
-          <div className="w-8 h-8 rounded-lg bg-zinc-100 flex items-center justify-center">
-            <Sparkles className="w-4 h-4 text-zinc-600" />
+          <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center">
+            <Sparkles className="w-4 h-4 text-muted-foreground" />
           </div>
-          <h3 className="text-lg font-semibold text-zinc-900">
+          <h3 className="text-lg font-semibold text-foreground">
             Skills & Specialties
           </h3>
         </div>
@@ -87,13 +87,13 @@ export function AboutSection({
           {consultantDetails.tags?.map((tag: { id: string; name: string }) => (
             <span
               key={tag.id}
-              className="px-3 py-1.5 bg-zinc-100 text-zinc-700 text-sm font-medium rounded-full"
+              className="px-3 py-1.5 bg-muted text-muted-foreground text-sm font-medium rounded-full"
             >
               {tag.name}
             </span>
           ))}
           {(!consultantDetails.tags || consultantDetails.tags.length === 0) && (
-            <p className="text-zinc-500 text-sm">
+            <p className="text-muted-foreground text-sm">
               Specializes in{" "}
               {consultantDetails.headline || consultantDetails.domain.name}
             </p>

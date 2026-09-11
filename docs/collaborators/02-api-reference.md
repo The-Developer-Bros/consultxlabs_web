@@ -1,16 +1,21 @@
 # Collaborator System — API Reference
 
-All endpoints require authentication (via BetterAuth session).
+All endpoints require an authenticated BetterAuth session; unauthenticated requests receive 401. Request bodies speak **percent** (`revenueSharePercentage`, 0–90); responses return the stored row, whose share field is **basis points** (`revenueShareBps`, 3000 = 30%) per #772 B5. This reference was refreshed on 2026-08-14 against the merged-model routes (#784).
 
 ---
 
-## Collaborator Management
+## Collaborator management
 
 ### GET /api/collaborations/webinar/[planId]
 
-List all collaborators for a webinar plan.
+Lists collaborators for a webinar plan, scoped to what the caller may see (`getCollaboratorsForUser`):
 
-**Response** `200`:
+- The **plan owner** sees every `PENDING` and `ACCEPTED` collaborator.
+- An **accepted collaborator** sees the `ACCEPTED` collaborators only.
+- A **pending invitee** sees only their own record.
+- Anyone else — including consultees and consultants with no record on the plan — receives 403; a missing plan receives 404.
+
+A successful response returns the visible rows:
 
 ```json
 {
@@ -18,19 +23,21 @@ List all collaborators for a webinar plan.
     {
       "id": "clx...",
       "consultantProfileId": "clx...",
+      "collaboratorType": "WEBINAR",
       "webinarPlanId": "clx...",
+      "classPlanId": null,
       "role": "CO_HOST",
-      "revenueSharePercentage": 25,
+      "canApprovePayment": false,
+      "canViewAnalytics": true,
+      "canEditEvent": false,
+      "canSeeAttendees": true,
+      "revenueShareBps": 2500,
       "status": "ACCEPTED",
       "invitedById": "clx...",
       "respondedAt": "2026-02-10T...",
       "consultantProfile": {
         "id": "clx...",
-        "user": {
-          "id": "clx...",
-          "name": "Alice Smith",
-          "image": "/uploads/alice.jpg"
-        }
+        "user": { "name": "Alice Smith", "image": "/uploads/alice.jpg" }
       }
     }
   ]
@@ -41,157 +48,78 @@ List all collaborators for a webinar plan.
 
 ### POST /api/collaborations/webinar/[planId]
 
-Invite a collaborator to a webinar plan.
-
-**Body**:
+Invites a collaborator to a webinar plan. The body carries the deal terms and the typed permission grants (#768):
 
 ```json
 {
   "consultantProfileId": "clx...",
   "role": "CO_HOST",
-  "revenueSharePercentage": 25
+  "revenueSharePercentage": 25,
+  "canApprovePayment": false,
+  "canViewAnalytics": true,
+  "canEditEvent": false,
+  "canSeeAttendees": true
 }
 ```
 
-**Validations**:
+The route and service enforce, in order: the requester is the plan owner (else 403); the body parses against `inviteWebinarCollaboratorSchema` (else 400); the target is not the owner themselves (else 400); no `PENDING`/`ACCEPTED` collaboration already exists for the pair (else 409); the role belongs to the webinar subset of the merged enum; the invited profile exists; and the share keeps the collaborator total at or under 90%, validated inside a Serializable transaction. A prior `REMOVED`/`DECLINED` row is re-activated to `PENDING` with the new terms instead of a second row being inserted.
 
-- Requester must be the plan owner
-- Target must be a valid consultant profile
-- Cannot invite yourself
-- Cannot invite someone already invited (unique constraint)
-- Total collaborator shares must not exceed 90%
-
-**Response** `201`:
-
-```json
-{
-  "data": {
-    "id": "clx...",
-    "consultantProfileId": "clx...",
-    "role": "CO_HOST",
-    "revenueSharePercentage": 25,
-    "status": "PENDING"
-  }
-}
-```
-
-**Errors**:
-
-- `403` — Not the plan owner
-- `400` — Cannot invite yourself
-- `400` — Revenue share exceeds 90% total
-- `409` — Already invited (unique constraint)
+A successful invite returns 201 with the created (or re-activated) row in the GET shape above, with `status: "PENDING"`.
 
 ---
 
 ### PATCH /api/collaborations/webinar/[planId]/[id]
 
-Update a collaborator's role or revenue share.
-
-**Body**:
+Updates a collaborator's role or revenue share. The body accepts either or both fields:
 
 ```json
-{
-  "role": "MODERATOR",
-  "revenueSharePercentage": 15
-}
+{ "role": "MODERATOR", "revenueSharePercentage": 15 }
 ```
 
-**Validations**:
-
-- Requester must be the plan owner
-- New total shares must not exceed 90%
-
-**Response** `200`:
-
-```json
-{
-  "data": { "id": "clx...", "role": "MODERATOR", "revenueSharePercentage": 15 }
-}
-```
+Only the plan owner may update (else 403). The service re-validates the 90% cap excluding the row being updated, rejects a role outside the plan type's subset, and verifies the collaborator actually belongs to this plan before touching it (IDOR guard). Failures surface as 400. A success returns 200 with the updated row.
 
 ---
 
 ### DELETE /api/collaborations/webinar/[planId]/[id]
 
-Remove a collaborator (sets status to REMOVED).
-
-**Validations**:
-
-- Requester must be the plan owner
-
-**Response** `200`:
-
-```json
-{
-  "data": { "id": "clx...", "status": "REMOVED" }
-}
-```
+Removes a collaborator by setting `status: REMOVED` (a soft delete). Only the plan owner may remove (else 403). The response returns the updated row. Removal triggers the notification and the verified Stream chat-access revocation described in [01-architecture.md §8](./01-architecture.md#8-removing-a-collaborator).
 
 ---
 
-### Class Collaborator Endpoints
+### Class collaborator endpoints
 
-Identical to the webinar endpoints above, but at:
+The class endpoints are identical in shape, at:
 
 - `GET /api/collaborations/class/[planId]`
 - `POST /api/collaborations/class/[planId]`
 - `PATCH /api/collaborations/class/[planId]/[id]`
 - `DELETE /api/collaborations/class/[planId]/[id]`
 
-Same request/response shapes. Uses `ClassCollaboratorRole` enum values:
-`CO_INSTRUCTOR`, `TEACHING_ASSISTANT`, `GUEST_LECTURER`, `CONTENT_CREATOR`
+The role must come from the class subset of the merged `CollaboratorRole` enum: `CO_INSTRUCTOR`, `TEACHING_ASSISTANT`, `GUEST_LECTURER`, `CONTENT_CREATOR`.
 
 ---
 
-## Invitation Response
+## Invitation response
 
 ### PATCH /api/collaborations/[id]/respond
 
-Accept or decline a collaboration invitation.
-
-**Body**:
+Accepts or declines a collaboration invitation:
 
 ```json
-{
-  "response": "ACCEPTED",
-  "planType": "webinar"
-}
+{ "response": "ACCEPTED", "planType": "webinar" }
 ```
 
-**Validations**:
+The route validates that `response` is `ACCEPTED` or `DECLINED` and `planType` is `webinar` or `class` (else 400), and that the caller has a consultant profile (else 404). The service then requires that the record belongs to the caller, that `planType` matches the record's plan FK (#784), and that the record is still `PENDING`; any mismatch returns 400.
 
-- Requester must be the invited consultant
-- Collaboration must be in PENDING status
-- `planType` must be `"webinar"` or `"class"`
-
-**Side effects on ACCEPTED**:
-
-- Updates status to ACCEPTED, sets respondedAt
-- Creates Stream.io chat channel (`collab-{planType}-{planId}`)
-- Sends notification to the host
-
-**Response** `200`:
-
-```json
-{
-  "data": {
-    "id": "clx...",
-    "status": "ACCEPTED",
-    "respondedAt": "2026-02-10T..."
-  }
-}
-```
+On `ACCEPTED`, two best-effort side effects run: the Stream coordination channel `collab-{planType}-{planId}` is created or updated, and the plan owner is notified. Neither can fail the acceptance. A success returns 200 with the updated row (`status`, `respondedAt` set).
 
 ---
 
-## My Collaborations
+## My collaborations
 
 ### GET /api/collaborations
 
-Get all collaborations for the authenticated consultant (both webinar and class).
-
-**Response** `200`:
+Returns all `PENDING` and `ACCEPTED` collaborations for the authenticated consultant, split by type. Each item embeds the plan (with its owner, its other visible collaborators, and up to five upcoming `SCHEDULED`/`IN_PROGRESS` events with their slots — this feeds the read-only schedule section on the collaboration cards) and the inviter:
 
 ```json
 {
@@ -200,103 +128,59 @@ Get all collaborations for the authenticated consultant (both webinar and class)
       {
         "id": "clx...",
         "role": "CO_HOST",
-        "revenueSharePercentage": 25,
+        "revenueShareBps": 2500,
         "status": "PENDING",
-        "createdAt": "2026-02-10T...",
         "webinarPlan": {
           "id": "clx...",
           "title": "Advanced React Patterns",
-          "price": 100000
+          "price": 100000,
+          "consultantProfile": { "user": { "name": "Kaustav Ghosh" } },
+          "collaborators": [ ... ],
+          "webinars": [ ... ]
         },
-        "invitedBy": {
-          "user": { "name": "Kaustav Ghosh" }
-        }
+        "invitedBy": { "user": { "name": "Kaustav Ghosh" } }
       }
     ],
-    "classCollaborations": [
-      {
-        "id": "clx...",
-        "role": "TEACHING_ASSISTANT",
-        "revenueSharePercentage": 15,
-        "status": "ACCEPTED",
-        "createdAt": "2026-02-08T...",
-        "classPlan": {
-          "id": "clx...",
-          "title": "Full-Stack Bootcamp",
-          "price": 500000
-        },
-        "invitedBy": {
-          "user": { "name": "Alice Smith" }
-        }
-      }
-    ]
+    "classCollaborations": [ ... ]
   }
 }
 ```
 
 ---
 
-## Revenue Split Preview
+## Revenue split preview
 
-### GET /api/collaborations/webinar/[planId]/revenue-split
+### GET /api/collaborations/webinar/[planId]/revenue-split?amount=100000
 
-Preview how earnings would be split for a webinar plan.
+Previews how a given amount would be divided by `calculateRevenueSplit()`. The `amount` query parameter is in paise and defaults to 10000 (₹100). Note that at real settlement the amount passed in is the **consultant pool** (gross minus the floored 20% platform fee), so a preview of the gross shows the proportions, not the final payouts — see [03-revenue-sharing.md](./03-revenue-sharing.md).
 
-**Response** `200`:
+Access is limited to the plan owner, accepted collaborators on the plan, and admin/staff; others receive 403.
+
+The response is the raw split array — owner first with the remainder, then each accepted collaborator with their floored share:
 
 ```json
 {
-  "data": {
-    "planId": "clx...",
-    "planType": "webinar",
-    "price": 100000,
-    "splits": [
-      {
-        "consultantProfileId": "clx...",
-        "role": "OWNER",
-        "sharePercentage": 60,
-        "grossAmount": 60000,
-        "platformFee": 12000,
-        "netAmount": 48000
-      },
-      {
-        "consultantProfileId": "clx...",
-        "role": "COLLABORATOR",
-        "sharePercentage": 25,
-        "grossAmount": 25000,
-        "platformFee": 5000,
-        "netAmount": 20000
-      },
-      {
-        "consultantProfileId": "clx...",
-        "role": "COLLABORATOR",
-        "sharePercentage": 15,
-        "grossAmount": 15000,
-        "platformFee": 3000,
-        "netAmount": 12000
-      }
-    ]
-  }
+  "data": [
+    { "consultantProfileId": "clx-owner", "share": 60000, "role": "OWNER" },
+    { "consultantProfileId": "clx-a", "share": 25000, "role": "CO_HOST" },
+    { "consultantProfileId": "clx-b", "share": 15000, "role": "MODERATOR" }
+  ]
 }
 ```
 
+An empty array means the plan has no accepted collaborators and settlement will use the ordinary single-owner flow.
+
 ### GET /api/collaborations/class/[planId]/revenue-split
 
-Same format for class plans.
+The class variant behaves identically.
 
 ---
 
-## Co-host Availability
+## Co-host availability
 
-### GET /api/collaborators/[consultantProfileId]/availability
+### GET /api/collaborators/[consultantProfileId]/availability?date=YYYY-MM-DD
 
-Get a collaborator's availability for a specific date. Used by the host's scheduling calendar to show availability overlay.
-
-**Query params**:
-
-- `date` — ISO date string (e.g. `2026-03-15`)
-
-**Response** `200`:
+Returns a co-host's availability and booking status for one date; the host's scheduling calendar renders it as the color overlay. Access is limited to the profile owner, consultants who share an **accepted** collaboration with the target (checked across both plan types in one lookup on the merged model), and admin/staff; a missing `date` parameter returns 400.
 
 ```json
 {
@@ -305,26 +189,14 @@ Get a collaborator's availability for a specific date. Used by the host's schedu
     "scheduleType": "WEEKLY",
     "date": "2026-03-15",
     "weeklySlots": [
-      {
-        "startDay": "MONDAY",
-        "startTimeUtc": 540,
-        "endDay": "MONDAY",
-        "endTimeUtc": 1020
-      }
+      { "startDay": "MONDAY", "startTimeUtc": 540, "endDay": "MONDAY", "endTimeUtc": 1020 }
     ],
     "customSlots": [],
     "bookedSlots": [
-      {
-        "startsAt": "2026-03-15T10:00:00Z",
-        "endsAt": "2026-03-15T11:00:00Z"
-      }
+      { "startsAt": "2026-03-15T10:00:00Z", "endsAt": "2026-03-15T11:00:00Z" }
     ]
   }
 }
 ```
 
-**Interpretation for calendar overlay**:
-
-- **Green**: Co-host has availability AND no booking → free
-- **Yellow**: Co-host has no availability defined for that time → may be flexible
-- **Red**: Co-host has a booking during that time → not available
+`bookedSlots` uses overlap semantics against the day and includes events the co-host has accepted a collaboration on, not only events they own. The overlay interpretation is: green when availability exists and no booking overlaps, yellow when no availability is defined for the time, red when a booking overlaps. The overlay is advice for picking a time. On the webinar path that advice is backed by hard enforcement — `assertCollaboratorsAvailable` returns 409 — but on the class path the overlay is all there is, because no class route calls the guard. Both cases are described in [01-architecture.md §5](./01-architecture.md#5-scheduling-with-enforced-co-host-availability).

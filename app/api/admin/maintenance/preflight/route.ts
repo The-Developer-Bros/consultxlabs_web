@@ -12,7 +12,6 @@ import prisma from "@/lib/prisma";
 export async function GET() {
   const auth = await requireAdminAuth();
   if (auth.error) return auth.error;
-  const session = auth.session;
 
   const now = new Date();
   const fourHoursFromNow = new Date(now.getTime() + 4 * 60 * 60 * 1000);
@@ -30,9 +29,12 @@ export async function GET() {
       where: {
         startsAt: { gte: now, lte: fourHoursFromNow },
         isTentative: false,
+        // A cancelled session is tombstoned, not deleted, so an unfiltered
+        // count warns the operator about sessions that will never happen.
+        deletedAt: null,
       },
     }),
-    prisma.payout.count({ where: { status: "PENDING" } }),
+    prisma.consultantPayout.count({ where: { status: "PENDING" } }),
     prisma.dispute.count({
       where: {
         status: { in: ["NEEDS_RESPONSE", "WARNING_NEEDS_RESPONSE"] },

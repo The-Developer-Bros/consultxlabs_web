@@ -52,10 +52,6 @@ function generateDisputeId(gateway: PaymentGateway): string {
       return `dp_${faker.string.alphanumeric(24)}`;
     case "RAZORPAY":
       return `disp_${faker.string.alphanumeric(14)}`;
-    case "LEMON_SQUEEZY":
-      return `disp_${faker.string.alphanumeric(16)}`;
-    case "XFLOW":
-      return `XF-DSP-${faker.string.alphanumeric(10).toUpperCase()}`;
     case "CARD":
       return `card_disp_${faker.string.alphanumeric(12)}`;
     default:
@@ -167,7 +163,7 @@ export async function createDisputes(): Promise<void> {
 
       await prisma.dispute.create({
         data: {
-          amount: payment.amount,
+          amountPaise: payment.amount,
           currency: payment.currency,
           reason,
           status,

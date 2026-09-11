@@ -244,17 +244,17 @@ const SYSTEM_JOBS: SystemJob[] = [
 
 const CATEGORY_CONFIG: Record<
   SystemJob["category"],
-  { icon: typeof CreditCard; color: string }
+  { icon: typeof CreditCard }
 > = {
-  Payments: { icon: CreditCard, color: "blue" },
-  Refunds: { icon: RefreshCw, color: "purple" },
-  Disputes: { icon: AlertTriangle, color: "amber" },
-  Earnings: { icon: DollarSign, color: "emerald" },
-  Appointments: { icon: Calendar, color: "indigo" },
-  Payouts: { icon: Wallet, color: "pink" },
-  Cleanup: { icon: Trash2, color: "gray" },
-  Reconciliation: { icon: Database, color: "cyan" },
-  Alerts: { icon: Bell, color: "red" },
+  Payments: { icon: CreditCard },
+  Refunds: { icon: RefreshCw },
+  Disputes: { icon: AlertTriangle },
+  Earnings: { icon: DollarSign },
+  Appointments: { icon: Calendar },
+  Payouts: { icon: Wallet },
+  Cleanup: { icon: Trash2 },
+  Reconciliation: { icon: Database },
+  Alerts: { icon: Bell },
 };
 
 interface JobCardProps {
@@ -267,99 +267,36 @@ function JobCard({ job, isRunning, onRun }: JobCardProps) {
   const config = CATEGORY_CONFIG[job.category];
   const Icon = config.icon;
 
-  const colorClasses: Record<
-    string,
-    { bg: string; text: string; badge: string }
-  > = {
-    blue: {
-      bg: "bg-blue-50",
-      text: "text-blue-600",
-      badge: "bg-blue-100 text-blue-700",
-    },
-    purple: {
-      bg: "bg-purple-50",
-      text: "text-purple-600",
-      badge: "bg-purple-100 text-purple-700",
-    },
-    amber: {
-      bg: "bg-amber-50",
-      text: "text-amber-600",
-      badge: "bg-amber-100 text-amber-700",
-    },
-    emerald: {
-      bg: "bg-emerald-50",
-      text: "text-emerald-600",
-      badge: "bg-emerald-100 text-emerald-700",
-    },
-    indigo: {
-      bg: "bg-indigo-50",
-      text: "text-indigo-600",
-      badge: "bg-indigo-100 text-indigo-700",
-    },
-    pink: {
-      bg: "bg-pink-50",
-      text: "text-pink-600",
-      badge: "bg-pink-100 text-pink-700",
-    },
-    gray: {
-      bg: "bg-zinc-50",
-      text: "text-zinc-600",
-      badge: "bg-zinc-100 text-zinc-700",
-    },
-    cyan: {
-      bg: "bg-cyan-50",
-      text: "text-cyan-600",
-      badge: "bg-cyan-100 text-cyan-700",
-    },
-    red: {
-      bg: "bg-red-50",
-      text: "text-red-600",
-      badge: "bg-red-100 text-red-700",
-    },
-  };
-
-  const colors = colorClasses[config.color];
-
   return (
     <motion.div
       whileHover={{ y: -2 }}
       transition={{ duration: 0.2 }}
-      className="relative overflow-hidden rounded-xl border border-zinc-200/80 bg-white p-5"
+      className="relative overflow-hidden rounded-xl border border-border bg-card p-5"
     >
       <div className="flex items-start justify-between gap-4">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-3 mb-2">
-            <div
-              className={cn(
-                "flex h-10 w-10 items-center justify-center rounded-lg",
-                colors.bg,
-              )}
-            >
-              <Icon className={cn("h-5 w-5", colors.text)} />
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
+              <Icon className="h-5 w-5 text-foreground" />
             </div>
             <div>
-              <h3 className="font-semibold text-zinc-900 text-sm">
+              <h3 className="font-semibold text-foreground text-sm">
                 {job.name}
               </h3>
-              <span
-                className={cn(
-                  "inline-block mt-0.5 px-2 py-0.5 rounded text-xs font-medium",
-                  colors.badge,
-                )}
-              >
+              <span className="inline-block mt-0.5 px-2 py-0.5 rounded text-xs font-medium bg-muted text-muted-foreground">
                 {job.category}
               </span>
             </div>
           </div>
-          <p className="text-sm text-zinc-500 mb-3">{job.description}</p>
-          <div className="flex items-center gap-1.5 text-xs text-zinc-400">
+          <p className="text-sm text-muted-foreground mb-3">{job.description}</p>
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground/70">
             <Clock className="h-3.5 w-3.5" />
             <span>{job.schedule}</span>
           </div>
         </div>
       </div>
 
-      <div className="mt-4 pt-4 border-t border-zinc-100">
+      <div className="mt-4 pt-4 border-t border-border">
         <Button
           size="sm"
           variant="outline"
@@ -524,21 +461,21 @@ export function SystemJobsPanel({ className }: SystemJobsPanelProps) {
     switch (status) {
       case "COMPLETED":
         return (
-          <Badge className="bg-green-100 text-green-700 gap-1">
+          <Badge className="bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400 gap-1">
             <CheckCircle2 className="h-3 w-3" />
             Completed
           </Badge>
         );
       case "FAILED":
         return (
-          <Badge className="bg-red-100 text-red-700 gap-1">
+          <Badge className="bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400 gap-1">
             <XCircle className="h-3 w-3" />
             Failed
           </Badge>
         );
       case "RUNNING":
         return (
-          <Badge className="bg-blue-100 text-blue-700 gap-1">
+          <Badge className="bg-muted text-muted-foreground gap-1">
             <Loader2 className="h-3 w-3 animate-spin" />
             Running
           </Badge>
@@ -574,10 +511,10 @@ export function SystemJobsPanel({ className }: SystemJobsPanelProps) {
         <CardContent>
           {loadingExecutions ? (
             <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-6 w-6 animate-spin text-zinc-400" />
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/70" />
             </div>
           ) : executions.length === 0 ? (
-            <p className="text-center text-zinc-500 py-8">
+            <p className="text-center text-muted-foreground py-8">
               No recent executions
             </p>
           ) : (
@@ -585,14 +522,14 @@ export function SystemJobsPanel({ className }: SystemJobsPanelProps) {
               {executions.map((execution) => (
                 <div
                   key={execution.id}
-                  className="flex items-center justify-between p-3 rounded-lg border border-zinc-200 dark:border-zinc-800"
+                  className="flex flex-col gap-2 p-3 rounded-lg border border-border sm:flex-row sm:items-center sm:justify-between"
                 >
                   <div className="flex items-center gap-3">
                     <div className="min-w-0">
                       <p className="font-medium text-sm truncate">
                         {execution.jobName}
                       </p>
-                      <p className="text-xs text-zinc-500">
+                      <p className="text-xs text-muted-foreground">
                         by {execution.triggeredBy.name || "System"} •{" "}
                         {formatExecutionTime(execution.startedAt)}
                       </p>
@@ -600,7 +537,7 @@ export function SystemJobsPanel({ className }: SystemJobsPanelProps) {
                   </div>
                   <div className="flex items-center gap-2">
                     {execution.result && (
-                      <span className="text-xs text-zinc-400">
+                      <span className="text-xs text-muted-foreground/70">
                         {Object.entries(execution.result)
                           .slice(0, 2)
                           .map(([k, v]) => `${k}: ${v}`)
@@ -622,10 +559,12 @@ export function SystemJobsPanel({ className }: SystemJobsPanelProps) {
           <div className="flex items-center gap-2 mb-4">
             {(() => {
               const Icon = CATEGORY_CONFIG[category].icon;
-              return <Icon className="h-5 w-5 text-zinc-400" />;
+              return <Icon className="h-5 w-5 text-muted-foreground/70" />;
             })()}
-            <h2 className="text-lg font-semibold text-zinc-900">{category}</h2>
-            <span className="text-sm text-zinc-400">
+            <h2 className="text-fluid-xl font-semibold tracking-tight text-foreground">
+              {category}
+            </h2>
+            <span className="text-sm text-muted-foreground/70">
               ({jobsByCategory[category].length} jobs)
             </span>
           </div>

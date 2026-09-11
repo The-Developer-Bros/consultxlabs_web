@@ -16,9 +16,22 @@ import {
   Settings,
   Loader2,
   Volume2,
+  CalendarClock,
+  Timer,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/utils/tailwind";
+import {
+  createMicLevelMeter,
+  SPEAKING_THRESHOLD,
+} from "@/lib/stream/audio-level";
+import {
+  formatScheduledAt,
+  sessionHeading,
+  sessionSubheading,
+  useSessionClock,
+  useSessionInfo,
+} from "../session-info";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -27,34 +40,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { ExitMeetingButton } from "./ExitMeetingButton";
+import { useRecordingConsent } from "./RecordingConsentNotice";
 
 interface MeetingSetupProps {
   setIsSetupComplete: (value: boolean) => void;
+  /** Stream call id, so the lobby can fetch this session's recording notice. */
+  meetingId: string;
 }
-
-// Audio analyzer helper functions moved outside component
-const createAudioAnalyzer = async () => {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
-    });
-
-    const audioContext = new AudioContext();
-    const analyser = audioContext.createAnalyser();
-    analyser.fftSize = 256;
-
-    const microphone = audioContext.createMediaStreamSource(stream);
-    microphone.connect(analyser);
-
-    const bufferLength = analyser.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength) as Uint8Array<ArrayBuffer>;
-
-    return { audioContext, analyser, dataArray, bufferLength };
-  } catch (error) {
-    console.error("Error accessing microphone:", error);
-    return null;
-  }
-};
 
 const DeviceSelector = () => {
   const { useMicrophoneState, useCameraState, useSpeakerState } =
@@ -84,7 +83,7 @@ const DeviceSelector = () => {
     <div className="space-y-4">
       {/* Camera */}
       <div className="space-y-2">
-        <div className="flex items-center gap-2 text-zinc-700">
+        <div className="flex items-center gap-2 text-muted-foreground">
           <Video className="w-4 h-4" />
           <Label className="text-sm font-medium">Camera</Label>
         </div>
@@ -95,7 +94,7 @@ const DeviceSelector = () => {
             await camState.camera.select(val);
           }}
         >
-          <SelectTrigger className="bg-white border-zinc-200">
+          <SelectTrigger className="bg-card border-border">
             <SelectValue placeholder="Select Camera" />
           </SelectTrigger>
           <SelectContent>
@@ -110,7 +109,7 @@ const DeviceSelector = () => {
 
       {/* Microphone */}
       <div className="space-y-2">
-        <div className="flex items-center gap-2 text-zinc-700">
+        <div className="flex items-center gap-2 text-muted-foreground">
           <Mic className="w-4 h-4" />
           <Label className="text-sm font-medium">Microphone</Label>
         </div>
@@ -121,7 +120,7 @@ const DeviceSelector = () => {
             await micState.microphone.select(val);
           }}
         >
-          <SelectTrigger className="bg-white border-zinc-200">
+          <SelectTrigger className="bg-card border-border">
             <SelectValue placeholder="Select Microphone" />
           </SelectTrigger>
           <SelectContent>
@@ -137,7 +136,7 @@ const DeviceSelector = () => {
       {/* Speakers */}
       {speakerState?.devices && speakerState.devices.length > 0 && (
         <div className="space-y-2">
-          <div className="flex items-center gap-2 text-zinc-700">
+          <div className="flex items-center gap-2 text-muted-foreground">
             <Volume2 className="w-4 h-4" />
             <Label className="text-sm font-medium">Speakers</Label>
           </div>
@@ -148,7 +147,7 @@ const DeviceSelector = () => {
               await speakerState.speaker.select(val);
             }}
           >
-            <SelectTrigger className="bg-white border-zinc-200">
+            <SelectTrigger className="bg-card border-border">
               <SelectValue placeholder="Select Speakers" />
             </SelectTrigger>
             <SelectContent>
@@ -165,24 +164,40 @@ const DeviceSelector = () => {
   );
 };
 
-const MeetingSetup = ({ setIsSetupComplete }: MeetingSetupProps) => {
+const MeetingSetup = ({ setIsSetupComplete, meetingId }: MeetingSetupProps) => {
   const call = useCall();
   const { useMicrophoneState, useCameraState } = useCallStateHooks();
   const micState = useMicrophoneState();
   const camState = useCameraState();
 
-  const [isCameraOn, setIsCameraOn] = useState(false);
-  const [isMicOn, setIsMicOn] = useState(true);
-  const [micLevel, setMicLevel] = useState(0);
+  // Device state is read from the SDK rather than mirrored into local booleans,
+  // which could disagree with the hardware after a failed toggle.
+  const isMicOn = micState.isEnabled;
+  const isCameraOn = camState.isEnabled;
+  const micStream = micState.mediaStream;
+
+  // The bar is driven through a ref rather than state: at one setState per
+  // animation frame React re-rendered the whole lobby ~60x/second, and the
+  // bar's own CSS transition then fought the updates. Only the caption, which
+  // changes rarely, is state.
+  const micBarRef = useRef<HTMLDivElement | null>(null);
+  const [isSpeaking, setIsSpeaking] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+
+  // #1134 P1-7 — nobody reaches the call before seeing the recording notice.
+  const consent = useRecordingConsent(meetingId);
+
+  const info = useSessionInfo();
+  const clock = useSessionClock(info.startsAt, info.endsAt);
+  const scheduledAt = formatScheduledAt(info.startsAt);
+  const heading = sessionHeading(info);
+  const subheading = sessionSubheading(info);
 
   const initDevices = useCallback(async () => {
     try {
       await camState.camera.disable();
-      setIsCameraOn(false);
       await micState.microphone.enable();
-      setIsMicOn(true);
     } catch (error) {
       console.error("Error initializing devices:", error);
     }
@@ -194,76 +209,20 @@ const MeetingSetup = ({ setIsSetupComplete }: MeetingSetupProps) => {
     }
   }, [call, initDevices]);
 
-  const calculateAudioLevel = (
-    analyser: AnalyserNode,
-    dataArray: Uint8Array<ArrayBuffer>,
-    bufferLength: number,
-  ) => {
-    analyser.getByteFrequencyData(dataArray);
-    const average = dataArray.reduce((a, b) => a + b, 0) / bufferLength;
-    return Math.min(average / 128, 1);
-  };
-
   useEffect(() => {
-    let animationFrame: number;
-    let audioContext: AudioContext | null = null;
+    setIsSpeaking(false);
+    if (micBarRef.current) micBarRef.current.style.width = "0%";
+    if (!isMicOn || !micStream) return;
 
-    setMicLevel(0);
-
-    const updateLevel = (
-      analyser: AnalyserNode,
-      dataArray: Uint8Array<ArrayBuffer>,
-      bufferLength: number,
-    ) => {
-      const normalizedLevel = calculateAudioLevel(
-        analyser,
-        dataArray,
-        bufferLength,
-      );
-      setMicLevel(normalizedLevel);
-      animationFrame = requestAnimationFrame(() =>
-        updateLevel(analyser, dataArray, bufferLength),
-      );
-    };
-
-    const setupAnalyzer = async () => {
-      const analyzerData = await createAudioAnalyzer();
-      if (!analyzerData) return;
-
-      const {
-        audioContext: context,
-        analyser: analyzer,
-        dataArray,
-        bufferLength,
-      } = analyzerData;
-
-      audioContext = context;
-      updateLevel(analyzer, dataArray, bufferLength);
-    };
-
-    if (isMicOn) {
-      const timer = setTimeout(setupAnalyzer, 100);
-
-      return () => {
-        clearTimeout(timer);
-        if (animationFrame) {
-          cancelAnimationFrame(animationFrame);
-        }
-        if (audioContext) {
-          audioContext.close();
-        }
-      };
-    }
-
-    return () => {
-      if (animationFrame) {
-        cancelAnimationFrame(animationFrame);
+    // The stream is Stream's own (`useMicrophoneState().mediaStream`), so the
+    // meter observes it and never owns it — see lib/stream/audio-level.
+    return createMicLevelMeter(micStream, (level) => {
+      if (micBarRef.current) {
+        micBarRef.current.style.width = `${Math.max(level * 100, 2)}%`;
       }
-      if (audioContext) {
-        audioContext.close();
-      }
-    };
-  }, [isMicOn]);
+      setIsSpeaking(level >= SPEAKING_THRESHOLD);
+    });
+  }, [isMicOn, micStream]);
 
   const handleJoinMeeting = async () => {
     try {
@@ -318,12 +277,7 @@ const MeetingSetup = ({ setIsSetupComplete }: MeetingSetupProps) => {
 
   const toggleCamera = async () => {
     try {
-      if (isCameraOn) {
-        await camState.camera.disable();
-      } else {
-        await camState.camera.enable();
-      }
-      setIsCameraOn(!isCameraOn);
+      await camState.camera.toggle();
     } catch (error) {
       console.error("Error toggling camera:", error);
     }
@@ -331,198 +285,242 @@ const MeetingSetup = ({ setIsSetupComplete }: MeetingSetupProps) => {
 
   const toggleMic = async () => {
     try {
-      if (isMicOn) {
-        await micState.microphone.disable();
-      } else {
-        await micState.microphone.enable();
-      }
-      setIsMicOn(!isMicOn);
+      await micState.microphone.toggle();
     } catch (error) {
       console.error("Error toggling microphone:", error);
     }
   };
 
+  const joinLabel = consent.loading
+    ? // The button is disabled for as long as this fetch is out. Without a
+      // label for it the control just looks broken, and the notice it is
+      // waiting on has not rendered yet to explain itself.
+      "Checking recording notice..."
+    : clock.phase === "in-progress" || clock.phase === "overrunning"
+      ? "Join now"
+      : clock.phase === "early"
+        ? "Join early"
+        : "Join meeting";
+
+  /** Mic and camera toggles, kept beside the preview so a change is seen. */
+  const deviceToggles = (
+    <div className="flex items-center gap-3">
+      <button
+        type="button"
+        onClick={toggleMic}
+        aria-label={isMicOn ? "Turn microphone off" : "Turn microphone on"}
+        aria-pressed={isMicOn}
+        className={cn(
+          "w-12 h-12 rounded-full flex items-center justify-center transition-colors",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
+          isMicOn
+            ? "bg-white/10 text-white hover:bg-white/20"
+            : "bg-red-500 text-white hover:bg-red-600",
+        )}
+      >
+        {isMicOn ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
+      </button>
+
+      <button
+        type="button"
+        onClick={toggleCamera}
+        aria-label={isCameraOn ? "Turn camera off" : "Turn camera on"}
+        aria-pressed={isCameraOn}
+        className={cn(
+          "w-12 h-12 rounded-full flex items-center justify-center transition-colors",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
+          isCameraOn
+            ? "bg-white/10 text-white hover:bg-white/20"
+            : "bg-red-500 text-white hover:bg-red-600",
+        )}
+      >
+        {isCameraOn ? (
+          <Video className="w-5 h-5" />
+        ) : (
+          <VideoOff className="w-5 h-5" />
+        )}
+      </button>
+
+      <button
+        type="button"
+        onClick={() => setShowSettings(true)}
+        aria-label="Audio and video settings"
+        aria-haspopup="dialog"
+        className={cn(
+          "w-12 h-12 rounded-full flex items-center justify-center transition-colors",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900",
+          "bg-white/10 text-white hover:bg-white/20",
+        )}
+      >
+        <Settings className="w-5 h-5" />
+      </button>
+    </div>
+  );
+
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-br from-zinc-900 via-zinc-800 to-zinc-900 p-4">
+    <div className="relative min-h-screen bg-gradient-to-br from-zinc-900 via-zinc-800 to-zinc-900 px-4 py-6 sm:px-6 lg:px-8">
       {/* Background pattern */}
       <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIHZpZXdCb3g9IjAgMCA2MCA2MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZyBmaWxsPSJub25lIiBmaWxsLXJ1bGU9ImV2ZW5vZGQiPjxnIGZpbGw9IiMyMjIiIGZpbGwtb3BhY2l0eT0iMC4wNSI+PGNpcmNsZSBjeD0iMzAiIGN5PSIzMCIgcj0iMiIvPjwvZz48L2c+PC9zdmc+')] opacity-50" />
 
-      <div className="relative z-10 w-full max-w-lg">
-        {/* Card */}
-        <div className="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl border border-zinc-200/50 overflow-hidden">
-          {/* Header */}
-          <div className="px-8 pt-8 pb-4">
-            <h1 className="text-2xl font-bold text-zinc-900 text-center">
-              {call?.state.custom?.title || "Join Meeting"}
-            </h1>
-            <p className="text-zinc-500 text-sm text-center mt-1">
-              Configure your audio and video before joining
-            </p>
-          </div>
+      <div className="relative z-10 mx-auto w-full max-w-6xl">
+        {/* #1067 — the route had no exit but the browser Back button. */}
+        <ExitMeetingButton className="-ml-3" />
+      </div>
 
-          {/* Video Preview */}
-          <div className="px-6 pb-4">
-            <div
-              className="relative rounded-xl overflow-hidden bg-zinc-900 shadow-inner"
-              style={{ aspectRatio: "16/9" }}
-            >
-              <VideoPreview
-                mirror={true}
-                className="w-full h-full object-cover"
-              />
+      <div className="relative z-10 mx-auto flex min-h-[calc(100vh-6rem)] w-full max-w-6xl items-center">
+        {/*
+          The preview used to sit in a narrow max-w-lg column, so it was small
+          and cropped. It is now the subject: a full-width 16:9 frame in the
+          wide column, with the session details and Join beside it on a desktop
+          and stacked beneath it on anything narrower.
+        */}
+        <div className="grid w-full gap-6 lg:grid-cols-[minmax(0,1fr)_22rem] lg:gap-8 lg:items-center">
+          {/* Preview + the controls that change it */}
+          <div className="space-y-4">
+            <div className="meeting-lobby-preview relative aspect-video w-full overflow-hidden rounded-2xl bg-zinc-950 shadow-2xl ring-1 ring-white/10">
+              <VideoPreview mirror={true} />
               {!isCameraOn && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-900">
-                  <div className="w-20 h-20 rounded-full bg-zinc-800 flex items-center justify-center mb-3">
-                    <VideoOff className="w-8 h-8 text-zinc-500" />
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-950">
+                  <div className="mb-3 flex h-20 w-20 items-center justify-center rounded-full bg-zinc-800">
+                    <VideoOff className="h-8 w-8 text-zinc-500" />
                   </div>
-                  <p className="text-zinc-400 text-sm font-medium">
+                  <p className="text-sm font-medium text-zinc-400">
                     Camera is off
                   </p>
                 </div>
               )}
+            </div>
 
-              {/* Camera/Mic status indicators */}
-              <div className="absolute bottom-3 left-3 flex gap-2">
-                <div
-                  className={cn(
-                    "px-2.5 py-1 rounded-full text-xs font-medium flex items-center gap-1.5 backdrop-blur-sm",
-                    isMicOn
-                      ? "bg-green-500/20 text-green-400"
-                      : "bg-red-500/20 text-red-400",
-                  )}
-                >
-                  {isMicOn ? (
-                    <Mic className="w-3 h-3" />
-                  ) : (
-                    <MicOff className="w-3 h-3" />
-                  )}
-                  {isMicOn ? "Mic on" : "Mic off"}
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              {deviceToggles}
+
+              {/* The on/off chips that used to sit here are gone: the toggles
+                  are now beside the preview and go red when off, and the
+                  preview says so itself, so the chips only repeated them. */}
+              {isMicOn && (
+                <div className="min-w-0 flex-1 sm:max-w-xs">
+                  <div className="flex items-center gap-3">
+                    <Mic className="h-4 w-4 shrink-0 text-zinc-500" />
+                    <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-white/10">
+                      <div
+                        ref={micBarRef}
+                        className="h-full rounded-full bg-white"
+                        style={{ width: "0%" }}
+                      />
+                    </div>
+                  </div>
+                  <p className="mt-1.5 pl-7 text-xs text-zinc-400">
+                    {isSpeaking
+                      ? "We can hear you"
+                      : "Say something to check your microphone"}
+                  </p>
                 </div>
-                <div
-                  className={cn(
-                    "px-2.5 py-1 rounded-full text-xs font-medium flex items-center gap-1.5 backdrop-blur-sm",
-                    isCameraOn
-                      ? "bg-green-500/20 text-green-400"
-                      : "bg-red-500/20 text-red-400",
-                  )}
-                >
-                  {isCameraOn ? (
-                    <Video className="w-3 h-3" />
-                  ) : (
-                    <VideoOff className="w-3 h-3" />
-                  )}
-                  {isCameraOn ? "Camera on" : "Camera off"}
-                </div>
-              </div>
+              )}
             </div>
           </div>
 
-          {/* Mic Level Indicator */}
-          {isMicOn && (
-            <div className="px-6 pb-4">
-              <div className="flex items-center gap-3">
-                <Mic className="w-4 h-4 text-zinc-400" />
-                <div className="flex-1">
-                  <div className="h-1.5 bg-zinc-200 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-gradient-to-r from-green-400 to-emerald-500 transition-all duration-75"
-                      style={{ width: `${Math.max(micLevel * 100, 2)}%` }}
-                    />
-                  </div>
-                </div>
-                <span className="text-xs text-zinc-500 w-20 text-right">
-                  {micLevel < 0.05 ? "Waiting..." : "Speaking"}
+          {/* Session details + the primary action */}
+          <div className="rounded-2xl border border-border/50 bg-card/95 p-6 shadow-2xl backdrop-blur-xl">
+            {/* Header — the person first, the offering under it, and the type
+                as a quiet chip. It was an upper-cased enum in the largest type
+                on the screen, above the name of the person you are meeting. */}
+            <div className="flex flex-wrap items-center gap-2">
+              {info.typeLabel && (
+                <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                  {info.typeLabel}
                 </span>
-              </div>
-            </div>
-          )}
-
-          {/* Controls */}
-          <div className="px-6 pb-6">
-            <div className="flex items-center justify-center gap-3">
-              {/* Mic Toggle */}
-              <button
-                onClick={toggleMic}
-                className={cn(
-                  "w-14 h-14 rounded-full flex items-center justify-center transition-all duration-200",
-                  isMicOn
-                    ? "bg-zinc-900 text-white hover:bg-zinc-800"
-                    : "bg-red-500 text-white hover:bg-red-600",
-                )}
-              >
-                {isMicOn ? (
-                  <Mic className="w-5 h-5" />
-                ) : (
-                  <MicOff className="w-5 h-5" />
-                )}
-              </button>
-
-              {/* Camera Toggle */}
-              <button
-                onClick={toggleCamera}
-                className={cn(
-                  "w-14 h-14 rounded-full flex items-center justify-center transition-all duration-200",
-                  isCameraOn
-                    ? "bg-zinc-900 text-white hover:bg-zinc-800"
-                    : "bg-red-500 text-white hover:bg-red-600",
-                )}
-              >
-                {isCameraOn ? (
-                  <Video className="w-5 h-5" />
-                ) : (
-                  <VideoOff className="w-5 h-5" />
-                )}
-              </button>
-
-              {/* Settings Toggle */}
-              <button
-                onClick={() => setShowSettings(!showSettings)}
-                className={cn(
-                  "w-14 h-14 rounded-full flex items-center justify-center transition-all duration-200",
-                  showSettings
-                    ? "bg-zinc-900 text-white"
-                    : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200",
-                )}
-              >
-                <Settings className="w-5 h-5" />
-              </button>
+              )}
+              {clock.status && (
+                <span
+                  className={cn(
+                    "rounded-full px-2 py-0.5 text-xs font-medium",
+                    clock.phase === "in-progress" ||
+                      clock.phase === "overrunning"
+                      ? "bg-green-500/15 text-green-500"
+                      : clock.phase === "starting-soon"
+                        ? "bg-foreground text-background"
+                        : "bg-muted text-muted-foreground",
+                  )}
+                >
+                  {clock.phase === "in-progress" ||
+                  clock.phase === "overrunning"
+                    ? "In progress"
+                    : clock.status}
+                </span>
+              )}
             </div>
 
-            {/* Device Settings */}
-            {showSettings && (
-              <div className="mt-4 p-4 bg-zinc-50 rounded-xl border border-zinc-200">
-                <p className="text-sm font-medium text-zinc-700 mb-3">
-                  Audio & Video Settings
-                </p>
-                <DeviceSelector />
+            <h1 className="mt-2 truncate text-fluid-2xl font-semibold tracking-tight text-foreground">
+              {heading}
+            </h1>
+            {subheading && (
+              <p className="truncate text-sm text-muted-foreground">
+                {subheading}
+              </p>
+            )}
+
+            {(scheduledAt || (info.durationMinutes ?? 0) > 0) && (
+              <div className="mt-4 space-y-1.5 text-sm text-muted-foreground">
+                {scheduledAt && (
+                  <span className="flex items-center gap-1.5">
+                    <CalendarClock className="h-4 w-4 shrink-0" />
+                    {scheduledAt}
+                  </span>
+                )}
+                {(info.durationMinutes ?? 0) > 0 && (
+                  <span className="flex items-center gap-1.5">
+                    <Timer className="h-4 w-4 shrink-0" />
+                    {info.durationMinutes} min
+                  </span>
+                )}
               </div>
             )}
-          </div>
 
-          {/* Join Button */}
-          <div className="px-6 pb-8">
+            {consent.node && <div className="mt-4">{consent.node}</div>}
+
             <Button
               onClick={handleJoinMeeting}
-              disabled={isJoining}
-              className="w-full h-12 bg-gradient-to-r from-emerald-500 to-green-500 hover:from-emerald-600 hover:to-green-600 text-white font-semibold rounded-xl shadow-lg shadow-green-500/25 transition-all duration-200 disabled:opacity-70"
+              disabled={isJoining || !consent.satisfied}
+              className="mt-6 h-12 w-full rounded-xl bg-primary text-base font-semibold text-primary-foreground shadow-lg transition-colors hover:bg-primary/90 disabled:opacity-70"
             >
               {isJoining ? (
                 <>
-                  <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                  <Loader2 className="mr-2 h-5 w-5 animate-spin" />
                   Joining...
                 </>
               ) : (
-                "Join Meeting"
+                joinLabel
               )}
             </Button>
+
+            {/* Replaces "Tip: test your mic and camera before joining", which
+                restated the screen. This only appears when there is something
+                the person would otherwise be surprised by. */}
+            {(!micState.hasBrowserPermission || !isCameraOn) && (
+              <p className="mt-3 text-center text-xs text-muted-foreground">
+                {!micState.hasBrowserPermission
+                  ? "Your browser is blocking the microphone. Allow access to be heard."
+                  : "Your camera is off — you will join with audio only."}
+              </p>
+            )}
           </div>
         </div>
-
-        {/* Footer tip */}
-        <p className="text-center text-zinc-500 text-xs mt-4">
-          Tip: Test your mic and camera before joining
-        </p>
       </div>
+
+      {/*
+        Was an inline block under the controls, so on a short viewport the
+        device lists ran off the bottom of the page and the lower options were
+        unreachable. DialogContent is portalled, caps itself at 90dvh and
+        scrolls internally, and brings Esc/outside-click/focus-trap with it.
+      */}
+      <Dialog open={showSettings} onOpenChange={setShowSettings}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Audio &amp; video settings</DialogTitle>
+          </DialogHeader>
+          <DeviceSelector />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

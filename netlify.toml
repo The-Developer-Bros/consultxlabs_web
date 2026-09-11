@@ -6,8 +6,42 @@
 [build.environment]
   # Node version
   NODE_VERSION = "22"
-  # Increase heap size to prevent OOM during lint/type-check step
-  NODE_OPTIONS = "--max-old-space-size=4096"
+  # Heap headroom for the webpack build. Lint + tsc are now skipped in `next build`
+  # (next.config.mjs) since CI gates them, so this no longer has to cover that step. #932
+  #
+  # Raised 4096 -> 6144 when ADR 24 added two route trees and the deploy preview
+  # started failing while `next build` still succeeded locally at 4096 and in CI.
+  # The standard build image has 8 GB, so this stays inside the container cap.
+  NODE_OPTIONS = "--max-old-space-size=6144"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Function memory / #1124 stall — MEASURED DEAD AND REVERTED. Do not re-add.
+#
+# The stall: a brand-new instance of the Next.js server handler blocks its
+# event loop ~24s before any application work whenever instances are created
+# under concurrent load (#1124). Replicated 2026-08-23 after ≥30 min idle:
+# 12/12 concurrent unique-key requests stalled at 29.5–31.5s.
+#
+# Raising handler memory was tested CORRECTLY on 2026-08-22 (2048 MB applied
+# to the real v2 function name, verified via `netlify api searchSiteFunctions`
+# → field `m`): 11/12 slow at 35.9–37.6s + one platform 500 vs the 1024 MB
+# control's 11/12 at 27.8–31.0s. No improvement; reverted in 08b10ce4. Since
+# Netlify `memory` and `vcpu` scale together, this tested CPU-share too — the
+# "CPU-starved cold-boot" hypothesis is dead. A lazy-init build (lazy Razorpay/
+# Stripe SDK clients) reproduced the stall at full strength the next day:
+# application init work is NOT the driver either.
+#
+# GOTCHA that wasted a day once: runtime API v2 (@netlify/plugin-nextjs 5.x)
+# generates ONE function named ___netlify-server-handler. The classic
+# ___netlify-handler / ___netlify-odb-handler names belong to v1 and match
+# NOTHING — a toml block targeting them is SILENTLY IGNORED (m stayed 1024).
+# Re-enumerate names after any adapter bump.
+#
+# What actually works (all measured): ISR cache hits pay no stall; keep-warm/
+# warm-deploy workflows (#1148) protect single clicks only; bursts cannot be
+# warmed. Full record: .claude/skills/nextjs-netlify-caching/SKILL.md,
+# issue #1124, docs/perf/netlify-stall-ticket-draft.md.
+# ─────────────────────────────────────────────────────────────────────────────
 
 # Skip builds for Dependabot PRs
 [context.deploy-preview]
@@ -17,21 +51,13 @@
       echo "Skipping deploy preview for Dependabot branch: $HEAD"
       exit 0
     fi
-    
+
     # Check if the commit author is Dependabot
     if git log --format="%an" -n 1 | grep -q "dependabot"; then
       echo "Skipping deploy preview for Dependabot commit"
       exit 0
     fi
-    
+
     # Continue with normal build for non-Dependabot PRs
     exit 1
   """
-
-# Production builds (main/prod branch)
-[context.production]
-  command = "npm run build"
-
-# Development builds (dev branch)  
-[context.dev]
-  command = "npm run build"

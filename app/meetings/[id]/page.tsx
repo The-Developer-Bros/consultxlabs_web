@@ -2,111 +2,63 @@
 
 import { useState, useEffect } from "react";
 import { useParams } from "next/navigation";
-import {
-  StreamCall,
-  StreamTheme,
-  CallingState,
-} from "@stream-io/video-react-sdk";
-import { Loader2, ShieldAlert } from "lucide-react";
+import { StreamCall, StreamTheme } from "@stream-io/video-react-sdk";
+import { ShieldAlert } from "lucide-react";
 
+import {
+  leaveCallAndReleaseMedia,
+  stopLocalTracks,
+} from "@/lib/stream/media-teardown";
+import { MeetingRoomSkeleton } from "./MeetingRoomSkeleton";
 import { useGetCallById } from "./hooks/useGetCallById";
 import Alert from "./components/Alert";
 import MeetingSetup from "./components/MeetingSetup";
 import MeetingRoom from "./components/MeetingRoom";
 import { useSession } from "@/lib/auth-client";
 
-interface AccessValidation {
-  hasAccess: boolean;
-  role: "host" | "participant" | null;
-  message: string;
-}
-
 const MeetingPage = () => {
   const { id } = useParams();
   const { data: session, isPending: isSessionPending } = useSession();
-  const { call, isCallLoading, error } = useGetCallById(id as string);
+  // #1134 P0-2 — access and call resolution are ONE server round-trip now. They
+  // used to be two effects racing each other: the call was created client-side
+  // before the access check came back, so an unauthorized visitor minted a real
+  // Stream call and only then saw "Access Denied".
+  const { call, isCallLoading, error, access, rejoin } = useGetCallById(
+    id as string,
+  );
   const [isSetupComplete, setIsSetupComplete] = useState(false);
-  const [accessValidation, setAccessValidation] =
-    useState<AccessValidation | null>(null);
-  const [isValidatingAccess, setIsValidatingAccess] = useState(true);
 
-  // Validate meeting access
+  // Release the camera and microphone on ANY exit from this page, not just the
+  // explicit Leave button: navigating away and the browser Back button both
+  // unmount the route, and until this ran on those paths too the capture light
+  // stayed on after the user had visibly left the meeting.
   useEffect(() => {
-    const validateAccess = async () => {
-      if (!id || !session?.user?.id) {
-        setIsValidatingAccess(false);
-        return;
-      }
+    if (!call) return;
 
-      try {
-        const response = await fetch(`/api/meetings/${id}/validate-access`);
-        const data = await response.json();
-        setAccessValidation(data);
-      } catch (err) {
-        console.error("Error validating meeting access:", err);
-        setAccessValidation({
-          hasAccess: false,
-          role: null,
-          message: "Failed to validate access. Please try again.",
-        });
-      } finally {
-        setIsValidatingAccess(false);
-      }
+    // React does not run effect cleanup when the document itself goes away
+    // (tab close, hard navigation), so the tracks are stopped from `pagehide`
+    // too. Synchronously: anything awaited here may never resume. Leaving the
+    // call properly is skipped — Stream times the participant out, and the
+    // camera going dark is the part that cannot wait.
+    const onPageHide = (event: PageTransitionEvent) => {
+      // `persisted` means the document is going into the back/forward cache,
+      // not away: it is frozen with its tree intact and Back restores it.
+      // Stopping tracks there leaves the SDK reporting the mic and camera as
+      // enabled while nothing is captured, so the meter sits at silence.
+      if (event.persisted) return;
+      stopLocalTracks(call);
     };
+    window.addEventListener("pagehide", onPageHide);
 
-    if (session?.user?.id) {
-      validateAccess();
-    } else if (!isSessionPending) {
-      setIsValidatingAccess(false);
-    }
-  }, [id, session?.user?.id, isSessionPending]);
-
-  // Cleanup on component unmount - disable media streams before leaving
-  useEffect(() => {
     return () => {
-      console.log("Meeting page unmounting, cleaning up call...");
-
-      const cleanup = async () => {
-        try {
-          // Disable media streams first to stop audio/video
-          await call?.camera.disable();
-          await call?.microphone.disable();
-
-          // Disable screen share if active
-          if (call?.screenShare?.state?.status === "enabled") {
-            await call?.screenShare.disable();
-          }
-
-          console.log("Media streams disabled");
-
-          // Leave the call if still connected
-          if (call?.state.callingState !== CallingState.LEFT) {
-            console.log("Leaving call on unmount");
-            await call?.leave();
-          }
-        } catch (error) {
-          console.warn("Error during cleanup on unmount:", error);
-        }
-      };
-
-      cleanup();
+      window.removeEventListener("pagehide", onPageHide);
+      void leaveCallAndReleaseMedia(call);
     };
   }, [call]);
 
-  // Loading states
-  if (isSessionPending || isValidatingAccess || isCallLoading) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-screen">
-        <Loader2 className="h-12 w-12 animate-spin text-primary" />
-        <p className="mt-4 text-lg">
-          {isSessionPending
-            ? "Checking authentication..."
-            : isValidatingAccess
-              ? "Validating access..."
-              : "Loading meeting..."}
-        </p>
-      </div>
-    );
+  // Loading states — lobby anatomy matches MeetingSetup to avoid spinner flash
+  if (isSessionPending || isCallLoading) {
+    return <MeetingRoomSkeleton />;
   }
 
   // Not logged in
@@ -115,24 +67,24 @@ const MeetingPage = () => {
   }
 
   // Access denied
-  if (accessValidation && !accessValidation.hasAccess) {
+  if (access && !access.hasAccess) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-zinc-50">
-        <div className="bg-white p-8 rounded-2xl shadow-xl border border-zinc-200 max-w-md text-center">
+      <div className="flex flex-col items-center justify-center min-h-screen bg-muted p-4">
+        <div className="w-full max-w-md bg-card p-8 rounded-2xl shadow-xl border border-border text-center">
           <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-red-100 flex items-center justify-center">
             <ShieldAlert className="w-8 h-8 text-red-600" />
           </div>
-          <h2 className="text-xl font-bold text-zinc-900 mb-2">
+          <h2 className="text-xl font-bold text-foreground mb-2">
             Access Denied
           </h2>
-          <p className="text-zinc-600 mb-4">{accessValidation.message}</p>
-          <p className="text-sm text-zinc-500">
+          <p className="text-muted-foreground mb-4">{access.message}</p>
+          <p className="text-sm text-muted-foreground/70">
             If you believe this is an error, please contact support or the
             meeting host.
           </p>
           <button
             onClick={() => window.history.back()}
-            className="mt-6 px-6 py-2.5 bg-zinc-900 text-white rounded-lg font-medium hover:bg-zinc-800 transition-colors"
+            className="mt-6 px-6 py-2.5 bg-foreground text-background rounded-lg font-medium hover:bg-foreground/90 transition-colors"
           >
             Go Back
           </button>
@@ -164,9 +116,12 @@ const MeetingPage = () => {
       <StreamCall call={call}>
         <StreamTheme>
           {!isSetupComplete ? (
-            <MeetingSetup setIsSetupComplete={setIsSetupComplete} />
+            <MeetingSetup
+              setIsSetupComplete={setIsSetupComplete}
+              meetingId={id as string}
+            />
           ) : (
-            <MeetingRoom />
+            <MeetingRoom onRejoin={rejoin} />
           )}
         </StreamTheme>
       </StreamCall>

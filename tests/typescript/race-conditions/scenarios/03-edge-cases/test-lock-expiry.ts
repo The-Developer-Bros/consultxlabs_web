@@ -26,11 +26,13 @@ import {
   generateMarkdownReport,
   resetBookingRegistry,
 } from "../../utilities/test-helpers.js";
+import { thirtyAfter } from "../../utilities/test-helpers.js";
 import {
   lockSlotBooking,
   unlockSlotBooking,
   type ApprovalLock,
 } from "../../../../../utils/appointmentlock.js";
+
 import {
   generateTestSlot,
   generateConsultantId,
@@ -78,7 +80,7 @@ async function runTest() {
   try {
     // User 1: Acquire lock with short TTL and DON'T release it (simulating hung request)
     const lock1Start = Date.now();
-    const lock1 = await lockSlotBooking(consultantId, slot.start, 2000); // 2s TTL
+    const lock1 = await lockSlotBooking(consultantId, slot.start, thirtyAfter(slot.start), 2000); // 2s TTL
 
     // Simulate processing but DON'T unlock (testing auto-expiry)
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -99,10 +101,10 @@ async function runTest() {
 
     // User 2: Try to acquire lock after expiry
     const lock2Start = Date.now();
-    let lock2: ApprovalLock | null = null;
+    let lock2: ApprovalLock[] | null = null;
 
     try {
-      lock2 = await lockSlotBooking(consultantId, slot.start, 15000);
+      lock2 = await lockSlotBooking(consultantId, slot.start, thirtyAfter(slot.start), 15000);
       await new Promise((resolve) => setTimeout(resolve, 100));
 
       results.push({

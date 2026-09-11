@@ -9,6 +9,8 @@ import { notifyVerificationStatusChanged } from "@/lib/novu";
 import { ReviewVerificationSchema } from "@/schemas/verifications";
 
 import { requirePrivilegedAuth } from "@/lib/auth-helpers";
+import { purgeExpertSurfaces } from "@/lib/data/public-cache";
+import * as Sentry from "@sentry/nextjs";
 interface RouteParams {
   params: Promise<{ verificationId: string }>;
 }
@@ -17,11 +19,10 @@ interface RouteParams {
  * GET /api/staff/moderation/profiles/[verificationId]
  * Get verification request details
  */
-export async function GET(req: NextRequest, { params }: RouteParams) {
+export async function GET(_req: NextRequest, { params }: RouteParams) {
   try {
     const auth = await requirePrivilegedAuth();
     if (auth.error) return auth.error;
-    const session = auth.session;
 
     const { verificationId } = await params;
 
@@ -58,6 +59,7 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
 
     return NextResponse.json({ verification });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "staff" } });
     console.error("Error fetching verification:", error);
     return NextResponse.json(
       { error: "Failed to fetch verification" },
@@ -188,6 +190,10 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
             : []),
     ]);
 
+    // Same publish switch as the admin verification route: VERIFIED puts the
+    // consultant on the public surfaces, anything else takes them off.
+    purgeExpertSurfaces(verification.consultantProfileId);
+
     // Fire-and-forget: notify consultant of verification status change
     const consultantUserId = verification.consultantProfile?.user?.id;
     if (consultantUserId) {
@@ -208,6 +214,7 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
             : "More information requested",
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "staff" } });
     console.error("Error reviewing verification:", error);
     return NextResponse.json(
       { error: "Failed to review verification" },

@@ -2,18 +2,39 @@ name: Stream User Sync
 
 on:
   schedule:
-    # Runs at 03:30 UTC (9:00 AM IST) every day
-    - cron: "30 3 * * *"
+    # Daily 03:40 UTC (09:10 IST). #709 — off cleanup-empty-folders (03:30).
+    - cron: "40 3 * * *"
   workflow_dispatch: # Allow manual triggering
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+  # A second workflow_dispatch while one is already pending would replace it
+  # under the default single-pending-run policy; queue: max keeps every
+  # trigger instead of silently dropping one.
+  queue: max
 
 jobs:
   sync-stream-users:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # #1134 P1-21 — must stay BELOW the job's 40-minute Redis lock TTL, so the
+    # lock always outlives any run that can exist and two runs can never
+    # overlap. Raised from 30 because a 100k-user walk does not fit in 30
+    # minutes: 1,000 pages, a 500ms sleep per deletion (8 minutes of sleep
+    # alone) plus a Stream round-trip and a Prisma query each.
+    timeout-minutes: 35
 
     env:
+      # #1066 — jobs run as bare Node processes, so Sentry.init only sees
+      # what the step env carries. Without the DSN the runner initialises
+      # a disabled client and every captureException is a no-op again.
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
       # Database connection (required for Prisma)
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # #476 cron locks load lib/redis at import — every job entry needs these
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
       DIRECT_URL: ${{ secrets.DIRECT_URL }}
 
       # Stream Chat API credentials
@@ -43,10 +64,13 @@ jobs:
         run: npx prisma generate
 
       - name: Sync Stream users
-        run: npx tsx jobs/stream/stream-sync.ts
+        run: npx --yes tsx@4.23.1 jobs/stream/stream-sync.ts
 
       - name: Notify on failure
         if: failure()
-        run: |
-          echo "Stream user sync job failed"
-          # Add notification logic here (Slack, email, etc.)
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          # Fallback sink — Slack has never been provisioned, so this is
+          # what actually pages today. See 07-required-secrets.md.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "stream-sync"

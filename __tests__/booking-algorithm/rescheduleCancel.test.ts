@@ -23,20 +23,44 @@ jest.mock("../../lib/prisma", () => ({
   __esModule: true,
   default: {
     $transaction: jest.fn(),
-    appointment: { findUnique: jest.fn() },
-    slotOfAppointment: { findMany: jest.fn(), deleteMany: jest.fn() },
+    // #1006 — cancel resolves the refund facts across the WHOLE booking, so it
+    // reads every appointment of the parent request, not just the one it was
+    // handed. Default to none: the refund path is exercised in its own suites.
+    appointment: {
+      findUnique: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
+    },
+    // #1003 — group-event cancel reads the attendee roster off the payments so
+    // it can notify them. Default to an empty event.
+    payment: { findMany: jest.fn().mockResolvedValue([]) },
+    slotOfAppointment: {
+      findMany: jest.fn(),
+      updateManyAndReturn: jest.fn().mockResolvedValue([]),
+    },
+    bookingStatusHistory: { create: jest.fn().mockResolvedValue({}) },
+    // #1008 — the cancel/reschedule routes call hasActiveDisputeForAppointment,
+    // which reads prisma.dispute.findFirst. Default to no live dispute.
+    dispute: { findFirst: jest.fn().mockResolvedValue(null) },
     $disconnect: jest.fn(),
   },
 }));
 
 // Mock auth-server (better-auth)
+jest.mock("../../lib/rate-limit", () => ({
+  __esModule: true,
+  applyRateLimit: jest.fn(async () => null),
+  eventMutationLimiter: {},
+}));
+jest.mock("../../utils/appointmentlock", () => ({
+  __esModule: true,
+  withAppointmentLock: jest.fn(
+    async (_id: string, fn: () => Promise<unknown>) => fn(),
+  ),
+  BookingLockUnavailableError: class extends Error {},
+  AppointmentBusyError: class extends Error {},
+}));
 jest.mock("../../lib/auth-server", () => ({
   getSession: jest.fn(),
-}));
-
-// Mock waitlist handler
-jest.mock("../../lib/waitlist/slot-handler", () => ({
-  handleSlotOpening: jest.fn().mockResolvedValue({ notified: 0 }),
 }));
 
 // Mock novu notifications
@@ -44,11 +68,21 @@ jest.mock("../../lib/novu", () => ({
   notifyAppointmentCancelled: jest.fn().mockResolvedValue(undefined),
 }));
 
+// #776 §C — whole-event (class/webinar) cancel refunds are exercised in their
+// own suite; here the cancel route just needs a benign summary back.
+jest.mock("../../lib/payments/operations/event-refunds", () => ({
+  refundWholeEventPayments: jest.fn().mockResolvedValue({
+    refundsIssued: 0,
+    refundedPaise: 0,
+    childRefundIds: [],
+    failures: [],
+  }),
+}));
+
 // ─── Imports ────────────────────────────────────────────────────────────────
 
 import prisma from "@/lib/prisma";
 import { getSession } from "@/lib/auth-server";
-import { handleSlotOpening } from "@/lib/waitlist/slot-handler";
 import { notifyAppointmentCancelled } from "@/lib/novu";
 import { POST as rescheduleHandler } from "@/app/api/appointments/[appointmentId]/reschedule/route";
 import { POST as cancelHandler } from "@/app/api/appointments/[appointmentId]/cancel/route";
@@ -111,6 +145,10 @@ function makeSlot(id: string, startsAt: Date, overrides: any = {}) {
     startsAt,
     endsAt: new Date(startsAt.getTime() + 30 * 60 * 1000),
     isTentative: false,
+    // `@default(SCHEDULED)`, non-nullable. Whole-series flows filter on
+    // SLOT_RESCHEDULABLE_FROM so a delivered session cannot brick the
+    // aggregate 24h gate; an unset fixture reads as not-live.
+    completionStatus: "SCHEDULED",
     appointmentId: "apt-1",
     createdAt: new Date("2025-01-01T00:00:00.000Z"),
     ...overrides,
@@ -207,11 +245,56 @@ function makeMockTx() {
       delete: jest.fn(),
       deleteMany: jest.fn(),
     },
-    consultation: { update: jest.fn() },
-    subscription: { update: jest.fn() },
-    webinar: { update: jest.fn() },
-    class: { update: jest.fn() },
-    slotOfAppointment: { updateMany: jest.fn(), deleteMany: jest.fn() },
+    consultation: {
+      update: jest.fn(),
+      findUnique: jest.fn().mockResolvedValue({ status: "SCHEDULED" }),
+      // B2 — the cancel/reschedule CAS guards use updateMany.
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    subscription: {
+      update: jest.fn(),
+      findUnique: jest.fn().mockResolvedValue({ status: "SCHEDULED" }),
+      // B2 — the cancel/reschedule CAS guards use updateMany.
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      // #448 — a PARTIAL (slotIds) subscription reschedule only terminal-guards
+      // via count (no status write); a positive count means the from-state is
+      // still reschedulable so the route proceeds without flipping to PENDING.
+      count: jest.fn().mockResolvedValue(1),
+    },
+    webinar: {
+      update: jest.fn(),
+      findUnique: jest.fn().mockResolvedValue({ status: "SCHEDULED" }),
+      // B2 — the cancel/reschedule CAS guards use updateMany.
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    class: {
+      update: jest.fn(),
+      findUnique: jest.fn().mockResolvedValue({ status: "SCHEDULED" }),
+      // B2 — the cancel/reschedule CAS guards use updateMany.
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    // transitionSlotCompletion reads the from-status, then moves the cohort
+    // with updateManyAndReturn so each moved id gets its history row.
+    slotOfAppointment: {
+      findMany: jest.fn().mockResolvedValue([]),
+      updateManyAndReturn: jest.fn().mockResolvedValue([{ id: "slot-1" }]),
+      deleteMany: jest.fn(),
+    },
+    appointmentParticipant: {
+      createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    bookingStatusHistory: { create: jest.fn().mockResolvedValue({}) },
+    // Cancel closes any live reschedule proposal so the appointment's
+    // openForAppointmentId reservation is released and the expiry cron cannot
+    // act on a cancelled booking. Reschedule creates one when times are proposed.
+    rescheduleRequest: {
+      // The cancel route reads the open proposals, then CASes each by id.
+      findMany: jest.fn().mockResolvedValue([]),
+      findUnique: jest.fn().mockResolvedValue({ status: "PENDING_REVIEW" }),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      create: jest.fn().mockResolvedValue({ id: "reschedule-request-1" }),
+    },
   };
 }
 
@@ -478,15 +561,37 @@ describe("Reschedule Route Handler - POST", () => {
       expect(body.slotsAffected).toBe(2);
 
       // Verify slots marked tentative by appointmentId (non-subscription path)
-      expect(mockTx.slotOfAppointment.updateMany).toHaveBeenCalledWith({
-        where: { appointmentId: "apt-1" },
-        data: { isTentative: true },
-      });
+      expect(mockTx.slotOfAppointment.updateManyAndReturn).toHaveBeenCalledWith(
+        // objectContaining: `select` is the helper's own business.
+        expect.objectContaining({
+          where: {
+            appointmentId: "apt-1",
+            // #837 — reschedule never resurrects COMPLETED/CANCELLED history
+            completionStatus: { in: ["SCHEDULED", "RESCHEDULED"] },
+          },
+          data: { isTentative: true, completionStatus: "RESCHEDULED" },
+        }),
+      );
 
       // Verify consultation status reverted
-      expect(mockTx.consultation.update).toHaveBeenCalledWith({
-        where: { id: "cons-1" },
-        data: { requestStatus: "PENDING" },
+      expect(mockTx.consultation.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: "cons-1",
+          status: {
+            in: [
+              "PENDING",
+              "APPROVED",
+              "APPROVED_PENDING_PAYMENT",
+              "SCHEDULED",
+            ],
+          },
+        },
+        // E2E-audit P0 — the PENDING flip MUST refresh requestedAt. The
+        // stale-request expiry sweep keys its PENDING cohort on that column,
+        // so a reschedule that left the original timestamp made any booking
+        // older than 48h read as stale: the next hourly run EXPIRED and fully
+        // refunded a live booking whose proposal was still open.
+        data: { status: "PENDING", requestedAt: expect.any(Date) },
       });
     });
   });
@@ -524,15 +629,36 @@ describe("Reschedule Route Handler - POST", () => {
       expect(body.rescheduleType).toBe("entire_booking");
 
       // Should mark all appointment slots tentative
-      expect(mockTx.slotOfAppointment.updateMany).toHaveBeenCalledWith({
-        where: { appointmentId: { in: ["apt-1", "apt-2"] } },
-        data: { isTentative: true },
-      });
+      expect(mockTx.slotOfAppointment.updateManyAndReturn).toHaveBeenCalledWith(
+        // objectContaining: `select` is the helper's own business.
+        expect.objectContaining({
+          where: {
+            appointmentId: { in: ["apt-1", "apt-2"] },
+            completionStatus: { in: ["SCHEDULED", "RESCHEDULED"] },
+          },
+          data: { isTentative: true, completionStatus: "RESCHEDULED" },
+        }),
+      );
 
       // Should update subscription status
-      expect(mockTx.subscription.update).toHaveBeenCalledWith({
-        where: { id: "sub-1" },
-        data: { requestStatus: "PENDING" },
+      expect(mockTx.subscription.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: "sub-1",
+          status: {
+            in: [
+              "PENDING",
+              "APPROVED",
+              "APPROVED_PENDING_PAYMENT",
+              "SCHEDULED",
+            ],
+          },
+        },
+        // E2E-audit P0 — the PENDING flip MUST refresh requestedAt. The
+        // stale-request expiry sweep keys its PENDING cohort on that column,
+        // so a reschedule that left the original timestamp made any booking
+        // older than 48h read as stale: the next hourly run EXPIRED and fully
+        // refunded a live booking whose proposal was still open.
+        data: { status: "PENDING", requestedAt: expect.any(Date) },
       });
     });
 
@@ -557,18 +683,33 @@ describe("Reschedule Route Handler - POST", () => {
       // The route marks ALL slots belonging to the affected appointment(s), not just the
       // specified slot ID. This ensures multi-slot sessions (e.g. 1.5h = 3 × 30-min slots)
       // are rescheduled atomically — a partial-tentative session would be inconsistent.
-      expect(mockTx.slotOfAppointment.updateMany).toHaveBeenCalledWith({
-        where: { appointmentId: { in: ["apt-1"] } },
-        data: { isTentative: true },
-      });
+      expect(mockTx.slotOfAppointment.updateManyAndReturn).toHaveBeenCalledWith(
+        // objectContaining: `select` is the helper's own business.
+        expect.objectContaining({
+          where: {
+            appointmentId: { in: ["apt-1"] },
+            completionStatus: { in: ["SCHEDULED", "RESCHEDULED"] },
+          },
+          data: { isTentative: true, completionStatus: "RESCHEDULED" },
+        }),
+      );
     });
 
-    it("should return 'multiple_sessions' type for multiple slotIds", async () => {
+    it("should return 'multiple_sessions' type when slotIds span multiple sessions", async () => {
       const appointment = makeSubscriptionAppointment();
       mockTx.appointment.findUnique.mockResolvedValue(appointment);
 
+      // #448 — multiple_sessions means slots from MULTIPLE appointments
+      // (sessions), not merely multiple slots of one session.
+      const slotA = makeSlot("slot-1", FUTURE_DATE, { appointmentId: "apt-1" });
+      const slotB = makeSlot(
+        "slot-2",
+        new Date(FUTURE_DATE.getTime() + 24 * 60 * 60 * 1000),
+        { appointmentId: "apt-2" },
+      );
       mockTx.appointment.findMany.mockResolvedValueOnce([
-        { id: "apt-1", slotsOfAppointment: appointment.slotsOfAppointment },
+        { id: "apt-1", slotsOfAppointment: [slotA] },
+        { id: "apt-2", slotsOfAppointment: [slotB] },
       ]);
 
       const req = makeRescheduleRequest("apt-1", "SUBSCRIPTION", {
@@ -579,6 +720,7 @@ describe("Reschedule Route Handler - POST", () => {
 
       expect(res.status).toBe(200);
       expect(body.rescheduleType).toBe("multiple_sessions");
+      expect(body.sessionsAffected).toBe(2);
       expect(body.slotsAffected).toBe(2);
     });
 
@@ -635,13 +777,20 @@ describe("Reschedule Route Handler - POST", () => {
       expect(body.success).toBe(true);
       expect(body.rescheduleType).toBe("entire_booking");
 
-      expect(mockTx.slotOfAppointment.updateMany).toHaveBeenCalledWith({
-        where: { appointmentId: "apt-1" },
-        data: { isTentative: true },
-      });
+      expect(mockTx.slotOfAppointment.updateManyAndReturn).toHaveBeenCalledWith(
+        // objectContaining: `select` is the helper's own business.
+        expect.objectContaining({
+          where: {
+            appointmentId: "apt-1",
+            // #837 — reschedule never resurrects COMPLETED/CANCELLED history
+            completionStatus: { in: ["SCHEDULED", "RESCHEDULED"] },
+          },
+          data: { isTentative: true, completionStatus: "RESCHEDULED" },
+        }),
+      );
 
-      expect(mockTx.webinar.update).toHaveBeenCalledWith({
-        where: { id: "web-1" },
+      expect(mockTx.webinar.updateMany).toHaveBeenCalledWith({
+        where: { id: "web-1", status: { in: ["SCHEDULED", "IN_PROGRESS"] } },
         data: { status: "SCHEDULED" },
       });
     });
@@ -661,8 +810,8 @@ describe("Reschedule Route Handler - POST", () => {
       expect(res.status).toBe(200);
       expect(body.success).toBe(true);
 
-      expect(mockTx.class.update).toHaveBeenCalledWith({
-        where: { id: "cls-1" },
+      expect(mockTx.class.updateMany).toHaveBeenCalledWith({
+        where: { id: "cls-1", status: { in: ["SCHEDULED", "IN_PROGRESS"] } },
         data: { status: "SCHEDULED" },
       });
     });
@@ -828,21 +977,43 @@ describe("Cancel Route Handler - POST", () => {
       expect(body.cancellationReason).toBe("SCHEDULE_CONFLICT");
 
       // Verify consultation updated with cancellation data
-      expect(mockTx.consultation.update).toHaveBeenCalledWith({
-        where: { id: "cons-1" },
+      expect(mockTx.consultation.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: "cons-1",
+          status: {
+            in: [
+              "PENDING",
+              "APPROVED",
+              "APPROVED_PENDING_PAYMENT",
+              "SCHEDULED",
+            ],
+          },
+        },
         data: expect.objectContaining({
-          requestStatus: "CANCELLED",
+          status: "CANCELLED",
           cancellationReason: "SCHEDULE_CONFLICT",
           cancellationNotes: "Cannot make it",
           cancelledBy: "user-1",
         }),
       });
 
-      // Verify slots soft-cancelled (not hard-deleted — preserves payment audit trail)
-      expect(mockTx.slotOfAppointment.updateMany).toHaveBeenCalledWith({
-        where: { appointmentId: "apt-1" },
-        data: { completionStatus: "CANCELLED" },
-      });
+      // Verify slots soft-cancelled (not hard-deleted — preserves payment
+      // audit trail); only live SCHEDULED slots flip, history is never
+      // re-stamped.
+      expect(mockTx.slotOfAppointment.updateManyAndReturn).toHaveBeenCalledWith(
+        // objectContaining: `select` is the helper's own business.
+        expect.objectContaining({
+          // RESCHEDULED counts too: a slot released by a pending reschedule is
+          // not SCHEDULED, and skipping it left non-terminal rows on a booking
+          // that no longer exists.
+          where: {
+            appointmentId: "apt-1",
+            completionStatus: { in: ["SCHEDULED", "RESCHEDULED"] },
+          },
+          // The tombstone is the other half of the soft-cancel (#676 A10).
+          data: { completionStatus: "CANCELLED", deletedAt: expect.any(Date) },
+        }),
+      );
 
       // Verify appointment is NOT deleted (soft-cancel preserves records)
       expect(mockTx.appointment.delete).not.toHaveBeenCalled();
@@ -852,8 +1023,8 @@ describe("Cancel Route Handler - POST", () => {
       const req = makeCancelRequest("apt-1");
       await cancelHandler(req, makeParams("apt-1"));
 
-      // Soft-cancel: updateMany with completionStatus, not deleteMany
-      expect(mockTx.slotOfAppointment.updateMany).toHaveBeenCalled();
+      // Soft-cancel: a completionStatus write, not deleteMany
+      expect(mockTx.slotOfAppointment.updateManyAndReturn).toHaveBeenCalled();
       expect(mockTx.slotOfAppointment.deleteMany).not.toHaveBeenCalled();
       expect(mockTx.appointment.delete).not.toHaveBeenCalled();
     });
@@ -874,10 +1045,20 @@ describe("Cancel Route Handler - POST", () => {
       const res = await cancelHandler(req, makeParams("apt-1"));
 
       expect(res.status).toBe(200);
-      expect(mockTx.subscription.update).toHaveBeenCalledWith({
-        where: { id: "sub-1" },
+      expect(mockTx.subscription.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: "sub-1",
+          status: {
+            in: [
+              "PENDING",
+              "APPROVED",
+              "APPROVED_PENDING_PAYMENT",
+              "SCHEDULED",
+            ],
+          },
+        },
         data: expect.objectContaining({
-          requestStatus: "CANCELLED",
+          status: "CANCELLED",
           cancellationReason: "FINANCIAL_REASONS",
           cancelledBy: "user-1",
         }),
@@ -888,7 +1069,7 @@ describe("Cancel Route Handler - POST", () => {
   // ─── WEBINAR Cancellation ───────────────────────────────────────────────
 
   describe("WEBINAR", () => {
-    it("should update webinar to CANCELLED without notifying waitlist", async () => {
+    it("should update webinar to CANCELLED", async () => {
       const appointment = makeWebinarAppointment();
       (prisma.appointment.findUnique as jest.Mock).mockResolvedValue(
         appointment,
@@ -899,20 +1080,17 @@ describe("Cancel Route Handler - POST", () => {
 
       expect(res.status).toBe(200);
 
-      expect(mockTx.webinar.update).toHaveBeenCalledWith({
-        where: { id: "web-1" },
+      expect(mockTx.webinar.updateMany).toHaveBeenCalledWith({
+        where: { id: "web-1", status: { in: ["SCHEDULED", "IN_PROGRESS"] } },
         data: { status: "CANCELLED" },
       });
-
-      // Whole-event cancel should NOT notify waitlist (event is dead)
-      expect(handleSlotOpening).not.toHaveBeenCalled();
     });
   });
 
   // ─── CLASS Cancellation ─────────────────────────────────────────────────
 
   describe("CLASS", () => {
-    it("should update class to CANCELLED without notifying waitlist", async () => {
+    it("should update class to CANCELLED", async () => {
       const appointment = makeClassAppointment();
       (prisma.appointment.findUnique as jest.Mock).mockResolvedValue(
         appointment,
@@ -923,13 +1101,10 @@ describe("Cancel Route Handler - POST", () => {
 
       expect(res.status).toBe(200);
 
-      expect(mockTx.class.update).toHaveBeenCalledWith({
-        where: { id: "cls-1" },
+      expect(mockTx.class.updateMany).toHaveBeenCalledWith({
+        where: { id: "cls-1", status: { in: ["SCHEDULED", "IN_PROGRESS"] } },
         data: { status: "CANCELLED" },
       });
-
-      // Whole-event cancel should NOT notify waitlist (event is dead)
-      expect(handleSlotOpening).not.toHaveBeenCalled();
     });
   });
 
@@ -948,10 +1123,15 @@ describe("Cancel Route Handler - POST", () => {
     expect(res.status).toBe(200);
 
     // Cancellation data should have null reason and notes
-    expect(mockTx.consultation.update).toHaveBeenCalledWith({
-      where: { id: "cons-1" },
+    expect(mockTx.consultation.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "cons-1",
+        status: {
+          in: ["PENDING", "APPROVED", "APPROVED_PENDING_PAYMENT", "SCHEDULED"],
+        },
+      },
       data: expect.objectContaining({
-        requestStatus: "CANCELLED",
+        status: "CANCELLED",
         cancellationReason: null,
         cancellationNotes: null,
       }),
@@ -977,28 +1157,74 @@ describe("Cancel Route Handler - POST", () => {
     );
   });
 
-  it("should not call waitlist for non-webinar/class cancellations", async () => {
+  // #1003 — a cancelled group event used to notify NOBODY: the recipient list
+  // was only assembled for the 1:1 types, so the organiser and every paying
+  // attendee learned about it by finding an empty calendar.
+  it("should notify the organiser and every paid attendee of a cancelled webinar", async () => {
     (prisma.appointment.findUnique as jest.Mock).mockResolvedValue(
-      makeConsultationAppointment(),
+      makeWebinarAppointment({
+        webinar: {
+          id: "web-1",
+          status: "SCHEDULED",
+          webinarPlan: {
+            title: "Intro to X",
+            consultantProfile: {
+              user: { id: "consultant-1", name: "Dr Who" },
+            },
+          },
+        },
+      }),
     );
+    (prisma.payment.findMany as jest.Mock).mockResolvedValue([
+      { userId: "attendee-1" },
+      { userId: "attendee-2" },
+      // Duplicate seats must not produce duplicate notifications.
+      { userId: "attendee-1" },
+    ]);
+
+    const req = makeCancelRequest("apt-1", { reason: "OTHER" });
+    await cancelHandler(req, makeParams("apt-1"));
+
+    const [recipients, payload] = (notifyAppointmentCancelled as jest.Mock).mock
+      .calls[0];
+    expect(recipients).toEqual(
+      expect.arrayContaining(["consultant-1", "attendee-1", "attendee-2"]),
+    );
+    expect(recipients).toHaveLength(3);
+    expect(payload).toEqual(
+      expect.objectContaining({
+        appointmentType: "WEBINAR",
+        planTitle: "Intro to X",
+      }),
+    );
+  });
+
+  it("should notify the roster of a cancelled class too", async () => {
+    (prisma.appointment.findUnique as jest.Mock).mockResolvedValue(
+      makeClassAppointment({
+        class: {
+          id: "cls-1",
+          status: "SCHEDULED",
+          classPlan: {
+            title: "Weekly Cohort",
+            consultantProfile: {
+              user: { id: "consultant-1", name: "Dr Who" },
+            },
+          },
+        },
+      }),
+    );
+    (prisma.payment.findMany as jest.Mock).mockResolvedValue([
+      { userId: "attendee-9" },
+    ]);
 
     const req = makeCancelRequest("apt-1");
     await cancelHandler(req, makeParams("apt-1"));
 
-    expect(handleSlotOpening).not.toHaveBeenCalled();
-  });
-
-  it("should never call waitlist on any cancellation (whole-event cancel)", async () => {
-    (prisma.appointment.findUnique as jest.Mock).mockResolvedValue(
-      makeWebinarAppointment(),
+    expect(notifyAppointmentCancelled).toHaveBeenCalledWith(
+      expect.arrayContaining(["consultant-1", "attendee-9"]),
+      expect.objectContaining({ appointmentType: "CLASS" }),
     );
-
-    const req = makeCancelRequest("apt-1");
-    const res = await cancelHandler(req, makeParams("apt-1"));
-
-    expect(res.status).toBe(200);
-    // Cancel route always cancels the entire event, so no waitlist notification
-    expect(handleSlotOpening).not.toHaveBeenCalled();
   });
 
   // ─── Response ──────────────────────────────────────────────────────────
@@ -1077,6 +1303,14 @@ describe("Cancel Route Handler - POST", () => {
 describe("cleanupTentativeSlots", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // #1319 wave 6 — the sweep releases holds inside prisma.$transaction so
+    // the tombstone and its history rows land together; hand the callback the
+    // same mocked client so the per-model mocks below keep applying.
+    (prisma.$transaction as jest.Mock).mockImplementation((arg: unknown) =>
+      typeof arg === "function"
+        ? (arg as (tx: typeof prisma) => unknown)(prisma)
+        : Promise.all(arg as Promise<unknown>[]),
+    );
   });
 
   it("should return success with 0 slots when none are stale", async () => {
@@ -1090,7 +1324,7 @@ describe("cleanupTentativeSlots", () => {
     expect(result.errors).toHaveLength(0);
   });
 
-  it("should find and delete stale tentative slots", async () => {
+  it("should find and soft-cancel stale tentative slots", async () => {
     const staleSlots = [
       {
         id: "slot-1",
@@ -1099,11 +1333,12 @@ describe("cleanupTentativeSlots", () => {
         endsAt: new Date("2025-01-01T10:30:00.000Z"),
         isTentative: true,
         createdAt: new Date("2024-12-01T00:00:00.000Z"),
+        updatedAt: new Date("2024-12-01T00:00:00.000Z"),
         appointment: {
           payment: [],
           consultation: {
             id: "cons-1",
-            requestStatus: "PENDING",
+            status: "PENDING",
             requestedBy: {
               user: { name: "Test User", email: "test@example.com" },
             },
@@ -1114,9 +1349,9 @@ describe("cleanupTentativeSlots", () => {
     ];
 
     (prisma.slotOfAppointment as any).findMany.mockResolvedValue(staleSlots);
-    (prisma.slotOfAppointment as any).deleteMany.mockResolvedValue({
-      count: 1,
-    });
+    (
+      prisma.slotOfAppointment as unknown as { updateManyAndReturn: jest.Mock }
+    ).updateManyAndReturn.mockResolvedValue([{ id: "slot-1" }]);
 
     const result = await cleanupTentativeSlots();
 
@@ -1134,6 +1369,7 @@ describe("cleanupTentativeSlots", () => {
         endsAt: new Date(),
         isTentative: true,
         createdAt: new Date("2024-12-01"),
+        updatedAt: new Date("2024-12-01"),
         appointment: { payment: [], consultation: null, subscription: null },
       },
       {
@@ -1143,6 +1379,7 @@ describe("cleanupTentativeSlots", () => {
         endsAt: new Date(),
         isTentative: true,
         createdAt: new Date("2024-12-01"),
+        updatedAt: new Date("2024-12-01"),
         appointment: { payment: [], consultation: null, subscription: null },
       },
       {
@@ -1152,14 +1389,19 @@ describe("cleanupTentativeSlots", () => {
         endsAt: new Date(),
         isTentative: true,
         createdAt: new Date("2024-12-01"),
+        updatedAt: new Date("2024-12-01"),
         appointment: { payment: [], consultation: null, subscription: null },
       },
     ];
 
     (prisma.slotOfAppointment as any).findMany.mockResolvedValue(staleSlots);
-    (prisma.slotOfAppointment as any).deleteMany.mockResolvedValue({
-      count: 3,
-    });
+    (
+      prisma.slotOfAppointment as unknown as { updateManyAndReturn: jest.Mock }
+    ).updateManyAndReturn.mockResolvedValue([
+      { id: "slot-1" },
+      { id: "slot-2" },
+      { id: "slot-3" },
+    ]);
 
     const result = await cleanupTentativeSlots();
 
@@ -1218,11 +1460,17 @@ describe("cleanupTentativeSlots", () => {
     );
   });
 
-  it("should not call deleteMany when no stale slots found", async () => {
+  it("should not write when no stale slots found", async () => {
     (prisma.slotOfAppointment as any).findMany.mockResolvedValue([]);
 
     await cleanupTentativeSlots();
 
-    expect((prisma.slotOfAppointment as any).deleteMany).not.toHaveBeenCalled();
+    expect(
+      (
+        prisma.slotOfAppointment as unknown as {
+          updateManyAndReturn: jest.Mock;
+        }
+      ).updateManyAndReturn,
+    ).not.toHaveBeenCalled();
   });
 });

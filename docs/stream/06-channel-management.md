@@ -45,7 +45,7 @@
 // After consultation approval
 const consultation = await prisma.consultation.update({
   where: { id: consultationId },
-  data: { requestStatus: "APPROVED" },
+  data: { status: "APPROVED" },
 });
 
 // Immediately create channel
@@ -99,12 +99,12 @@ Combine both strategies based on entity type:
 
 ```typescript
 // Eager for paid/approved entities
-if (consultation.requestStatus === "APPROVED") {
+if (consultation.status === "APPROVED") {
   await createConsultationChannel(consultation.id);
 }
 
-// Lazy for events (created when first user joins waitlist)
-if (webinar.waitlist.length === 1) {
+// Lazy for events (created when the first attendee registers)
+if (registeredCount === 1) {
   await createWebinarChannel(webinar.id);
 }
 ```
@@ -121,206 +121,132 @@ if (webinar.waitlist.length === 1) {
 
 - User login (ensure membership of all channels)
 - After joining an event (add to specific channel)
-- Periodic background job (fix any inconsistencies)
+- Privileged maintenance run (fix any inconsistencies — the session gate rejects unauthenticated callers entirely)
 - After profile changes
 
 **File**: `actions/stream/chat/event-channel.action.ts`
 
+The real signature and contract matter more than the body, because callers get
+both wrong in ways that are invisible until production:
+
 ```typescript
-export const syncUserEventChannels = async (userId: string) => {
-  try {
-    // Get user details
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      include: {
-        consulteeProfile: true,
-        consultantProfile: true,
-      },
-    });
-
-    if (!user) {
-      throw new Error("User not found");
-    }
-
-    // WEBINARS: Get all webinars where user is participating
-    // Method 1: Waitlist participation
-    const webinarsFromWaitlist = await prisma.webinar.findMany({
-      where: {
-        waitlist: {
-          some: { userId: userId },
-        },
-      },
-      select: { id: true },
-    });
-
-    // Method 2: Appointment participation
-    const webinarsFromAppointments = await prisma.webinar.findMany({
-      where: {
-        appointment: {
-          slotsOfAppointment: {
-            some: {
-              user: {
-                some: { id: userId },
-              },
-            },
-          },
-        },
-      },
-      select: { id: true },
-    });
-
-    // Combine and deduplicate webinar IDs
-    const allWebinarIds = Array.from(
-      new Set([
-        ...webinarsFromWaitlist.map((w) => w.id),
-        ...webinarsFromAppointments.map((w) => w.id),
-      ]),
-    );
-
-    console.log(
-      `User ${userId}: Found ${webinarsFromWaitlist.length} webinars from waitlist, ` +
-        `${webinarsFromAppointments.length} from appointments, ` +
-        `${allWebinarIds.length} total unique webinars`,
-    );
-
-    // Add user to all webinar channels
-    for (const webinarId of allWebinarIds) {
-      await addUserToEventChannel("webinar", webinarId, userId);
-    }
-
-    // CLASSES: Get all classes where user is participating
-    // Method 1: Waitlist participation
-    const classesFromWaitlist = await prisma.class.findMany({
-      where: {
-        waitlist: {
-          some: { userId: userId },
-        },
-      },
-      select: { id: true },
-    });
-
-    // Method 2: Appointment participation
-    const classesFromAppointments = await prisma.class.findMany({
-      where: {
-        appointments: {
-          some: {
-            slotsOfAppointment: {
-              some: {
-                user: {
-                  some: { id: userId },
-                },
-              },
-            },
-          },
-        },
-      },
-      select: { id: true },
-    });
-
-    // Combine and deduplicate class IDs
-    const allClassIds = Array.from(
-      new Set([
-        ...classesFromWaitlist.map((c) => c.id),
-        ...classesFromAppointments.map((c) => c.id),
-      ]),
-    );
-
-    console.log(
-      `User ${userId}: Found ${classesFromWaitlist.length} classes from waitlist, ` +
-        `${classesFromAppointments.length} from appointments, ` +
-        `${allClassIds.length} total unique classes`,
-    );
-
-    // Add user to all class channels
-    for (const classId of allClassIds) {
-      await addUserToEventChannel("class", classId, userId);
-    }
-
-    // CONSULTANT CHANNELS: If user is a consultant
-    if (user.consultantProfile) {
-      const consultantId = user.consultantProfile.id;
-
-      // Get all hosted webinars
-      const hostedWebinars = await prisma.webinar.findMany({
-        where: {
-          webinarPlan: {
-            consultantProfileId: consultantId,
-          },
-        },
-        select: { id: true },
-      });
-
-      // Add to webinar channels
-      for (const webinar of hostedWebinars) {
-        await addUserToEventChannel("webinar", webinar.id, userId);
-      }
-
-      // Get all hosted classes
-      const hostedClasses = await prisma.class.findMany({
-        where: {
-          classPlan: {
-            consultantProfileId: consultantId,
-          },
-        },
-        select: { id: true },
-      });
-
-      // Add to class channels
-      for (const classItem of hostedClasses) {
-        await addUserToEventChannel("class", classItem.id, userId);
-      }
-    }
-
-    return { success: true };
-  } catch (error) {
-    console.error("Error synchronizing user event channels:", error);
-    throw error;
-  }
-};
+export async function syncUserEventChannels(
+  userId: string,
+  force = false,
+): Promise<{
+  success: boolean;
+  skipped?: boolean;
+  error?: string;
+  channelsSynced?: number;
+  failed?: number;
+  staleChannelsRemoved?: number;
+  durationMs?: number;
+}>;
 ```
+
+Five properties of this contract are load-bearing.
+
+**It reports failure by resolving, not by rejecting.** A missing user returns
+`{ success: false, error: "User not found" }` rather than throwing. A caller
+written as `sync(id).then(markDone).catch(logIt)` therefore marks a failed sync
+as done, because the `catch` only ever sees the thrown case. That is exactly the
+bug fixed in `providers/StreamProviderImpl.tsx`, where the success marker was
+persisted to `sessionStorage` for a sync that had failed, suppressing every
+retry for the rest of the tab's life. Branch on `result.success`.
+
+**It can no-op.** A recent successful sync for the same user returns
+`{ success: true, skipped: true }` without doing any work, unless `force` is
+passed. Treat `skipped` as success, because it means the state is already
+correct.
+
+**It revokes rather than adds, and it fans out in bounded chunks.** The add pass
+is retired: channels are provisioned on demand by
+`POST /api/stream/channels/open` and eagerly at booking approval and payment
+success, so what remains is the reconciliation half — query Stream for every
+channel the user is actually in, and remove the memberships that the
+expected-set no longer justifies. Removals go out through chunked
+`Promise.allSettled` rather than a sequential loop, so one channel that fails
+does not abandon the rest — hence `failed` alongside `channelsSynced`, which
+now reports the size of the expected-set rather than a count of work performed.
+A partial result is the normal shape, not an error.
+
+That reconciliation query pages through `queryChannelsPaged`
+(`lib/stream/batch.ts`), because Stream returns at most 30 channels per
+`queryChannels` call no matter what `limit` is requested. Reading a single page
+as the whole list is what left stale direct messages beyond the thirtieth
+channel unrevoked (#1270); see
+[17. Channel Lifecycle](./17-channel-lifecycle.md#streams-per-request-ceilings)
+for the full account and for the matching 100-member ceiling on channel
+creation.
+
+**It is session-gated.** The module is `"use server"`, so the action is
+remotely invocable and gates itself before any work: it reads the session with
+the cookie cache disabled (`getSession(true)`), rejects suspended accounts, and
+allows only self or privileged (`isPrivileged`) callers — mirroring
+`assertCanMintToken` in `actions/stream/chat/stream.action.ts`. The gate fires
+before the `force` path clears the sync dedup guard, so an unauthenticated call
+cannot reset someone else's guard. Legitimate callers always act as self:
+`providers/StreamProviderImpl.tsx` fires the sync fire-and-forget, and
+`components/chat/InitializeUserChannelsButton.tsx` passes the signed-in user's
+own id.
+
+**Its expected-set excludes events past retention.** `getWebinarIdsForUser` and
+`getClassIdsForUser` select each event's latest slot `endsAt` plus the owning
+organization's `streamRecordingRetentionDays`, then drop events whose window
+has lapsed via `isPastRetention` in `lib/stream/channel-lifecycle.ts`. Without
+this filter the sync could lazily resurrect a channel the retention cron
+hard-deleted — and the resurrected channel would classify as already-frozen
+against its `chatFrozenAt` ledger stamp and stay writable forever (F-HIGH-2,
+2026-08-23 architecture review). [17. Channel Lifecycle](./17-channel-lifecycle.md)
+documents the full failure mode and the invariant that protects it.
+
+For the current body, read the function itself. It is long, it changes with the
+event model, and a transcribed copy here has drifted every time.
 
 ---
 
 ## Channel Membership Rules
 
-### Waitlist Channel Membership
+### Who May Talk to Whom (Policy)
 
-Only waitlist users with status `BOOKED` are included in event channel membership. Users with WAITING or NOTIFIED status are not added to Stream channels. This prevents users who have not yet confirmed their booking from accessing event chat.
+The platform deliberately supports only three conversation shapes. First, a consultant and a consultee who transact together share exactly one direct-message channel: consultations, subscriptions, trials, and ad-hoc DMs between the same pair all reuse the deterministic `dm-<idA>-<idB>` channel id (the two user ids are put into code-unit order before joining, so the pair can never produce a duplicate channel regardless of who initiates). An organization-scoped conversation uses the `dmo-` form instead; see [Direct Messages](./04-chat-implementation.md#direct-messages) for why the ordering must not use `localeCompare`. Trials were absent from this list until recently, and the omission was accidentally accurate: the trial branch in the payment webhook existed but could never execute, because the consultant could not be resolved for a trial appointment. A trial now opens the same conversation as any other one-to-one booking. Second, group events — webinars and classes — put every booked attendee and the host into one shared event channel, and this is the sanctioned space where consultees can talk alongside other consultees. Third, consultants collaborating on a joint webinar or class get a plan-scoped `collab-{webinar|class}-{planId}` channel that is reconciled against the accepted collaborator list.
+
+Consultee↔consultee direct messages are intentionally not supported. This is a decision, not a gap: peer-to-peer DMs on a marketplace are only safe with mature moderation infrastructure, and the block stays until the moderation enforcement shipped for #693 and the #899 hardening have settled in production. The full rationale is recorded in `docs/decisions/2026-07-11-moderation-enforcement-and-peer-chat-block.md`. There is no consultee↔consultee code path to disable — reviewers should keep it that way.
+
+### Server-Side Authorization for Membership Changes
+
+Stream's server-side API bypasses its own permission system whenever a valid API secret is presented, so every membership mutation must be authorized in our application layer before the Stream call. The `addMemberToChannel` server action requires a signed-in session and allows only admins, staff, or the channel's creator to add members; non-privileged callers can no longer lazily create channels they do not own. The channel-creation route applies the same rule: event channels require the caller to be the event's creator (or privileged), and custom channels are admin/staff-only.
 
 ### Participant Sources
 
-Users can be added to event channels through multiple paths:
+Event channel membership follows the event's session slots: a user is a member
+if they are connected to one, which is exactly what registering does. The host
+is added separately.
 
 ```mermaid
 graph TB
     User[User]
 
     subgraph "Webinar Membership"
-        W1[Waitlist Entry]
         W2[Appointment Slot]
         W3[Host/Consultant]
     end
 
     subgraph "Class Membership"
-        C1[Waitlist Entry]
         C2[Appointment Slot]
         C3[Instructor/Consultant]
     end
 
-    User -->|Joins Waitlist| W1
-    User -->|Books Appointment| W2
+    User -->|Registers| W2
     User -->|Creates Plan| W3
 
-    User -->|Joins Waitlist| C1
-    User -->|Books Appointment| C2
+    User -->|Enrolls| C2
     User -->|Creates Plan| C3
 
-    W1 --> WChannel[Webinar Channel]
-    W2 --> WChannel
+    W2 --> WChannel[Webinar Channel]
     W3 --> WChannel
 
-    C1 --> CChannel[Class Channel]
-    C2 --> CChannel
+    C2 --> CChannel[Class Channel]
     C3 --> CChannel
 
     style WChannel fill:#4fc3f7
@@ -329,28 +255,20 @@ graph TB
 
 ### Deduplication Strategy
 
-**Problem**: User might join through multiple paths (waitlist + appointment)
+**Problem**: a webinar's registrants are connected to every one of its slots, so
+the same user id appears once per slot.
 
-**Solution**: Deduplicate before adding to channel
+**Solution**: Deduplicate before adding to the channel
 
 ```typescript
-// Collect from all sources
-const waitlistIds = webinar.waitlist.map((entry) => entry.userId);
 const appointmentIds =
   webinar.appointment?.slotsOfAppointment?.flatMap((slot) =>
     slot.user.map((user) => user.id),
   ) || [];
 
-// Deduplicate using Set
-const allParticipantIds = Array.from(
-  new Set([...waitlistIds, ...appointmentIds]),
-);
+const allParticipantIds = Array.from(new Set(appointmentIds));
 
-console.log(
-  `Waitlist: ${waitlistIds.length}, ` +
-    `Appointments: ${appointmentIds.length}, ` +
-    `Unique: ${allParticipantIds.length}`,
-);
+console.log(`Unique participants: ${allParticipantIds.length}`);
 ```
 
 ### Host Inclusion
@@ -446,6 +364,12 @@ await channel.addMembers([userId]);
 await channel.addMembers([userId]); // No-op if already member
 ```
 
+The shipped lazy paths go one step further than check-then-create: when a
+lost create race is rejected by Stream, the existing channel is adopted via
+`isChannelAlreadyExistsError` in `lib/stream-utils.ts` instead of failing the
+caller. [17. Channel Lifecycle](./17-channel-lifecycle.md) documents the full
+create-and-adopt story.
+
 ---
 
 ## User Channel Sync Flow
@@ -453,33 +377,31 @@ await channel.addMembers([userId]); // No-op if already member
 ```mermaid
 flowchart TB
     Start([syncUserEventChannels called])
-    Start --> GetUser[Get user from database]
+    Start --> AuthGate{"Session gate:<br/>signed in, not banned,<br/>self or privileged?"}
+    AuthGate -->|No| Error0[Throw: Unauthorized / Forbidden]
+    AuthGate -->|Yes| GetUser[Get user from database]
 
     GetUser --> CheckUser{User exists?}
-    CheckUser -->|No| Error1[Throw: User not found]
-    CheckUser -->|Yes| GetWebinarsWaitlist
+    CheckUser -->|No| ResolveMissing["Resolve: {success:false,<br/>error:'User not found'}"]
+    CheckUser -->|Yes| GetWebinarsAppts
 
     subgraph "Webinar Membership"
-        GetWebinarsWaitlist[Query webinars<br/>where user in waitlist]
-        GetWebinarsAppts[Query webinars<br/>where user in appointments]
-        DedupeWebinars[Deduplicate webinar IDs]
+        GetWebinarsAppts[Query webinars<br/>where user holds a slot]
+        DedupeWebinars[Deduplicate webinar IDs,<br/>drop events past retention]
 
-        GetWebinarsWaitlist --> DedupeWebinars
         GetWebinarsAppts --> DedupeWebinars
     end
 
     DedupeWebinars --> AddToWebinars[For each webinar:<br/>addUserToEventChannel]
 
     subgraph "Class Membership"
-        GetClassesWaitlist[Query classes<br/>where user in waitlist]
-        GetClassesAppts[Query classes<br/>where user in appointments]
-        DedupeClasses[Deduplicate class IDs]
+        GetClassesAppts[Query classes<br/>where user holds slots]
+        DedupeClasses[Deduplicate class IDs,<br/>drop events past retention]
 
-        GetClassesWaitlist --> DedupeClasses
         GetClassesAppts --> DedupeClasses
     end
 
-    AddToWebinars --> GetClassesWaitlist
+    AddToWebinars --> GetClassesAppts
     DedupeClasses --> AddToClasses[For each class:<br/>addUserToEventChannel]
 
     AddToClasses --> IsConsultant{User is<br/>consultant?}
@@ -504,24 +426,26 @@ flowchart TB
 
     style Start fill:#e3f2fd
     style Success fill:#c8e6c9
+    style Error0 fill:#ffcdd2
     style Error1 fill:#ffcdd2
 ```
 
 **Flow Steps**:
 
-1. **User Retrieval**: Fetch user with consultant/consultee profiles
-2. **Webinar Collection**:
-   - Query waitlist entries
+1. **Session Gate**: Require a signed-in, non-banned caller acting as self (or a privileged role); the gate precedes everything, including the `force` guard reset
+2. **User Retrieval**: Fetch user with consultant/consultee profiles
+3. **Webinar Collection**:
    - Query appointment slots
    - Deduplicate IDs
-3. **Webinar Channel Addition**: Add user to all webinar channels
-4. **Class Collection**:
-   - Query waitlist entries
+   - Drop events past their retention window (`isPastRetention`)
+4. **Webinar Channel Addition**: Add user to all webinar channels
+5. **Class Collection**:
    - Query appointment slots
    - Deduplicate IDs
-5. **Class Channel Addition**: Add user to all class channels
-6. **Consultant Check**: If user is consultant, add to hosted events
-7. **Completion**: Return success
+   - Drop events past their retention window (`isPastRetention`)
+6. **Class Channel Addition**: Add user to all class channels
+7. **Consultant Check**: If user is consultant, add to hosted events
+8. **Completion**: Return success
 
 ---
 
@@ -619,12 +543,30 @@ export const addUserToEventChannel = async (
         members: [userId], // Add during creation
       });
 
-      await channel.create();
-      systemCreatedChannel = true;
-      console.log(
-        `Created channel ${channelId} with creator ${channelCreatorId} ` +
-          `and initial member ${userId}`,
-      );
+      try {
+        await channel.create();
+        systemCreatedChannel = true;
+        console.log(
+          `Created channel ${channelId} with creator ${channelCreatorId} ` +
+            `and initial member ${userId}`,
+        );
+      } catch (createError) {
+        if (!isChannelAlreadyExistsError(createError)) throw createError;
+
+        // Lost a concurrent-create race: ADOPT the winner's channel instead
+        // of failing this user's join, and retry our own membership once —
+        // the winner's roster snapshot may predate us.
+        console.log(`Lost the create race for ${channelId}; adopting`);
+        try {
+          await channel.addMembers([userId]);
+        } catch (adoptError) {
+          // Best-effort: logged, never thrown; the next sync reconciles a miss.
+          console.warn(
+            `Post-adoption addMembers failed for ${userId}:`,
+            adoptError,
+          );
+        }
+      }
     } else {
       // Channel exists - update name if needed and add member
       const eventData = await getEventData(eventType, eventId);
@@ -702,8 +644,18 @@ export async function syncAllUserChannels() {
 
   for (const user of users) {
     try {
-      await syncUserEventChannels(user.id);
-      successCount++;
+      // The session gate applies here too: this loop only passes when it runs
+      // under a PRIVILEGED (ADMIN/STAFF) session, or when each call acts as
+      // self. An unauthenticated script is rejected outright.
+      const result = await syncUserEventChannels(user.id);
+      // The sync reports per-user problems by RESOLVING with success:false,
+      // not by rejecting — count them as failures, not successes.
+      if (result.success) {
+        successCount++;
+      } else {
+        console.warn(`Skipped ${user.id}: ${result.error}`);
+        errorCount++;
+      }
     } catch (error) {
       console.error(`Failed to sync user ${user.id}:`, error);
       errorCount++;
@@ -716,14 +668,18 @@ export async function syncAllUserChannels() {
 }
 ```
 
+The session gate constrains loops like this: each call must act as self or run
+under a privileged caller — an unauthenticated background job is rejected
+outright.
+
 ### Add to Channel on Event Join
 
 ```typescript
-// When user joins webinar waitlist
+// When a user registers for a webinar
 async function handleJoinWebinar(userId: string, webinarId: string) {
   try {
-    // 1. Add to database waitlist
-    await prisma.webinarWaitlist.create({
+    // 1. Record the registration
+    await prisma.slotOfAppointment.update({
       data: {
         userId,
         webinarId,
@@ -750,13 +706,13 @@ async function handleJoinWebinar(userId: string, webinarId: string) {
 **Good**:
 
 ```typescript
-const allIds = Array.from(new Set([...waitlistIds, ...appointmentIds]));
+const allIds = Array.from(new Set(appointmentIds));
 ```
 
 **Bad**:
 
 ```typescript
-const allIds = [...waitlistIds, ...appointmentIds]; // Duplicates possible
+const allIds = appointmentIds; // Duplicates possible
 ```
 
 ### 2. Include Creator in Members
@@ -806,7 +762,6 @@ await channel.addMembers([userId]);
 ```typescript
 console.log(
   `Webinar ${webinarId} participants: ` +
-    `${waitlistCount} from waitlist, ` +
     `${appointmentCount} from appointments, ` +
     `${uniqueCount} total unique`,
 );

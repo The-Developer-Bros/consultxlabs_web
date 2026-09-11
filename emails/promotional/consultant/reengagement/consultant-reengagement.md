@@ -42,7 +42,7 @@ But if this could actually help you grow your consulting practice, I don't want 
 
 Reply to this email with "interested" and I'll give you:
 
-- 30-day free trial with zero setup requirements
+- 30-day trial with zero setup requirements
 - Personal onboarding call (I'll help you set everything up)
 - Direct access to me for any issues or questions
 - No pressure — if it's not a fit after 30 days, no problem

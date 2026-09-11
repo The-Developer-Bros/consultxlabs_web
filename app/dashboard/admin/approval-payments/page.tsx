@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { DashboardHeader } from "@/components/dashboard/PageScaffold";
 import { useQuery } from "@tanstack/react-query";
 import { Clock, AlertCircle, ExternalLink, RefreshCcw } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
@@ -44,7 +45,10 @@ export default function ApprovalPaymentsPage() {
     queryKey: ["admin-approval-payments", refreshKey],
     queryFn: fetchApprovalPayments,
     staleTime: 30 * 1000, // 30 seconds
-    refetchInterval: 60 * 1000, // Auto-refresh every minute
+    // See AdminHomePageClient: focus, not a timer. Explicit because the global
+    // default disables BOTH focus and mount refetching, so dropping the
+    // interval without this would freeze the list at first load.
+    refetchOnWindowFocus: true,
   });
 
   const handleRefresh = () => {
@@ -57,10 +61,12 @@ export default function ApprovalPaymentsPage() {
       <div className="flex items-center justify-center h-full">
         <Card className="w-full max-w-md">
           <CardHeader>
-            <CardTitle className="text-red-600">Error</CardTitle>
+            <CardTitle className="text-red-600 dark:text-red-400">
+              Error
+            </CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-gray-700">
+            <p className="text-muted-foreground">
               {error instanceof Error
                 ? error.message
                 : "Failed to load approval payments"}
@@ -82,80 +88,77 @@ export default function ApprovalPaymentsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">
-            Approval Payments Monitor
-          </h1>
-          <p className="text-gray-600 mt-1">
-            Track consultations and subscriptions awaiting payment after
-            approval
-          </p>
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleRefresh}
-          disabled={isLoading}
-          className="gap-2"
-        >
-          <RefreshCcw
-            className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`}
-          />
-          Refresh
-        </Button>
-      </div>
+      <DashboardHeader
+        title="Approval Payments Monitor"
+        subtitle="Track consultations and subscriptions awaiting payment after approval"
+        actions={
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRefresh}
+            disabled={isLoading}
+            className="gap-2"
+          >
+            <RefreshCcw
+              className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`}
+            />
+            Refresh
+          </Button>
+        }
+      />
 
       {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
               Total Pending
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{approvalPayments.length}</div>
+            <div className="text-2xl font-bold text-foreground">
+              {approvalPayments.length}
+            </div>
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-green-600">
+            <CardTitle className="text-sm font-medium text-green-600 dark:text-green-400">
               Active
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-green-600">
+            <div className="text-2xl font-bold text-green-600 dark:text-green-400">
               {activeCount}
             </div>
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-amber-600">
+            <CardTitle className="text-sm font-medium text-amber-600 dark:text-amber-400">
               Expiring Soon
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-amber-600">
+            <div className="text-2xl font-bold text-amber-600 dark:text-amber-400">
               {expiringSoonCount}
             </div>
-            <p className="text-xs text-gray-500 mt-1">
+            <p className="text-xs text-muted-foreground mt-1">
               &lt; 24 hours remaining
             </p>
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-red-600">
+            <CardTitle className="text-sm font-medium text-red-600 dark:text-red-400">
               Expired
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-red-600">
+            <div className="text-2xl font-bold text-red-600 dark:text-red-400">
               {expiredCount}
             </div>
-            <p className="text-xs text-gray-500 mt-1">
+            <p className="text-xs text-muted-foreground mt-1">
               Requires manual intervention
             </p>
           </CardContent>
@@ -181,34 +184,27 @@ export default function ApprovalPaymentsPage() {
                   key={payment.id}
                   className={`border rounded-lg p-4 ${
                     payment.isExpired
-                      ? "border-red-300 bg-red-50"
+                      ? "border-red-300 bg-red-50 dark:border-red-900/60 dark:bg-red-950/30"
                       : payment.isExpiringSoon
-                        ? "border-amber-300 bg-amber-50"
-                        : "border-gray-200 bg-white"
+                        ? "border-amber-300 bg-amber-50 dark:border-amber-900/60 dark:bg-amber-950/30"
+                        : "border-border bg-card"
                   }`}
                 >
-                  <div className="flex items-start justify-between">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                     <div className="flex-1 space-y-2">
                       {/* Header */}
-                      <div className="flex items-center gap-2">
-                        <h3 className="font-semibold text-gray-900">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="font-semibold text-foreground">
                           {payment.title}
                         </h3>
-                        <Badge
-                          variant="outline"
-                          className={
-                            payment.type === "consultation"
-                              ? "bg-blue-50 text-blue-700 border-blue-300"
-                              : "bg-purple-50 text-purple-700 border-purple-300"
-                          }
-                        >
+                        <Badge variant="outline">
                           {payment.type.toUpperCase()}
                         </Badge>
                         {payment.isExpired && (
                           <Badge variant="destructive">EXPIRED</Badge>
                         )}
                         {payment.isExpiringSoon && !payment.isExpired && (
-                          <Badge className="bg-amber-500 text-white">
+                          <Badge className="bg-amber-500 text-white dark:bg-amber-600">
                             EXPIRING SOON
                           </Badge>
                         )}
@@ -217,23 +213,23 @@ export default function ApprovalPaymentsPage() {
                       {/* Details Grid */}
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                         <div>
-                          <p className="text-gray-500">Consultant</p>
-                          <p className="font-medium text-gray-900">
+                          <p className="text-muted-foreground">Consultant</p>
+                          <p className="font-medium text-foreground">
                             {payment.consultantName}
                           </p>
                         </div>
                         <div>
-                          <p className="text-gray-500">Consultee</p>
-                          <p className="font-medium text-gray-900">
+                          <p className="text-muted-foreground">Consultee</p>
+                          <p className="font-medium text-foreground">
                             {payment.consulteeName}
                           </p>
-                          <p className="text-xs text-gray-500">
+                          <p className="text-xs text-muted-foreground">
                             {payment.consulteeEmail}
                           </p>
                         </div>
                         <div>
-                          <p className="text-gray-500">Amount</p>
-                          <p className="font-medium text-gray-900">
+                          <p className="text-muted-foreground">Amount</p>
+                          <p className="font-medium text-foreground">
                             {formatCurrencyAmount(
                               payment.amount,
                               payment.currency,
@@ -241,16 +237,16 @@ export default function ApprovalPaymentsPage() {
                           </p>
                         </div>
                         <div>
-                          <p className="text-gray-500">Status</p>
-                          <p className="font-medium text-amber-700">
+                          <p className="text-muted-foreground">Status</p>
+                          <p className="font-medium text-amber-700 dark:text-amber-400">
                             {payment.status}
                           </p>
                         </div>
                       </div>
 
                       {/* Time Information */}
-                      <div className="flex items-center gap-4 text-xs">
-                        <div className="flex items-center gap-1 text-gray-500">
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+                        <div className="flex items-center gap-1 text-muted-foreground">
                           <Clock className="h-3 w-3" />
                           <span>
                             Approved{" "}
@@ -260,7 +256,7 @@ export default function ApprovalPaymentsPage() {
                           </span>
                         </div>
                         {payment.isExpired ? (
-                          <span className="text-red-600 font-medium">
+                          <span className="text-red-600 dark:text-red-400 font-medium">
                             Expired{" "}
                             {formatDistanceToNow(new Date(payment.expiresAt), {
                               addSuffix: true,
@@ -270,8 +266,8 @@ export default function ApprovalPaymentsPage() {
                           <span
                             className={
                               payment.isExpiringSoon
-                                ? "text-amber-600 font-medium"
-                                : "text-gray-500"
+                                ? "text-amber-600 dark:text-amber-400 font-medium"
+                                : "text-muted-foreground"
                             }
                           >
                             Expires{" "}
@@ -296,7 +292,7 @@ export default function ApprovalPaymentsPage() {
                     </div>
 
                     {/* Actions */}
-                    <div className="flex flex-col gap-2 ml-4">
+                    <div className="flex flex-col gap-2 sm:ml-4 sm:w-auto">
                       {payment.paymentUrl && (
                         <Button
                           size="sm"
@@ -329,8 +325,10 @@ export default function ApprovalPaymentsPage() {
             </div>
           ) : (
             <div className="text-center py-12">
-              <p className="text-gray-500">No pending approval payments</p>
-              <p className="text-sm text-gray-400 mt-1">
+              <p className="text-muted-foreground">
+                No pending approval payments
+              </p>
+              <p className="text-sm text-muted-foreground/70 mt-1">
                 All approved requests have been paid or are still in pending
                 status
               </p>

@@ -70,41 +70,68 @@ const formatRelativeTime = (dateString: string) => {
   return formatDate(dateString);
 };
 
+// #997 secondary findings — this queue used to fetch every PENDING
+// verification in one unbounded call. The API (`getVerificationQueue`) was
+// already paginated (default limit 20) — the client just never asked for
+// page 2, silently hiding anything past the first page. Page through it
+// with "Load more" instead.
+const PAGE_SIZE = 20;
+
 export function VerificationQueue({
   apiBasePath = "/api/staff/moderation/profiles",
 }: VerificationQueueProps) {
   const [verifications, setVerifications] = useState<ProfileVerification[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
+  const [total, setTotal] = useState(0);
   const [selectedVerification, setSelectedVerification] =
     useState<ProfileVerification | null>(null);
   const { toast } = useToast();
 
-  const fetchVerifications = useCallback(async () => {
-    try {
-      setLoading(true);
-      const response = await fetch(`${apiBasePath}?status=PENDING`);
-      if (!response.ok) throw new Error("Failed to fetch verifications");
-      const data: { verifications?: ProfileVerification[] } =
-        await response.json();
-      setVerifications(data.verifications || []);
-    } catch (error) {
-      console.error("Error fetching verifications:", error);
-      toast({
-        title: "Error",
-        description: "Failed to load pending verifications",
-        variant: "destructive",
-      });
-    } finally {
-      setLoading(false);
-    }
-  }, [apiBasePath, toast]);
+  const fetchVerifications = useCallback(
+    async (targetPage: number, append: boolean) => {
+      try {
+        if (append) setLoadingMore(true);
+        else setLoading(true);
+        const response = await fetch(
+          `${apiBasePath}?status=PENDING&page=${targetPage}&limit=${PAGE_SIZE}`,
+        );
+        if (!response.ok) throw new Error("Failed to fetch verifications");
+        const data: {
+          verifications?: ProfileVerification[];
+          pagination?: { total: number; hasMore: boolean };
+        } = await response.json();
+        const fetched = data.verifications ?? [];
+        setVerifications((prev) => (append ? [...prev, ...fetched] : fetched));
+        setTotal(data.pagination?.total ?? fetched.length);
+        setHasMore(data.pagination?.hasMore ?? false);
+        setPage(targetPage);
+      } catch (error) {
+        console.error("Error fetching verifications:", error);
+        toast({
+          title: "Error",
+          description: "Failed to load pending verifications",
+          variant: "destructive",
+        });
+      } finally {
+        if (append) setLoadingMore(false);
+        else setLoading(false);
+      }
+    },
+    [apiBasePath, toast],
+  );
 
   useEffect(() => {
-    fetchVerifications();
+    fetchVerifications(1, false);
   }, [fetchVerifications]);
 
+  const handleRefresh = () => fetchVerifications(1, false);
+  const handleLoadMore = () => fetchVerifications(page + 1, true);
+
   const handleVerificationComplete = () => {
-    fetchVerifications();
+    fetchVerifications(1, false);
     setSelectedVerification(null);
   };
 
@@ -141,7 +168,7 @@ export function VerificationQueue({
           <Button
             variant="outline"
             size="sm"
-            onClick={fetchVerifications}
+            onClick={handleRefresh}
             className="mt-4"
           >
             <RefreshCw className="h-4 w-4 mr-2" />
@@ -157,13 +184,13 @@ export function VerificationQueue({
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <p className="text-sm text-zinc-500">
-            {verifications.length} pending verification
-            {verifications.length !== 1 ? "s" : ""}
+            {verifications.length} of {total} pending verification
+            {total !== 1 ? "s" : ""}
           </p>
           <Button
             variant="ghost"
             size="sm"
-            onClick={fetchVerifications}
+            onClick={handleRefresh}
             disabled={loading}
           >
             <RefreshCw
@@ -248,6 +275,22 @@ export function VerificationQueue({
             </Card>
           );
         })}
+
+        {hasMore && (
+          <div className="flex justify-center pt-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleLoadMore}
+              disabled={loadingMore}
+            >
+              {loadingMore ? (
+                <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+              ) : null}
+              Load more
+            </Button>
+          </div>
+        )}
       </div>
 
       <VerificationReviewModal
@@ -260,5 +303,3 @@ export function VerificationQueue({
     </>
   );
 }
-
-export default VerificationQueue;

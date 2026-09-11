@@ -6,7 +6,7 @@ import { SettingsSkeleton } from "@/components/dashboard/DashboardSkeletons";
 import {
   DashboardHeader,
   DashboardContent,
-} from "@/components/dashboard/DashboardShell";
+} from "@/components/dashboard/PageScaffold";
 import { useQuery } from "@tanstack/react-query";
 import { fetchConsultantData } from "../../utils/fetchHelpers";
 import { SettingsTab } from "./SettingsTab";

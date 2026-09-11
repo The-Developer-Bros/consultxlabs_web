@@ -2,9 +2,16 @@ name: Expire Stale Requests
 
 on:
   schedule:
-    # Run daily at 1 AM UTC
-    - cron: "0 1 * * *"
+    # Hourly at :10 (booking-journey audit B1 — a PENDING consultation pins a
+    # tentative slot, so expiry runs hourly against the 48h threshold instead
+    # of daily against 30 days). Minute chosen against the cron-stagger grid —
+    # check-workflow-hygiene rejects recurring start collisions.
+    - cron: "10 * * * *"
   workflow_dispatch: # Allow manual triggering
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   expire-stale-requests:
@@ -12,8 +19,16 @@ jobs:
     timeout-minutes: 10
 
     env:
+      # #1066 — jobs run as bare Node processes, so Sentry.init only sees
+      # what the step env carries. Without the DSN the runner initialises
+      # a disabled client and every captureException is a no-op again.
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
       # Database connection (required for Prisma)
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # #476 cron locks load lib/redis at import — every job entry needs these
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
       DIRECT_URL: ${{ secrets.DIRECT_URL }}
 
     steps:
@@ -33,10 +48,13 @@ jobs:
         run: npx prisma generate
 
       - name: Expire stale requests
-        run: npx tsx jobs/appointments/expire-stale-requests.ts
+        run: npx --yes tsx@4.23.1 jobs/appointments/expire-stale-requests.ts
 
       - name: Notify on failure
         if: failure()
-        run: |
-          echo "Stale request expiration job failed"
-          # Add notification logic here (Slack, email, etc.)
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          # Fallback sink — Slack has never been provisioned, so this is
+          # what actually pages today. See 07-required-secrets.md.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "expire-stale-requests"

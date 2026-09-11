@@ -10,7 +10,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useQuery } from "@tanstack/react-query";
+import {
+  ResponsiveTable,
+  type ResponsiveColumn,
+} from "@/components/ui/responsive-table";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import {
   Wallet,
@@ -18,6 +22,7 @@ import {
   Clock,
   CheckCircle,
   AlertTriangle,
+  Send,
 } from "lucide-react";
 import type { EarningsStats, Earning } from "@/types/payments";
 
@@ -74,16 +79,21 @@ export default function EarningsSection() {
 
   const { data: earningsData, isLoading: earningsLoading } = useQuery({
     queryKey: ["admin-earnings", status, page],
+    // Filter/page live in the key, so each value is its own query. Without
+    // this, switching to one not yet fetched dropped `data` to undefined and
+    // re-showed the loading branch. Same fix as #346 on the appointments list.
+    placeholderData: keepPreviousData,
     queryFn: () => fetchEarnings(status, page, limit),
     staleTime: 30 * 1000,
   });
 
   const stats: EarningsStats = statsData?.stats || {
-    pending: { count: 0, consultantShare: 0, platformFee: 0 },
-    ready: { count: 0, consultantShare: 0, platformFee: 0 },
-    paid: { count: 0, consultantShare: 0, platformFee: 0 },
-    held: { count: 0, consultantShare: 0, platformFee: 0 },
-    refunded: { count: 0, consultantShare: 0, platformFee: 0 },
+    pending: { count: 0, consultantSharePaise: 0, platformFeePaise: 0 },
+    ready: { count: 0, consultantSharePaise: 0, platformFeePaise: 0 },
+    batched: { count: 0, consultantSharePaise: 0, platformFeePaise: 0 },
+    paid: { count: 0, consultantSharePaise: 0, platformFeePaise: 0 },
+    held: { count: 0, consultantSharePaise: 0, platformFeePaise: 0 },
+    refunded: { count: 0, consultantSharePaise: 0, platformFeePaise: 0 },
     totalPlatformRevenue: 0,
   };
 
@@ -95,15 +105,24 @@ export default function EarningsSection() {
 
   const getStatusBadge = (status: string) => {
     const badges: Record<string, { bg: string; text: string }> = {
-      PENDING: { bg: "bg-yellow-100", text: "text-yellow-800" },
-      READY: { bg: "bg-blue-100", text: "text-blue-800" },
-      PAID: { bg: "bg-green-100", text: "text-green-800" },
-      HELD: { bg: "bg-orange-100", text: "text-orange-800" },
-      REFUNDED: { bg: "bg-red-100", text: "text-red-800" },
+      PENDING: {
+        bg: "bg-yellow-100 dark:bg-yellow-950/40",
+        text: "text-yellow-800 dark:text-yellow-400",
+      },
+      READY: { bg: "bg-muted", text: "text-foreground" },
+      PAID: {
+        bg: "bg-green-100 dark:bg-green-950/40",
+        text: "text-green-800 dark:text-green-400",
+      },
+      HELD: { bg: "bg-muted", text: "text-foreground" },
+      REFUNDED: {
+        bg: "bg-red-100 dark:bg-red-950/40",
+        text: "text-red-800 dark:text-red-400",
+      },
     };
     const badge = badges[status] || {
-      bg: "bg-gray-100",
-      text: "text-gray-800",
+      bg: "bg-muted",
+      text: "text-muted-foreground",
     };
     return (
       <span
@@ -114,13 +133,72 @@ export default function EarningsSection() {
     );
   };
 
+  const earningsColumns: ResponsiveColumn<Earning>[] = [
+    {
+      key: "consultant",
+      header: "Consultant",
+      primary: true,
+      cell: (earning) => (
+        <div>
+          <p className="text-sm font-medium text-foreground">
+            {earning.consultantProfile?.user?.name || "Unknown"}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {earning.consultantProfile?.user?.email}
+          </p>
+        </div>
+      ),
+    },
+    {
+      key: "gross",
+      header: "Gross",
+      cell: (earning) => (
+        <span className="text-sm text-foreground">
+          {formatAmount(earning.grossAmount)}
+        </span>
+      ),
+    },
+    {
+      key: "platformFee",
+      header: "Platform Fee",
+      cell: (earning) => (
+        <span className="text-sm text-muted-foreground">
+          {formatAmount(earning.platformFeePaise)}
+        </span>
+      ),
+    },
+    {
+      key: "consultantShare",
+      header: "Consultant Share",
+      cell: (earning) => (
+        <span className="text-sm font-semibold text-green-700 dark:text-green-400">
+          {formatAmount(earning.consultantSharePaise)}
+        </span>
+      ),
+    },
+    {
+      key: "status",
+      header: "Status",
+      cell: (earning) => getStatusBadge(earning.status),
+    },
+    {
+      key: "date",
+      header: "Date",
+      cell: (earning) => (
+        <span className="text-sm text-muted-foreground">
+          {new Date(earning.createdAt).toLocaleDateString()}
+        </span>
+      ),
+    },
+  ];
+
   return (
     <div className="space-y-6">
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
         {statsLoading ? (
           <>
-            {[1, 2, 3, 4, 5].map((i) => (
+            {[1, 2, 3, 4, 5, 6].map((i) => (
               <Skeleton key={i} className="h-24 w-full" />
             ))}
           </>
@@ -130,15 +208,17 @@ export default function EarningsSection() {
               <CardContent className="pt-4">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm text-gray-500">Pending (Hold)</p>
-                    <p className="text-xl font-bold text-yellow-700">
+                    <p className="text-sm text-muted-foreground">
+                      Pending (Hold)
+                    </p>
+                    <p className="text-xl font-bold text-yellow-700 dark:text-yellow-400">
                       {stats.pending.count}
                     </p>
-                    <p className="text-xs text-gray-500">
-                      {formatAmount(stats.pending.consultantShare)}
+                    <p className="text-xs text-muted-foreground">
+                      {formatAmount(stats.pending.consultantSharePaise)}
                     </p>
                   </div>
-                  <Clock className="w-8 h-8 text-yellow-500" />
+                  <Clock className="w-8 h-8 text-yellow-500 dark:text-yellow-400" />
                 </div>
               </CardContent>
             </Card>
@@ -147,15 +227,41 @@ export default function EarningsSection() {
               <CardContent className="pt-4">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm text-gray-500">Ready for Payout</p>
-                    <p className="text-xl font-bold text-blue-700">
+                    <p className="text-sm text-muted-foreground">
+                      Ready for Payout
+                    </p>
+                    <p className="text-xl font-bold text-foreground">
                       {stats.ready.count}
                     </p>
-                    <p className="text-xs text-gray-500">
-                      {formatAmount(stats.ready.consultantShare)}
+                    <p className="text-xs text-muted-foreground">
+                      {formatAmount(stats.ready.consultantSharePaise)}
                     </p>
                   </div>
-                  <Wallet className="w-8 h-8 text-blue-500" />
+                  <Wallet className="w-8 h-8 text-muted-foreground" />
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* #837 split BATCHED out of READY. The producer has returned this
+                bucket ever since; the dashboard was never given a card for it,
+                so cleared earnings already committed to a payout batch stopped
+                being counted under "Ready" and started appearing nowhere at
+                all — money in transit, invisible. */}
+            <Card>
+              <CardContent className="pt-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-muted-foreground">
+                      Batched (In Transit)
+                    </p>
+                    <p className="text-xl font-bold text-blue-700 dark:text-blue-400">
+                      {stats.batched.count}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {formatAmount(stats.batched.consultantSharePaise)}
+                    </p>
+                  </div>
+                  <Send className="w-8 h-8 text-blue-500 dark:text-blue-400" />
                 </div>
               </CardContent>
             </Card>
@@ -164,15 +270,15 @@ export default function EarningsSection() {
               <CardContent className="pt-4">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm text-gray-500">Paid Out</p>
-                    <p className="text-xl font-bold text-green-700">
+                    <p className="text-sm text-muted-foreground">Paid Out</p>
+                    <p className="text-xl font-bold text-green-700 dark:text-green-400">
                       {stats.paid.count}
                     </p>
-                    <p className="text-xs text-gray-500">
-                      {formatAmount(stats.paid.consultantShare)}
+                    <p className="text-xs text-muted-foreground">
+                      {formatAmount(stats.paid.consultantSharePaise)}
                     </p>
                   </div>
-                  <CheckCircle className="w-8 h-8 text-green-500" />
+                  <CheckCircle className="w-8 h-8 text-green-500 dark:text-green-400" />
                 </div>
               </CardContent>
             </Card>
@@ -181,30 +287,36 @@ export default function EarningsSection() {
               <CardContent className="pt-4">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm text-gray-500">Held (Dispute)</p>
-                    <p className="text-xl font-bold text-orange-700">
+                    <p className="text-sm text-muted-foreground">
+                      Held (Dispute)
+                    </p>
+                    <p className="text-xl font-bold text-foreground">
                       {stats.held.count}
                     </p>
-                    <p className="text-xs text-gray-500">
-                      {formatAmount(stats.held.consultantShare)}
+                    <p className="text-xs text-muted-foreground">
+                      {formatAmount(stats.held.consultantSharePaise)}
                     </p>
                   </div>
-                  <AlertTriangle className="w-8 h-8 text-orange-500" />
+                  <AlertTriangle className="w-8 h-8 text-muted-foreground" />
                 </div>
               </CardContent>
             </Card>
 
-            <Card className="bg-gradient-to-r from-purple-50 to-indigo-50">
+            <Card className="bg-muted">
               <CardContent className="pt-4">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm text-purple-600">Platform Revenue</p>
-                    <p className="text-xl font-bold text-purple-700">
+                    <p className="text-sm text-muted-foreground">
+                      Platform Revenue
+                    </p>
+                    <p className="text-xl font-bold text-foreground">
                       {formatAmount(stats.totalPlatformRevenue)}
                     </p>
-                    <p className="text-xs text-purple-500">Total fees earned</p>
+                    <p className="text-xs text-muted-foreground">
+                      Total fees earned
+                    </p>
                   </div>
-                  <TrendingUp className="w-8 h-8 text-purple-500" />
+                  <TrendingUp className="w-8 h-8 text-muted-foreground" />
                 </div>
               </CardContent>
             </Card>
@@ -215,7 +327,7 @@ export default function EarningsSection() {
       {/* Earnings List */}
       <Card>
         <CardHeader>
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <CardTitle className="text-lg">All Earnings</CardTitle>
             <Select
               value={status}
@@ -224,7 +336,7 @@ export default function EarningsSection() {
                 setPage(1);
               }}
             >
-              <SelectTrigger className="w-40">
+              <SelectTrigger className="w-full sm:w-40">
                 <SelectValue placeholder="Filter status" />
               </SelectTrigger>
               <SelectContent>
@@ -245,100 +357,49 @@ export default function EarningsSection() {
                 <Skeleton key={i} className="h-16 w-full" />
               ))}
             </div>
-          ) : earningsData?.earnings?.length > 0 ? (
+          ) : (
             <>
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead className="bg-gray-50 border-b">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Consultant
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Gross
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Platform Fee
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Consultant Share
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Status
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Date
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {earningsData.earnings.map((earning: Earning) => (
-                      <tr key={earning.id} className="hover:bg-gray-50">
-                        <td className="px-4 py-3">
-                          <div>
-                            <p className="text-sm font-medium text-gray-900">
-                              {earning.consultantProfile?.user?.name ||
-                                "Unknown"}
-                            </p>
-                            <p className="text-xs text-gray-500">
-                              {earning.consultantProfile?.user?.email}
-                            </p>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-900">
-                          {formatAmount(earning.grossAmount)}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-purple-600">
-                          {formatAmount(earning.platformFee)}
-                        </td>
-                        <td className="px-4 py-3 text-sm font-semibold text-green-700">
-                          {formatAmount(earning.consultantShare)}
-                        </td>
-                        <td className="px-4 py-3">
-                          {getStatusBadge(earning.status)}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-500">
-                          {new Date(earning.createdAt).toLocaleDateString()}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <ResponsiveTable<Earning>
+                columns={earningsColumns}
+                rows={earningsData.earnings}
+                getRowId={(e) => e.id}
+                empty={
+                  <div className="text-center py-12">
+                    <p className="text-muted-foreground">No earnings found</p>
+                  </div>
+                }
+              />
 
               {/* Pagination */}
-              {earningsData?.pagination && (
-                <div className="flex items-center justify-between pt-4">
-                  <div className="text-sm text-gray-500">
-                    Showing {(page - 1) * limit + 1} to{" "}
-                    {Math.min(page * limit, earningsData.pagination.total)} of{" "}
-                    {earningsData.pagination.total} earnings
+              {earningsData?.pagination &&
+                earningsData.earnings.length > 0 && (
+                  <div className="flex flex-col gap-3 pt-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="text-sm text-muted-foreground">
+                      Showing {(page - 1) * limit + 1} to{" "}
+                      {Math.min(page * limit, earningsData.pagination.total)} of{" "}
+                      {earningsData.pagination.total} earnings
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setPage((p) => Math.max(1, p - 1))}
+                        disabled={page === 1}
+                      >
+                        Previous
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setPage((p) => p + 1)}
+                        disabled={!earningsData.pagination.hasMore}
+                      >
+                        Next
+                      </Button>
+                    </div>
                   </div>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setPage((p) => Math.max(1, p - 1))}
-                      disabled={page === 1}
-                    >
-                      Previous
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setPage((p) => p + 1)}
-                      disabled={!earningsData.pagination.hasMore}
-                    >
-                      Next
-                    </Button>
-                  </div>
-                </div>
-              )}
+                )}
             </>
-          ) : (
-            <div className="text-center py-12">
-              <p className="text-gray-500">No earnings found</p>
-            </div>
           )}
         </CardContent>
       </Card>

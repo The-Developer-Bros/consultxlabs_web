@@ -255,7 +255,7 @@ Measure lock acquisition latency:
 ```bash
 # Run 100 sequential lock acquisitions
 for i in {1..100}; do
-  curl -X POST http://localhost:3000/api/events/consultations/test-$i \
+  curl -X POST http://localhost:3000/api/bookings/consultations/test-$i \
     -H "Content-Type: application/json" \
     -d '{"status": "APPROVED"}'
 done

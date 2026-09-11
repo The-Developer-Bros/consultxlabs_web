@@ -7,6 +7,8 @@
  * Requires env var: BETTERSTACK_API_KEY
  */
 
+import * as Sentry from "@sentry/nextjs";
+
 const BETTERSTACK_API_URL = "https://uptime.betterstack.com/api/v2";
 
 function getApiKey(): string | null {
@@ -79,6 +81,7 @@ export async function createIncident(
     return incidentId ?? null;
   } catch (error) {
     console.error("[BetterStack] Failed to create incident:", error);
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "betterstack" } });
     return null;
   }
 }
@@ -105,6 +108,7 @@ export async function resolveIncident(incidentId: string): Promise<boolean> {
     return res.ok;
   } catch (error) {
     console.error("[BetterStack] Failed to resolve incident:", error);
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "betterstack" } });
     return false;
   }
 }

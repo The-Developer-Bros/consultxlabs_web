@@ -2,183 +2,110 @@
 
 ## Overview
 
-When a collaborator accepts an invitation, a private Stream.io messaging channel is auto-created for team coordination. This allows the host and all accepted collaborators to communicate before, during, and after events.
+When a collaborator accepts an invitation, a private Stream.io messaging channel is created (or reconciled) for team coordination, so the host and all accepted collaborators can communicate before, during, and after events. This page was refreshed on 2026-08-14; the creation function is now a full member **reconciler** rather than a create-only helper.
 
-**File**: `actions/stream/chat/channel.action.ts` — `createCollaboratorChannel()`
-
----
-
-## Channel Architecture
-
-### Channel Naming Convention
-
-The platform uses different channel ID patterns to distinguish channel purposes:
-
-| Purpose                    | Channel ID Pattern               | Channel Type | Members                       |
-| -------------------------- | -------------------------------- | ------------ | ----------------------------- |
-| 1:1 Consultation           | `consultation-{consultationId}`  | `messaging`  | Consultant + consultee        |
-| 1:1 Subscription           | `subscription-{subscriptionId}`  | `messaging`  | Consultant + consultee        |
-| Webinar Event              | `webinar-{webinarId}`            | `team`       | Host + all participants       |
-| Class Event                | `class-{classId}`                | `team`       | Host + all participants       |
-| **Collaborator (Webinar)** | `collab-webinar-{webinarPlanId}` | `messaging`  | Host + accepted collaborators |
-| **Collaborator (Class)**   | `collab-class-{classPlanId}`     | `messaging`  | Host + accepted collaborators |
-
-### Why `messaging` type?
-
-Collaborator channels use `messaging` (private, invitation-only) rather than `team` (open) because:
-
-- Only the host and accepted collaborators should have access
-- Participants should not see collaborator coordination
-- Private channels prevent accidental information leakage
+**File**: `actions/stream/chat/channel.action.ts` — `createCollaboratorChannel()` (called from `respondToInvitation()` in `lib/collaborators/service.ts`).
 
 ---
 
-## Channel Creation Flow
+## Channel architecture
+
+### Channel naming convention
+
+The platform distinguishes channel purposes by ID prefix; the canonical prefix constants and the type-inference helper live in `lib/stream-channel-ids.ts`.
+
+| Purpose | Channel ID pattern | Channel type | Members |
+| --- | --- | --- | --- |
+| Direct message | `dm-{...}` | `messaging` | The two participants |
+| Webinar event | `webinar-{webinarId}` | `team` | Host + participants |
+| Class event | `class-{classId}` | `team` | Host + participants |
+| **Collaborator (webinar)** | `collab-webinar-{webinarPlanId}` | `messaging` | Host + accepted collaborators |
+| **Collaborator (class)** | `collab-class-{classPlanId}` | `messaging` | Host + accepted collaborators |
+
+The `consultation-{id}` and `subscription-{id}` patterns are **legacy** — nothing creates them any more (#1134 P0-7); 1:1 conversations are DMs. `getChannelTypeFromId()` still resolves all messaging-side prefixes (including `collab-`) so existing rows keep working.
+
+### Why the `messaging` type?
+
+Collaborator channels use `messaging` (private, invitation-only) rather than `team` (the open event-channel type) because only the host and accepted collaborators should have access — event participants must not see the behind-the-scenes coordination.
+
+---
+
+## Channel creation and reconciliation
 
 ### Trigger
 
-A collaborator channel is created (or updated) when a collaborator **accepts** an invitation.
-
-**Location**: `lib/collaborators/service.ts` — `respondToInvitation()`
+The channel is created or reconciled when a collaborator **accepts** an invitation. `respondToInvitation()` loads the action via dynamic `import()` (avoiding a service ↔ server-action circular dependency) and treats failure as non-blocking — the acceptance stands, and the error is logged and reported to Sentry (`subsystem: "stream"`, warning level):
 
 ```typescript
-// When response is ACCEPTED:
-if (response === "ACCEPTED") {
-  try {
-    const { createCollaboratorChannel } =
-      await import("@/actions/stream/chat/channel.action");
-    await createCollaboratorChannel(planType, planId);
-  } catch (err) {
-    console.error("Failed to create collaborator channel:", err);
-    // Non-blocking: collaboration still accepted even if channel creation fails
-  }
+// lib/collaborators/service.ts — respondToInvitation(), on ACCEPTED
+try {
+  const { createCollaboratorChannel } =
+    await import("@/actions/stream/chat/channel.action");
+  await createCollaboratorChannel(planType, planId);
+} catch (err) {
+  Sentry.captureException(..., { tags: { subsystem: "stream" }, level: "warning" });
+  console.error("Failed to create collaborator channel:", err);
 }
 ```
 
-**Note**: Dynamic `import()` is used to avoid circular dependencies between the service layer and server actions.
+### What the reconciler does
 
-### Channel Creation Logic
+`createCollaboratorChannel(planType, planId)` performs these steps:
 
-```
-createCollaboratorChannel("webinar", planId)
-        │
-        ▼
-  Query plan with:
-    - consultantProfile.user.id (host)
-    - collaborators where status = ACCEPTED
-      └─ consultantProfile.user.id (each collaborator)
-        │
-        ▼
-  Collect member IDs:
-    [hostUserId, ...collaboratorUserIds]
-        │
-        ▼
-  Skip if < 2 members
-  (no channel needed if host is alone)
-        │
-        ▼
-  createChannel({
-    channelType: "messaging",
-    channelId: "collab-webinar-{planId}",
-    channelName: "{Plan Title} - Collaborators",
-    members: allMemberIds,
-    createdById: hostUserId,
-    additionalData: {
-      webinar_plan_id: planId,
-      is_collaborator_channel: true,
-    },
-  })
-```
+1. Loads the plan with its host and all `ACCEPTED` collaborators, and builds the deduplicated expected member set (host + collaborators).
+2. Skips entirely (returns `null`) when fewer than two members exist — no channel is needed while the host is alone.
+3. Creates the channel idempotently: type `messaging`, id `collab-{planType}-{planId}`, name `"{Plan Title} - Collaborators"`, `created_by_id` = host, with the metadata keys `{planType}_plan_id` and `is_collaborator_channel: true`.
+4. Grants the host channel-scoped moderator rights (#899 — this path bypasses the shared `createChannel` helper, so the grant is repeated here).
+5. **Diffs membership in both directions**: queries the channel's current members, adds anyone present in the DB set but missing from the channel, and removes anyone on the channel who is no longer in the DB set (the host is always in the expected set). A second collaborator accepting later is added by the same call; a departed one is dropped on the next reconcile.
 
-### Idempotency
-
-If the channel already exists (e.g., a second collaborator accepts), Stream.io's `getOrCreate` behavior updates the member list rather than failing. New members are added to the existing channel.
+Because the function converges the channel onto the DB state rather than only appending, re-running it is always safe.
 
 ---
 
-## Channel Type Inference
+## Access revocation on removal
 
-The `addMemberToChannel()` function in `channel.action.ts` infers channel type from the ID prefix:
+When the host removes a collaborator, `removeCollaborator()` revokes chat access in two places, independently of the removal notification:
 
-```typescript
-const channelType =
-  channelId.startsWith("consultation-") ||
-  channelId.startsWith("subscription-") ||
-  channelId.startsWith("collab-")
-    ? "messaging"
-    : "team";
-```
+- **Event channels** — the collaborator is removed from every `webinar-{id}`/`class-{id}` channel of the plan's events via `removeUserFromEventChannel`. That helper reports failure by returning `{ success: false }` rather than throwing, so the service checks every result and reports any event whose revocation failed to Sentry; previously a failed revocation was indistinguishable from success and a removed collaborator silently kept chat access (#1125).
+- **The coordination channel** — the collaborator is removed from `collab-{planType}-{planId}` with its own error handling, since losing the coordination channel is a different access grant than the event channels.
 
-This ensures that when new members are added to collaborator channels, the correct Stream.io channel type is used.
+Notification and Stream revocation run in separate try/catch blocks so a Novu outage cannot block revocation, and vice versa.
 
 ---
 
-## Channel Lifecycle
+## Channel lifecycle
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                COLLABORATOR CHANNEL LIFECYCLE                 │
-│                                                              │
-│  1. Collaborator A accepts invitation                        │
-│     └─ Channel created: collab-webinar-{planId}              │
-│        Members: [Host, Collaborator A]                       │
-│                                                              │
-│  2. Collaborator B accepts invitation                        │
-│     └─ Channel updated (getOrCreate)                         │
-│        Members: [Host, Collaborator A, Collaborator B]       │
-│                                                              │
-│  3. Team coordinates via private chat                        │
-│     └─ Discuss content, logistics, timings                   │
-│                                                              │
-│  4. Host removes Collaborator B                              │
-│     └─ Collaborator removed from BOTH:                       │
-│        a) Event channel (webinar-{eventId} or               │
-│           class-{eventId})                                    │
-│        b) Plan-level collab channel                           │
-│           (collab-webinar-{planId} or                         │
-│            collab-class-{planId})                              │
-│        Notification and Stream removal use independent        │
-│        try/catch blocks -- one failure does not block the     │
-│        other.                                                 │
-│                                                              │
-│  5. Channel persists for ongoing collaboration               │
-│     └─ No auto-deletion                                      │
-└─────────────────────────────────────────────────────────────┘
+1. Collaborator A accepts        → channel created: collab-webinar-{planId}
+                                    members [Host, A]; host granted moderator
+2. Collaborator B accepts        → reconciler adds B → members [Host, A, B]
+3. Team coordinates via chat     → content, logistics, timings
+4. Host removes collaborator B   → B removed from event channels (verified,
+                                    #1125) AND from the collab channel
+5. Channel persists              → no auto-deletion; the next reconcile
+                                    converges membership onto the DB state
 ```
 
 ---
 
-## Video Call Roles (Deferred)
+## Video call roles (deferred)
 
-Stream.io video calls support role-based permissions:
+Stream video calls support role-based permissions, and the intended mapping is recorded here for when the work is picked up.
 
-| Collaborator Role                   | Intended Stream Role | Status   |
-| ----------------------------------- | -------------------- | -------- |
-| CO_HOST / CO_INSTRUCTOR             | `host`               | Deferred |
-| MODERATOR / TEACHING_ASSISTANT      | `moderator`          | Deferred |
-| GUEST_SPEAKER / GUEST_LECTURER      | `speaker`            | Deferred |
-| TECHNICAL_SUPPORT / CONTENT_CREATOR | `attendee`           | Deferred |
+| Collaborator role | Intended Stream role | Status |
+| --- | --- | --- |
+| CO_HOST / CO_INSTRUCTOR | `host` | Deferred |
+| MODERATOR / TEACHING_ASSISTANT | `moderator` | Deferred |
+| GUEST_SPEAKER / GUEST_LECTURER | `speaker` | Deferred |
+| TECHNICAL_SUPPORT / CONTENT_CREATOR | `attendee` | Deferred |
 
-**Why deferred**: Video calls are currently created client-side using `call.getOrCreate()` in `lib/meeting.ts`. Assigning collaborator-specific roles requires either:
-
-1. Server-side call creation (architectural change), or
-2. Client-side role assignment after call creation (race conditions)
-
-The foundation (collaborator data in the DB) is in place for a future implementation.
+The reason it is deferred is that video calls are created client-side (`lib/meeting.ts` `call.getOrCreate()`). Assigning collaborator-specific roles requires either server-side call creation (an architectural change) or client-side role assignment after creation (racy). The collaborator data in the DB is the foundation for a future implementation.
 
 ---
 
-## Chat UI Integration
+## Chat UI integration
 
-Collaborator channels appear in the consultant's chat interface. The channel ID prefix `collab-` allows the UI to:
-
-1. Display these channels in a "Collaborations" section
-2. Show the plan title as the channel name
-3. Distinguish them from 1:1 consultation/subscription chats
-
-### Channel Data
-
-Each channel carries metadata in `additionalData`:
+Collaborator channels appear in the consultant's chat interface. The `collab-` prefix and the channel metadata let the UI group them separately from DMs and event channels:
 
 ```json
 {
@@ -187,8 +114,4 @@ Each channel carries metadata in `additionalData`:
 }
 ```
 
-This enables the UI to:
-
-- Link to the plan management page
-- Show plan-specific context
-- Filter/group channels by type
+With that, the UI can display a "Collaborations" section, show the plan title as the channel name, and link back to the plan management page.

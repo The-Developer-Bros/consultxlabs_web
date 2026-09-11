@@ -5,7 +5,4 @@ export { useExpertsFilters } from "./useExpertsFilters";
 // keeps working after the hook was lifted to the top-level `hooks/`
 // directory for shared use across the experts and programs listings.
 export { useInfiniteScroll } from "@/hooks/useInfiniteScroll";
-export {
-  useExpertFilterChips,
-  type ChipKey,
-} from "./useExpertFilterChips";
+export { useExpertFilterChips } from "./useExpertFilterChips";

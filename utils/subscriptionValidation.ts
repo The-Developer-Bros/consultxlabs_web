@@ -1,5 +1,5 @@
-import { PrismaClient, Prisma } from "@prisma/client";
-import { addWeeks, endOfWeek, isWithinInterval } from "date-fns";
+import type { PrismaLike } from "@/lib/prisma";
+import { isWithinInterval } from "date-fns";
 import { SlotCalculationService } from "@/utils/slotAllocation/SlotCalculationService";
 import { OCCUPIED_REQUEST_STATUSES } from "@/utils/slotAllocation/occupancyPolicy";
 
@@ -49,9 +49,7 @@ interface SubscriptionValidationResult {
  * - Example: Jan 1 (Mon) to Feb 1 (Thu) = 5 weeks (not 4.33)
  */
 export class SubscriptionValidationService {
-  constructor(
-    private readonly prisma: PrismaClient | Prisma.TransactionClient,
-  ) {}
+  constructor(private readonly prisma: PrismaLike) {}
 
   /**
    * Validates subscription slot allocation based on weekly limits and subscription period
@@ -79,6 +77,11 @@ export class SubscriptionValidationService {
     }
 
     const { subscriptionPlan } = subscription;
+    // ADR B9 — all weekly/daily buckets below use the subscription's
+    // scheduling timezone (column default Asia/Kolkata).
+    const schedulingTimezone =
+      subscription.schedulingTimezone ??
+      SlotCalculationService.DEFAULT_SCHEDULING_TIMEZONE;
     const proposedSlotDates = proposedSlots.map((slot) => new Date(slot));
 
     // FIXED: Use the correct Sunday-to-Saturday week counting logic
@@ -94,7 +97,7 @@ export class SubscriptionValidationService {
       warnings: [],
       weeklyInfo: [],
       totalCallsScheduled: 0,
-      maxTotalCalls: subscriptionPlan.callsPerWeek * exactWeeks,
+      maxTotalCalls: subscriptionPlan.sessionsPerWeek * exactWeeks,
       subscriptionPeriod: {
         start: subscription.schedulingPeriodStartsAt,
         end: subscription.schedulingPeriodEndsAt,
@@ -120,22 +123,26 @@ export class SubscriptionValidationService {
     );
 
     // Group existing appointments by week
-    const existingCallsByWeek =
-      this.groupAppointmentsByWeek(existingAppointments);
+    const existingCallsByWeek = this.groupAppointmentsByWeek(
+      existingAppointments,
+      schedulingTimezone,
+    );
 
     // Group proposed slots by week
     const proposedCallsByWeek = this.groupSlotsByWeek(
       proposedSlotDates,
       subscriptionPlan.sessionDurationInHours,
+      schedulingTimezone,
     );
 
     // Generate weekly info for the entire subscription period
     const weeklyInfo = this.generateWeeklyInfo(
       subscription.schedulingPeriodStartsAt,
       subscription.schedulingPeriodEndsAt,
-      subscriptionPlan.callsPerWeek,
+      subscriptionPlan.sessionsPerWeek,
       existingCallsByWeek,
       proposedCallsByWeek,
+      schedulingTimezone,
     );
 
     result.weeklyInfo = weeklyInfo;
@@ -211,7 +218,7 @@ export class SubscriptionValidationService {
         },
         // FIX Bug #15: Use centralized occupancy statuses for consistency
         subscription: {
-          requestStatus: {
+          status: {
             in: OCCUPIED_REQUEST_STATUSES,
           },
         },
@@ -227,6 +234,7 @@ export class SubscriptionValidationService {
    */
   private groupAppointmentsByWeek(
     appointments: AppointmentWithSlots[],
+    schedulingTimezone: string,
   ): Map<string, number> {
     const weeklyCallCount = new Map<string, number>();
 
@@ -242,10 +250,10 @@ export class SubscriptionValidationService {
             ? slot
             : earliest,
       );
-      const weekStart = SlotCalculationService.startOfWeekSunday(
+      const weekKey = SlotCalculationService.weekKey(
         new Date(firstSlot.startsAt),
+        schedulingTimezone,
       );
-      const weekKey = weekStart.toISOString();
 
       weeklyCallCount.set(weekKey, (weeklyCallCount.get(weekKey) || 0) + 1);
     }
@@ -259,26 +267,28 @@ export class SubscriptionValidationService {
   private groupSlotsByWeek(
     slotDates: Date[],
     sessionDurationInHours: number,
+    schedulingTimezone: string,
   ): Map<string, number> {
     const slotsPerCall = Math.ceil(sessionDurationInHours / 0.5); // 30-minute intervals
 
-    // Group slots by day first
+    // Group slots by scheduling-timezone day first (server-tz-independent;
+    // matches the client's dayKey bucketing).
     const slotsByDay = new Map<string, Date[]>();
     for (const slotDate of slotDates) {
-      const dayKey = slotDate.toDateString();
+      const dayKey = SlotCalculationService.dayKey(
+        slotDate,
+        schedulingTimezone,
+      );
       if (!slotsByDay.has(dayKey)) {
         slotsByDay.set(dayKey, []);
       }
       slotsByDay.get(dayKey)!.push(slotDate);
     }
 
-    const getWeekString = (date: Date): string => {
-      const weekStart = SlotCalculationService.startOfWeekSunday(date);
-      // FIX: Use full ISO format to match generateWeeklyInfo and groupAppointmentsByWeek.
-      // Previously used .split("T")[0] (YYYY-MM-DD) which never matched the full ISO
-      // keys used elsewhere, causing proposed weekly limits to never be enforced.
-      return weekStart.toISOString();
-    };
+    const getWeekString = (date: Date): string =>
+      // Must match the key format used by generateWeeklyInfo and
+      // groupAppointmentsByWeek — all three use SlotCalculationService.weekKey.
+      SlotCalculationService.weekKey(date, schedulingTimezone);
 
     // FIX: Use 1-second tolerance for floating-point precision issues
     // Matches SlotValidationService behavior for consistency
@@ -362,17 +372,20 @@ export class SubscriptionValidationService {
   private generateWeeklyInfo(
     subscriptionStart: Date,
     subscriptionEnd: Date,
-    callsPerWeek: number,
+    sessionsPerWeek: number,
     existingCalls: Map<string, number>,
     proposedCalls: Map<string, number>,
+    schedulingTimezone: string,
   ): WeeklyCallInfo[] {
     // FIX: Add maximum iteration limit to prevent infinite loops
     const MAX_WEEKS = 520; // 10 years - reasonable upper bound for subscriptions
     let weekCount = 0;
 
     const weeklyInfo: WeeklyCallInfo[] = [];
-    let currentWeek =
-      SlotCalculationService.startOfWeekSunday(subscriptionStart);
+    let currentWeek = SlotCalculationService.startOfWeekSundayInTz(
+      subscriptionStart,
+      schedulingTimezone,
+    );
 
     while (currentWeek <= subscriptionEnd) {
       weekCount++;
@@ -386,8 +399,17 @@ export class SubscriptionValidationService {
         );
       }
 
-      const weekEnd = endOfWeek(currentWeek);
-      const weekKey = currentWeek.toISOString();
+      // Next Sunday 00:00 in the scheduling timezone; +8 days then normalize
+      // stays correct across DST transitions.
+      const nextWeek = SlotCalculationService.startOfWeekSundayInTz(
+        new Date(currentWeek.getTime() + 8 * 24 * 60 * 60 * 1000),
+        schedulingTimezone,
+      );
+      const weekEnd = new Date(nextWeek.getTime() - 1);
+      const weekKey = SlotCalculationService.weekKey(
+        currentWeek,
+        schedulingTimezone,
+      );
 
       const existingCallCountDb = existingCalls.get(weekKey) || 0;
       const proposedCallCount = proposedCalls.get(weekKey) || 0;
@@ -405,12 +427,12 @@ export class SubscriptionValidationService {
         weekEnd: new Date(weekEnd),
         existingCalls: effectiveExistingCalls,
         proposedCalls: proposedCallCount,
-        maxCalls: callsPerWeek,
-        canScheduleMore: !isPastWeek && totalCalls < callsPerWeek,
-        availableSlots: isPastWeek ? 0 : Math.max(0, callsPerWeek - totalCalls),
+        maxCalls: sessionsPerWeek,
+        canScheduleMore: !isPastWeek && totalCalls < sessionsPerWeek,
+        availableSlots: isPastWeek ? 0 : Math.max(0, sessionsPerWeek - totalCalls),
       });
 
-      currentWeek = addWeeks(currentWeek, 1);
+      currentWeek = nextWeek;
     }
 
     return weeklyInfo;
@@ -476,14 +498,14 @@ export class SubscriptionValidationService {
     weekDate: Date,
     additionalCalls: number = 1,
   ): Promise<boolean> {
-    const weekStart = SlotCalculationService.startOfWeekSunday(weekDate);
     const validationResult = await this.validateSubscriptionSlots(
       subscriptionId,
       [],
     );
 
+    // Containment match (weeks are scheduling-timezone ranges, ADR B9)
     const weekInfo = validationResult.weeklyInfo.find(
-      (week) => week.weekStart.getTime() === weekStart.getTime(),
+      (week) => week.weekStart <= weekDate && weekDate <= week.weekEnd,
     );
 
     return weekInfo ? weekInfo.availableSlots >= additionalCalls : false;
@@ -491,18 +513,24 @@ export class SubscriptionValidationService {
 }
 
 /**
- * Helper function to get the week that contains a specific date within a subscription period
+ * Helper function to get the week that contains a specific date within a
+ * subscription period. Weeks are scheduling-timezone Sundays (ADR B9).
  */
 export function getSubscriptionWeek(
   targetDate: Date,
   subscriptionStartDate: Date,
+  schedulingTimezone?: string,
 ): number {
-  const weekStart = SlotCalculationService.startOfWeekSunday(
+  const weekStart = SlotCalculationService.startOfWeekSundayInTz(
     subscriptionStartDate,
+    schedulingTimezone,
   );
-  const targetWeekStart = SlotCalculationService.startOfWeekSunday(targetDate);
+  const targetWeekStart = SlotCalculationService.startOfWeekSundayInTz(
+    targetDate,
+    schedulingTimezone,
+  );
 
-  const diffInWeeks = Math.floor(
+  const diffInWeeks = Math.round(
     (targetWeekStart.getTime() - weekStart.getTime()) /
       (7 * 24 * 60 * 60 * 1000),
   );
@@ -514,14 +542,14 @@ export function getSubscriptionWeek(
  * Helper function to determine subscription type based on plan details
  */
 export function getSubscriptionType(
-  callsPerWeek: number,
+  sessionsPerWeek: number,
   durationInMonths: number,
 ): string {
-  if (callsPerWeek === 1 && durationInMonths === 1) {
+  if (sessionsPerWeek === 1 && durationInMonths === 1) {
     return "Basic";
-  } else if (callsPerWeek === 2 && durationInMonths === 2) {
+  } else if (sessionsPerWeek === 2 && durationInMonths === 2) {
     return "Extended";
-  } else if (callsPerWeek === 3 && durationInMonths === 6) {
+  } else if (sessionsPerWeek === 3 && durationInMonths === 6) {
     return "Comprehensive";
   }
   return "Custom";

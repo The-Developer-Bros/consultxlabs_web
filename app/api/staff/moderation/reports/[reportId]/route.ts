@@ -7,6 +7,7 @@ import prisma from "@/lib/prisma";
 import { ModerationReportStatus } from "@prisma/client";
 
 import { requirePrivilegedAuth } from "@/lib/auth-helpers";
+import * as Sentry from "@sentry/nextjs";
 interface RouteParams {
   params: Promise<{ reportId: string }>;
 }
@@ -19,7 +20,6 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
   try {
     const auth = await requirePrivilegedAuth();
     if (auth.error) return auth.error;
-    const session = auth.session;
 
     const { reportId } = await params;
 
@@ -55,6 +55,7 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
 
     return NextResponse.json({ report });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "staff" } });
     console.error("Error fetching moderation report:", error);
     return NextResponse.json(
       { error: "Failed to fetch report" },
@@ -123,6 +124,7 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
 
     return NextResponse.json({ report });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "staff" } });
     console.error("Error updating moderation report:", error);
     return NextResponse.json(
       { error: "Failed to update report" },

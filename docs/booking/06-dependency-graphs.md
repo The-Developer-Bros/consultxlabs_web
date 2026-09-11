@@ -1,41 +1,38 @@
 # Dependency Graphs
 
-Visual maps of how files in the booking system relate to each other.
+Maps of how files in the booking system relate to each other, regenerated from the current imports.
 
 ---
 
 ## 1. System Layer Architecture
 
-How the 5 layers stack. Each layer only calls the layer directly below it.
+Each layer only calls the layer directly below it.
 
 ```mermaid
 block-beta
   columns 1
   block:UI["FRONTEND COMPONENTS"]
-    A["UnifiedCalendar.tsx (1222)"]
-    B["EventPlannerFor*.tsx"]
-    C["EventCard.tsx (1031)"]
+    A["UnifiedCalendar.tsx / SlotPicker.tsx"]
+    B["components/planner (event forms, EventCard)"]
   end
   block:HOOKS["FRONTEND HOOKS"]
-    D["useSlotAllocation (2171)"]
-    E["useCalendarData (737)"]
-    F["useSubscriptionValidation (260)"]
+    D["useSlotAllocation"]
+    E["useCalendarData"]
   end
   block:UTILS["FRONTEND UTILITIES"]
-    G["calendarUtils (786)"]
-    H["allocationAlgorithms (850)"]
-    I["allocationService (612)"]
+    G["lib/scheduling (calendarUtils, allocationAlgorithms, allocationService, ...)"]
   end
   block:API["API ROUTES (Next.js)"]
     J["*/validate (POST)"]
     K["*/allocate (PATCH)"]
-    L["slots/* & appointments/*"]
+    L["appointments/* & slots/*"]
   end
   block:SERVICES["BACKEND SERVICES"]
-    M["SlotCalculationService (416)"]
-    N["SlotValidationService (808)"]
-    O["SlotAllocationService (1140)"]
-    P["appointmentlock (698)"]
+    M["SlotCalculationService"]
+    N["SlotValidationService"]
+    O["SlotAllocationService"]
+    P["lib/booking/transitions.ts (CAS)"]
+    Q["utils/appointmentlock.ts (locking)"]
   end
 
   UI --> HOOKS
@@ -48,32 +45,40 @@ block-beta
 
 ## 2. Backend Dependency Graph
 
-Which backend file imports which. Read bottom-up (leaf nodes first).
+Which backend file imports which, read bottom-up (leaf nodes first). `lib/booking/transitions.ts` is imported directly by API routes and by `SlotAllocationService`, not only by the service layer — every status write in the booking subsystem goes through it.
 
 ```mermaid
 flowchart BT
   subgraph types ["Types & Schemas (read first)"]
-    T["types.ts (143)\nEventType, EventConfig,\nTimeSlot, ProgressInfo"]
-    ZOD["validationSchemas.ts (215)\nZod: allocationRequestSchema,\nvalidationRequestSchema"]
+    T["utils/slotAllocation/types.ts"]
+    ZOD["schemas/slotAllocation/validationSchemas.ts"]
   end
 
   subgraph services ["Core Services"]
-    CALC["SlotCalculationService.ts (416)\nPure math, no DB\ncountWeeks, getSlotsPerCall,\ncalculateRequiredSlots"]
-    VAL["SlotValidationService.ts (808)\nvalidate(), validateNoConflicts,\nvalidateMatchesSchedule,\nvalidateConsecutiveSlots"]
-    ALLOC["SlotAllocationService.ts (1140)\nautoAllocate, manualAllocate,\nuseRequestedSlots"]
+    CALC["SlotCalculationService.ts\npure math"]
+    VAL["SlotValidationService.ts\nvalidate, isOccupiedByLiveAppointment"]
+    ALLOC["SlotAllocationService.ts\nautoAllocate, manualAllocate, useRequestedSlots"]
+    OCC["occupancyPolicy.ts\nbuildOccupiedAppointmentFilter, buildDeadHoldFilter"]
+    COV["availabilityCoverage.ts\nloadPublishedCoverage, findUncoveredAtom"]
+    MERGE["mergeAdjacentWeeklyRows.ts"]
+  end
+
+  subgraph guards ["Correctness Guards"]
+    TRANS["lib/booking/transitions.ts\nCAS status transitions"]
+    LOCK["utils/appointmentlock.ts\ndistributed locking via Redis"]
   end
 
   subgraph infra ["Infrastructure"]
-    PRISMA["lib/prisma\n(Prisma client)"]
-    REDIS["lib/redis\n(Upstash Redis)"]
-    LOCK["appointmentlock.ts (698)\nDistributed locking\nvia Redis"]
+    PRISMA["lib/prisma"]
+    REDIS["lib/redis (Upstash Redis)"]
   end
 
   subgraph routes ["API Routes"]
-    R_ALLOC["*/allocate/route.ts\nPATCH handler"]
-    R_VAL["*/validate/route.ts\nPOST handler"]
-    R_RESCH["*/reschedule/route.ts\nPOST handler"]
-    R_SLOTS["slots/*/route.ts\nCRUD handlers"]
+    R_ALLOC["*/allocate/route.ts (PATCH)"]
+    R_VAL["*/validate/route.ts (POST)"]
+    R_CANCEL["appointments/[id]/cancel/route.ts"]
+    R_RESCH["appointments/[id]/reschedule/route.ts"]
+    R_CHECKOUT["lib/payments/operations/checkout.ts"]
   end
 
   T --> CALC
@@ -82,6 +87,7 @@ flowchart BT
   CALC --> VAL
   CALC --> ALLOC
   VAL --> ALLOC
+  VAL --> OCC
   PRISMA --> VAL
   PRISMA --> ALLOC
   REDIS --> LOCK
@@ -90,41 +96,42 @@ flowchart BT
   ZOD --> R_VAL
   ALLOC --> R_ALLOC
   VAL --> R_VAL
-  PRISMA --> R_RESCH
-  PRISMA --> R_SLOTS
+  ALLOC --> TRANS
+  R_CANCEL --> TRANS
+  R_CANCEL --> LOCK
+  R_RESCH --> TRANS
+  R_RESCH --> LOCK
+  R_CHECKOUT --> COV
+  R_CHECKOUT --> LOCK
+  MERGE --> COV
 ```
-
-**Reading order**: `types.ts` -> `SlotCalculationService` -> `SlotValidationService` -> `SlotAllocationService` -> API routes
 
 ---
 
 ## 3. Frontend Dependency Graph
 
-Which frontend file imports which. Read bottom-up.
-
 ```mermaid
 flowchart BT
   subgraph shared_types ["Shared Types"]
-    ST["@/types/slots\nTCustomSlot, TWeeklySlot"]
-    BT2["@/utils/slotAllocation/types\nSlotConflictResult"]
+    ST["@/types/slots"]
+    BT2["@/utils/slotAllocation/types"]
   end
 
-  subgraph utils ["Frontend Utilities"]
-    CU["calendarUtils.ts (786)\nTimeSlot, mapWeeklySlots,\nmapCustomSlots,\ncalculateRequiredSlots"]
-    AS["allocationService.ts (612)\nAPI client: validateSlots,\nallocateSlots, fetchAvailability"]
-    AA["allocationAlgorithms.ts (850)\nPreference-based auto allocation\nwith time/day scoring"]
+  subgraph utils ["lib/scheduling/"]
+    CU["calendarUtils.ts"]
+    AS["allocationService.ts\nAPI client"]
+    AA["allocationAlgorithms.ts\nmanual/requested pre-validation + submit (no auto engine)"]
   end
 
-  subgraph hooks ["Frontend Hooks"]
-    USA["useSlotAllocation (2171)\ntoggleSlot, validateWeekly,\nprogress tracking"]
-    UCD["useCalendarData (737)\ngetSlotStatusForInterval,\nfetch availability + appointments"]
-    USV["useSubscriptionValidation (260)\nvalidateSlots, getAvailableWeeks"]
+  subgraph hooks ["hooks/scheduling/"]
+    USA["useSlotAllocation\nmanual/requested submission"]
+    UCD["useCalendarData\nfetch + polling + slot status"]
   end
 
-  subgraph components ["Components"]
-    UC["UnifiedCalendar.tsx (1222)\nMain calendar rendering"]
-    EP["EventPlannerFor*.tsx\nConsultation/Subscription/\nWebinar/Class planners"]
-    AT["AppointmentsTab.tsx (855)\nConsultant appointment list"]
+  subgraph components ["components/scheduling/ + components/planner/"]
+    UC["UnifiedCalendar.tsx"]
+    SP["SlotPicker.tsx"]
+    EC["EventCard.tsx (components/planner/components)"]
   end
 
   ST --> CU
@@ -138,43 +145,14 @@ flowchart BT
   UCD --> UC
   USA --> UC
   CU --> UC
+  UC --> SP
 ```
 
-**Reading order**: `types/slots` -> `calendarUtils` -> `allocationService` -> `allocationAlgorithms` -> `useCalendarData` -> `useSlotAllocation` -> `UnifiedCalendar`
+**Reading order**: `calendarUtils` -> `allocationService` -> `allocationAlgorithms` -> `useCalendarData` + `useSlotAllocation` -> `UnifiedCalendar`. Server-side auto-allocation (`SlotAllocationService`) has no frontend counterpart in this chain — the client only pre-validates and submits.
 
 ---
 
-## 4. Consultee Side (Separate Dependency Chain)
-
-The consultee dashboard has its own simpler chain.
-
-```mermaid
-flowchart BT
-  subgraph consultee_utils ["Consultee Utilities"]
-    SH["scheduleHelpers.ts\ngetActualSlots"]
-    SC["statusConfig.ts\nSTATUS_CONFIG"]
-    GM["getMetadata.ts\ngetStatusColor"]
-  end
-
-  subgraph consultee_components ["Consultee Components"]
-    EC["EventCard.tsx (1031)\nBooking card with\nreschedule/cancel/join"]
-    DU["DocumentUpload.tsx (809)"]
-    CAL["Calendar.tsx (323)"]
-    RID["ReportIssueDialog.tsx"]
-    CCD["CancelConfirmationDialog.tsx"]
-  end
-
-  SC --> EC
-  DU --> EC
-  RID --> EC
-  CCD --> EC
-  SH --> CAL
-  GM --> CAL
-```
-
----
-
-## 5. Request Flow: Slot Allocation (The Main Path)
+## 4. Request Flow: Slot Allocation (The Main Path)
 
 What happens when the consultant clicks "Allocate Slots":
 
@@ -189,139 +167,126 @@ sequenceDiagram
   participant SAS as SlotAllocationService
   participant SVS as SlotValidationService
   participant SCS as SlotCalculationService
+  participant TRANS as lib/booking/transitions.ts
   participant DB as Prisma + PostgreSQL
   participant LOCK as appointmentlock + Redis
 
-  UC->>USA: User selects slots via toggleSlot()
-  USA->>AA: Auto-expand consecutive slots
+  UC->>USA: User selects slots (manual/requested)
   USA->>UC: Update UI (selected slots, progress)
 
   Note over UC: User clicks "Allocate"
 
-  UC->>AS: allocateSlots(type, id, mode, slots)
-  AS->>API: PATCH /api/events/{type}/{id}/allocate
+  UC->>USA: autoAllocate / manualAllocate / allocateRequestedSlots
+
+  alt Auto Mode (client submits, server picks)
+    USA->>AS: allocateSlots(type, id, [], {isAuto: true})
+  else Manual or Requested Mode
+    USA->>AA: AllocationAlgorithms.manualAllocate / allocateRequestedSlots
+    AA->>AA: Pre-validate (required count, no past slots, webinar contiguity)
+    AA->>AS: allocateSlots(type, id, slots, options)
+  end
+
+  AS->>API: PATCH /api/bookings/{type}/{id}/allocate
 
   API->>ZOD: Parse request body
   ZOD-->>API: Validated {isAuto, slots?, useRequestedSlots?}
 
-  alt Auto Mode
+  alt Auto Mode (server-picked)
     API->>SAS: autoAllocate(type, id)
-    SAS->>DB: Fetch event config + availability
-    SAS->>SCS: calculateRequiredSlots()
-    SAS->>SCS: getSlotsPerCall()
-    SAS->>SAS: Build available slots lookup set
-    SAS->>SAS: findAvailableSlots()
+    SAS->>SCS: calculateRequiredSlots(), getSlotsPerCall()
+    SAS->>SAS: findAvailableSlots() (preferenceScoring.ts orders, never filters)
   else Manual Mode
     API->>SAS: manualAllocate(type, id, slots)
   else Requested Mode
     API->>SAS: useRequestedSlots(type, id)
   end
 
-  SAS->>LOCK: Acquire distributed lock (Redis)
+  SAS->>LOCK: lockSlotBooking / lockAutoAllocate
   LOCK-->>SAS: Lock acquired
 
   SAS->>SVS: validate(type, id, slots, consultant, config)
   SVS->>SCS: validateDuration()
   SVS->>DB: validateNoConflicts() - check existing appointments
-  SVS->>SVS: validateMatchesSchedule()
-  SVS->>SVS: validateConsecutiveSlots()
   SVS-->>SAS: ValidationResult
 
-  SAS->>DB: BEGIN TRANSACTION (60s timeout)
-  SAS->>DB: Delete old appointments (if any)
-  SAS->>DB: Create Appointment records
-  SAS->>DB: Create SlotOfAppointment records
-  SAS->>DB: Update event status
+  SAS->>DB: BEGIN TRANSACTION
+  SAS->>DB: Clear stale tentative slots (payment-guarded; never a payment-bearing appointment)
+  SAS->>DB: Create/reuse Appointment, create SlotOfAppointment rows
+  SAS->>TRANS: transitionConsultationRequest / transitionSubscriptionRequest
   SAS->>DB: COMMIT
 
   SAS->>LOCK: Release lock
   SAS-->>API: AllocationResult
   API-->>AS: JSON response
-  AS-->>UC: Success -> refresh calendar
+  AS-->>USA: AllocationResponse (or AllocationAlgorithms result)
+  USA-->>UC: Success -> refresh calendar
 ```
 
 ---
 
-## 6. Request Flow: Slot Validation (Pre-flight Check)
+## 5. Maintenance & Cleanup Flow
 
-What happens when the frontend validates slots before allocation:
-
-```mermaid
-sequenceDiagram
-  participant UC as UnifiedCalendar
-  participant AS as allocationService
-  participant API as validate/route.ts
-  participant ZOD as validationSchemas
-  participant SVS as SlotValidationService
-  participant DB as Prisma + PostgreSQL
-
-  UC->>AS: validateSlots(type, id, slots)
-  AS->>API: POST /api/events/{type}/{id}/validate
-
-  API->>ZOD: Parse {slots: ["ISO...", ...]}
-  API->>DB: Fetch event + consultant + availability
-
-  API->>SVS: validate(type, id, slots, consultant, config)
-  SVS->>SVS: validateSlotsInFuture (now + 5s buffer)
-  SVS->>DB: validateNoConflicts (range overlap query)
-  SVS->>SVS: validateMatchesSchedule (weekly/custom)
-  SVS->>SVS: validateSchedulingPeriod
-  SVS->>SVS: Event-specific validation
-
-  SVS-->>API: {conflicts, outsideAvailability, validSlots}
-  API-->>AS: JSON response
-  AS-->>UC: Show warnings/errors in UI
-```
-
----
-
-## 7. Maintenance & Cleanup Flow
-
-How cron jobs keep the system healthy:
+How the GitHub Actions crons keep the booking subsystem healthy. Every job listed here first calls `abortIfMaintenance()` (`lib/maintenance-cron.ts`), which refuses to run while the platform is in a declared maintenance freeze.
 
 ```mermaid
 flowchart LR
   subgraph triggers ["GitHub Actions (Cron Triggers)"]
-    GH1["cleanup-tentative-slots.yml\nevery 15 min"]
-    GH2["auto-complete-appointments.yml\nevery hour"]
-    GH3["cleanup-invalid-appointments.yml\ndaily"]
-    GH4["reconcile-slot-availability.yml\ndaily"]
-    GH5["expire-stale-requests.yml\nevery 30 min"]
+    GH1["cleanup-tentative-slots.yml\nevery 2 hours at :38"]
+    GH2["auto-complete-appointments.yml\nhourly at :07"]
+    GH3["cleanup-invalid-appointments.yml\nhourly at :12"]
+    GH4["reconcile-slot-availability.yml\nhourly at :32"]
+    GH5["expire-stale-requests.yml\nhourly at :10"]
+    GH6["cleanup-stale-pending-consultations.yml\nhourly at :37"]
+    GH7["expire-reschedule-proposals.yml\nhourly at :45"]
+    GH8["expire-unpaid-trials.yml\nhourly at :40"]
   end
 
-  subgraph jobs ["Job Files (Lightweight)"]
-    J1["cleanup-tentative-slots.ts"]
-    J2["auto-complete-appointments.ts"]
-    J3["cleanup-invalid-appointments.ts"]
-    J4["reconcile-slot-availability.ts"]
-    J5["expire-stale-requests.ts"]
+  subgraph jobs ["jobs/**.ts (thin GH Actions wrappers)"]
+    J1["appointments/cleanup-tentative-slots.ts"]
+    J2["appointments/auto-complete-appointments.ts"]
+    J3["appointments/cleanup-invalid-appointments.ts"]
+    J4["appointments/reconcile-slot-availability.ts"]
+    J5["appointments/expire-stale-requests.ts"]
+    J6["appointments/cleanup-stale-pending-consultations.ts"]
+    J7["appointments/expire-reschedule-proposals.ts"]
+    J8["trials/expire-unpaid-trials.ts"]
   end
 
-  subgraph scripts ["Script Files (Verbose, for manual runs)"]
-    S1["scripts/appointments/\ncleanup-tentative-slots.ts"]
-    S2["scripts/appointments/\nauto-complete-appointments.ts"]
+  subgraph scripts ["scripts/**.ts (the actual logic)"]
+    S1["appointments/cleanup-tentative-slots.ts"]
+    S2["appointments/auto-complete-appointments.ts"]
+    S3["appointments/cleanup-invalid-appointments.ts"]
+    S4["appointments/reconcile-slot-availability.ts"]
+    S5["appointments/expire-stale-requests.ts"]
+    S6["appointments/cleanup-stale-pending-consultations.ts"]
+    S7["appointments/expire-reschedule-proposals.ts"]
+    S8["trials/expire-unpaid-trials.ts"]
   end
 
   subgraph cleanup_actions ["What They Do"]
-    A1["Remove tentative appointments\nolder than 30 minutes"]
-    A2["Mark past appointments\nas COMPLETED"]
-    A3["Remove orphaned records\nwith missing FKs"]
-    A4["Sync slot availability\nstate with appointments"]
-    A5["Expire PENDING requests\nolder than threshold"]
+    A1["Delete stale isTentative slots with no SUCCEEDED payment;\nnever a confirmed or payment-bearing appointment"]
+    A2["transitionSlotCompletion(COMPLETED) for past appointments"]
+    A3["Remove orphaned records with missing FKs"]
+    A4["Detect double-booking / sync slot availability with appointments"]
+    A5["transitionConsultationRequest/transitionSubscriptionRequest(EXPIRED) for stale PENDING"]
+    A6["transitionConsultationRequest(CANCELLED) + transitionSlotCompletion(CANCELLED)\nfor approved consultations with no SUCCEEDED payment after 7 days"]
+    A7["RescheduleRequest -> EXPIRED for proposals nobody answered by their deadline"]
+    A8["TrialSession -> CANCELLED once paymentDueAt passes, which frees the slot by status alone"]
   end
 
-  GH1 --> J1 --> A1
-  GH2 --> J2 --> A2
-  GH3 --> J3 --> A3
-  GH4 --> J4 --> A4
-  GH5 --> J5 --> A5
-  J1 -.->|same logic, verbose| S1
-  J2 -.->|same logic, verbose| S2
+  GH1 --> J1 --> S1 --> A1
+  GH2 --> J2 --> S2 --> A2
+  GH3 --> J3 --> S3 --> A3
+  GH4 --> J4 --> S4 --> A4
+  GH5 --> J5 --> S5 --> A5
+  GH6 --> J6 --> S6 --> A6
+  GH7 --> J7 --> S7 --> A7
+  GH8 --> J8 --> S8 --> A8
 ```
 
 ---
 
-## 8. Data Model Relationships (Simplified)
+## 6. Data Model Relationships (Simplified)
 
 ```mermaid
 erDiagram
@@ -339,64 +304,18 @@ erDiagram
   ClassEvent ||--o{ Appointment : "M appointments"
 
   Appointment ||--|{ SlotOfAppointment : "N slots per session"
+  Appointment ||--o{ BookingStatusHistory : "one row per creation and CAS transition"
   SlotOfAppointment ||--o| MeetingSession : "video call"
 ```
 
----
-
-## 9. File Dependency Summary Table
-
-Quick reference: what imports what.
-
-### Backend
-
-| File                        | Imports From                                                                |
-| --------------------------- | --------------------------------------------------------------------------- |
-| `types.ts`                  | _(leaf node - no local deps)_                                               |
-| `validationSchemas.ts`      | _(leaf node - only zod)_                                                    |
-| `SlotCalculationService.ts` | `types.ts`                                                                  |
-| `SlotValidationService.ts`  | `types.ts`, `SlotCalculationService`, `lib/prisma`                          |
-| `SlotAllocationService.ts`  | `types.ts`, `SlotCalculationService`, `SlotValidationService`, `lib/prisma` |
-| `appointmentlock.ts`        | `lib/redis`, `errors/SlotLockError`                                         |
-| `*/allocate/route.ts`       | `SlotAllocationService`, `types`, `validationSchemas`                       |
-| `*/validate/route.ts`       | `SlotValidationService`, `types`, `validationSchemas`, `lib/prisma`         |
-| `*/reschedule/route.ts`     | `lib/prisma`, `lib/auth-server`                                             |
-
-### Frontend
-
-| File                           | Imports From                                                                      |
-| ------------------------------ | --------------------------------------------------------------------------------- |
-| `calendarUtils.ts`             | `@/types/slots`                                                                   |
-| `allocationService.ts`         | `calendarUtils`, `@/utils/slotAllocation/types`                                   |
-| `allocationAlgorithms.ts`      | `calendarUtils`, `allocationService`                                              |
-| `useCalendarData.ts`           | `allocationService`                                                               |
-| `useSlotAllocation.ts`         | `calendarUtils`, `allocationAlgorithms`                                           |
-| `useSubscriptionValidation.ts` | _(independent - no local deps)_                                                   |
-| `UnifiedCalendar.tsx`          | `calendarUtils`, `useCalendarData`, `useSlotAllocation`                           |
-| `EventPlannerFor*.tsx`         | `types/event`, `services/planner`, form components                                |
-| `EventCard.tsx` (consultee)    | `DocumentUpload`, `ReportIssueDialog`, `CancelConfirmationDialog`, `statusConfig` |
+> Note: the diagram labels the Prisma `Class` model as `ClassEvent` because `class` is a reserved keyword in Mermaid.
 
 ---
 
 ## How to Read This
 
-**If you want to understand the backend algorithm:**
+**Backend algorithm**: `types.ts` -> `SlotCalculationService` -> `SlotValidationService` -> `SlotAllocationService`, with every status write routed through `lib/booking/transitions.ts` and every slot-occupying write holding a lock from `utils/appointmentlock.ts`.
 
-```
-types.ts -> SlotCalculationService -> SlotValidationService -> SlotAllocationService
-   (4 files, read left to right, ~2500 LOC total)
-```
+**Frontend**: `calendarUtils` -> `allocationService` -> `allocationAlgorithms` -> `useCalendarData` + `useSlotAllocation` -> `UnifiedCalendar`. Auto-allocation is server-only; the client never scores or picks slots itself.
 
-**If you want to understand the frontend:**
-
-```
-calendarUtils -> allocationService -> allocationAlgorithms -> useCalendarData + useSlotAllocation -> UnifiedCalendar
-   (6 files, read left to right, ~5400 LOC total)
-```
-
-**If you want to trace a full request:**
-
-```
-UnifiedCalendar -> useSlotAllocation -> allocationService -> API route -> SlotAllocationService -> SlotValidationService -> SlotCalculationService -> Prisma -> PostgreSQL
-   (follow Diagram 5 above)
-```
+**Tracing a full request**: `UnifiedCalendar` -> `useSlotAllocation` -> `allocationAlgorithms` (manual and requested modes only; auto mode calls the service directly) -> `allocationService` -> API route -> `SlotAllocationService` -> `SlotValidationService` -> `SlotCalculationService` -> Prisma -> PostgreSQL (see Diagram 4).

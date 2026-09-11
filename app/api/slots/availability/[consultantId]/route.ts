@@ -76,7 +76,16 @@ export async function GET(
           totalPages: Math.ceil(totalSlots / limit),
         },
       },
-      { status: 200 },
+      {
+        status: 200,
+        headers: {
+          // #309 — short shared cache: 1000 users viewing the same consultant's
+          // day share one origin hit per 15s. Staleness is bounded and safe:
+          // checkout re-validates availability at confirm time (#788/#827),
+          // so a stale picker can only show a slot that 409s on book.
+          "Cache-Control": "public, s-maxage=15, stale-while-revalidate=60",
+        },
+      },
     );
   } catch (error) {
     console.error("Error fetching slots:", error);
@@ -139,7 +148,7 @@ function filterSlots(
 ): TSlotTiming[] {
   return slots.filter((slot) => {
     const slotStart = parseISO(slot.dateInISO);
-    const slotEnd = parseISO(slot.slotEndTimeInUTC);
+    const slotEnd = parseISO(slot.endsAt);
     return slotStart < userDayEnd && slotEnd > userDayStart;
   });
 }
@@ -148,13 +157,15 @@ async function removeBookedSlots(
   slots: TSlotTiming[],
   consultantUserId: string,
 ): Promise<TSlotTiming[]> {
+  if (slots.length === 0) return slots;
+
+  const candidateTimes = slots.map((s) => parseISO(s.startsAt));
+
   const appointments = await prisma.appointment.findMany({
     where: {
       slotsOfAppointment: {
         some: {
-          startsAt: {
-            in: slots.map((s) => parseISO(s.slotStartTimeInUTC)),
-          },
+          startsAt: { in: candidateTimes },
           // Scope to this consultant only — prevents Consultant A's bookings
           // from incorrectly hiding Consultant B's availability
           user: {
@@ -163,23 +174,29 @@ async function removeBookedSlots(
         },
       },
     },
-    include: {
+    // Over-fetch fix: the old shape was an unfiltered include returning
+    // EVERY slot of every matched appointment (a 200-slot subscription
+    // returned all 200 rows) plus full appointment scalars — per picker
+    // request. Only candidate-time slots can block a candidate, so the
+    // include is filtered to them and nothing else is selected.
+    select: {
       slotsOfAppointment: {
-        select: {
-          startsAt: true,
-        },
+        where: { startsAt: { in: candidateTimes } },
+        select: { startsAt: true },
       },
     },
   });
 
-  const bookedSlotTimes = appointments.flatMap((a) =>
-    a.slotsOfAppointment.map((slot) =>
-      formatInTimeZone(slot.startsAt, "UTC", "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"),
+  const bookedSlotTimes = new Set(
+    appointments.flatMap((a) =>
+      a.slotsOfAppointment.map((slot) =>
+        formatInTimeZone(slot.startsAt, "UTC", "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"),
+      ),
     ),
   );
 
   return slots.filter(
-    (slot) => !bookedSlotTimes.includes(slot.slotStartTimeInUTC),
+    (slot) => !bookedSlotTimes.has(slot.startsAt),
   );
 }
 
@@ -193,7 +210,7 @@ function filterExpiredSlots(slots: TSlotTiming[]): TSlotTiming[] {
   );
 
   return slots.filter((slot) => {
-    const slotStart = parseISO(slot.slotStartTimeInUTC);
+    const slotStart = parseISO(slot.startsAt);
     return slotStart >= minimumBookingTime;
   });
 }
@@ -267,12 +284,12 @@ function mapWeeklySlotToTiming(
       "yyyy-MM-dd'T'HH:mm:ssXXX",
     ),
     dayOfWeek: slot.startDay,
-    slotStartTimeInUTC: formatInTimeZone(
+    startsAt: formatInTimeZone(
       fromZonedTime(adjustedStart, userTimeZone),
       "UTC",
       "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
     ),
-    slotEndTimeInUTC: formatInTimeZone(
+    endsAt: formatInTimeZone(
       fromZonedTime(adjustedEnd, userTimeZone),
       "UTC",
       "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
@@ -307,12 +324,12 @@ function mapCustomSlotToTiming(
       "yyyy-MM-dd'T'HH:mm:ssXXX",
     ),
     dayOfWeek,
-    slotStartTimeInUTC: formatInTimeZone(
+    startsAt: formatInTimeZone(
       slot.startsAt,
       "UTC",
       "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
     ),
-    slotEndTimeInUTC: formatInTimeZone(
+    endsAt: formatInTimeZone(
       slot.endsAt,
       "UTC",
       "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",

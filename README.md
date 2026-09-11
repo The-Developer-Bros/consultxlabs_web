@@ -38,7 +38,7 @@ Think of it as the "Airbnb for expertise": a platform where professionals can mo
 | **In-App Messaging**     | Direct communication and document sharing between sessions                        |
 | **Document Review**      | Upload resumes, portfolios, or code for expert feedback                           |
 | **Smart Scheduling**     | Timezone-aware booking with weekly and custom availability                        |
-| **Secure Payments**      | Stripe (global) and Razorpay (India) with escrow protection                       |
+| **Secure Payments**      | Razorpay (primary, INR settlement) and Stripe (request→approve bookings), with escrow protection. **Consultees book from anywhere; consultants must be able to receive INR in India** — see below. |
 | **Earnings Dashboard**   | 80/20 revenue split with transparent payout tracking                              |
 | **Referral System**      | Viral growth via referral links, credit rewards for referrer and referee          |
 | **Collaborators**        | Multi-creator webinars and classes with role-based revenue sharing                |
@@ -49,6 +49,29 @@ Think of it as the "Airbnb for expertise": a platform where professionals can mo
 - 8+ domains (Technology, Business, Design, Marketing, Career Coaching, Education, Startups, Languages)
 - Multiple session types to fit any learning style
 - Money-back guarantee for unsatisfied sessions
+
+## Who can use this, and from where
+
+This distinction is load-bearing and easy to get backwards, so it is stated up
+front rather than buried in the payments docs.
+
+**Consultees can be anywhere in the world.** International cards are accepted,
+Razorpay converts at the buyer's bank and settles INR to the platform, and the
+FIRC needed under FEMA is generated automatically. Nothing blocks a foreign
+buyer and nothing should — this is live and working.
+
+**Consultants must be able to receive INR into an Indian bank account.** This is
+not a preference, it is what is currently built. TDS is withheld under Section
+194-O, which by definition applies only to residents; paying a non-resident
+instead requires Section 195 withholding, treaty relief against a tax residency
+certificate and Form 10F, and a Form 15CA/15CB filing per remittance, none of
+which exists yet. RazorpayX also cannot pay a foreign bank account at all. The
+payout pipeline enforces this: `processSinglePayout` throws rather than
+half-paying someone, and the UI says so during consultant onboarding.
+
+If you are changing payout code and wondering why the non-resident branch
+refuses instead of falling through — that is deliberate, and removing it would
+create a statutory withholding failure, not a feature.
 
 ## Quick Start
 
@@ -152,6 +175,21 @@ Create a `.env` file based on `.env.sample`. Never commit `.env` or secrets to t
 | `NEXT_PUBLIC_RAZORPAY_KEY_ID` | Razorpay key ID | `rzp_test_` for dev, `rzp_live_` for prod |
 | `RAZORPAY_KEY_ID` | Razorpay key ID (server) | Same as public key |
 | `RAZORPAY_SECRET` | Razorpay secret | Different per environment |
+| `RAZORPAY_WEBHOOK_SECRET` | Razorpay webhook signing secret | **Required.** `/api/webhooks/razorpay` returns 500 before verifying anything when it is unset, so every gateway event is rejected — silently, since no live payment has exercised it. Absent from Netlify's deploy-preview context; confirm it exists for **production**. |
+
+> **Reminder — Dodo Payments is schema-only.** `DODO_PAYMENTS` exists as a
+> `PaymentGateway` enum value and nothing else: no client, no checkout path, no
+> webhook handler, no payout submitter, and no timeline. The value is reserved
+> only because Postgres cannot drop an enum value cheaply. It throws
+> (`UnsupportedGatewayError`) if it ever reaches gateway routing, a refund, or a
+> payout, so it cannot be used by accident — see
+> [docs/payments/gateways/README.md](docs/payments/gateways/README.md).
+>
+> **For a finance or CA review:** the live rails are **Razorpay** (primary, INR
+> settlement) and **Stripe** (the request→approve booking path only). Dodo has
+> never moved money and appears in no reconciliation or filing. Lemon Squeezy
+> and XFlow were evaluated in March 2026, rejected, and removed from the
+> codebase; they are not options.
 
 ### Stream.io (Video & Chat)
 

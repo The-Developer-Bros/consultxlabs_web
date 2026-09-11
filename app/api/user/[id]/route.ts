@@ -1,9 +1,12 @@
+import * as Sentry from "@sentry/nextjs";
 import prisma from "@/lib/prisma";
+import { getUserDetails } from "@/lib/data/user-details";
 import { NextRequest, NextResponse } from "next/server";
 import { UserRole, Gender } from "@prisma/client";
 
 import { getSession } from "@/lib/auth-server";
 import { persistProfessionalBackground } from "@/utils/onboarding-server";
+import { scrubUser } from "@/lib/compliance/erasure/scrub-user";
 
 /**
  * Convert empty strings to undefined so Prisma skips the field update.
@@ -36,67 +39,7 @@ export async function GET(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const user = await prisma.user.findUnique({
-      where: { id: id },
-      include: {
-        // Professional background at User level
-        workExperiences: {
-          orderBy: [{ isCurrent: "desc" }, { startDate: "desc" }],
-        },
-        education: {
-          orderBy: { endYear: "desc" },
-        },
-        certifications: {
-          orderBy: { issueDate: "desc" },
-        },
-        consultantProfile: {
-          select: {
-            id: true,
-            description: true,
-            experience: true,
-            rating: true,
-            domainId: true,
-            // New fields
-            headline: true,
-            websiteUrl: true,
-            twitterUrl: true,
-            githubUrl: true,
-            videoIntroUrl: true,
-            languages: true,
-            toolsAndTechnologies: true,
-            mentoringStyle: true,
-            sessionTypes: true,
-            profileCompletionPercentage: true,
-            isVerified: true,
-            totalMenteesHelped: true,
-          },
-        },
-        consulteeProfile: {
-          select: {
-            id: true,
-            aboutMe: true,
-            preferredLanguage: true,
-            goals: true,
-            careerStage: true,
-            skillsToDevelop: true,
-            budgetPreference: true,
-          },
-        },
-        staffProfile: {
-          select: {
-            id: true,
-            department: true,
-            position: true,
-          },
-        },
-        adminProfile: {
-          select: {
-            id: true,
-            notes: true,
-          },
-        },
-      },
-    });
+    const user = await getUserDetails(id);
 
     if (!user) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
@@ -107,6 +50,7 @@ export async function GET(
     if (error instanceof Error) {
       console.error("Error: ", error.stack);
     }
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "user" } });
     return NextResponse.json(
       {
         error:
@@ -131,7 +75,20 @@ export async function PUT(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
+    // PRIVILEGE ESCALATION GUARD. The check above admits a user editing
+    // THEMSELVES, and `role` used to flow from the body straight into the
+    // update below — so any consultee could PUT their own id with
+    // {"role":"ADMIN"} and become a platform admin. Only an ADMIN may set a
+    // role, and never on themselves (that would let a compromised admin
+    // session quietly re-grant itself after a demotion).
+    const isAdmin = session.user.role === "ADMIN";
     const body = await req.json();
+    if (body.role !== undefined && (!isAdmin || session.user.id === id)) {
+      return NextResponse.json(
+        { error: "Forbidden — role cannot be changed here" },
+        { status: 403 },
+      );
+    }
     const {
       name,
       email,
@@ -211,6 +168,7 @@ export async function PUT(
     return NextResponse.json({ data: updatedUser }, { status: 200 });
   } catch (error) {
     console.error("Error updating user:", error);
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "user" } });
     return NextResponse.json(
       { error: "An error occurred while updating the user" },
       { status: 500 },
@@ -239,6 +197,7 @@ export async function PATCH(
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (error) {
     console.error("Error patching user professional background:", error);
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "user" } });
     return NextResponse.json(
       { error: "An error occurred while updating professional background" },
       { status: 500 },
@@ -270,6 +229,44 @@ export async function DELETE(
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
+    // Money-history gate (#781 §B parity with the consultant route). A hard
+    // delete cascades Payment → PaymentLeg / BookingUtilization /
+    // ReferralCreditUsage away and 500s on the first Restrict (Refund,
+    // Dispute) — destroying financial records the schema's own DPDP comment
+    // says are retained per IT Act 5–7y obligations. Users whose money ever
+    // moved get the §12 erasure scrub instead: PII pseudonymised, erasedAt
+    // tombstone set, financial rows intact.
+    // Consultant-side money lives on ConsultantProfile (earnings/payouts/TDS
+    // Restrict-delete through it), not on Payment — a consultant with payout
+    // history but no payer-side rows must also take the scrub path, or the
+    // hard delete 500s on the first Restrict (#1205-triage).
+    const [paymentCount, referralCreditCount, profile] = await Promise.all([
+      prisma.payment.count({ where: { userId: id } }),
+      prisma.referralCredit.count({ where: { userId: id } }),
+      prisma.consultantProfile.findFirst({
+        where: { userId: id },
+        select: {
+          _count: { select: { earnings: true, payouts: true, tdsRecords: true } },
+        },
+      }),
+    ]);
+    const consultantMoneyCount = profile
+      ? profile._count.earnings +
+        profile._count.payouts +
+        profile._count.tdsRecords
+      : 0;
+    const hasMoneyHistory =
+      paymentCount + referralCreditCount + consultantMoneyCount > 0;
+
+    if (hasMoneyHistory) {
+      await scrubUser(prisma, id);
+      return NextResponse.json({
+        message:
+          "Account erased (PII scrubbed; financial history retained per statutory retention)",
+        softDeleted: true,
+      });
+    }
+
     // Revoke all sessions for the user before deletion (atomic)
     await prisma.$transaction([
       prisma.session.deleteMany({ where: { userId: id } }),
@@ -282,6 +279,7 @@ export async function DELETE(
     );
   } catch (error) {
     console.error("Error deleting user:", error);
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "user" } });
     return NextResponse.json(
       { error: "An error occurred while deleting the user" },
       { status: 500 },

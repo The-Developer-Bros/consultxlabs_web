@@ -9,7 +9,7 @@ import type { IExpertFilters, IExpertsMetaData } from "../utils";
  * `company-${companyName}` string encoding so removal can dispatch off
  * `kind` without parsing — names with hyphens etc. just work.
  */
-export type ChipKey =
+type ChipKey =
   | { kind: "domain" }
   | { kind: "subdomain" }
   | { kind: "tag"; value: string }

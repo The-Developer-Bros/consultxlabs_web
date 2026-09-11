@@ -1,0 +1,72 @@
+name: Cron Heartbeat
+
+# Dead-man's switch for the scheduled fleet.
+#
+# Every other alert in this repo fires on a run that FAILED. Nothing fires on a
+# run that never started, and there are two ways that happens: GitHub disables
+# scheduled workflows after 60 days of repository inactivity, and the `schedule`
+# trigger is best-effort with no SLA. Either way the money fleet can go silent
+# without producing a single red run.
+#
+# Runs at 04:40 UTC — a slot no other workflow occupies at any hour, and after
+# the 03:45 ledger reconcile so a fleet-wide stall shows up in the same
+# morning's signal.
+
+on:
+  schedule:
+    - cron: "40 4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+# Read-only access to the Actions API; no repo write is needed or wanted.
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  cron-heartbeat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        # --ignore-scripts: this job never touches the database, so it does not
+        # need the `postinstall` prisma generate, and skipping lifecycle scripts
+        # keeps a scheduled job that runs with an Actions token off the
+        # arbitrary-code-execution path entirely.
+        run: npm ci --ignore-scripts
+
+      # No prisma generate: this job never touches the database.
+      #
+      # Deliberately NOT wrapped in withCronLock (#1169): the dead-man switch
+      # must not depend on the Redis it helps monitor, and the check is
+      # read-only so a double-run is harmless. The Redis pair below is only for
+      # the fail-open `cron:heartbeat:last` write — the /api/health leg.
+      - name: Check that every scheduled workflow is still firing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+        run: npx --yes tsx@4.23.1 scripts/ci/check-cron-heartbeat.ts
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          # Fallback sink — Slack has never been provisioned, so this is
+          # what actually pages today. See 07-required-secrets.md.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "cron-heartbeat"

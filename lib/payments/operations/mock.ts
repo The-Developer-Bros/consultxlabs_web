@@ -50,12 +50,6 @@ function generateMockPaymentId(gateway: PaymentGateway): string {
     case "RAZORPAY":
       return `order_mock_${random}${timestamp}`;
 
-    case "LEMON_SQUEEZY":
-      return `ls_mock_${random}_${timestamp}`;
-
-    case "XFLOW":
-      return `xf_mock_${random}_${timestamp}`;
-
     default:
       return `mock_${random}_${timestamp}`;
   }

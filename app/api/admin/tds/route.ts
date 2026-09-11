@@ -3,9 +3,11 @@
  * View TDS deduction summaries and manage Form 26Q filing status
  */
 
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import { requireAdminAuth, requirePrivilegedAuth } from "@/lib/auth-helpers";
+import { requireAdminAuth, requireBackofficeSurface } from "@/lib/auth-helpers";
+import { ENABLE_TDS_ADMIN_VIEW } from "@/lib/feature-flags";
 import {
   getTDSSummary,
   getConsultantTDSBreakdown,
@@ -13,12 +15,25 @@ import {
   getIndianFinancialYear,
 } from "@/lib/payments/tax/tds-service";
 
+// 404 when the flag is off, mirroring "endpoint doesn't exist" semantics
+// rather than 403 — the Form 26Q filing surface is intentionally hidden
+// pre-launch. Flip ENABLE_TDS_ADMIN_VIEW=true when finance is ready to
+// operate the quarterly filing flow. See lib/feature-flags.ts.
+function notFoundIfGated() {
+  if (!ENABLE_TDS_ADMIN_VIEW) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+  return null;
+}
+
 /**
  * GET /api/admin/tds?fy=2026-27&view=summary|consultants
  */
 export async function GET(req: NextRequest) {
+  const gated = notFoundIfGated();
+  if (gated) return gated;
   try {
-    const auth = await requirePrivilegedAuth();
+    const auth = await requireBackofficeSurface("tds.read");
     if (auth.error) return auth.error;
     const session = auth.session;
 
@@ -44,7 +59,19 @@ export async function GET(req: NextRequest) {
         where: { financialYear: fy, reportedInForm26Q: false },
         include: {
           consultantProfile: {
-            include: { taxInfo: true },
+            include: { taxInfo: true, user: { select: { name: true } } },
+          },
+          // #1354 — org-rail rows share this table, and a filing view that
+          // resolved only one rail's identity would hand finance a deduction
+          // with no deductee to file it against.
+          organization: {
+            select: {
+              id: true,
+              name: true,
+              taxInfo: {
+                select: { legalName: true, panEncrypted: true },
+              },
+            },
           },
         },
       });
@@ -52,15 +79,33 @@ export async function GET(req: NextRequest) {
       const { decryptPAN } = await import("@/lib/payments/tax/pan-crypto");
       const form26qData = records.map((r) => ({
         id: r.id,
+        // CR #1354 r1 — the deductee is a consultant XOR an organisation, so
+        // the row names which rail it is on rather than leaving the caller to
+        // infer it from a null id.
+        deducteeType: r.consultantProfileId ? "CONSULTANT" : "ORGANIZATION",
         consultantProfileId: r.consultantProfileId,
+        organizationId: r.organizationId,
+        // The return needs the name on the PAN; `name` is the editable trade
+        // name and is only the fallback.
+        deducteeName:
+          r.consultantProfile?.user?.name ??
+          r.organization?.taxInfo?.legalName ??
+          r.organization?.name ??
+          null,
         financialYear: r.financialYear,
         quarter: r.quarter,
         tdsDeducted: r.tdsDeducted,
-        tdsRate: r.tdsRate,
+        // 26Q wants a percent column; storage is bps (#781 §C).
+        tdsRatePercent: r.tdsRateBps / 100,
         cumulativeAmountCredited: r.cumulativeAmountCredited,
         isReversal: r.isReversal,
-        consultantPAN: r.consultantProfile.taxInfo?.panEncrypted
+        // #1354 — `consultantProfile` is now nullable because org-rail rows
+        // share this table, so each rail decrypts from its own tax satellite.
+        consultantPAN: r.consultantProfile?.taxInfo?.panEncrypted
           ? decryptPAN(Buffer.from(r.consultantProfile.taxInfo.panEncrypted))
+          : null,
+        organizationPAN: r.organization?.taxInfo?.panEncrypted
+          ? decryptPAN(Buffer.from(r.organization.taxInfo.panEncrypted))
           : null,
         createdAt: r.createdAt,
       }));
@@ -71,6 +116,10 @@ export async function GET(req: NextRequest) {
     const summary = await getTDSSummary(fy);
     return NextResponse.json(summary);
   } catch (error) {
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "admin" } },
+    );
     console.error("Admin TDS API error:", error);
     return NextResponse.json(
       { error: "Failed to fetch TDS data" },
@@ -90,10 +139,11 @@ export async function GET(req: NextRequest) {
  * and the `view=form26q` GET above which both expose decrypted PAN data.
  */
 export async function POST(req: NextRequest) {
+  const gated = notFoundIfGated();
+  if (gated) return gated;
   try {
     const auth = await requireAdminAuth();
     if (auth.error) return auth.error;
-    const session = auth.session;
 
     const body = await req.json();
     const { financialYear, quarter, filingDate } = body;
@@ -125,6 +175,10 @@ export async function POST(req: NextRequest) {
       recordsUpdated: result.count,
     });
   } catch (error) {
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "admin" } },
+    );
     console.error("Admin TDS filing error:", error);
     return NextResponse.json(
       { error: "Failed to update TDS filing status" },

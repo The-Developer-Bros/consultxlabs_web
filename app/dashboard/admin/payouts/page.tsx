@@ -8,23 +8,24 @@ import {
   TabsTrigger,
 } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
+import { DashboardHeader } from "@/components/dashboard/PageScaffold";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useMemo } from "react";
-import {
-  BarChart,
-  Bar,
-  CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+import dynamic from "next/dynamic";
 
 import PendingPayoutsSection from "./_sections/PendingPayoutsSection";
 import ProcessingPayoutsSection from "./_sections/ProcessingPayoutsSection";
 import CompletedPayoutsSection from "./_sections/CompletedPayoutsSection";
 import EarningsSection from "./_sections/EarningsSection";
+
+// Lazy-load recharts so it stays out of this route's first-load JS.
+const PayoutsChart = dynamic(() => import("./PayoutsChart"), {
+  ssr: false,
+  loading: () => (
+    <div className="h-[200px] w-full animate-pulse rounded-md bg-muted" />
+  ),
+});
 
 type TabKey = "pending" | "processing" | "completed" | "earnings";
 
@@ -35,72 +36,25 @@ const VALID_TABS: readonly TabKey[] = [
   "earnings",
 ] as const;
 
-interface PayoutTrendDatum {
-  createdAt: string;
-  amount: number;
+interface PayoutTrendSeriesDatum {
+  day: string;
+  label: string;
+  totalPaise: number;
 }
 
 interface PayoutTrendResponse {
-  payouts: PayoutTrendDatum[];
-  pagination?: {
-    total: number;
-    limit: number;
-    offset: number;
-    hasMore: boolean;
-  };
+  series: PayoutTrendSeriesDatum[];
 }
 
+// #997 secondary findings — the 7-day bucketing used to run client-side over
+// a `?limit=100` guess (not 7-day-safe at scale). The server now returns an
+// already-bucketed, bounded 7-day series via /api/admin/payouts/trend.
 async function fetchPayoutTrend(): Promise<PayoutTrendResponse> {
-  // TODO: If /api/admin/payouts?limit=100 doesn't return enough history for a
-  // meaningful trend (e.g. paginated past the 7-day window), introduce a
-  // dedicated trend endpoint rather than fetching more client-side.
-  const response = await fetch("/api/admin/payouts?limit=100");
+  const response = await fetch("/api/admin/payouts/trend");
   if (!response.ok) {
     throw new Error("Failed to fetch payout trend");
   }
   return response.json() as Promise<PayoutTrendResponse>;
-}
-
-function formatDayKey(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function formatDayLabel(date: Date): string {
-  return date.toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-  });
-}
-
-function buildLast7DaysSeries(
-  payouts: PayoutTrendDatum[] | undefined,
-): Array<{ day: string; label: string; total: number }> {
-  const now = new Date();
-  const days: Array<{ day: string; label: string; total: number }> = [];
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date(now);
-    d.setHours(0, 0, 0, 0);
-    d.setDate(d.getDate() - i);
-    days.push({ day: formatDayKey(d), label: formatDayLabel(d), total: 0 });
-  }
-  if (!payouts?.length) return days;
-
-  const index = new Map(days.map((d, i) => [d.day, i]));
-  for (const p of payouts) {
-    if (!p?.createdAt) continue;
-    const d = new Date(p.createdAt);
-    if (Number.isNaN(d.getTime())) continue;
-    const key = formatDayKey(d);
-    const idx = index.get(key);
-    if (idx !== undefined) {
-      // amounts are stored in minor units (paise/cents) — normalize to major
-      days[idx].total += (p.amount || 0) / 100;
-    }
-  }
-  return days;
 }
 
 export default function AdminPayoutsPage() {
@@ -129,20 +83,24 @@ export default function AdminPayoutsPage() {
   });
 
   const chartData = useMemo(
-    () => buildLast7DaysSeries(trendData?.payouts),
-    [trendData?.payouts],
+    () =>
+      (trendData?.series ?? []).map((d) => ({
+        day: d.day,
+        label: d.label,
+        // amounts are paise server-side — normalize to major units for display.
+        total: d.totalPaise / 100,
+      })),
+    [trendData?.series],
   );
 
   const hasAnyTrendData = chartData.some((d) => d.total > 0);
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Payouts</h1>
-        <p className="text-gray-600 mt-1">
-          Manage consultant payouts and earnings
-        </p>
-      </div>
+      <DashboardHeader
+        title="Payouts"
+        subtitle="Manage consultant payouts and earnings"
+      />
 
       {/* Payout trend chart */}
       <Card>
@@ -153,50 +111,9 @@ export default function AdminPayoutsPage() {
           {trendLoading ? (
             <Skeleton className="h-[200px] w-full" />
           ) : hasAnyTrendData ? (
-            <div style={{ width: "100%", height: 200 }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart
-                  data={chartData}
-                  margin={{ top: 8, right: 16, left: 0, bottom: 0 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                  <XAxis
-                    dataKey="label"
-                    stroke="#64748b"
-                    fontSize={12}
-                    tickLine={false}
-                    axisLine={false}
-                  />
-                  <YAxis
-                    stroke="#64748b"
-                    fontSize={12}
-                    tickLine={false}
-                    axisLine={false}
-                    tickFormatter={(value: number) =>
-                      value >= 1000
-                        ? `${(value / 1000).toFixed(1)}k`
-                        : String(value)
-                    }
-                  />
-                  <Tooltip
-                    formatter={(value: number) =>
-                      value.toLocaleString(undefined, {
-                        style: "currency",
-                        currency: "INR",
-                        maximumFractionDigits: 0,
-                      })
-                    }
-                  />
-                  <Bar
-                    dataKey="total"
-                    fill="#6366f1"
-                    radius={[4, 4, 0, 0]}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+            <PayoutsChart data={chartData} />
           ) : (
-            <div className="flex h-[200px] items-center justify-center text-sm text-gray-500">
+            <div className="flex h-[200px] items-center justify-center text-sm text-muted-foreground">
               Analytics coming soon
             </div>
           )}
@@ -205,7 +122,7 @@ export default function AdminPayoutsPage() {
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
-        <TabsList className="grid w-full max-w-xl grid-cols-4">
+        <TabsList className="grid h-auto w-full max-w-xl grid-cols-2 gap-1 sm:h-9 sm:grid-cols-4">
           <TabsTrigger value="pending">Pending</TabsTrigger>
           <TabsTrigger value="processing">Processing</TabsTrigger>
           <TabsTrigger value="completed">Completed</TabsTrigger>

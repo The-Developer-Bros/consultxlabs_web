@@ -63,14 +63,14 @@
 ### 1. Approval Request Flow
 
 ```typescript
-// app/api/events/consultations/[consultationId]/route.ts
+// app/api/bookings/consultations/[consultationId]/route.ts
 export async function PATCH(request, { params }) {
   const { consultationId } = await params;
   const { status } = await request.json();
 
   // LAYER 1: Distributed Lock
   let lock;
-  if (status === RequestStatus.APPROVED) {
+  if (status === AppointmentStatus.APPROVED) {  // enum renamed from `RequestStatus`
     lock = await lockConsultationApproval(consultationId, 30000);
   }
 
@@ -85,8 +85,8 @@ export async function PATCH(request, { params }) {
 
         // LAYER 3: Idempotency Check
         if (
-          currentConsultation.requestStatus ===
-          RequestStatus.APPROVED_PENDING_PAYMENT
+          currentConsultation.status ===
+          AppointmentStatus.APPROVED_PENDING_PAYMENT   // field/enum renamed from `requestStatus`/AppointmentStatus
         ) {
           return { duplicate: true };
         }
@@ -106,7 +106,7 @@ export async function PATCH(request, { params }) {
           const updatedConsultation = await tx.consultation.update({
             where: { id: consultationId },
             data: {
-              requestStatus: RequestStatus.APPROVED_PENDING_PAYMENT,
+              status: AppointmentStatus.APPROVED_PENDING_PAYMENT,  // field/enum renamed
               requestNotes: `${consultation.requestNotes}\n\n[System] Payment link generated: ${paymentResult.checkoutUrl}`,
             },
           });
@@ -197,7 +197,7 @@ export async function handlePaymentSuccess(paymentIntentId, metadata) {
 ```prisma
 model Consultation {
   id                  String        @id @default(cuid())
-  requestStatus       RequestStatus @default(PENDING)
+  status              AppointmentStatus @default(PENDING)  // renamed from `requestStatus`/AppointmentStatus
   requestNotes        String?       @db.Text
   consultationPlan    ConsultationPlan @relation(...)
   requestedBy         ConsulteeProfile @relation(...)
@@ -212,7 +212,7 @@ model Consultation {
 ```prisma
 model Subscription {
   id                       String        @id @default(cuid())
-  requestStatus            RequestStatus @default(PENDING)
+  status                   AppointmentStatus @default(PENDING)  // renamed from `requestStatus`/AppointmentStatus
   requestNotes             String?       @db.Text
   schedulingPeriodStartsAt DateTime?
   schedulingPeriodEndsAt   DateTime?
@@ -224,17 +224,44 @@ model Subscription {
 }
 ```
 
-### RequestStatus Enum
+### AppointmentStatus Enum
+
+> **Rename note:** The enum was `AppointmentStatus` and the DB column was `status`; after the terminology-unification refactor both are renamed to `AppointmentStatus` / `status`. The values are unchanged.
 
 ```prisma
-enum RequestStatus {
+enum AppointmentStatus {
   PENDING                    // Initial state
   APPROVED_PENDING_PAYMENT   // Approved, awaiting payment
   APPROVED                   // Paid and confirmed
+  SCHEDULED                  // Session time confirmed
+  COMPLETED                  // Session held
   REJECTED                   // Declined
-  CANCELLED                  // Cancelled by user
+  CANCELLED                  // Cancelled
+  EXPIRED                    // Payment window lapsed
 }
 ```
+
+### Guarded Transitions — `REQUEST_ALLOWED_FROM`
+
+**File:** `lib/booking/transitions.ts` lines 33–42.
+
+The allowed-from set is baked directly into every `UPDATE` statement's `WHERE` clause (`status: { in: allowedFrom }`), so an illegal transition matches zero rows instead of corrupting state. There is no separate pre-check that can race the write.
+
+```typescript
+// lib/booking/transitions.ts
+export const REQUEST_ALLOWED_FROM: Record<AppointmentStatus, AppointmentStatus[]> = {
+  PENDING:                  ["APPROVED_PENDING_PAYMENT"],
+  APPROVED:                 ["PENDING", "APPROVED_PENDING_PAYMENT"],
+  APPROVED_PENDING_PAYMENT: ["PENDING", "APPROVED"],
+  SCHEDULED:                ["APPROVED", "APPROVED_PENDING_PAYMENT"],
+  COMPLETED:                ["APPROVED", "SCHEDULED"],
+  REJECTED:                 ["PENDING", "APPROVED_PENDING_PAYMENT"],
+  CANCELLED:                ["PENDING", "APPROVED", "APPROVED_PENDING_PAYMENT", "SCHEDULED"],
+  EXPIRED:                  ["PENDING", "APPROVED_PENDING_PAYMENT"],
+};
+```
+
+**`APPROVED_PENDING_PAYMENT` semantics:** This state marks a consultation/subscription that a consultant has approved *before* the consultee has paid. The payment link is generated at this point. If the consultee cancels (via `DELETE /api/checkout/pending/[paymentId]`), the `fromIn` is narrowed to `["PENDING", "APPROVED_PENDING_PAYMENT"]` — an `APPROVED` parent (post-payment) blocks the cancel and the Serializable transaction rolls back. An `APPROVED` parent means payment already succeeded; the cancel-pending path is the wrong tool.
 
 ## Concurrency Handling
 

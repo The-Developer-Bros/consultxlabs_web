@@ -7,11 +7,11 @@ export const getParticipantManagementUrl = (
 ): string => {
   const baseUrl = `/dashboard/consultant/${consultantId}/appointments/participants`;
 
+  // Only group sessions have a roster worth managing. CONSULTATION and
+  // SUBSCRIPTION are 1-on-1 — they used to emit URLs here, but the pages
+  // those URLs pointed at were unreachable (supportsParticipantManagement
+  // below has always excluded them) and rendered a "roster" of two people.
   switch (appointment.appointmentType) {
-    case "CONSULTATION":
-      return `${baseUrl}/consultations/${appointment.consultationId}`;
-    case "SUBSCRIPTION":
-      return `${baseUrl}/subscriptions/${appointment.subscriptionId}`;
     case "WEBINAR":
       return `${baseUrl}/webinars/${appointment.webinarId}`;
     case "CLASS":

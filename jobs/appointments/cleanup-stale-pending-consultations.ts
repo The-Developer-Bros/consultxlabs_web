@@ -14,6 +14,8 @@ import {
 } from "../../scripts/appointments/cleanup-stale-pending-consultations";
 import fs from "fs";
 import { abortIfMaintenance } from "../../lib/maintenance-cron";
+import * as Sentry from "@sentry/nextjs";
+import { runJob } from "../../lib/observability/job-sentry";
 
 /**
  * Output results to GitHub Actions
@@ -50,6 +52,7 @@ function outputToGitHubActions(result: StalePendingConsultationsResult): void {
  */
 async function main(): Promise<void> {
   await abortIfMaintenance("cleanup-stale-pending-consultations");
+  Sentry.logger.info("job:cleanup-stale-pending-consultations started");
   console.log("🧹 Starting stale pending consultations cleanup job...");
   console.log(`Timestamp: ${new Date().toISOString()}`);
 
@@ -68,15 +71,17 @@ async function main(): Promise<void> {
 
     outputToGitHubActions(result);
 
+    Sentry.logger.info("job:cleanup-stale-pending-consultations finished", {
+      consultationsCancelled: result.consultationsCancelled,
+      slotsReleased: result.slotsReleased,
+    });
+
     if (!result.success) {
-      process.exit(1);
+      process.exitCode = 1;
     }
-  } catch (error) {
-    console.error("❌ Fatal error in stale consultation cleanup:", error);
-    process.exit(1);
   } finally {
     await disconnectDatabase();
   }
 }
 
-main();
+runJob("cleanup-stale-pending-consultations", main);

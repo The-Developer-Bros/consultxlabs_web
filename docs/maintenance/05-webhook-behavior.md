@@ -2,7 +2,7 @@
 
 ## Overview
 
-All webhook routes (`/api/webhooks/*`) are **exempt from maintenance mode**. This means webhooks from Stripe, Razorpay, Lemon Squeezy, XFlow, and Stream.io will be received and processed regardless of whether the site is in DEGRADED or OFFLINE mode.
+All webhook routes (`/api/webhooks/*`) are **exempt from maintenance mode**. This means webhooks from Stripe, Razorpay, and Stream.io will be received and processed regardless of whether the site is in DEGRADED or OFFLINE mode.
 
 This is intentional: payment webhooks are critical for completing transactions and must not be blocked.
 
@@ -12,8 +12,6 @@ This is intentional: payment webhooks are critical for completing transactions a
 | ----------------- | ---------------------------------- | ---------------------------------- | ----------------------------------------- |
 | **Stripe**        | `POST /api/webhooks/stripe`        | `stripe.webhooks.constructEvent()` | `logWebhookEvent()` with gateway event ID |
 | **Razorpay**      | `POST /api/webhooks/razorpay`      | HMAC SHA256 signature              | `logWebhookEvent()` with gateway event ID |
-| **Lemon Squeezy** | `POST /api/webhooks/lemon-squeezy` | HMAC SHA256 (custom)               | `logWebhookEvent()` with gateway event ID |
-| **XFlow**         | `POST /api/webhooks/xflow`         | HMAC SHA256 (custom)               | `logWebhookEvent()` with gateway event ID |
 | **Stream.io**     | `POST /api/stream/webhooks/`       | HMAC SHA256 (constant-time)        | `logWebhookEvent()` with event ID         |
 
 ## Stripe Webhook Events Handled
@@ -36,21 +34,6 @@ This is intentional: payment webhooks are critical for completing transactions a
 - `refund.created` / `refund.processed` / `refund.failed` -- Refund lifecycle
 - `payment.dispute.created` / `payment.dispute.won` / `payment.dispute.lost` / `payment.dispute.closed` -- Dispute lifecycle
 - `payout.processed` / `payout.reversed` / `payout.rejected` / `payout.queued` / `payout.pending` / `payout.cancelled` -- Payout lifecycle
-
-## Lemon Squeezy Webhook Events Handled
-
-- `order_created` -- New order
-- `subscription_created` -- Subscription started
-- `subscription_payment_success` -- Recurring payment succeeded
-- `subscription_payment_failed` -- Recurring payment failed
-- `subscription_cancelled` -- Subscription cancelled
-
-## XFlow Webhook Events Handled
-
-- `payment.succeeded` -- Payment completed
-- `payment.failed` -- Payment failed
-- `payment.pending` -- Payment pending
-- `subscription.created` / `subscription.updated` / `subscription.deleted` -- Subscription lifecycle
 
 ## Stream.io Webhook Events Handled
 
@@ -77,19 +60,6 @@ This is intentional: payment webhooks are critical for completing transactions a
 - **Behavior on failure**: Retries on non-2xx response
 - **Dashboard**: Razorpay Dashboard > Webhooks > Recent Deliveries
 
-### Lemon Squeezy
-
-- **Retry policy**: Retries with exponential backoff
-- **Retry window**: Up to 7 days
-- **Max retries**: Multiple attempts
-- **Dashboard**: Lemon Squeezy Dashboard > Webhooks
-
-### XFlow
-
-- **Retry policy**: Retries on non-2xx response
-- **Retry window**: Limited retry window
-- **Dashboard**: XFlow merchant portal
-
 ## Idempotency Protection
 
 All webhook handlers use `logWebhookEvent()` from `/api/webhooks/utils.ts`:
@@ -100,7 +70,7 @@ All webhook handlers use `logWebhookEvent()` from `/api/webhooks/utils.ts`:
 
 **Database table**: `WebhookEvent`
 
-- `gateway`: STRIPE | RAZORPAY | STREAM | LEMON_SQUEEZY | XFLOW
+- `gateway`: STRIPE | RAZORPAY | STREAM
 - `eventId`: Unique identifier from the gateway
 - `eventType`: Event type string
 - `payload`: Full JSON payload

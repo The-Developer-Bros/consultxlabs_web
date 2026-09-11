@@ -21,19 +21,20 @@ Complete reference for all status enums used throughout the Familiarise applicat
 
 ## Core Request/Booking Flow
 
-### RequestStatus
+### AppointmentStatus
 
-**Location**: `prisma/schema.prisma`
+**Location**: `prisma/schema.prisma` (field: `status`, DB column: `status` via `@map`)
 **Models**: `Consultation`, `Subscription`
 
 Tracks the lifecycle of consultation and subscription **requests** from initial submission through final scheduling.
 
 ```prisma
-enum RequestStatus {
+enum AppointmentStatus {
   PENDING
   APPROVED
   APPROVED_PENDING_PAYMENT // Approved by consultant but awaiting payment
   SCHEDULED
+  COMPLETED
   REJECTED
   CANCELLED
   EXPIRED
@@ -47,7 +48,8 @@ enum RequestStatus {
 | `PENDING`                  | Initial state when user submits request   | APPROVED, APPROVED_PENDING_PAYMENT, REJECTED, EXPIRED | User submission                      |
 | `APPROVED`                 | Consultant approved and payment confirmed | SCHEDULED, CANCELLED                                  | Consultant approval + payment exists |
 | `APPROVED_PENDING_PAYMENT` | Consultant approved but awaiting payment  | APPROVED, PENDING, CANCELLED                          | Consultant approval without payment  |
-| `SCHEDULED`                | Appointment created and confirmed         | CANCELLED                                             | Appointment creation                 |
+| `SCHEDULED`                | Appointment created and confirmed         | COMPLETED, CANCELLED                                  | Appointment creation                 |
+| `COMPLETED`                | Session completed                         | -                                                     | Session end time reached             |
 | `REJECTED`                 | Consultant declined the request           | -                                                     | Consultant rejection                 |
 | `CANCELLED`                | Either party cancelled the request        | -                                                     | User or consultant cancellation      |
 | `EXPIRED`                  | Request expired without action            | -                                                     | Reserved for future use              |
@@ -171,8 +173,8 @@ enum PaymentStatus {
 
 #### Webhook Integration
 
-- **PENDING → SUCCEEDED**: Triggered by `checkout.session.completed` (Stripe) or `payment.captured` (Razorpay)
-- **PENDING → FAILED**: Triggered by `checkout.session.expired` or `payment.failed`
+- **PENDING → SUCCEEDED**: Triggered by `payment_intent.succeeded` (Stripe) or `payment.captured`/`order.paid` (Razorpay)
+- **PENDING → FAILED**: Triggered by `payment_intent.payment_failed` (Stripe) or `payment.failed` (Razorpay)
 - Always validate webhook metadata before transitioning to SUCCEEDED (see `schemas/webhooks/metadata.ts`)
 
 ---
@@ -375,9 +377,9 @@ Payment: PENDING
     ↓ (webhook)
 Payment: SUCCEEDED
     ↓
-RequestStatus: APPROVED
+AppointmentStatus: APPROVED
     ↓
-RequestStatus: SCHEDULED
+AppointmentStatus: SCHEDULED
     ↓
 Appointment Created
 ```
@@ -387,22 +389,22 @@ Appointment Created
 ```
 User Action: Submit Request (no payment)
     ↓
-RequestStatus: PENDING
+AppointmentStatus: PENDING
     ↓
 Consultant: Approve Request
     ↓
 Payment Check: No Payment Found
     ↓
-RequestStatus: APPROVED_PENDING_PAYMENT
+AppointmentStatus: APPROVED_PENDING_PAYMENT
 Payment: PENDING (link generated)
     ↓
 User: Complete Payment
     ↓ (webhook)
 Payment: SUCCEEDED
     ↓
-RequestStatus: APPROVED
+AppointmentStatus: APPROVED
     ↓
-RequestStatus: SCHEDULED
+AppointmentStatus: SCHEDULED
     ↓
 Appointment Created
 ```
@@ -410,13 +412,13 @@ Appointment Created
 #### Payment Timeout Flow
 
 ```
-RequestStatus: APPROVED_PENDING_PAYMENT
+AppointmentStatus: APPROVED_PENDING_PAYMENT
 Payment: PENDING
     ↓
 Wait 48 hours
     ↓ (cron job: /api/cleanup/approval-payments)
 Payment: FAILED
-RequestStatus: PENDING or EXPIRED
+AppointmentStatus: PENDING or EXPIRED
 ```
 
 ---
@@ -471,7 +473,7 @@ If Escalated:
 
 ## Best Practices
 
-### When Working with RequestStatus
+### When Working with AppointmentStatus
 
 1. **Always check for existing payments** before transitioning to APPROVED_PENDING_PAYMENT
 
@@ -479,9 +481,9 @@ If Escalated:
    const hasPayment = await checkPaymentExists(requestId);
    if (!hasPayment) {
      // Generate payment link
-     status = RequestStatus.APPROVED_PENDING_PAYMENT;
+     status = AppointmentStatus.APPROVED_PENDING_PAYMENT;
    } else {
-     status = RequestStatus.APPROVED;
+     status = AppointmentStatus.APPROVED;
    }
    ```
 
@@ -528,7 +530,7 @@ If Escalated:
 ### When Working with WebinarStatus/ClassStatus
 
 1. **Separate booking state from execution state**
-   - RequestStatus: Tracks the booking/approval process
+   - AppointmentStatus: Tracks the booking/approval process
    - WebinarStatus/ClassStatus: Tracks the event execution
 
 2. **Don't transition to IN_PROGRESS until event actually starts**
@@ -577,20 +579,20 @@ Before implementing any status change:
 - **Files Modified**:
   - `app/api/payments/refunds/route.ts` - Two-phase refund pattern
   - `app/api/payments/disputes/route.ts` - External API outside transaction
-  - `app/api/events/consultations/[consultationId]/route.ts` - Email try-catch
-  - `app/api/events/subscriptions/[subscriptionId]/route.ts` - Email try-catch
+  - `app/api/bookings/consultations/[consultationId]/route.ts` - Email try-catch
+  - `app/api/bookings/subscriptions/[subscriptionId]/route.ts` - Email try-catch
   - `app/api/cleanup/approval-payments/route.ts` - Removed redundant check
 
 ### 2025-11-28 - Security Enhancement
 
-- **Added**: `APPROVED_PENDING_PAYMENT` status to RequestStatus enum
+- **Added**: `APPROVED_PENDING_PAYMENT` status to AppointmentStatus enum (formerly AppointmentStatus; enum renamed in refactor #679)
 - **Purpose**: Prevent payment bypass vulnerability where consultations could be scheduled without payment
 - **Implementation**: Pay-after-approval workflow with 48-hour payment timeout
 - **Files Modified**:
   - `prisma/schema.prisma` - Added new enum value
   - `lib/payments/webhooks/handlers.ts` - Added APPROVED_PENDING_PAYMENT handling
-  - `app/api/events/consultations/[consultationId]/route.ts` - Approval payment enforcement
-  - `app/api/events/subscriptions/[subscriptionId]/route.ts` - Approval payment enforcement
+  - `app/api/bookings/consultations/[consultationId]/route.ts` - Approval payment enforcement
+  - `app/api/bookings/subscriptions/[subscriptionId]/route.ts` - Approval payment enforcement
   - `app/api/cleanup/approval-payments/route.ts` - Payment expiration cron job
 
 ---

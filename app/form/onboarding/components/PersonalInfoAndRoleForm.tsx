@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Button } from "@/components/ui/button";
@@ -17,30 +17,40 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Loader2 } from "lucide-react";
 import { PersonalInfoAndRoleFormSchema } from "@/utils/onboarding";
 import { useSession } from "@/lib/auth-client";
 import { z } from "zod";
 import { UserRole, Gender } from "@prisma/client";
 
 type FormData = z.infer<typeof PersonalInfoAndRoleFormSchema>;
+// #1132 — DateOfBirthSchema accepts a Date OR a `YYYY-MM-DD` string (the wizard
+// round-trips values through JSON between steps) and always yields a Date, so
+// the schema's input and output types differ. useForm needs both spelled out;
+// inferring from the output alone makes the resolver unassignable.
+type FormInput = z.input<typeof PersonalInfoAndRoleFormSchema>;
 
 interface Props {
   onNext: (data: FormData) => void;
   initialData: Partial<FormData>;
 }
 
-const ROLE_INFO: Record<
-  string,
-  { title: string; description: string }
-> = {
+// User-facing copy avoids internal role jargon (#onboarding-ux): "CONSULTEE"
+// means nothing to a new visitor — the picker answers "what do you want to
+// do?" instead. Enum VALUES are unchanged; only labels/descriptions differ.
+const ROLE_INFO: Record<string, { title: string; description: string }> = {
   CONSULTANT: {
-    title: "Consultant",
-    description: "Share your expertise and mentor others",
+    title: "I want to offer my expertise",
+    description:
+      "Create a consultant profile, get verified, and start taking sessions",
   },
   CONSULTEE: {
-    title: "Consultee",
-    description: "Learn from experienced professionals",
+    title: "I want expert guidance",
+    description: "Find experienced professionals and book your first session",
+  },
+  ORG_WORKSPACE: {
+    title: "For my organization",
+    description: "Create and manage an organization for your school or company",
   },
 };
 
@@ -54,6 +64,41 @@ const GENDER_OPTIONS = [
 const PersonalInfoAndRoleForm: React.FC<Props> = ({ onNext, initialData }) => {
   const { data: session } = useSession();
   const [optionalOpen, setOptionalOpen] = useState(false);
+  // Reflects the parent's async role-flip (ORG_WORKSPACE path hits the
+  // `setOnboardingRoleAction` server action before advancing). When the
+  // action fails, the parent shows a toast and does NOT unmount us, so the
+  // `finally` re-enables the button for retry.
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // #840 — invitees skip the role-picker entirely when they have a pending
+  // org invitation; picking a B2C tile would create unwanted profiles.
+  // CR #1245 r2 — tri-state: undefined = checking, null = none found,
+  // object = invite exists. The role picker MUST NOT render while checking
+  // or on failure, or a pending invitee could submit a B2C role.
+  const [inviteCheckDone, setInviteCheckDone] = useState(false);
+  const [inviteCheckError, setInviteCheckError] = useState(false);
+  const [pendingInvite, setPendingInvite] = useState<{
+    organizationName: string;
+    role: string;
+    organizationId: string;
+  } | null>(null);
+  const loadPendingInvites = useCallback(() => {
+    setInviteCheckDone(false);
+    setInviteCheckError(false);
+    fetch("/api/user/pending-invites")
+      .then((r) => (r.ok ? r.json() : Promise.reject("fetch failed")))
+      .then((d) => {
+        if (d?.invites?.length > 0) setPendingInvite(d.invites[0]);
+        setInviteCheckDone(true);
+      })
+      .catch(() => {
+        setInviteCheckError(true);
+        setInviteCheckDone(true);
+      });
+  }, []);
+  useEffect(() => {
+    loadPendingInvites();
+  }, [loadPendingInvites]);
 
   const {
     register,
@@ -62,7 +107,7 @@ const PersonalInfoAndRoleForm: React.FC<Props> = ({ onNext, initialData }) => {
     watch,
     reset,
     formState: { errors },
-  } = useForm<FormData>({
+  } = useForm<FormInput, unknown, FormData>({
     resolver: zodResolver(PersonalInfoAndRoleFormSchema),
     mode: "onChange",
     defaultValues: {
@@ -111,13 +156,53 @@ const PersonalInfoAndRoleForm: React.FC<Props> = ({ onNext, initialData }) => {
   const selectedRole = watch("role");
   const bioLength = watch("bio")?.length || 0;
 
-  const onSubmit = (data: FormData) => {
+  const onSubmit = async (data: FormData) => {
     const submissionData = {
       ...data,
       email: session?.user?.email || "",
     };
-    onNext(submissionData);
+    setIsSubmitting(true);
+    try {
+      await onNext(submissionData);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
+
+  // #840 — invitees with a pending org invitation see this instead of the
+  // role tiles, so they can't accidentally create a B2C profile.
+  if (pendingInvite) {
+    if (!inviteCheckDone) {
+    return (
+      <div className="mx-auto max-w-md py-8 text-center">
+        <p className="text-sm text-zinc-500">Checking for pending invitations…</p>
+      </div>
+    );
+  }
+  if (inviteCheckError && !pendingInvite) {
+    return (
+      <div className="mx-auto max-w-md space-y-3 py-8 text-center">
+        <p className="text-sm text-red-600">Could not check for pending invitations.</p>
+        <Button size="sm" onClick={() => loadPendingInvites()}>Retry</Button>
+      </div>
+    );
+  }
+
+  return (
+      <div className="mx-auto max-w-md space-y-4 py-8 text-center">
+        <div className="rounded-lg border border-blue-200 bg-blue-50 p-6">
+          <p className="text-lg font-semibold text-blue-900">
+            You&apos;ve been invited to join{" "}
+            <span className="underline">{pendingInvite.organizationName}</span>
+          </p>
+          <p className="mt-2 text-sm text-zinc-600">
+            Check your email for the invitation link to accept and join
+            the organisation. Your profile will be set up as part of that flow.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
@@ -151,6 +236,61 @@ const PersonalInfoAndRoleForm: React.FC<Props> = ({ onNext, initialData }) => {
               Email cannot be changed
             </p>
           </div>
+        </div>
+      </div>
+
+      {/* #1132 — DPDP age gate. India's age of majority is 18 (s.2(f)), and
+          below it processing needs verifiable parental consent (s.9); there was
+          no age check anywhere in the product before this. Collecting the DOB
+          solely to run the check is an exempt purpose (Fourth Schedule Part B
+          item 6).
+
+          Deliberately OUTSIDE the optional collapsible below: the field is
+          required, so behind a closed disclosure labelled "optional" a submit
+          failed with both the input and its error invisible. */}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="space-y-2">
+          <Label htmlFor="dateOfBirth">
+            Date of birth <span className="text-destructive">*</span>
+          </Label>
+          <Controller
+            name="dateOfBirth"
+            control={control}
+            render={({ field }) => (
+              <Input
+                id="dateOfBirth"
+                type="date"
+                max={new Date().toISOString().slice(0, 10)}
+                // Handles both shapes the schema accepts: a Date from this
+                // input, or a `YYYY-MM-DD` string restored from the wizard's
+                // JSON round-trip on back-navigation.
+                value={
+                  field.value instanceof Date
+                    ? isNaN(field.value.getTime())
+                      ? ""
+                      : field.value.toISOString().slice(0, 10)
+                    : typeof field.value === "string"
+                      ? field.value.slice(0, 10)
+                      : ""
+                }
+                onChange={(e) =>
+                  field.onChange(
+                    e.target.value ? new Date(e.target.value) : undefined,
+                  )
+                }
+                aria-invalid={!!errors.dateOfBirth}
+              />
+            )}
+          />
+          {errors.dateOfBirth ? (
+            <p className="text-sm text-destructive">
+              {errors.dateOfBirth.message}
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              You must be at least 18 to use Familiarise.
+            </p>
+          )}
         </div>
       </div>
 
@@ -288,7 +428,9 @@ const PersonalInfoAndRoleForm: React.FC<Props> = ({ onNext, initialData }) => {
           name="role"
           control={control}
           render={({ field }) => (
-            <div className={`grid gap-3 ${Object.keys(ROLE_INFO).length === 2 ? "sm:grid-cols-2" : "sm:grid-cols-3"}`}>
+            <div
+              className={`grid gap-3 ${Object.keys(ROLE_INFO).length === 2 ? "sm:grid-cols-2" : "sm:grid-cols-3"}`}
+            >
               {Object.entries(ROLE_INFO).map(([role, info]) => (
                 <button
                   key={role}
@@ -332,13 +474,33 @@ const PersonalInfoAndRoleForm: React.FC<Props> = ({ onNext, initialData }) => {
                 experts in your field.
               </>
             )}
+            {selectedRole === "ORG_WORKSPACE" && (
+              <>
+                As an <strong>Organization Owner</strong>, you&apos;ll be able
+                to create and manage an organization, invite team members,
+                sponsor consultations, and access analytics for your school or
+                company.
+              </>
+            )}
             {/* STAFF and ADMIN roles are invite-only via admin dashboard */}
           </p>
         </div>
       )}
 
-      <Button type="submit" className="w-full" size="lg">
-        Continue
+      <Button
+        type="submit"
+        className="w-full"
+        size="lg"
+        disabled={isSubmitting}
+      >
+        {isSubmitting ? (
+          <>
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            Continuing...
+          </>
+        ) : (
+          "Continue"
+        )}
       </Button>
     </form>
   );

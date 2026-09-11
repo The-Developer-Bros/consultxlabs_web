@@ -1,14 +1,14 @@
 import { AppointmentsType } from "@prisma/client";
 
 // Base interface for any time slot (availability or appointment)
-export interface TimeSlotMeta {
+interface TimeSlotMeta {
   startTime: Date | string; // Can be Date object or ISO string
   endTime: Date | string; // Can be Date object or ISO string
   // Add any other common properties if needed
 }
 
 // Interface for appointment slots that require more details (e.g., for tooltips)
-export interface DetailedTimeSlotMeta extends TimeSlotMeta {
+interface DetailedTimeSlotMeta extends TimeSlotMeta {
   appointmentDetails?: {
     id: string;
     type: AppointmentsType;
@@ -54,7 +54,7 @@ const findOverlappingAppointments = (
 
 // --- Unified Slot Status Calculation Logic ---
 
-export interface SlotStatusResult {
+interface SlotStatusResult {
   isAvailable: boolean; // Is the interval within general availability?
   isBooked: boolean; // Is there *any* booking overlap? (for tooltip/logic)
   isBookedForDisplay: boolean; // Is the interval *fully* covered by bookings? (for grey 'Booked' style)

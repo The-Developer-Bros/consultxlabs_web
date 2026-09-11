@@ -1,6 +1,6 @@
+import * as Sentry from "@sentry/nextjs";
 import {
   searchUsersWithRelationships,
-  upsertUsersToStream,
 } from "@/actions/stream/chat/user.action";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -29,33 +29,30 @@ export async function GET(req: NextRequest) {
 
     streamLogger.debug("Searching users", { searchTerm });
 
-    // Always use relationship-scoped search to prevent global user enumeration
-    const users = await searchUsersWithRelationships(
-      searchTerm,
-      session.user.id,
-    );
+    // Always use relationship-scoped search to prevent global user enumeration.
+    // The action now derives identity from the session itself — the second
+    // argument it used to take was a client-controlled impersonation handle.
+    const users = await searchUsersWithRelationships(searchTerm);
 
     streamLogger.debug("Search results", { count: users.length });
 
-    // If users are found, upsert them to Stream Chat
-    if (users.length > 0) {
-      try {
-        const userIds = users.map((user) => user.id);
-        await upsertUsersToStream(userIds);
-        streamLogger.debug("Users upserted to Stream", {
-          count: users.length,
-        });
-      } catch (upsertError) {
-        streamLogger.error("User upsert to Stream failed", upsertError);
-        // Continue even if upserting fails
-      }
-    }
+    // #1280 — search results are deliberately NOT upserted to Stream.
+    //
+    // Stream bills chat by monthly active users, and an MAU is any user who has
+    // opened a WebSocket. Upserting every SEARCH RESULT put people on the meter
+    // who had taken no action at all — the searcher had merely typed their
+    // name. Nothing was gained by it either: every path that actually needs a
+    // user to exist on Stream upserts them itself, immediately before naming
+    // them, because Stream refuses an operation that references a user it does
+    // not hold. See actions/stream/chat/channel.action.ts and, since #1271,
+    // the video mint in actions/stream/meetings/meeting.action.ts.
 
     return NextResponse.json({
       success: true,
       users,
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "stream" } });
     streamLogger.error("User search failed", error);
     return NextResponse.json(
       { success: false, error: (error as Error).message },

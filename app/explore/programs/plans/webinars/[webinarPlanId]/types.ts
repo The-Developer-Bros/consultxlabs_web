@@ -1,40 +1,45 @@
 import type { Prisma } from "@prisma/client";
 import type { ICollaboratorInfo } from "../../types";
+import type { ConsultantPublicScalars } from "@/lib/data/consultant-public";
 
-export type TWebinarPlanData = Prisma.WebinarPlanGetPayload<{
-  include: {
-    consultantProfile: {
-      include: {
-        user: {
-          select: { id: true; name: true; email: true; image: true };
+// price is number at runtime via the extended client (#780)
+// consultantProfile is projected to the public allowlist (no statutory PII). (#946)
+export type TWebinarPlanData = Omit<
+  Prisma.WebinarPlanGetPayload<{
+    include: {
+      consultantProfile: {
+        select: ConsultantPublicScalars & {
+          user: {
+            select: { id: true; name: true; email: true; image: true };
+          };
+          domain: true;
+          subDomains: true;
+          tags: true;
         };
-        domain: true;
-        subDomains: true;
-        tags: true;
       };
-    };
-    topics: true;
-    webinars: {
-      include: {
-        appointment: {
-          include: {
-            slotsOfAppointment: {
-              include: {
-                user: {
-                  select: { id: true };
+      topics: true;
+      faqs: true;
+      webinars: {
+        include: {
+          appointment: {
+            include: {
+              slotsOfAppointment: {
+                include: {
+                  user: {
+                    select: { id: true };
+                  };
                 };
               };
+              payment: true;
             };
-            payment: true;
           };
-        };
-        waitlist: {
-          select: { userId: true; position: true; status: true };
         };
       };
     };
-  };
-}> & {
+  }>,
+  "price"
+> & {
+  price: number;
   collaborators?: ICollaboratorInfo[];
 };
 

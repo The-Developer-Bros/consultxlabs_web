@@ -2,6 +2,8 @@
 
 import { usePathname } from "next/navigation";
 
+import { needsHeaderSpacer } from "@/lib/navigation/public-chrome";
+
 /**
  * HeaderSpacer - Creates vertical space to account for fixed Navbar and AnnouncementBar
  *
@@ -13,37 +15,15 @@ import { usePathname } from "next/navigation";
  * - Announcement bar visibility (present, dismissed, wrapping text)
  * - Device safe areas (notch, Dynamic Island)
  *
- * Excludes:
- * - Pages with transparent navbar overlay (home, explore/experts, etc.)
- * - Pages that exclude navbar entirely (checkout, dashboard, meetings, etc.)
+ * Which routes need a spacer is derived in lib/navigation/public-chrome.ts
+ * rather than listed locally — the local list had already drifted from the
+ * Navbar's dark-hero list, which is what put a white spacer band under the
+ * transparent nav on the organisations directory.
  */
 const HeaderSpacer = () => {
   const pathname = usePathname();
 
-  // Routes that don't need the spacer (hero sections, excluded navbar routes)
-  const excludedRoutes = [
-    "/", // Home page (has full-bleed hero)
-    "/explore/experts", // Experts page (has dark hero section)
-    "/explore/programs", // Programs page (has dark hero section)
-    "/explore/community", // Community page (has dark hero section)
-  ];
-
-  // Routes that never show navbar (so no spacer needed)
-  const noNavbarRoutes = [
-    "/api/",
-    "/auth/",
-    "/form/",
-    "/checkout/",
-    "/dashboard",
-    "/meetings/",
-  ];
-
-  // Check if current route should exclude spacer
-  const shouldExclude =
-    excludedRoutes.includes(pathname) ||
-    noNavbarRoutes.some((route) => pathname.startsWith(route));
-
-  if (shouldExclude) {
+  if (!needsHeaderSpacer(pathname)) {
     return null;
   }
 

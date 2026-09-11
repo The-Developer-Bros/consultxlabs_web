@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-server";
 import prisma from "@/lib/prisma";
@@ -48,6 +49,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ data: consultants });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "consultants" } });
     console.error("Error searching consultants:", error);
     return NextResponse.json(
       { error: "Failed to search consultants" },

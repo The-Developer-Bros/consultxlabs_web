@@ -3,10 +3,15 @@
  * Update/Delete specific payout accounts
  */
 
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 
 import { getSession } from "@/lib/auth-server";
+import {
+  getRazorpayPayoutsService,
+  isRazorpayPayoutsConfigured,
+} from "@/lib/payments/payouts/razorpay-payouts";
 interface RouteParams {
   params: Promise<{ id: string }>;
 }
@@ -49,6 +54,58 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
       );
     }
 
+    // #1230 — retry the penny-drop for an unverified Razorpay account. The
+    // creation-time validation can come back async ("created") or fail
+    // transiently; without this action the account stayed isVerified:false
+    // forever while payout selection filters on the flag.
+    if (body.action === "reverify") {
+      if (account.provider !== "RAZORPAY" || !account.razorpayFundAccId) {
+        return NextResponse.json(
+          {
+            error:
+              "Re-verification requires a Razorpay account with a fund account",
+            code: "NOT_RAZORPAY_ACCOUNT",
+          },
+          { status: 400 },
+        );
+      }
+      if (!isRazorpayPayoutsConfigured()) {
+        return NextResponse.json(
+          {
+            error: "RazorpayX payouts are not configured on the platform yet",
+            code: "RAZORPAYX_UNCONFIGURED",
+          },
+          { status: 503 },
+        );
+      }
+      try {
+        const validation =
+          await getRazorpayPayoutsService().validateBankAccount(
+            account.razorpayFundAccId,
+          );
+        const verified = validation.accountStatus === "valid";
+        const updated = await prisma.payoutAccount.update({
+          where: { id: account.id },
+          data: { isVerified: verified },
+        });
+        return NextResponse.json({
+          success: true,
+          accountStatus: validation.accountStatus,
+          verification: validation.status,
+          account: updated,
+        });
+      } catch (err) {
+        console.error("[payout-account] reverify failed:", err);
+        return NextResponse.json(
+          {
+            error:
+              "Bank verification is temporarily unavailable; try again later.",
+          },
+          { status: 502 },
+        );
+      }
+    }
+
     // Handle setting as default (use transaction for atomicity)
     if (body.isDefault === true) {
       await prisma.$transaction(async (tx) => {
@@ -78,6 +135,7 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
       account: updatedAccount,
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "consultant" } });
     console.error("Error updating payout account:", error);
     return NextResponse.json(
       { error: "Failed to update payout account" },
@@ -124,7 +182,7 @@ export async function DELETE(req: NextRequest, { params }: RouteParams) {
     }
 
     // Don't allow deletion if there are pending payouts using this account
-    const pendingPayouts = await prisma.payout.count({
+    const pendingPayouts = await prisma.consultantPayout.count({
       where: {
         consultantProfileId: consultantProfile.id,
         status: { in: ["PENDING", "APPROVED", "PROCESSING"] },
@@ -163,6 +221,7 @@ export async function DELETE(req: NextRequest, { params }: RouteParams) {
 
     return NextResponse.json({ success: true });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "consultant" } });
     console.error("Error deleting payout account:", error);
     return NextResponse.json(
       { error: "Failed to delete payout account" },

@@ -44,9 +44,3 @@ export interface TConsulteeEventsResponse {
   classes: TConsulteeClass[];
   trials: TTrialWithPlan[];
 }
-
-// API wrapper response
-export interface TConsulteeEventsApiResponse {
-  data: TConsulteeEventsResponse;
-  success: boolean;
-}

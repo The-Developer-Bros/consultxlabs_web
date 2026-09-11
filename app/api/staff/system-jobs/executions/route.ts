@@ -7,16 +7,16 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { SystemJobStatus, Prisma } from "@prisma/client";
 
-import { requirePrivilegedAuth } from "@/lib/auth-helpers";
+import { requireBackofficeSurface } from "@/lib/auth-helpers";
+import * as Sentry from "@sentry/nextjs";
 /**
  * GET /api/staff/system-jobs/executions
  * List job execution history with filters
  */
 export async function GET(req: NextRequest) {
   try {
-    const auth = await requirePrivilegedAuth();
+    const auth = await requireBackofficeSurface("systemJobs.manage");
     if (auth.error) return auth.error;
-    const session = auth.session;
 
     const { searchParams } = new URL(req.url);
     const jobId = searchParams.get("jobId");
@@ -91,6 +91,7 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "staff" } });
     console.error("Error fetching job executions:", error);
     return NextResponse.json(
       { error: "Failed to fetch job executions" },

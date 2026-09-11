@@ -114,17 +114,17 @@ const FEATURED_POST: BlogPost = {
 
 function BlurredCard({ post }: { post: BlogPost }) {
   return (
-    <div className="relative bg-white rounded-2xl border border-zinc-200 overflow-hidden select-none">
+    <div className="relative bg-card rounded-2xl border border-border overflow-hidden select-none">
       <div className="blur-[6px] pointer-events-none" aria-hidden>
-        <div className="h-44 bg-gradient-to-br from-zinc-100 to-zinc-200" />
+        <div className="h-44 bg-gradient-to-br from-muted to-muted" />
         <div className="p-5">
-          <h3 className="text-base font-semibold text-zinc-900 mb-2 line-clamp-2">
+          <h3 className="text-base font-semibold text-foreground mb-2 line-clamp-2">
             {post.title}
           </h3>
-          <p className="text-sm text-zinc-500 line-clamp-2 mb-3">
+          <p className="text-sm text-muted-foreground line-clamp-2 mb-3">
             {post.teaser}
           </p>
-          <span className="text-xs text-zinc-400">{post.readTime}</span>
+          <span className="text-xs text-muted-foreground/70">{post.readTime}</span>
         </div>
       </div>
     </div>
@@ -143,7 +143,7 @@ export default function BlogPage() {
           >
             Coming Soon
           </Badge>
-          <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight mb-6">
+          <h1 className="text-fluid-5xl font-bold tracking-tight mb-6">
             The Familiarise Blog
           </h1>
           <p className="text-lg md:text-xl text-zinc-400 leading-relaxed">
@@ -156,17 +156,21 @@ export default function BlogPage() {
       <main className="container mx-auto px-4 md:px-6 py-12 md:py-16 space-y-16">
         {/* Featured / Top Story */}
         <section>
-          <h2 className="text-2xl font-bold mb-6">Featured</h2>
-          <div className="relative bg-white rounded-2xl border border-zinc-200 overflow-hidden select-none">
+          <h2 className="text-fluid-3xl font-bold tracking-tight mb-6">
+            Featured
+          </h2>
+          <div className="relative bg-card rounded-2xl border border-border overflow-hidden select-none">
             <div className="blur-[6px] pointer-events-none" aria-hidden>
               <div className="grid grid-cols-1 md:grid-cols-2">
-                <div className="h-64 md:h-auto bg-gradient-to-br from-zinc-100 to-zinc-200" />
+                <div className="h-64 md:h-auto bg-gradient-to-br from-muted to-muted" />
                 <div className="p-6 md:p-8 flex flex-col justify-center">
-                  <h3 className="text-xl font-bold text-zinc-900 mb-3">
+                  <h3 className="text-xl font-bold text-foreground mb-3">
                     {FEATURED_POST.title}
                   </h3>
-                  <p className="text-zinc-500 mb-4">{FEATURED_POST.teaser}</p>
-                  <span className="text-sm text-zinc-400">
+                  <p className="text-muted-foreground mb-4">
+                    {FEATURED_POST.teaser}
+                  </p>
+                  <span className="text-sm text-muted-foreground/70">
                     {FEATURED_POST.readTime}
                   </span>
                 </div>
@@ -178,8 +182,10 @@ export default function BlogPage() {
         {/* Category sections */}
         {BLOG_SECTIONS.map((section) => (
           <section key={section.category}>
-            <h2 className="text-2xl font-bold mb-6">{section.category}</h2>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <h2 className="text-fluid-3xl font-bold tracking-tight mb-6">
+              {section.category}
+            </h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
               {section.posts.map((post, i) => (
                 <BlurredCard key={i} post={post} />
               ))}
@@ -189,13 +195,13 @@ export default function BlogPage() {
       </main>
 
       {/* Bottom CTA */}
-      <section className="py-16 md:py-20 bg-zinc-50 border-t border-zinc-200">
+      <section className="py-16 md:py-20 bg-muted border-t border-border">
         <div className="container mx-auto px-4 md:px-6 text-center max-w-xl">
-          <FileText className="w-10 h-10 text-zinc-300 mx-auto mb-4" />
-          <h2 className="text-2xl font-bold mb-3">
+          <FileText className="w-10 h-10 text-muted-foreground/70 mx-auto mb-4" />
+          <h2 className="text-fluid-3xl font-bold tracking-tight mb-3">
             We&apos;re writing the first articles now
           </h2>
-          <p className="text-zinc-500">
+          <p className="text-muted-foreground">
             Real stories, real advice, from the experts on our platform. No
             fluff, no filler — just the guidance you&apos;d pay for in a
             session, for free.

@@ -1,7 +1,8 @@
+import * as Sentry from "@sentry/nextjs";
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import prisma from "@/lib/prisma";
-import { RecordingTransferService } from "@/lib/stream/recording-transfer-service";
+import { getBestRecordingUrl } from "@/lib/stream/recording-storage";
 import { RecordingService } from "@/lib/stream/recording-service";
 import {
   requireApiAuth,
@@ -112,23 +113,59 @@ const classInclude = {
   },
 } satisfies Prisma.ClassInclude;
 
-type ConsultationWithResources = Prisma.ConsultationGetPayload<{
-  include: typeof consultationInclude;
-}>;
-type SubscriptionWithResources = Prisma.SubscriptionGetPayload<{
-  include: typeof subscriptionInclude;
-}>;
-type WebinarWithResources = Prisma.WebinarGetPayload<{
-  include: typeof webinarInclude;
-}>;
-type ClassWithResources = Prisma.ClassGetPayload<{
-  include: typeof classInclude;
-}>;
+// Trials ride the subscription plan's materials + the single trial
+// appointment's recordings — same shape as consultations.
+const trialInclude = {
+  subscriptionPlan: {
+    include: {
+      materials: {
+        select: planMaterialSelect,
+        orderBy: { order: "asc" as const },
+      },
+      consultantProfile: {
+        include: { user: { select: consultantUserSelect } },
+      },
+    },
+  },
+  appointment: {
+    include: slotsWithRecordings,
+  },
+} satisfies Prisma.TrialSessionInclude;
+
+// Derived via the extended client — raw GetPayload would re-introduce
+// bigint money/fileSize fields (#780).
+type ConsultationWithResources = Prisma.Result<
+  typeof prisma.consultation,
+  { include: typeof consultationInclude },
+  "findFirstOrThrow"
+>;
+type SubscriptionWithResources = Prisma.Result<
+  typeof prisma.subscription,
+  { include: typeof subscriptionInclude },
+  "findFirstOrThrow"
+>;
+type WebinarWithResources = Prisma.Result<
+  typeof prisma.webinar,
+  { include: typeof webinarInclude },
+  "findFirstOrThrow"
+>;
+type ClassWithResources = Prisma.Result<
+  typeof prisma.class,
+  { include: typeof classInclude },
+  "findFirstOrThrow"
+>;
+type TrialWithResources = Prisma.Result<
+  typeof prisma.trialSession,
+  { include: typeof trialInclude },
+  "findFirstOrThrow"
+>;
 
 // Appointment type that has slotsOfAppointment with meetingSession recordings
-type AppointmentWithSlots = Prisma.AppointmentGetPayload<{
-  include: typeof slotsWithRecordings;
-}>;
+type AppointmentWithSlots = Prisma.Result<
+  typeof prisma.appointment,
+  { include: typeof slotsWithRecordings },
+  "findFirstOrThrow"
+>;
 
 export async function GET(
   request: Request,
@@ -175,16 +212,28 @@ export async function GET(
       classPlanIds: paidClassPlanIds,
     } = await RecordingService.getPaidPlanIds(userId);
 
-    const [consultations, subscriptions, webinars, classes] = await Promise.all(
-      [
+    // #1166 ORG-4 — personal surface: participation arms pin the appointment
+    // to organizationId: null (ADR 19; mirrors the events read). The
+    // paid-plan arms below stay unpinned — they are payment-derived CONTENT
+    // entitlement, not booking scope, and pinning them would revoke
+    // recordings the user paid for. Trials stay unpinned (attribution-only
+    // org tag, always B2C).
+    const [consultations, subscriptions, webinars, classes, trials] =
+      await Promise.all([
         prisma.consultation.findMany({
-          where: { requestedById: consulteeId },
+          where: {
+            requestedById: consulteeId,
+            appointment: { is: { organizationId: null } },
+          },
           include: consultationInclude,
           orderBy: { requestedAt: "desc" },
         }),
 
         prisma.subscription.findMany({
-          where: { requestedById: consulteeId },
+          where: {
+            requestedById: consulteeId,
+            appointments: { some: { organizationId: null } },
+          },
           include: subscriptionInclude,
           orderBy: { requestedAt: "desc" },
         }),
@@ -195,6 +244,7 @@ export async function GET(
               // Instances the user directly attended
               {
                 appointment: {
+                  organizationId: null,
                   slotsOfAppointment: {
                     some: { user: { some: { id: userId } } },
                   },
@@ -239,6 +289,7 @@ export async function GET(
               {
                 appointments: {
                   some: {
+                    organizationId: null,
                     slotsOfAppointment: {
                       some: { user: { some: { id: userId } } },
                     },
@@ -278,8 +329,13 @@ export async function GET(
           include: classInclude,
           orderBy: { createdAt: "desc" },
         }),
-      ],
-    );
+
+        prisma.trialSession.findMany({
+          where: { consulteeProfileId: consulteeId },
+          include: trialInclude,
+          orderBy: { requestedAt: "desc" },
+        }),
+      ]);
 
     // Include if COMPLETED or has at least 1 material/recording
     type TransformedEvent = {
@@ -300,10 +356,9 @@ export async function GET(
             planTitle: c.consultationPlan.title,
             consultantName: c.consultationPlan.consultantProfile.user.name,
             consultantImage: c.consultationPlan.consultantProfile.user.image,
-            status: c.requestStatus,
+            status: c.status,
             date:
-              c.appointment?.slotsOfAppointment?.[0]?.startsAt ||
-              c.requestedAt,
+              c.appointment?.slotsOfAppointment?.[0]?.startsAt || c.requestedAt,
             materials: c.consultationPlan.materials,
             recordings: await extractRecordings(
               c.appointment ? [c.appointment] : [],
@@ -318,7 +373,7 @@ export async function GET(
             planTitle: s.subscriptionPlan.title,
             consultantName: s.subscriptionPlan.consultantProfile.user.name,
             consultantImage: s.subscriptionPlan.consultantProfile.user.image,
-            status: s.requestStatus,
+            status: s.status,
             date: s.schedulingPeriodStartsAt || s.requestedAt,
             materials: s.subscriptionPlan.materials,
             recordings: await extractRecordings(s.appointments),
@@ -349,8 +404,7 @@ export async function GET(
             id: cl.id,
             planTitle: cl.classPlan.title,
             consultantName: cl.classPlan.consultantProfile?.user.name ?? null,
-            consultantImage:
-              cl.classPlan.consultantProfile?.user.image ?? null,
+            consultantImage: cl.classPlan.consultantProfile?.user.image ?? null,
             status: cl.status,
             date:
               cl.schedulingPeriodStartsAt ||
@@ -361,10 +415,33 @@ export async function GET(
           })),
         )
       ).filter(shouldInclude),
+      trials: (
+        await Promise.all(
+          trials.map(async (t: TrialWithResources) => ({
+            id: t.id,
+            planTitle: `Trial: ${t.subscriptionPlan.title}`,
+            consultantName:
+              t.subscriptionPlan.consultantProfile?.user.name ?? null,
+            consultantImage:
+              t.subscriptionPlan.consultantProfile?.user.image ?? null,
+            status: t.status,
+            date:
+              t.appointment?.slotsOfAppointment?.[0]?.startsAt || t.requestedAt,
+            materials: t.subscriptionPlan.materials,
+            recordings: await extractRecordings(
+              t.appointment ? [t.appointment] : [],
+            ),
+          })),
+        )
+      ).filter(shouldInclude),
     };
 
     return NextResponse.json({ data: transform, success: true });
   } catch (error) {
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "dashboard" } },
+    );
     console.error("Error fetching consultee resources:", error);
     return NextResponse.json(
       { error: "Failed to fetch resources" },
@@ -386,7 +463,7 @@ async function extractRecordings(appointments: AppointmentWithSlots[]) {
       title: rec.title,
       durationInMinutes: rec.durationInMinutes,
       recordedAt: rec.recordedAt,
-      playbackUrl: await RecordingTransferService.getBestRecordingUrl(rec),
+      playbackUrl: await getBestRecordingUrl(rec),
       thumbnailUrl: rec.thumbnailUrl,
       status: rec.status,
     })),

@@ -18,7 +18,7 @@ Familiarise's maintenance mode system provides two-tier protection (DEGRADED and
 1. [Architecture](./01-architecture.md) -- System design, data flow, key files
 2. [DEGRADED vs OFFLINE](./02-degraded-vs-offline.md) -- What each phase blocks (with tables)
 3. [Business Risks](./03-business-risks.md) -- Money-at-stake analysis
-4. [Cron Jobs Reference](./04-cron-jobs-reference.md) -- All 27 jobs, schedules, maintenance impact
+4. [Cron Jobs Reference](./04-cron-jobs-reference.md) -- All 61 jobs, schedules, locking, maintenance impact
 5. [Webhook Behavior](./05-webhook-behavior.md) -- Payment webhook handling during downtime
 6. [Pre-Maintenance Checklist](./06-pre-maintenance-checklist.md) -- Step-by-step operational checklist
 7. [Post-Maintenance Recovery](./07-post-maintenance-recovery.md) -- Verification and reconciliation steps

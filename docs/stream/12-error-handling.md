@@ -51,6 +51,14 @@ The Stream integration uses a multi-layered error handling approach:
 
 ---
 
+## Server-Side Circuit Breaker (#473)
+
+The error boundary and retry mechanisms below protect the browser. As of #473, the server-side hot paths that call Stream are additionally wrapped in the shared circuit breaker (`withCircuitBreaker`, the same primitive already used for Redis) through `withStreamCircuitBreaker` in `lib/stream-client.ts`. Without it, a Stream outage made every authenticated dashboard load wait out the full thirty-second client timeout on each Stream call and cascade, because chat and video are touched on nearly every load. With the breaker, once Stream has failed enough times the breaker opens and subsequent calls fail in under a millisecond instead of hanging.
+
+Closed-breaker behaviour is identical to calling Stream directly, so a genuine Stream error still propagates unchanged. Only when the breaker is already open does a wrapped call short-circuit: a caller that supplied a fallback degrades gracefully — the channel queries return an empty list so the dashboard still renders — while a caller without one receives a typed `StreamUnavailableError` so it can branch on "Stream is down" rather than misread the outage as "no data". The wrapped hot paths today are the channel queries, the channel membership upserts, and the user connect and upsert calls.
+
+---
+
 ## StreamErrorBoundary Component
 
 React Error Boundary specifically designed for Stream services.

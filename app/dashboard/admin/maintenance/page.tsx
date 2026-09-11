@@ -3,7 +3,7 @@
 import {
   DashboardHeader,
   DashboardContent,
-} from "@/components/dashboard/DashboardShell";
+} from "@/components/dashboard/PageScaffold";
 import MaintenanceControls from "@/components/dashboard/MaintenanceControls";
 
 export default function AdminMaintenancePage() {

@@ -20,7 +20,7 @@ import {
   OCCUPIED_REQUEST_STATUSES,
   OCCUPIED_EVENT_STATUSES,
 } from "@/utils/slotAllocation/occupancyPolicy";
-import { RequestStatus, TrialSessionStatus } from "@prisma/client";
+import { AppointmentStatus, TrialSessionStatus } from "@prisma/client";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // buildOccupiedAppointmentFilter
@@ -42,7 +42,7 @@ describe("buildOccupiedAppointmentFilter", () => {
     const consultationFilter = filters[0] as any;
 
     expect(consultationFilter.consultation).toBeDefined();
-    expect(consultationFilter.consultation.requestStatus.in).toEqual(
+    expect(consultationFilter.consultation.status.in).toEqual(
       OCCUPIED_REQUEST_STATUSES,
     );
     expect(
@@ -55,7 +55,7 @@ describe("buildOccupiedAppointmentFilter", () => {
     const subscriptionFilter = filters[1] as any;
 
     expect(subscriptionFilter.subscription).toBeDefined();
-    expect(subscriptionFilter.subscription.requestStatus.in).toEqual(
+    expect(subscriptionFilter.subscription.status.in).toEqual(
       OCCUPIED_REQUEST_STATUSES,
     );
     expect(
@@ -85,14 +85,21 @@ describe("buildOccupiedAppointmentFilter", () => {
     expect(classFilter.class.classPlan.consultantProfileId).toBe("cp-001");
   });
 
-  it("should include trial session filter with SCHEDULED status", () => {
+  it("should include trial session filter for occupying statuses", () => {
     const filters = buildOccupiedAppointmentFilter("cp-001");
     const trialFilter = filters[4] as any;
 
     expect(trialFilter.trialSession).toBeDefined();
     expect(trialFilter.trialSession.is.consultantProfileId).toBe("cp-001");
-    expect(trialFilter.trialSession.is.status).toBe(
-      TrialSessionStatus.SCHEDULED,
+    // AWAITING_PAYMENT occupies too: a paid trial reserves its slot the moment
+    // the consultant accepts and holds it while the learner pays. Matching only
+    // SCHEDULED let someone else book the slot mid-payment, after which the
+    // capture webhook would confirm the trial into a double booking.
+    expect(trialFilter.trialSession.is.status.in).toEqual(
+      expect.arrayContaining([
+        TrialSessionStatus.SCHEDULED,
+        TrialSessionStatus.AWAITING_PAYMENT,
+      ]),
     );
   });
 
@@ -102,15 +109,18 @@ describe("buildOccupiedAppointmentFilter", () => {
 
     // When no consultantProfileId, the filter should not scope by consultant
     expect(consultationFilter.consultation.consultationPlan).toBeUndefined();
-    expect(consultationFilter.consultation.requestStatus).toBeDefined();
+    expect(consultationFilter.consultation.status).toBeDefined();
   });
 
   it("should include trial filter without consultantProfileId when not provided", () => {
     const filters = buildOccupiedAppointmentFilter();
     const trialFilter = filters[4] as any;
 
-    expect(trialFilter.trialSession.is.status).toBe(
-      TrialSessionStatus.SCHEDULED,
+    expect(trialFilter.trialSession.is.status.in).toEqual(
+      expect.arrayContaining([
+        TrialSessionStatus.SCHEDULED,
+        TrialSessionStatus.AWAITING_PAYMENT,
+      ]),
     );
     expect(trialFilter.trialSession.is.consultantProfileId).toBeUndefined();
   });
@@ -122,19 +132,19 @@ describe("buildOccupiedAppointmentFilter", () => {
 
 describe("OCCUPIED_REQUEST_STATUSES", () => {
   it("should include PENDING, APPROVED, APPROVED_PENDING_PAYMENT, SCHEDULED", () => {
-    expect(OCCUPIED_REQUEST_STATUSES).toContain(RequestStatus.PENDING);
-    expect(OCCUPIED_REQUEST_STATUSES).toContain(RequestStatus.APPROVED);
+    expect(OCCUPIED_REQUEST_STATUSES).toContain(AppointmentStatus.PENDING);
+    expect(OCCUPIED_REQUEST_STATUSES).toContain(AppointmentStatus.APPROVED);
     expect(OCCUPIED_REQUEST_STATUSES).toContain(
-      RequestStatus.APPROVED_PENDING_PAYMENT,
+      AppointmentStatus.APPROVED_PENDING_PAYMENT,
     );
-    expect(OCCUPIED_REQUEST_STATUSES).toContain(RequestStatus.SCHEDULED);
+    expect(OCCUPIED_REQUEST_STATUSES).toContain(AppointmentStatus.SCHEDULED);
   });
 
   it("should NOT include terminal statuses", () => {
-    expect(OCCUPIED_REQUEST_STATUSES).not.toContain(RequestStatus.CANCELLED);
-    expect(OCCUPIED_REQUEST_STATUSES).not.toContain(RequestStatus.REJECTED);
-    expect(OCCUPIED_REQUEST_STATUSES).not.toContain(RequestStatus.COMPLETED);
-    expect(OCCUPIED_REQUEST_STATUSES).not.toContain(RequestStatus.EXPIRED);
+    expect(OCCUPIED_REQUEST_STATUSES).not.toContain(AppointmentStatus.CANCELLED);
+    expect(OCCUPIED_REQUEST_STATUSES).not.toContain(AppointmentStatus.REJECTED);
+    expect(OCCUPIED_REQUEST_STATUSES).not.toContain(AppointmentStatus.COMPLETED);
+    expect(OCCUPIED_REQUEST_STATUSES).not.toContain(AppointmentStatus.EXPIRED);
   });
 
   it("should have exactly 4 statuses", () => {

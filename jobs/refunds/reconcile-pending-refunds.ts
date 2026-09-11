@@ -9,11 +9,14 @@
 
 import {
   reconcilePendingRefunds,
+  notifyFailedRefunds,
   disconnectDatabase,
   type RefundReconciliationResult,
 } from "../../scripts/refunds/reconcile-pending-refunds";
 import fs from "fs";
 import { abortIfMaintenance } from "../../lib/maintenance-cron";
+import * as Sentry from "@sentry/nextjs";
+import { runJob } from "../../lib/observability/job-sentry";
 
 /**
  * Output results to GitHub Actions
@@ -28,6 +31,9 @@ function outputToGitHubActions(result: RefundReconciliationResult): void {
       `reconciled_count=${result.reconciledCount}`,
       `failed_count=${result.failedCount}`,
       `skipped_count=${result.skippedCount}`,
+      // #1458 — surfaced as its own output so a workflow can alert on refunds
+      // stranded behind a gateway fence without parsing the log.
+      `skipped_fenced=${result.skippedFenced}`,
       `success=${result.success}`,
     ].join("\n");
 
@@ -46,6 +52,7 @@ function outputToGitHubActions(result: RefundReconciliationResult): void {
  */
 async function main(): Promise<void> {
   await abortIfMaintenance("reconcile-pending-refunds");
+  Sentry.logger.info("job:reconcile-pending-refunds started");
   console.log("🔄 Starting refund reconciliation job...");
   console.log(`Timestamp: ${new Date().toISOString()}`);
 
@@ -66,15 +73,27 @@ async function main(): Promise<void> {
 
     outputToGitHubActions(result);
 
+    // #779 §A — page payers of FAILED refunds that haven't been notified yet.
+    // Runs after reconciliation (which can itself FLIP a stale PENDING refund
+    // to FAILED) so a just-failed refund is caught in the same pass.
+    const failedNotify = await notifyFailedRefunds();
+    console.log(
+      `\n📨 Failed-refund notifications: scanned=${failedNotify.scanned} notified=${failedNotify.notified}`,
+    );
+
+    Sentry.logger.info("job:reconcile-pending-refunds finished", {
+      totalProcessed: result.totalProcessed,
+      reconciledCount: result.reconciledCount,
+      failedCount: result.failedCount,
+      skippedCount: result.skippedCount,
+    });
+
     if (!result.success) {
-      process.exit(1);
+      process.exitCode = 1;
     }
-  } catch (error) {
-    console.error("❌ Fatal error in refund reconciliation:", error);
-    process.exit(1);
   } finally {
     await disconnectDatabase();
   }
 }
 
-main();
+runJob("reconcile-pending-refunds", main);

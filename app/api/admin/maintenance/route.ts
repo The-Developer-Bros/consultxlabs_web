@@ -1,7 +1,11 @@
-import { drainActiveSessions } from "@/actions/maintenance/drain-sessions";
+import * as Sentry from "@sentry/nextjs";
+import {
+  drainActiveSessions,
+  unfreezeChannelsAfterMaintenance,
+} from "@/actions/maintenance/drain-sessions";
+import { reportSentryError } from "@/lib/observability/report";
 import { freezeAppointments } from "@/actions/maintenance/freeze-appointments";
 import { pauseDiscountCodes } from "@/actions/maintenance/pause-discount-codes";
-import { pauseWaitlistExpiry } from "@/actions/maintenance/pause-waitlist-expiry";
 import { runPostRecovery } from "@/actions/maintenance/post-recovery";
 import { MaintenancePhase } from "@prisma/client";
 import crypto from "crypto";
@@ -12,8 +16,6 @@ import { createIncident, resolveIncident } from "@/lib/betterstack";
 import { requireAdminAuth } from "@/lib/auth-helpers";
 import { getMaintenanceState, setMaintenanceState } from "@/lib/maintenance";
 import prisma from "@/lib/prisma";
-
-const DEFAULT_WINDOW_MS = 4 * 60 * 60 * 1000;
 
 // Local wrapper preserves the existing call sites that expect `{ userId }`.
 // Maintenance is now strictly ADMIN-only (was previously allowing STAFF too).
@@ -40,7 +42,6 @@ type OfflineActivationResult = {
   drain?: Awaited<ReturnType<typeof drainActiveSessions>>;
   freeze?: Awaited<ReturnType<typeof freezeAppointments>>;
   discounts?: Awaited<ReturnType<typeof pauseDiscountCodes>>;
-  waitlist?: Awaited<ReturnType<typeof pauseWaitlistExpiry>>;
   errors: string[];
 };
 
@@ -62,30 +63,35 @@ async function runOfflineActivation(
 ): Promise<OfflineActivationResult> {
   const result: OfflineActivationResult = { errors: [] };
   const start = new Date();
-  const end = estimatedEnd ?? new Date(start.getTime() + DEFAULT_WINDOW_MS);
 
   try {
     result.drain = await drainActiveSessions();
   } catch (error) {
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "admin" } },
+    );
     result.errors.push(formatError("drainActiveSessions failed", error));
   }
 
   try {
     result.freeze = await freezeAppointments(start, estimatedEnd);
   } catch (error) {
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "admin" } },
+    );
     result.errors.push(formatError("freezeAppointments failed", error));
   }
 
   try {
     result.discounts = await pauseDiscountCodes();
   } catch (error) {
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "admin" } },
+    );
     result.errors.push(formatError("pauseDiscountCodes failed", error));
-  }
-
-  try {
-    result.waitlist = await pauseWaitlistExpiry(start, end);
-  } catch (error) {
-    result.errors.push(formatError("pauseWaitlistExpiry failed", error));
   }
 
   return result;
@@ -159,7 +165,7 @@ export async function POST(request: NextRequest) {
         status: { in: ["NEEDS_RESPONSE", "WARNING_NEEDS_RESPONSE"] },
         dueBy: { gte: new Date(), lte: bufferEnd },
       },
-      select: { id: true, dueBy: true, amount: true, currency: true },
+      select: { id: true, dueBy: true, amountPaise: true, currency: true },
       orderBy: { dueBy: "asc" },
     });
     if (urgentDisputes.length > 0) {
@@ -212,9 +218,6 @@ export async function POST(request: NextRequest) {
       : {}),
     ...(offlineActivation?.discounts !== undefined
       ? { discounts: offlineActivation.discounts }
-      : {}),
-    ...(offlineActivation?.waitlist !== undefined
-      ? { waitlist: offlineActivation.waitlist }
       : {}),
     ...(offlineActivation && offlineActivation.errors.length > 0
       ? { setupErrors: offlineActivation.errors }
@@ -327,9 +330,6 @@ export async function PATCH(request: NextRequest) {
     ...(offlineActivation?.discounts !== undefined
       ? { discounts: offlineActivation.discounts }
       : {}),
-    ...(offlineActivation?.waitlist !== undefined
-      ? { waitlist: offlineActivation.waitlist }
-      : {}),
     ...(offlineActivation && offlineActivation.errors.length > 0
       ? { setupErrors: offlineActivation.errors }
       : {}),
@@ -354,10 +354,79 @@ export async function DELETE() {
     endedBy: auth.userId,
   });
 
-  const recoveryResult = await runPostRecovery();
+  // #1146 — the unfreeze must not be able to be skipped by something upstream
+  // of it throwing.
+  //
+  // This used to be a bare `await`, with the chat unfreeze below it. Every step
+  // inside `runPostRecovery` is individually wrapped today, so a rejection is
+  // unlikely in practice — but the call site took no responsibility for it, and
+  // a single future unguarded `await` inside that function would make an OFF
+  // transition skip the unfreeze entirely and brick group chat with no signal.
+  // Stream grants `use-frozen-channel` to no role, so "bricked" means unwritable
+  // by every user AND every admin, with no error and no visible cause.
+  //
+  // The recovery report is best-effort; the unfreeze is not.
+  let recoveryResult: Awaited<ReturnType<typeof runPostRecovery>>;
+  try {
+    recoveryResult = await runPostRecovery();
+  } catch (error) {
+    reportSentryError(error, {
+      subsystem: "admin",
+      op: "maintenance.post-recovery",
+    });
+    recoveryResult = {
+      database: false,
+      redis: false,
+      notification: false,
+      errors: [formatError("runPostRecovery failed", error)],
+    };
+  }
+
+  // #1134 — the drain freezes group chat channels on the way into OFFLINE, and
+  // Stream grants `use-frozen-channel` to NO role by default, so a channel left
+  // frozen is unwritable by every user AND every admin, with no visible cause.
+  // Shipping the freeze without its inverse would leave a release window in
+  // which ending maintenance silently bricks group chat, which is why both
+  // halves are in this PR rather than four apart.
+  //
+  // Best-effort: a chat failure must not stop maintenance from ending. But it is
+  // REPORTED and returned — a silent unfreeze failure is indistinguishable from
+  // success, and being invisible is the entire problem with a frozen channel.
+  let chat:
+    | Awaited<ReturnType<typeof unfreezeChannelsAfterMaintenance>>
+    | undefined;
+  try {
+    chat = await unfreezeChannelsAfterMaintenance();
+    if (chat.errors.length > 0) {
+      reportSentryError(
+        new Error(
+          `Maintenance unfreeze partially failed: ${chat.errors.length} channel(s)`,
+        ),
+        {
+          subsystem: "stream",
+          op: "maintenance.unfreeze",
+          extra: { errors: chat.errors.slice(0, 10) },
+        },
+      );
+    }
+  } catch (error) {
+    reportSentryError(error, {
+      subsystem: "stream",
+      op: "maintenance.unfreeze",
+    });
+    chat = {
+      unfrozen: 0,
+      errors: [error instanceof Error ? error.message : String(error)],
+      source: "none",
+    };
+  }
+
   return NextResponse.json({
     phase: "OFF",
     message: "Maintenance mode ended",
     recovery: recoveryResult,
+    // Surfaced, not swallowed: the caller is an operator ending maintenance and
+    // needs to know if chat did not come back with it.
+    chat,
   });
 }

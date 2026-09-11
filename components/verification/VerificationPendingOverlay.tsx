@@ -44,11 +44,15 @@ const statusContent: Record<
     iconColor: string;
   }
 > = {
+  // PENDING_VERIFICATION is ACTIONABLE: the consultant still has to
+  // complete/submit their verification from Settings. The old passive
+  // "Awaiting Verification" copy contradicted the Settings page (which
+  // says "Submit for Verification") and stranded new consultants.
   PENDING_VERIFICATION: {
     icon: Clock,
-    title: "Awaiting Verification",
+    title: "Complete your verification",
     description:
-      "Your profile is pending verification by our team. This usually takes 1-2 business days. You'll receive an email once your profile is approved.",
+      "Your profile isn't visible to clients yet. Submit your verification details from Settings so clients can find and book you — reviews typically take 1-2 business days.",
     iconBg: "bg-amber-100",
     iconColor: "text-amber-600",
   },
@@ -217,15 +221,19 @@ export function VerificationPendingOverlay({
 
         {(status === "PENDING_VERIFICATION" || status === "UNDER_REVIEW") && (
           <div className="space-y-4">
-            <div className="flex items-center justify-center gap-2 text-sm text-zinc-500">
-              <AlertCircle className="w-4 h-4" />
-              <span>
-                You&apos;ll receive an email once the review is complete
-              </span>
-            </div>
+            {status === "UNDER_REVIEW" && (
+              <div className="flex items-center justify-center gap-2 text-sm text-zinc-500">
+                <AlertCircle className="w-4 h-4" />
+                <span>
+                  You&apos;ll receive an email once the review is complete
+                </span>
+              </div>
+            )}
             <Button asChild className="gap-2">
               <Link href={resubmitUrl}>
-                View Settings
+                {status === "PENDING_VERIFICATION"
+                  ? "Complete Verification"
+                  : "View Settings"}
                 <ArrowRight className="w-4 h-4" />
               </Link>
             </Button>
@@ -241,6 +249,73 @@ export function VerificationPendingOverlay({
           </Button>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Compact banner variant for the dashboard shell's banner slot.
+ *
+ * Gating policy (product decision, dashboard redesign): the waiting states
+ * (PENDING_VERIFICATION / UNDER_REVIEW) must NOT wall off the dashboard —
+ * an unverified consultant can't take bookings anyway, so the pages are
+ * harmless empty states and walling them just hides the product. Only
+ * REJECTED keeps the full-screen `VerificationPendingOverlay` (with the
+ * reviewer feedback threaded in) because it demands an action before the
+ * consultant can operate.
+ */
+export function VerificationBanner({
+  status,
+  resubmitUrl = "/settings/verification",
+}: {
+  status: VerificationStatus;
+  resubmitUrl?: string;
+}) {
+  if (status !== "PENDING_VERIFICATION" && status !== "UNDER_REVIEW") {
+    return null;
+  }
+
+  const isActionable = status === "PENDING_VERIFICATION";
+  const Icon = isActionable ? Clock : Shield;
+
+  return (
+    <div
+      className={cn(
+        "border-b px-4 sm:px-6 py-2.5 flex items-start gap-3 text-sm",
+        isActionable
+          ? "bg-amber-50 border-amber-200 text-amber-900"
+          : "bg-blue-50 border-blue-200 text-blue-900",
+      )}
+    >
+      <Icon className="w-4 h-4 mt-0.5 shrink-0" />
+      <div className="flex-1 min-w-0">
+        {isActionable ? (
+          <>
+            <span className="font-semibold">Complete your verification.</span>{" "}
+            <span>
+              Your profile isn&apos;t visible to clients until you submit your
+              verification details.
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="font-semibold">Verification under review.</span>{" "}
+            <span>
+              Our team is reviewing your profile — you&apos;ll receive an email
+              once the review is complete (usually 1-2 business days).
+            </span>
+          </>
+        )}
+      </div>
+      {isActionable && (
+        <Link
+          href={resubmitUrl}
+          className="shrink-0 inline-flex items-center gap-1 font-semibold text-amber-900 hover:text-amber-700 transition-colors"
+        >
+          Complete verification
+          <ArrowRight className="w-3.5 h-3.5" />
+        </Link>
+      )}
     </div>
   );
 }

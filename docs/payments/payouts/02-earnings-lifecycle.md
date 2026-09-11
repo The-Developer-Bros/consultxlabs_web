@@ -1,5 +1,7 @@
 # Earnings Lifecycle
 
+> **Moved (org/B2B side):** The organization-side documentation for earnings now lives in [`docs/enterprise/10-money-and-ledger/06-earnings-lifecycle.md`](../../enterprise/10-money-and-ledger/06-earnings-lifecycle.md) (and the payout batching in [`07-payout-pipeline.md`](../../enterprise/10-money-and-ledger/07-payout-pipeline.md)). This file keeps the consumer-marketplace (B2C) and gateway-generic details only.
+
 > How consultant earnings flow from payment to payout
 
 ---
@@ -14,7 +16,10 @@ stateDiagram-v2
     PENDING --> REFUNDED: Payment Refunded
 
     READY --> HELD: Dispute Opened
-    READY --> PAID: Payout Completed
+    READY --> BATCHED: Rolled into payout batch
+
+    BATCHED --> PAID: Payout Completed (COMPLETED + UTR)
+    BATCHED --> READY: Batch failed or rejected
 
     HELD --> READY: Dispute Resolved (favor consultant)
     HELD --> REFUNDED: Dispute Resolved (favor customer)
@@ -47,7 +52,8 @@ stateDiagram-v2
 | **PENDING**  | Earnings created, within hold period    | Wait for hold expiry |
 | **READY**    | Hold period passed, eligible for payout | Include in batch     |
 | **HELD**     | Frozen due to dispute                   | Await resolution     |
-| **PAID**     | Successfully paid to consultant         | Terminal state       |
+| **BATCHED**  | Rolled into a payout batch, but cash has not left yet | Await payout completion |
+| **PAID**     | Successfully paid to consultant (payout reached COMPLETED with a UTR) | Terminal state       |
 | **REFUNDED** | Payment was refunded                    | Terminal state       |
 
 ---
@@ -255,7 +261,7 @@ sequenceDiagram
 | PAID            | Yes*        | Via `forceRefund: true` (lost disputes), decrements totalRevenue |
 | REFUNDED        | No          | Already refunded                                   |
 
-> *PAID earnings can now be refunded using `forceRefund: true`, used by the lost-dispute handler. This creates TDS reversal records and decrements `totalRevenue`.
+> *PAID earnings can now be refunded using `forceRefund: true`, used by the lost-dispute handler. This routes through the shared `recordTdsReversal` helper to write a negative `isReversal` `TDSRecord` (capped at the original withholding so a refund-then-chargeback can't double-reverse, #813) and decrements `totalRevenue`.
 
 ---
 
@@ -298,7 +304,7 @@ await refundEarnings(paymentId);
 
 // Lost dispute on already-PAID earnings (Mar 2026)
 await refundEarnings(paymentId, { forceRefund: true });
-// Creates TDS reversal records, decrements totalRevenue
+// Writes a negative isReversal TDSRecord via recordTdsReversal (capped, #813), decrements totalRevenue
 ```
 
 ---
@@ -379,7 +385,8 @@ enum EarningStatus {
   PENDING   // Within hold period
   READY     // Eligible for payout
   HELD      // Frozen due to dispute
-  PAID      // Payout completed
+  BATCHED   // Rolled into a payout batch; cash has not been disbursed yet
+  PAID      // Payout completed (reached COMPLETED with a UTR)
   REFUNDED  // Payment was refunded
 }
 ```

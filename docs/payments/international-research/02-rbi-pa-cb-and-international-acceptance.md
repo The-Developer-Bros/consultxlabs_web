@@ -3,6 +3,15 @@
 > **Research Date:** March 2026
 > **Status:** Current as of March 2026
 
+> **Status: dated research, not current guidance.** Written March 2026 and kept
+> for the regulatory groundwork it records, which is still useful. Its gateway
+> shortlist is not: **XFlow was evaluated and rejected** (it is cross-border B2B
+> settlement infrastructure, not a payment gateway) and removed from the
+> codebase in #984, and Lemon Squeezy was rejected for prohibiting services in
+> its ToS. Neither is a current option. The live rails are Razorpay (primary,
+> INR settlement) and Stripe (the request→approve booking path). See
+> [../gateways/README.md](../gateways/README.md) for what is actually wired.
+
 ---
 
 ## 1. What is PA-CB?

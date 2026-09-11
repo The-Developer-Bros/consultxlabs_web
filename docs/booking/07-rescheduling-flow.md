@@ -25,9 +25,13 @@
 
 Rescheduling allows a consultee to request new time slots for an existing appointment without creating a new booking and without triggering any payment operation. The original payment is fully reused -- there is no charge, no refund, and no new invoice.
 
-**Who can trigger a reschedule:** The user who originally booked the appointment (the consultee).
+**Who can trigger a reschedule:** For consultations and subscriptions, the consultee who booked (or the consultant on Manage Timings / allocate). Webinars, classes, and trials are **not** consultee-reschedulable (#1005); group events are organiser-managed.
 
 **Minimum notice:** 24 hours before any affected slot (`MINIMUM_HOURS_BEFORE_RESCHEDULE = 24`). If any slot selected for rescheduling starts within 24 hours, the entire request is rejected.
+
+**Stale-tab guard (#1012):** Re-allocation after a reschedule must send `expectedTentativeSlotCount` matching the live tentative set. A second tab that submits after the first finished receives 409 instead of delete+recreating confirmed slots.
+
+**Planner webinar time/duration edits (#1071):** Host edits go through `replaceContiguousSlotRun`, which reconciles the live N×30min atoms in place (tentative-flip first so `slot_no_confirmed_overlap` cannot self-collide, then update / create / soft-retire). This is distinct from consultee allocate-reschedule; class planner PATCH does not rewrite session slot runs when only `sessionDurationInHours` changes.
 
 **Code location:** `app/api/appointments/[appointmentId]/reschedule/route.ts`
 
@@ -45,7 +49,7 @@ When a consultee reschedules, the system does **not** delete the old slots. Inst
 
 2. **Slot count integrity.** The auto-allocation algorithm uses the count of existing slots (tentative + non-tentative) to determine how many new slots to create. If we deleted the old slots, the algorithm would not know how many slots the event originally required and could allocate the wrong number. See [Reschedule Detection in Auto-Allocation](#reschedule-detection-in-auto-allocation) for the full explanation.
 
-3. **Graceful abandonment handling.** If a consultee initiates a reschedule but never follows through, a cron job can clean up stale tentative slots after a timeout period (currently 7 days). Deletion would leave the event in a broken state with fewer slots than expected.
+3. **Graceful abandonment handling.** If a consultee initiates a reschedule but never follows through, a cron job can clean up stale tentative slots after a timeout period (currently 24 hours, `TENTATIVE_EXPIRATION_HOURS = 24`). Deletion would leave the event in a broken state with fewer slots than expected.
 
 4. **No payment side effects.** Deleting slots could trigger cascading effects in the payment system (refund calculations, earnings adjustments). Marking as tentative keeps the payment records cleanly attached.
 
@@ -205,7 +209,7 @@ After the consultee initiates a reschedule, the request appears on the consultan
 
 ### How Rescheduled Requests Appear
 
-The consultant's dashboard includes a **Requests** tab (`RequestSlotAllocationTab.tsx`). This tab fetches all consultations and subscriptions with `requestStatus: PENDING`. When a request is a reschedule (as opposed to a fresh booking), the system detects this by examining the slots:
+The consultant's dashboard includes a **Requests** tab (`RequestSlotAllocationTab.tsx`). This tab fetches all consultations and subscriptions with `status: PENDING`. When a request is a reschedule (as opposed to a fresh booking), the system detects this by examining the slots:
 
 - It counts **tentative** slots (`isTentative: true`) vs **total** slots.
 - If tentative slots exist, it is a reschedule.
@@ -237,20 +241,41 @@ The consultant has two buttons for handling any pending request:
 
 | Button                  | Action                                              | When to use                                       |
 | ----------------------- | --------------------------------------------------- | ------------------------------------------------- |
-| **Use Requested Times** | Accept the times the consultee proposed             | Consultee submitted preferred times and they work |
-| **Allocate Slots**      | Run the auto-allocation algorithm to find new times | Need the system to find optimal times             |
+| **Use Requested Times** | Accept the times the consultee proposed on a FIRST request | Consultee submitted preferred times and they work |
+| **Allocate Slots**      | Run the auto-allocation algorithm to find new times | Need the system to find optimal times, and the only option after a reschedule |
 
 #### Option A: "Use Requested Times" (useRequestedSlots)
 
-This path is used when the consultee has already proposed specific times. The flow:
+This path is used when the consultee has already proposed specific times on
+their original request. It is **not** available once a reschedule has been
+requested. A reschedule releases slots by flipping `isTentative` and
+`completionStatus` on the existing rows; it never writes a new `startsAt`.
+Those rows therefore still hold the very times the consultee is trying to move
+away from, and `fetchEventData` derives `requestedSlots` from them, so reusing
+them would silently re-confirm the original booking. The service rejects that
+case and the button is hidden whenever any slot is `RESCHEDULED`.
 
-1. Fetch the event data including all requested slots.
-2. Verify appointments actually exist (prevents approving empty requests).
-3. Verify the slot count matches (requested slots = appointment slots).
-4. Run validation on the requested slots (availability, conflicts, etc.).
-5. Update the event status to `APPROVED`.
-6. Clear all `isTentative` flags (`isTentative: false` on all slots).
-7. Return success with the existing appointments.
+The flow:
+
+1. Take the consultant allocation lock, then the consultee booking lock, in that
+   order. This path used to hold no lock at all, which let an approval run
+   alongside an auto or manual allocation of the same event. The consultee lock
+   matters separately: the overlap exclusion constraint is keyed by consultant,
+   so it cannot see the same person being booked with two different consultants
+   at once.
+2. Inside the transaction, apply the initial-allocation guard under an advisory
+   lock. It is always armed here, because approving stored times is only ever
+   valid for an event that has not been allocated yet. A retry carrying the same
+   idempotency key replays the winner's batch; a different key gets a 409.
+3. Fetch the event data including all requested slots.
+4. Verify appointments actually exist (prevents approving empty requests).
+5. Reject if any slot is `RESCHEDULED` — the stored times are stale by definition.
+6. Verify the slot count matches (requested slots = appointment slots).
+7. Run validation on the requested slots (availability, conflicts, etc.).
+8. Update the event status to `APPROVED`.
+9. Clear all `isTentative` flags (`isTentative: false` on all slots).
+10. Stamp the idempotency key on the first appointment.
+11. Return success with the existing appointments.
 
 #### Option B: "Allocate Slots" (autoAllocate)
 
@@ -275,7 +300,7 @@ sequenceDiagram
 
     Con->>Tab: Opens Requests tab
     Tab->>API_List: Fetch PENDING requests
-    API_List->>DB: Query consultations/subscriptions<br/>where requestStatus = PENDING
+    API_List->>DB: Query consultations/subscriptions<br/>where status = PENDING
     DB-->>API_List: Return events with slots
     API_List-->>Tab: Events with tentative slot counts
 
@@ -345,8 +370,8 @@ sequenceDiagram
     RescheduleAPI->>RescheduleAPI: Filter slots to requested slotIds
     RescheduleAPI->>RescheduleAPI: Validate 24-hour window for each slot
 
-    RescheduleAPI->>DB: UPDATE slots SET isTentative = true<br/>WHERE id IN (s1, s2, s3)
-    RescheduleAPI->>DB: UPDATE subscription SET requestStatus = PENDING
+    RescheduleAPI->>DB: UPDATE slots SET isTentative = true, completionStatus = RESCHEDULED<br/>WHERE id IN (s1, s2, s3)
+    Note over RescheduleAPI,DB: Partial reschedule (slotIds): subscription status left unchanged.<br/>Only a full reschedule (no slotIds) sets status = PENDING.
     RescheduleAPI->>DB: COMMIT TRANSACTION
 
     RescheduleAPI-->>Frontend: success, rescheduleType = multiple_sessions,<br/>slotsAffected = 3
@@ -355,7 +380,7 @@ sequenceDiagram
     Note over Consultee,SlotService: PHASE 2: Consultant Reviews and Re-Allocates
 
     ConsultantUI->>DB: Fetch PENDING requests
-    DB-->>ConsultantUI: Subscription with requestStatus = PENDING
+    DB-->>ConsultantUI: Subscription with status = PENDING
 
     ConsultantUI->>ConsultantUI: Count tentative slots, show "Multiple Sessions" badge
 
@@ -551,9 +576,9 @@ Each of the 6 slots is checked. If `slot_5a` starts in 18 hours, the entire requ
 
 Only the 6 requested slots have `isTentative` set to `true`. The other 90 slots remain `isTentative: false`.
 
-**Step 7: Update subscription status.**
+**Step 7: Subscription status is left untouched.**
 
-The subscription's `requestStatus` is set to `PENDING`. (Note: this is a known issue -- it should arguably remain `APPROVED` for partial reschedules. See [Known Issues](#known-issues).)
+A partial reschedule of specific sessions no longer flips the whole subscription back to `PENDING`. The subscription keeps its existing status (for example `APPROVED`), and only the rescheduled slots are re-tentatived; session-level state is tracked on the slots via their `completionStatus` (`RESCHEDULED`). Only an entire-subscription reschedule (no `slotIds`) genuinely re-enters `PENDING`.
 
 **Step 8: Response.**
 
@@ -587,7 +612,7 @@ If the algorithm did not detect the reschedule, it would call `calculateRequired
 
 ### How Detection Works
 
-The algorithm inspects existing slot data before deciding how many slots to create (SlotAllocationService.ts L92-127):
+The algorithm inspects existing slot data before deciding how many slots to create (`SlotAllocationService.autoAllocate`):
 
 ```typescript
 // Count existing slots by tentative status
@@ -607,8 +632,16 @@ const isReschedule = tentativeSlotCount > 0;
 
 let requiredSlots: number;
 if (isReschedule) {
-  // RESCHEDULE: Preserve the original total slot count
-  requiredSlots = existingNonTentativeSlotCount + tentativeSlotCount;
+  // RESCHEDULE: allocate only the sessions being rescheduled, not the whole
+  // booking. One appointment is one session, so the count is the number of
+  // appointments carrying a tentative slot, times the slots each session needs.
+  // (#898 — a partial reschedule of 2 of 10 sessions needs 2 sessions' worth of
+  // new slots, not all 10; the earlier `existingNonTentative + tentative`
+  // formula over-allocated partial reschedules.)
+  const rescheduleSessions = existingAppointments.filter((a) =>
+    a.slotsOfAppointment.some((s) => s.isTentative),
+  ).length;
+  requiredSlots = rescheduleSessions * slotsPerCall;
 } else {
   // INITIAL ALLOCATION: Calculate from config
   requiredSlots = SlotCalculationService.calculateRequiredSlots(
@@ -620,16 +653,17 @@ if (isReschedule) {
 
 ### The Math
 
-Using our example:
+Using our example (3 sessions rescheduled, each a 1-hour call = 2 slots):
 
-| Count                           | Value  | Explanation                                        |
-| ------------------------------- | ------ | -------------------------------------------------- |
-| `existingNonTentativeSlotCount` | 90     | Slots that are confirmed and not being rescheduled |
-| `tentativeSlotCount`            | 6      | Slots marked for rescheduling                      |
-| `isReschedule`                  | `true` | Because `tentativeSlotCount > 0`                   |
-| `requiredSlots`                 | 96     | `90 + 6 = 96` (the original total)                 |
+| Count                           | Value  | Explanation                                            |
+| ------------------------------- | ------ | ------------------------------------------------------ |
+| `existingNonTentativeSlotCount` | 90     | Slots that are confirmed and not being rescheduled     |
+| `tentativeSlotCount`            | 6      | Slots marked for rescheduling                          |
+| `isReschedule`                  | `true` | Because `tentativeSlotCount > 0`                       |
+| `rescheduleSessions`            | 3      | Appointments carrying at least one tentative slot      |
+| `requiredSlots`                 | 6      | `3 sessions x 2 slots = 6` (only the rescheduled slots) |
 
-The algorithm now knows: "I need 96 total slots. 90 are already confirmed. I need to find new times for 6 slots." It will replace the 6 tentative slots with 6 new confirmed slots, leaving the 90 confirmed ones untouched.
+The algorithm now knows: "I need to find 6 new slots -- one replacement per tentative slot, across the 3 rescheduled sessions." It allocates 6 new confirmed slots, leaving the 90 confirmed ones untouched. (#898 made `requiredSlots` the count of slots being rescheduled; previously it was the booking's full total, which silently over-allocated partial reschedules.)
 
 ### What Would Go Wrong Without This
 
@@ -645,7 +679,7 @@ flowchart LR
 
     subgraph With_Detection["WITH Reschedule Detection"]
         A2["96 original slots"] --> B2["6 marked tentative"]
-        B2 --> C2["requiredSlots = 90 + 6 = 96"]
+        B2 --> C2["requiredSlots = 3 sessions × 2 = 6"]
         C2 --> D2["Algorithm allocates 6 replacement slots"]
         D2 --> E2["Total: 90 confirmed + 6 new = 96 slots"]
         E2 --> F2["CORRECT: Subscription still has<br/>48 sessions"]
@@ -654,6 +688,16 @@ flowchart LR
     style F1 fill:#ffcdd2
     style F2 fill:#c8e6c9
 ```
+
+### Preserving Paid Appointments During Re-Allocation
+
+When the allocator clears an event's old slots before writing the new ones, it must not destroy any appointment that carries a `Payment`. Deleting such an appointment cascades to its `Payment`, which `ConsultantEarnings` references with `onDelete: Restrict`, so the cascade aborts the whole transaction. The allocator therefore preserves any payment-bearing appointment and strips only its slots.
+
+For subscriptions and classes this is sufficient, because their relation to `Appointment` is one-to-many: the allocator writes the new slots onto fresh appointment rows alongside the preserved one. Consultations and webinars are one-to-one (`consultationId` and `webinarId` are unique), so creating a second appointment for the same event would violate that unique constraint. For those two types the allocator instead reuses the preserved appointment, attaching the new slots to the existing row rather than creating a replacement (#898). The original payment, earnings, and cancellation-policy snapshot all stay attached, and a rescheduled webinar's enrolled attendees are re-linked to the new slots.
+
+### Per-Day Session Cap
+
+Auto-allocation also enforces a per-day session cap -- one call per day for subscriptions and two for classes -- so a week's sessions are spread across days rather than stacked onto one. The cap buckets candidate slots by local day, matching the consultant's manual-allocation guard so that automatic and manual allocation agree at timezone boundaries (#898).
 
 ---
 
@@ -735,14 +779,14 @@ The entire operation runs inside a Prisma `$transaction` with a 60-second timeou
 
 | Event Type       | Partial reschedule? | Status field updated | New status value | Notes                                                                                                        |
 | ---------------- | ------------------- | -------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------ |
-| **Consultation** | No (always entire)  | `requestStatus`      | `PENDING`        | Single session, single appointment. All slots marked tentative.                                              |
-| **Subscription** | Yes (via `slotIds`) | `requestStatus`      | `PENDING`        | Supports all three reschedule types. See Known Issues for status behavior on partial reschedule.             |
-| **Webinar**      | No (always entire)  | `status`             | `SCHEDULED`      | All slots marked tentative. Uses `status` not `requestStatus` because webinars have a different state model. |
-| **Class**        | No (always entire)  | `status`             | `SCHEDULED`      | Same as webinar. Uses `status` instead of `requestStatus`.                                                   |
+| **Consultation** | No (always entire)  | `status`      | `PENDING`        | Single session, single appointment. All slots marked tentative.                                              |
+| **Subscription** | Yes (via `slotIds`) | `status` (entire reschedule only) | `PENDING`        | Supports all three reschedule types. Only an entire reschedule (no `slotIds`) reverts `status` to `PENDING`; a partial reschedule of specific sessions leaves the subscription status unchanged and re-tentatives only the selected slots. |
+| **Webinar**      | No (always entire)  | `status`             | `SCHEDULED`      | All slots marked tentative. Uses `status` not `status` because webinars have a different state model. |
+| **Class**        | No (always entire)  | `status`             | `SCHEDULED`      | Same as webinar. Uses `status` instead of `status`.                                                   |
 
 ### Why Different Status Fields?
 
-Consultations and subscriptions use `requestStatus` because they follow a request/approval workflow. The consultee requests, the consultant approves. Setting `requestStatus` back to `PENDING` puts the booking back into the approval queue.
+Consultations and subscriptions use `status` because they follow a request/approval workflow. The consultee requests, the consultant approves. Setting `status` back to `PENDING` puts the booking back into the approval queue.
 
 Webinars and classes use `status` because they do not have the same request/approval model. Setting `status` to `SCHEDULED` indicates the event needs new time allocation without implying a request/approval step.
 
@@ -799,11 +843,11 @@ stateDiagram-v2
     ReAllocated: New startsAt/endsAt assigned
     ReAllocated: Same slot record, updated times
 
-    Tentative --> Abandoned: No action taken (7+ days)
+    Tentative --> Abandoned: No action taken (24+ hours)
     Abandoned: isTentative still true
-    Abandoned: Stale after 7+ days
+    Abandoned: Stale after 24+ hours
 
-    Abandoned --> CleanedUp: Cron job removes
+    Abandoned --> CleanedUp: Cron job removes (24h)
     CleanedUp: Slot deleted from DB
     CleanedUp: Event may need manual review
 
@@ -816,7 +860,7 @@ stateDiagram-v2
 | --------------------- | ------------------------ | -------------------------------- | ---------------------------------------------------- |
 | Allocated (confirmed) | Tentative                | Consultee calls POST /reschedule | `isTentative` = `true`                               |
 | Tentative             | Re-allocated (confirmed) | Consultant approves/allocates    | `isTentative` = `false`, `startsAt`/`endsAt` updated |
-| Tentative             | Abandoned                | No action for 7+ days            | No change (still `isTentative` = `true`)             |
+| Tentative             | Abandoned                | No action for 24+ hours          | No change (still `isTentative` = `true`)             |
 | Abandoned             | Cleaned up               | Cron job fires                   | Slot record deleted                                  |
 | Re-allocated          | Tentative                | Consultee reschedules again      | `isTentative` = `true`                               |
 
@@ -960,7 +1004,7 @@ if (slotsToReschedule.length !== slotIds.length) {
 - The tentative slots still hold their old times, but those times are no longer valid.
 - The auto-allocation algorithm will continue to detect this as a reschedule (`tentativeSlotCount > 0`) on any future allocation attempt.
 
-**Current mitigation:** A cron job is designed to clean up tentative slots after 7 days of inactivity. However, this cleanup is deletion-based, which means the subscription will then have fewer slots than expected.
+**Current mitigation:** A cron job is designed to clean up tentative slots after 24 hours of inactivity (`TENTATIVE_EXPIRATION_HOURS = 24`). However, this cleanup is deletion-based, which means the subscription will then have fewer slots than expected.
 
 **Ideal future mitigation:** Instead of deleting, the cron should either (a) revert the tentative flags and restore the original status, or (b) notify both parties before taking action.
 
@@ -1012,7 +1056,7 @@ Five issues have been validated against the codebase. All are legitimate and tra
 
 ### Issue 1: slotIds vs Session-Based Selection
 
-**Priority:** HIGH | **Status:** Planned fix (Phase 3)
+**Priority:** HIGH | **Status:** Partially addressed ([#448](https://github.com/Practitionist/familiarise_web/issues/448)) — the API responses and `rescheduleType` are now session-based, so the user-facing semantics no longer mislead. The request contract still accepts `slotIds[]`, so migrating the request itself to `appointmentIds[]` remains the Phase 3 work.
 
 **The problem:** The API accepts `slotIds[]` (individual 30-minute time blocks) instead of `appointmentIds[]` (logical sessions). There is no session-level abstraction in the API contract.
 
@@ -1028,17 +1072,17 @@ Five issues have been validated against the codebase. All are legitimate and tra
 
 ### Issue 2: Status Always Set to PENDING
 
-**Priority:** HIGH | **Status:** Planned fix (Phase 1)
+**Priority:** HIGH | **Status:** FIXED — a partial reschedule no longer flips the whole subscription to `PENDING`.
 
-**The problem:** When a subscription reschedule occurs, the subscription's `requestStatus` is unconditionally set to `PENDING`, regardless of whether it is a partial or full reschedule.
+**The former problem:** A subscription reschedule used to set the subscription's `status` to `PENDING` unconditionally, regardless of whether it was a partial or full reschedule.
 
-**Why this matters:** Consider a 48-session subscription where the consultee reschedules 1 session. Setting the entire subscription to `PENDING` implies the whole subscription needs re-approval, which:
+**Why this mattered:** Consider a 48-session subscription where the consultee reschedules 1 session. Setting the entire subscription to `PENDING` implied the whole subscription needed re-approval, which:
 
-- Removes it from the "active" list and places it in the "pending" queue.
-- May confuse the consultant into thinking the entire subscription needs attention.
-- The other 47 sessions are fully confirmed and should not appear to need action.
+- Removed it from the "active" list and placed it in the "pending" queue.
+- Could confuse the consultant into thinking the entire subscription needed attention.
+- The other 47 sessions were fully confirmed and should not have appeared to need action.
 
-**Planned fix:** For partial reschedules (`individual_session` or `multiple_sessions`), keep the subscription status as `APPROVED` and rely on the `isTentative` flags to indicate which specific slots need attention. Only set `PENDING` for `entire_booking` reschedules.
+**The fix:** For partial reschedules (`individual_session` or `multiple_sessions`), the subscription keeps its existing status (for example `APPROVED`) and only the rescheduled slots are re-tentatived and stamped `completionStatus = RESCHEDULED`. Only an entire (`entire_booking`) reschedule re-enters `PENDING`.
 
 ### Issue 3: No Partial Reschedule Tracking Field
 
@@ -1071,7 +1115,7 @@ In practice, this edge case is unlikely because sessions rarely span midnight. B
 
 ### Issue 5: Toast Shows Slot Count, Not Session Count
 
-**Priority:** HIGH | **Status:** Planned fix (Phase 1)
+**Priority:** HIGH | **Status:** FIXED ([#448](https://github.com/Practitionist/familiarise_web/issues/448) follow-up) — the reschedule API now returns `sessionsAffected` (the count of distinct appointments) alongside `slotsAffected`, derives `rescheduleType` from sessions, and the consultee toast displays the session count. A one-hour (two-slot) session now correctly reports one session rather than "2 sessions".
 
 **The problem:** The API returns `slotsAffected` (e.g., 72 slots for 18 four-slot sessions), and the frontend displays this as a session count. The user sees "72 sessions marked for rescheduling" when it should say "18 sessions."
 
@@ -1091,7 +1135,7 @@ In practice, this edge case is unlikely because sessions rarely span midnight. B
 
 | Phase   | Scope                       | Issues Fixed                                    | Breaking Change? |
 | ------- | --------------------------- | ----------------------------------------------- | ---------------- |
-| Phase 1 | API response + status logic | #2 (PENDING status), #5 (slot vs session count) | No               |
+| Phase 1 | API response + status logic | #2 (PENDING status, fixed), #5 (slot vs session count) | No               |
 | Phase 2 | Schema migration            | #3 (tracking field)                             | No (additive)    |
 | Phase 3 | New endpoint                | #1 (slotIds to appointmentIds)                  | Yes              |
 | Phase 4 | Optimization                | #4 (session-aware validation)                   | No               |
@@ -1104,3 +1148,19 @@ In practice, this edge case is unlikely because sessions rarely span midnight. B
 - [API Reference](./04-api-reference.md) -- Validate and allocate endpoints (used after reschedule)
 - [Rescheduling Payment Flow](../payments/cancellations-rescheduling/02-rescheduling-payment-flow.md) -- Payment reuse details
 - [Cancellation Payment Flow](../payments/cancellations-rescheduling/01-cancellation-payment-flow.md) -- When user cancels instead of rescheduling
+
+## The response loop (2026-08-14, #1163 / #1169 PR 4)
+
+A proposal can now be answered by the other side. `POST /api/appointments/[appointmentId]/reschedule/respond` with `{ "action": "accept" }` re-validates the proposed times through the full allocator (manual mode under the consultant-wide lock — the same machinery auto-confirm uses, so nothing is written unless validation commits) and finalizes the request to `ACCEPTED`; `{ "action": "decline" }` is a guarded transition to `DECLINED` that deliberately leaves the released slots in the consultant's allocate queue, because the initiator still wants to move. The initiator's own exit remains `withdraw`, which restores the booking. Authorization is the counterparty alone, with the withdraw route's anti-oracle 404 discipline. The consultee's event reads now carry the live proposal (`rescheduleRequests` with `proposedSlots`), so a consultant-initiated reschedule finally renders on the consultee side instead of an indefinite "Awaiting schedule confirmation". Admins of the organization funding a booking may cancel and reschedule it, acting on the payer side of the policy tiers; their proposals carry the consultee role, so the same auto-confirm consent rules apply.
+
+Two refusals guard the accept path specifically, because accept is the action that moves the booking's slots to new times. A proposal that has passed its `expiresAt` is refused with `PROPOSAL_EXPIRED` before the allocator is asked for anything. The deadline cannot be inferred from the status alone: `expireRescheduleProposals` runs hourly, so a lapsed proposal remains `PENDING_REVIEW` for up to an hour after it stops being answerable. This matters beyond tidiness, because the deadline is `min(now + 72h, earliest released session − 24h)` — accepting a lapsed proposal is precisely how a booking would land inside the 24-hour window that the reschedule route itself refuses to move it into. The race between that check and the final transition needs no lock of its own, since `EXPIRED` is not an allowed from-state for `ACCEPTED` and a cron that wins the race therefore makes the transition fail rather than accept. A booking carrying a live payment dispute is refused with `DISPUTE_ACTIVE`, matching the freeze that the cancel and reschedule routes already apply: while a dispute is contested the booking's state is evidence and must not move. That guard sits deliberately after the counterparty check rather than before it, because answering `409` to an unauthorized caller would turn the endpoint into the dispute oracle that the surrounding 404 discipline exists to prevent. Decline is exempt from both refusals, as it moves nothing.
+
+## Confirming a proposal without declining it (2026-09-05, #1340)
+
+Both confirmation paths — the consultee-initiated auto-confirm in `lib/booking/reschedule-auto-confirm.ts` and the explicit accept in `lib/booking/reschedule-respond.ts` — run in two steps, and the order of those steps is what makes this correct. They first call `SlotAllocationService.allocate` in manual mode under the consultant-wide lock, so the full availability, cap and conflict validation happens before anything is written, and only when that transaction has committed do they close the proposal itself with a compare-and-swap from `PENDING_REVIEW` to `AUTO_ACCEPTED` or `ACCEPTED`.
+
+The allocator's final act inside that transaction is `resolveConsumedPreferenceRequests`, which closes every open reschedule proposal whose released slots the newly placed times replace. That sweep exists because placing times on the calendar is itself an answer: a competing proposal must not keep holding its `openForAppointmentId` reservation once the session has been moved. Until #1340 the sweep had no way to tell a competing proposal from the one it was serving, so a confirmation superseded itself. The proposal was marked `DECLINED` inside the allocator's transaction, the caller's compare-and-swap then matched zero rows and threw `IllegalTransitionError`, and the booking moved while its audit trail recorded a refusal. Auto-confirm swallowed the error and answered `autoConfirmed: false` to a consultee whose session had already been rescheduled, and the explicit accept rethrew it as a `409` and never sent the MOVED notification.
+
+Both callers therefore pass `excludeRescheduleRequestId` on the allocation request, and the sweep adds `id: { not: … }` to its supersede query. The exclusion is opt-in and deliberately narrow: an allocation that is not confirming a specific proposal — a consultant placing different times by hand, or any ordinary re-plan — still supersedes every open proposal on those slots exactly as before.
+
+Accept now also runs inside `withAppointmentLock`, the same per-appointment atom the cancel and reschedule routes take. Accept is a lifecycle mutation that moves this appointment's slots, and the allocator's own locks are keyed by consultant and by consultee rather than by appointment, so an accept and a concurrent cancellation of the same booking never contended for anything. The lock order is unchanged, because the appointment atom is the coarsest key and is taken before the allocator acquires its own. A caller that arrives while another mutation holds the appointment receives `423 APPOINTMENT_BUSY`, and a caller that arrives while the locking service is unreachable receives `503 BOOKING_LOCK_UNAVAILABLE`, both matching the reschedule route's answers.

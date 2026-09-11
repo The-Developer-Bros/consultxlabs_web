@@ -7,17 +7,13 @@ import {
   CardTitle,
   CardDescription,
 } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { Mail, MapPin, Phone, Clock, MessageSquare } from "lucide-react";
+import { Mail, Phone, Clock, MessageSquare } from "lucide-react";
+import { ContactForm } from "./ContactForm";
 import {
   COMPANY_INFO,
   PAGE_META,
   BUSINESS_HOURS,
-  INQUIRY_CATEGORIES,
   SUPPORT_LINKS,
   getMailtoLink,
   getTelLink,
@@ -26,16 +22,16 @@ import {
 export default function ContactUsPage() {
   return (
     <section className="w-full">
-      <div className="container mx-auto px-4 md:px-6 py-8">
+      <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Hero Section */}
         <div className="text-center mb-12">
           <div className="flex justify-center mb-4">
-            <MessageSquare className="h-16 w-16 text-blue-600" />
+            <MessageSquare className="h-16 w-16 text-foreground" />
           </div>
-          <h1 className="text-4xl md:text-5xl font-bold mb-4">
+          <h1 className="text-fluid-4xl md:text-fluid-5xl font-bold tracking-tight mb-4">
             {PAGE_META.contact.title}
           </h1>
-          <p className="text-xl text-muted-foreground max-w-3xl mx-auto">
+          <p className="text-fluid-lg text-muted-foreground max-w-3xl mx-auto">
             {PAGE_META.contact.description}
           </p>
         </div>
@@ -43,35 +39,18 @@ export default function ContactUsPage() {
         <div className="max-w-6xl mx-auto grid md:grid-cols-2 gap-8">
           {/* Contact Information */}
           <div className="space-y-6">
-            <Card>
+            <Card className="shadow-elevation-1">
               <CardHeader>
-                <CardTitle className="text-2xl">Get in Touch</CardTitle>
+                <CardTitle className="text-fluid-2xl">Get in Touch</CardTitle>
                 <CardDescription>
                   Our team is available to assist you with any inquiries
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
-                {/* Company Address */}
-                <div className="flex items-start gap-4">
-                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blue-100 dark:bg-blue-950 flex items-center justify-center">
-                    <MapPin className="h-5 w-5 text-blue-600" />
-                  </div>
-                  <div>
-                    <h3 className="font-semibold mb-1">Address</h3>
-                    <p className="text-sm text-muted-foreground">
-                      {COMPANY_INFO.name}
-                      <br />
-                      {COMPANY_INFO.address}
-                    </p>
-                  </div>
-                </div>
-
-                <Separator />
-
                 {/* Email */}
                 <div className="flex items-start gap-4">
-                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-green-100 dark:bg-green-950 flex items-center justify-center">
-                    <Mail className="h-5 w-5 text-green-600" />
+                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-muted flex items-center justify-center">
+                    <Mail className="h-5 w-5 text-foreground" />
                   </div>
                   <div>
                     <h3 className="font-semibold mb-1">Email</h3>
@@ -79,7 +58,7 @@ export default function ContactUsPage() {
                       General Inquiries:{" "}
                       <a
                         href={getMailtoLink()}
-                        className="text-blue-600 hover:underline"
+                        className="font-medium text-foreground underline underline-offset-4 hover:no-underline"
                       >
                         {COMPANY_INFO.email}
                       </a>
@@ -88,7 +67,7 @@ export default function ContactUsPage() {
                       Support:{" "}
                       <a
                         href={getMailtoLink(COMPANY_INFO.supportEmail)}
-                        className="text-blue-600 hover:underline"
+                        className="font-medium text-foreground underline underline-offset-4 hover:no-underline"
                       >
                         {COMPANY_INFO.supportEmail}
                       </a>
@@ -100,15 +79,15 @@ export default function ContactUsPage() {
 
                 {/* Phone */}
                 <div className="flex items-start gap-4">
-                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-purple-100 dark:bg-purple-950 flex items-center justify-center">
-                    <Phone className="h-5 w-5 text-purple-600" />
+                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-muted flex items-center justify-center">
+                    <Phone className="h-5 w-5 text-foreground" />
                   </div>
                   <div>
                     <h3 className="font-semibold mb-1">Phone</h3>
                     <p className="text-sm text-muted-foreground">
                       <a
                         href={getTelLink()}
-                        className="text-blue-600 hover:underline"
+                        className="font-medium text-foreground underline underline-offset-4 hover:no-underline"
                       >
                         {COMPANY_INFO.phone}
                       </a>
@@ -123,8 +102,8 @@ export default function ContactUsPage() {
 
                 {/* Business Hours */}
                 <div className="flex items-start gap-4">
-                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-orange-100 dark:bg-orange-950 flex items-center justify-center">
-                    <Clock className="h-5 w-5 text-orange-600" />
+                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-muted flex items-center justify-center">
+                    <Clock className="h-5 w-5 text-foreground" />
                   </div>
                   <div>
                     <h3 className="font-semibold mb-1">Business Hours</h3>
@@ -141,7 +120,7 @@ export default function ContactUsPage() {
             </Card>
 
             {/* Support Information */}
-            <Card>
+            <Card className="shadow-elevation-1">
               <CardHeader>
                 <CardTitle>Support Resources</CardTitle>
               </CardHeader>
@@ -155,7 +134,7 @@ export default function ContactUsPage() {
                     <li key={link.href} className="text-sm">
                       <a
                         href={link.href}
-                        className="text-blue-600 hover:underline"
+                        className="font-medium text-foreground underline underline-offset-4 hover:no-underline"
                       >
                         • {link.label}
                       </a>
@@ -167,112 +146,23 @@ export default function ContactUsPage() {
           </div>
 
           {/* Contact Form */}
-          <Card>
+          <Card className="shadow-elevation-1">
             <CardHeader>
-              <CardTitle className="text-2xl">Send us a Message</CardTitle>
+              <CardTitle className="text-fluid-2xl">Send us a Message</CardTitle>
               <CardDescription>
                 Fill out the form below and we'll get back to you as soon as
                 possible
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <form className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="first-name">
-                      First name <span className="text-red-500">*</span>
-                    </Label>
-                    <Input
-                      id="first-name"
-                      placeholder="Enter your first name"
-                      required
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="last-name">
-                      Last name <span className="text-red-500">*</span>
-                    </Label>
-                    <Input
-                      id="last-name"
-                      placeholder="Enter your last name"
-                      required
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="email">
-                    Email <span className="text-red-500">*</span>
-                  </Label>
-                  <Input
-                    id="email"
-                    placeholder="Enter your email"
-                    required
-                    type="email"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="phone">Phone (optional)</Label>
-                  <Input
-                    id="phone"
-                    placeholder="Enter your phone number"
-                    type="tel"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="subject">
-                    Subject <span className="text-red-500">*</span>
-                  </Label>
-                  <Input
-                    id="subject"
-                    placeholder="What is this regarding?"
-                    required
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="message">
-                    Message <span className="text-red-500">*</span>
-                  </Label>
-                  <Textarea
-                    className="min-h-[150px]"
-                    id="message"
-                    placeholder="Enter your message"
-                    required
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="category">Inquiry Type</Label>
-                  <select
-                    id="category"
-                    className="w-full px-3 py-2 border rounded-md bg-background"
-                  >
-                    {INQUIRY_CATEGORIES.map((category) => (
-                      <option key={category.value} value={category.value}>
-                        {category.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <Button className="w-full" type="submit" size="lg">
-                  Send Message
-                </Button>
-
-                <p className="text-xs text-muted-foreground text-center">
-                  We typically respond within 24-48 hours during business days
-                </p>
-              </form>
+              <ContactForm />
             </CardContent>
           </Card>
         </div>
 
         {/* Additional Information */}
         <div className="max-w-6xl mx-auto mt-8">
-          <Card>
+          <Card className="shadow-elevation-1">
             <CardContent className="p-6">
               <div className="grid md:grid-cols-3 gap-6 text-center">
                 <div>

@@ -12,7 +12,8 @@ const DEFAULT_TAX_RATE = parseFloat(
 
 export interface PricingConfig {
   taxRate?: number; // Override tax rate (0.18 = 18%)
-  isInternational?: boolean; // If true, zero-rate tax (export of services)
+  isInternational?: boolean; // Legacy signal; zero-rating now keys off exportZeroRated
+  exportZeroRated?: boolean; // Server-decided (#1230): international AND valid platform LUT
   discountPercent?: number; // Applied discount percentage (0.10 = 10%)
   discountAmount?: number; // Fixed discount amount
   creditsApplied?: number; // Referral credits applied (same unit as baseAmount, typically paise)
@@ -93,9 +94,13 @@ export function calculatePricing(
   baseAmount: number,
   config: PricingConfig = {},
 ): PricingBreakdown {
-  const taxRate = config.isInternational
-    ? 0
-    : (config.taxRate ?? DEFAULT_TAX_RATE);
+  // #1230 — zero-rating is a server-decided flag (platform LUT state), not a
+  // country comparison; the checkout context ships `exportZeroRated` so the
+  // client preview cannot diverge from determineTax/gst.ts.
+  const taxRate =
+    config.exportZeroRated === true
+      ? 0
+      : (config.taxRate ?? DEFAULT_TAX_RATE);
   const discountPercent = config.discountPercent ?? 0;
 
   const subtotal = calculateSubtotal(baseAmount);

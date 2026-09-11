@@ -16,7 +16,10 @@
 import prisma from "../../lib/prisma";
 import redis from "../../lib/redis";
 import { notifyAppointmentReminder } from "../../lib/novu/service";
-import { getAppUrl } from "../../lib/url";
+import { notificationScope } from "../../lib/novu/workflows";
+import { notificationHref } from "../../lib/novu/resolve-href";
+import { planTitleOrSessionLabel } from "../../lib/novu/humanize";
+import { withCronLock } from "@/lib/cron/with-cron-lock";
 
 // Reminder windows (in milliseconds)
 const REMINDER_24H = {
@@ -139,7 +142,9 @@ async function sendRemindersForWindow(window: {
     try {
       // Determine event type and plan info
       let appointmentType = "consultation";
-      let planTitle = "Unknown";
+      // #536 — empty, not "Unknown": an appointment matching none of the four
+      // shapes below would have named the customer's session "Unknown".
+      let planTitle = "";
       let consultantName = "Consultant";
       let consulteeName = "Consultee";
       const userIds: string[] = [];
@@ -207,16 +212,22 @@ async function sendRemindersForWindow(window: {
         // Redis unavailable — send anyway rather than skip silently
       }
 
-      const baseUrl = getAppUrl();
-
-      await notifyAppointmentReminder(uniqueUserIds, {
-        appointmentType,
-        consultantName,
-        consulteeName,
-        planTitle,
-        dateTime: slot.startsAt.toISOString(),
-        dashboardUrl: `${baseUrl}/dashboard`,
-      });
+      await notifyAppointmentReminder(
+        uniqueUserIds,
+        {
+          ...notificationScope(apt.organizationId),
+          appointmentType,
+          consultantName,
+          consulteeName,
+          planTitle: planTitleOrSessionLabel(planTitle, appointmentType),
+          // Rendered per recipient timezone at the trigger boundary (#536).
+          dateTime: slot.startsAt.toISOString(),
+          dashboardUrl: notificationHref(apt.organizationId, "appointments"),
+        },
+        // 24h and 1h payloads are identical — key the Novu transactionId by
+        // window so the second reminder isn't deduped away.
+        `${apt.id}:${window.label}`,
+      );
 
       sent++;
     } catch (error) {
@@ -232,7 +243,15 @@ async function sendRemindersForWindow(window: {
 /**
  * Main function to send all appointment reminders
  */
+// #476 — locked at the core so every entry (GH Actions / HTTP) shares one
+// mutual exclusion; fail-open: repeat-safe side effects, lock is belt-and-braces.
 export async function sendAppointmentReminders(): Promise<ReminderResult> {
+  return withCronLock("send-appointment-reminders", { failMode: "open" }, () =>
+    sendAppointmentRemindersUnlocked(),
+  );
+}
+
+async function sendAppointmentRemindersUnlocked(): Promise<ReminderResult> {
   console.log("🔔 Starting appointment reminders scan...");
 
   const [result24h, result1h] = await Promise.all([

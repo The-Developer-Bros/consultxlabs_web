@@ -3,11 +3,11 @@ import prisma from "lib/prisma";
 import { FeedbackStatus, Prisma } from "@prisma/client";
 
 import { requirePrivilegedAuth } from "@/lib/auth-helpers";
+import * as Sentry from "@sentry/nextjs";
 export async function GET(req: NextRequest) {
   try {
     const auth = await requirePrivilegedAuth();
     if (auth.error) return auth.error;
-    const session = auth.session;
 
     const { searchParams } = new URL(req.url);
     const status = searchParams.get("status");
@@ -80,6 +80,7 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "staff" } });
     console.error("Error fetching feedbacks:", error);
     return NextResponse.json(
       { error: "Failed to fetch feedbacks" },

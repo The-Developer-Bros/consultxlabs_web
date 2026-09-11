@@ -93,12 +93,94 @@ export const razorpayBaseEventSchema = z.object({
   event: z.string(),
 });
 
-export type RazorpayPaymentCapturedEvent = z.infer<
-  typeof razorpayPaymentCapturedEventSchema
->;
-export type RazorpayOrderPaidEvent = z.infer<
-  typeof razorpayOrderPaidEventSchema
->;
-export type RazorpayPaymentFailedEvent = z.infer<
-  typeof razorpayPaymentFailedEventSchema
+// A loose envelope schema used for idempotency key derivation and for
+// extracting optional entity identifiers before narrowing to a specific
+// event schema downstream. All `payload.*` fields are optional because
+// different event types populate different payload shapes.
+export const razorpayWebhookEnvelopeSchema = z
+  .object({
+    event: z.string(),
+    account_id: z.string().optional(),
+    payload: z
+      .object({
+        payment: z
+          .object({
+            entity: z
+              .object({
+                id: z.string().optional(),
+                order_id: z.string().optional(),
+                notes: z.record(z.unknown()).optional(),
+              })
+              .passthrough()
+              .optional(),
+          })
+          .passthrough()
+          .optional(),
+        order: z
+          .object({
+            entity: z
+              .object({
+                id: z.string().optional(),
+                notes: z.record(z.unknown()).optional(),
+              })
+              .passthrough()
+              .optional(),
+          })
+          .passthrough()
+          .optional(),
+        refund: z
+          .object({
+            entity: z
+              .object({
+                id: z.string().optional(),
+                payment_id: z.string().optional(),
+                amount: z.number().optional(),
+                currency: z.string().optional(),
+                status: z.string().optional(),
+              })
+              .passthrough()
+              .optional(),
+          })
+          .passthrough()
+          .optional(),
+        dispute: z
+          .object({
+            entity: z
+              .object({
+                id: z.string().optional(),
+                payment_id: z.string().optional(),
+                amount: z.number().optional(),
+                currency: z.string().optional(),
+                reason_code: z.string().optional(),
+                reason_description: z.string().optional(),
+                status: z.string().optional(),
+                respond_by: z.number().nullable().optional(),
+                deduct_at_onset: z.boolean().optional(),
+              })
+              .passthrough()
+              .optional(),
+          })
+          .passthrough()
+          .optional(),
+        payout: z
+          .object({
+            entity: z
+              .object({
+                id: z.string().optional(),
+                status: z.string().optional(),
+                failure_reason: z.string().nullable().optional(),
+              })
+              .passthrough()
+              .optional(),
+          })
+          .passthrough()
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
+export type RazorpayWebhookEnvelope = z.infer<
+  typeof razorpayWebhookEnvelopeSchema
 >;

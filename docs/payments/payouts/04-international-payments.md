@@ -156,11 +156,11 @@ flowchart LR
 
 ### For Indian Platform (Familiarise)
 
-| Tax               | Rate | Applies To                                        |
-| ----------------- | ---- | ------------------------------------------------- |
-| GST on Services   | 18%  | Platform commission (B2B)                         |
-| TDS on Payments   | 10%  | Payments to Indian consultants (if >₹30,000/year) |
-| Equalization Levy | 2%   | Payments from non-resident (digital services)     |
+| Tax             | Rate  | Applies To                                                               |
+| --------------- | ----- | ------------------------------------------------------------------------ |
+| GST on Services | 18%   | Platform commission (B2B)                                                |
+| TDS on Payments | 0.1%  | Section 194-O (e-commerce operator), Indian consultants; ₹50K FY threshold; 5% if no PAN (lib/compliance/tds.ts) |
+| Equalization Levy | N/A | Abolished 1 Apr 2025 (Finance Act 2025); do not implement               |
 
 ### For Indian Consultants
 

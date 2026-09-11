@@ -1,0 +1,74 @@
+name: Expire Event Chat Channels
+
+on:
+  schedule:
+    # Daily. Freeze at +7d after the session ends, hard-delete at the org retention window.
+    - cron: "35 4 * * *"
+  workflow_dispatch: # Allow manual triggering
+
+# #1134 P1-17 — queue rather than cancel: a run part-way through a delete batch
+# must finish, and both stages are idempotent so a queued run simply resumes.
+# Read-only: this job runs a script and writes nothing back to the repo.
+permissions:
+  contents: read
+
+concurrency:
+  group: expire-event-channels
+  cancel-in-progress: false
+
+jobs:
+  expire-event-channels:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      # #1066 — jobs run as bare Node processes, so Sentry.init only sees
+      # what the step env carries. Without the DSN the runner initialises
+      # a disabled client and every captureException is a no-op again.
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
+      # Database connection (required for Prisma)
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      # #476 — fail-closed cron lock: without these the job refuses to run.
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      NEXT_PUBLIC_STREAM_API_KEY: ${{ secrets.NEXT_PUBLIC_STREAM_API_KEY }}
+      STREAM_API_KEY: ${{ secrets.STREAM_API_KEY }}
+      STREAM_API_SECRET: ${{ secrets.STREAM_API_SECRET }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          # The job only reads the repo to run a script; it never pushes. Leaving
+          # the token in .git/config lets any later step — or a compromised
+          # dependency — use it.
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        # The runner holds deploy-scoped secrets, so a compromised transitive
+        # dependency's postinstall would run with them. Nothing here needs
+        # lifecycle scripts. Same posture as expire-reschedule-proposals.yml.
+        run: npm ci --ignore-scripts
+
+      - name: Generate Prisma client
+        run: npx --no-install --ignore-scripts prisma generate
+
+      - name: Run release earnings job
+        run: npx --yes --ignore-scripts tsx@4.23.1 jobs/stream/expire-event-channels.ts
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          # Fallback sink — Slack has never been provisioned, so this is
+          # what actually pages today. See 07-required-secrets.md.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "expire-event-channels"

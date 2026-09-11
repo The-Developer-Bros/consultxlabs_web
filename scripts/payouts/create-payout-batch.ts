@@ -15,8 +15,15 @@
  */
 
 import { EarningStatus, PayoutStatus, PayoutMethod } from "@prisma/client";
-import { randomUUID } from "crypto";
+import { randomUUID, createHash } from "crypto";
 import prisma from "@/lib/prisma";
+import { getActiveOrgMaintenanceWindow } from "@/lib/maintenance";
+import {
+  createOrgPayoutBatch,
+  PayoutLockError,
+  PayoutValidationError,
+} from "@/lib/payments/payouts/org-payout-service";
+import { sumPaise } from "@/lib/payments/utils/money";
 
 // Configuration
 const MINIMUM_PAYOUT_AMOUNT = 50000; // ₹500 in paise
@@ -77,9 +84,9 @@ export async function createPayoutBatch(
           ? { consultantProfileId: { in: consultantProfileIds } }
           : {}),
       },
-      _sum: { consultantShare: true },
+      _sum: { consultantSharePaise: true },
       having: {
-        consultantShare: {
+        consultantSharePaise: {
           _sum: { gte: MINIMUM_PAYOUT_AMOUNT },
         },
       },
@@ -94,7 +101,7 @@ export async function createPayoutBatch(
     }
 
     // Process each eligible consultant
-    // FIX #617: The groupBy _sum.consultantShare is only used for candidate selection.
+    // FIX #617: The groupBy _sum.consultantSharePaise is only used for candidate selection.
     // The actual payable amount is re-computed inside the transaction to subtract refundedShareAmount.
     for (const consultant of eligibleConsultants) {
       const { consultantProfileId } = consultant;
@@ -139,14 +146,18 @@ export async function createPayoutBatch(
               status: EarningStatus.READY,
               payoutId: null,
             },
-            select: { id: true, consultantShare: true, refundedShareAmount: true },
+            select: {
+              id: true,
+              consultantSharePaise: true,
+              refundedShareAmount: true,
+            },
           });
 
           if (readyEarnings.length === 0) return null;
 
           const amount = readyEarnings.reduce(
             (sum, e) =>
-              sum + Math.max(e.consultantShare - e.refundedShareAmount, 0),
+              sum + Math.max(e.consultantSharePaise - e.refundedShareAmount, 0),
             0,
           );
 
@@ -154,7 +165,7 @@ export async function createPayoutBatch(
 
           const shouldAutoApprove = amount < AUTO_APPROVE_THRESHOLD;
 
-          const payout = await tx.payout.create({
+          const payout = await tx.consultantPayout.create({
             data: {
               consultantProfileId,
               provider: account.provider,
@@ -171,7 +182,13 @@ export async function createPayoutBatch(
             },
           });
 
-          // Link the exact earnings by ID (not broad filter)
+          // Link the exact earnings by ID (not broad filter).
+          // #993 parity — mark BATCHED (not left READY): the earning is now
+          // in a batch and must not be re-picked, but cash hasn't moved yet.
+          // Leaving it READY meant the canonical handlers — which filter on
+          // BATCHED — never saw these rows: earnings stayed welded to their
+          // payout forever (never PAID on completion, permanently orphaned on
+          // pre-gateway failure), and refundEarnings treated them as un-paid.
           const linkResult = await tx.consultantEarnings.updateMany({
             where: {
               id: { in: readyEarnings.map((e) => e.id) },
@@ -180,6 +197,7 @@ export async function createPayoutBatch(
             },
             data: {
               payoutId: payout.id,
+              status: EarningStatus.BATCHED,
             },
           });
 
@@ -248,6 +266,121 @@ export async function createPayoutBatch(
 }
 
 /**
+ * Org-side payout batch creation (#713-2 / #700 LED-4).
+ *
+ * Walks every canHost org with READY OrganizationEarnings older than the
+ * cycle window and calls the org-payout-service to roll them into one
+ * OrganizationPayout per org. Idempotent via a SHA-256-derived key from
+ * (orgId, periodStart) — re-running the cron in the same window is a
+ * no-op. Errors against a single org do not abort the rest of the run.
+ *
+ * Period semantics: the cron is weekly-Monday; the natural window is
+ * "everything in the prior 7 days". Callers may pass an explicit
+ * (periodStart, periodEnd); default is now()-7d → now().
+ */
+export interface OrgBatchResult {
+  success: boolean;
+  orgsScanned: number;
+  payoutsCreated: number;
+  payoutsAlreadyExisted: number;
+  totalAmount: number;
+  skippedNotEligible: number;
+  errors: string[];
+}
+
+export async function createOrgPayoutBatches(opts?: {
+  periodStart?: Date;
+  periodEnd?: Date;
+}): Promise<OrgBatchResult> {
+  const periodEnd = opts?.periodEnd ?? new Date();
+  const periodStart =
+    opts?.periodStart ??
+    new Date(periodEnd.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+  const result: OrgBatchResult = {
+    success: false,
+    orgsScanned: 0,
+    payoutsCreated: 0,
+    payoutsAlreadyExisted: 0,
+    totalAmount: 0,
+    skippedNotEligible: 0,
+    errors: [],
+  };
+
+  // Eligible = canHost orgs with at least one unbatched READY earning in
+  // the window. groupBy is cheaper than scanning every canHost org and
+  // probing each.
+  const eligible = await prisma.organizationEarnings.groupBy({
+    by: ["organizationId"],
+    where: {
+      status: EarningStatus.READY,
+      orgPayoutId: null,
+      createdAt: { gte: periodStart, lt: periodEnd },
+    },
+    _count: true,
+  });
+  result.orgsScanned = eligible.length;
+
+  for (const row of eligible) {
+    const orgId = row.organizationId;
+
+    // Per-org maintenance gate. The platform-wide check ran at job
+    // entry via `abortIfMaintenance`; this one skips a single tenant
+    // during a planned tenant-scoped downtime so the other orgs in the
+    // batch still get paid. Only OFFLINE blocks payouts — DEGRADED
+    // implies read-only product surfaces, not paused payouts.
+    const orgMaint = await getActiveOrgMaintenanceWindow(orgId);
+    if (orgMaint && orgMaint.phase === "OFFLINE") {
+      result.skippedNotEligible++;
+      result.errors.push(
+        `${orgId}: org-specific OFFLINE maintenance active (${orgMaint.reason ?? "no reason"}); skipped`,
+      );
+      continue;
+    }
+
+    // Deterministic per-(org, periodStart) key — re-running the cron in
+    // the same window is a no-op via the unique constraint.
+    const idempotencyKey = createHash("sha256")
+      .update(`${orgId}:${periodStart.toISOString()}`)
+      .digest("hex");
+
+    try {
+      const out = await createOrgPayoutBatch(orgId, periodStart, periodEnd, {
+        idempotencyKey,
+        notes: `Weekly cron batch ${periodStart.toISOString()} → ${periodEnd.toISOString()}`,
+      });
+      if (out.alreadyExisted) {
+        result.payoutsAlreadyExisted++;
+      } else {
+        result.payoutsCreated++;
+        result.totalAmount += out.amountPaise;
+      }
+    } catch (err) {
+      if (err instanceof PayoutLockError) {
+        // Another worker holds the lock; safe to skip — they'll
+        // produce the same payout we would have.
+        result.errors.push(`${orgId}: payout lock held; skipped`);
+        continue;
+      }
+      if (err instanceof PayoutValidationError) {
+        // 4xx semantics — eligibility check failed (no account, refunds
+        // exceed earnings, etc.). Not an error worth aborting the run.
+        result.skippedNotEligible++;
+        result.errors.push(`${orgId}: ${err.message}`);
+        continue;
+      }
+      // Anything else is a real error; record but continue with the
+      // remaining orgs.
+      const message = err instanceof Error ? err.message : String(err);
+      result.errors.push(`${orgId}: ${message}`);
+    }
+  }
+
+  result.success = true;
+  return result;
+}
+
+/**
  * Get statistics about pending payouts
  */
 export async function getPayoutStats(): Promise<{
@@ -257,22 +390,22 @@ export async function getPayoutStats(): Promise<{
   completed: { count: number; amount: number };
 }> {
   const [pending, approved, processing, completed] = await Promise.all([
-    prisma.payout.aggregate({
+    prisma.consultantPayout.aggregate({
       where: { status: PayoutStatus.PENDING },
       _sum: { amount: true },
       _count: true,
     }),
-    prisma.payout.aggregate({
+    prisma.consultantPayout.aggregate({
       where: { status: PayoutStatus.APPROVED },
       _sum: { amount: true },
       _count: true,
     }),
-    prisma.payout.aggregate({
+    prisma.consultantPayout.aggregate({
       where: { status: PayoutStatus.PROCESSING },
       _sum: { amount: true },
       _count: true,
     }),
-    prisma.payout.aggregate({
+    prisma.consultantPayout.aggregate({
       where: { status: PayoutStatus.COMPLETED },
       _sum: { amount: true },
       _count: true,
@@ -280,13 +413,19 @@ export async function getPayoutStats(): Promise<{
   ]);
 
   return {
-    pending: { count: pending._count, amount: pending._sum.amount || 0 },
-    approved: { count: approved._count, amount: approved._sum.amount || 0 },
+    pending: { count: pending._count, amount: sumPaise(pending._sum.amount) },
+    approved: {
+      count: approved._count,
+      amount: sumPaise(approved._sum.amount),
+    },
     processing: {
       count: processing._count,
-      amount: processing._sum.amount || 0,
+      amount: sumPaise(processing._sum.amount),
     },
-    completed: { count: completed._count, amount: completed._sum.amount || 0 },
+    completed: {
+      count: completed._count,
+      amount: sumPaise(completed._sum.amount),
+    },
   };
 }
 
@@ -312,6 +451,33 @@ export async function runBatchCreationTask(): Promise<BatchResult> {
 
     // Create batch
     const result = await createPayoutBatch();
+
+    // Org-side batches: independent pass for canHost orgs. Errors on
+    // either side don't abort the other — the consultant flow is the
+    // primary v1 path and must keep running even if the org pipeline
+    // surfaces an issue.
+    try {
+      const orgBatch = await createOrgPayoutBatches();
+      console.log(`\n🏢 Org Payout Batch:`);
+      console.log(`   Orgs scanned: ${orgBatch.orgsScanned}`);
+      console.log(`   Created: ${orgBatch.payoutsCreated}`);
+      console.log(
+        `   Already existed (idempotent): ${orgBatch.payoutsAlreadyExisted}`,
+      );
+      console.log(`   Skipped (ineligible): ${orgBatch.skippedNotEligible}`);
+      console.log(
+        `   Total amount: ₹${(orgBatch.totalAmount / 100).toFixed(2)}`,
+      );
+      if (orgBatch.errors.length > 0) {
+        console.warn(`   ⚠️ Org batch issues (non-fatal):`);
+        orgBatch.errors.forEach((e) => console.warn(`      - ${e}`));
+      }
+    } catch (err) {
+      console.error(
+        "❌ Org payout batch creation threw — consultant batch was unaffected:",
+        err,
+      );
+    }
 
     // Get post-batch stats
     const postStats = await getPayoutStats();

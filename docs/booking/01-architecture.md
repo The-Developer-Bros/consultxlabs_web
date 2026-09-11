@@ -30,14 +30,14 @@ Unified validation for all 4 event types. Takes a `PrismaClient` or transaction 
 
 **Universal validators** (all event types):
 
-| Validator                  | What it checks                                                                                                                                                                                                                                       |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `validateSlotsInFuture`    | All slots > now + 5 seconds (buffer prevents race conditions)                                                                                                                                                                                        |
+| Validator                  | What it checks                                                                                                                                                                                                                                                                                                                                                       |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `validateSlotsInFuture`    | All slots > now + 5 seconds (buffer prevents race conditions)                                                                                                                                                                                                                                                                                                        |
 | `validateNoConflicts`      | Range overlap detection: `slotStart < existingEnd AND existingStart < slotEnd`. Uses `buildOccupiedAppointmentFilter()` to exclude terminal-status appointments (CANCELLED, REJECTED, EXPIRED). Checks APPROVED subscriptions, PENDING/APPROVED/APPROVED_PENDING_PAYMENT consultations, SCHEDULED webinars/classes. Detects expired payments (orphaned payment fix). |
-| `validateMatchesSchedule`  | WEEKLY: day-of-week + time-of-day within availability ranges. CUSTOM: overlap detection with available slots.                                                                                                                                        |
-| `validateSchedulingPeriod` | All slots within [startDate, endDate] -- server-side enforcement                                                                                                                                                                                     |
-| `validateConsecutiveSlots` | Sort + check 30-min diff with 1-second tolerance                                                                                                                                                                                                     |
-| `validateSameDaySlots`     | All slots share the same `toDateString()`                                                                                                                                                                                                            |
+| `validateMatchesSchedule`  | WEEKLY: day-of-week + time-of-day within availability ranges. CUSTOM: overlap detection with available slots.                                                                                                                                                                                                                                                        |
+| `validateSchedulingPeriod` | All slots within [startDate, endDate] -- server-side enforcement                                                                                                                                                                                                                                                                                                     |
+| `validateConsecutiveSlots` | Sort + check 30-min diff with 1-second tolerance                                                                                                                                                                                                                                                                                                                     |
+| `validateSameDaySlots`     | All slots share the same `toDateString()`                                                                                                                                                                                                                                                                                                                            |
 
 **Event-specific validators**:
 
@@ -134,23 +134,22 @@ flowchart TD
 
 ### useSlotAllocation
 
-**File**: `shared/hooks/useSlotAllocation.ts` (~2170 lines)
+**File**: `hooks/scheduling/useSlotAllocation.ts`
 
-Central React hook managing slot selection state for all event types.
+Central React hook (exported as `useEventSlotAllocation`) managing slot selection state for all event types.
 
 **Key behaviors**:
 
-- `toggleSlot()` -- event-specific interactive blocking: weekly limits (subscription), daily session limits (class), consecutive enforcement
+- `toggleSlot()` -- event-specific interactive blocking: weekly limits (subscription), daily session limits (class), consecutive enforcement, delegated to the pure rules in `lib/scheduling/slotSelectionValidation.ts`
 - Auto-expansion -- when selecting a slot, auto-select consecutive adjacent slots to fill `slotsPerSession`
-- `validateWeeklyDistribution()` -- counts **calls** not raw slots (divides by `slotsPerSession`)
-- `isCompleteCall()` -- checks if a day's slots form a complete session
 - Progress tracking -- scheduled/required/remaining calls
+- Submission for manual and requested modes goes through `lib/scheduling/allocationAlgorithms.ts` (`AllocationAlgorithms.manualAllocate` / `allocateRequestedSlots`); auto mode just posts `isAuto: true` and lets the server pick
 
 ### useCalendarData
 
-**File**: `shared/hooks/useCalendarData.ts` (~737 lines)
+**File**: `hooks/scheduling/useCalendarData.ts`
 
-Unified calendar data synchronization. Fetches availability, appointments, and event slots in parallel.
+Unified calendar data synchronization. Fetches availability, appointments, and event slots, and drives the visibility-gated poll defined in `lib/scheduling/availabilityPolling.ts` (`AVAILABILITY_POLL_INTERVAL_MS = 60_000`, #1164).
 
 **Key function**: `getSlotStatusForInterval()` returns:
 
@@ -160,11 +159,11 @@ Unified calendar data synchronization. Fetches availability, appointments, and e
 
 Uses server-calculated `bookingStatus` (available / partially-booked / fully-booked) as source of truth.
 
-### useSubscriptionValidation
+There is no `useSubscriptionValidation` hook in this repo today — no file of that name exists, and the API it would imply (`validateSlots()`, `getAvailableWeeks()`, `canScheduleInWeek()`) has no matching functions anywhere. The subscription-specific week math it would have covered lives server-side in `utils/subscriptionValidation.ts` (`getSubscriptionWeek`, `getSubscriptionType`), which `SlotValidationService`, `lib/scheduling/allocationService.ts`, and `useSlotAllocation.ts` all call directly.
 
-**File**: `shared/hooks/useSubscriptionValidation.ts` (~261 lines)
+### Where allocation happens
 
-Subscription-specific frontend validation: `validateSlots()`, `getAvailableWeeks()`, `canScheduleInWeek()`.
+There is one allocator and it lives on the server. The client engine that used to pick slots for auto mode — strategies, time-of-day and day-of-week scoring, weekly distribution, same-day spacing — was deleted in PR #1178 along with the tests that could only have exercised it, because product code has submitted `isAuto: true` and left the picking to `SlotAllocationService`, under its Redis locks and timezone-aware caps, since #997 Phase 1. Auto-mode preference scoring now lives server-side in `utils/slotAllocation/preferenceScoring.ts`, which orders candidate slots but never filters them (#1065). `lib/scheduling/allocationAlgorithms.ts` was not deleted along with the auto engine: the file and class still exist, still export `manualAllocate()` and `allocateRequestedSlots()`, and are still imported — by `hooks/scheduling/useSlotAllocation.ts` alone, which `UnifiedCalendar.tsx` and `RequestSlotAllocationTab.tsx` both consume through that hook rather than importing the file directly — they now do pre-submission validation and submission for the manual and requested modes only, so nothing on the client can any longer be mistaken for a second auto-allocation engine. The hooks above are correspondingly a selection and display layer: `useSlotAllocation` guards selection and submits, while `useCalendarData` polls date-dependent availability every 60 seconds whenever the tab is visible (#1164), so the heatmap reflects slots other people have taken instead of staying green until allocation rejects the choice.
 
 ---
 
@@ -286,7 +285,7 @@ Tentative appointments handle two scenarios: pending payment and rescheduling.
 stateDiagram-v2
     [*] --> Tentative: Checkout creates appointment
     Tentative --> Confirmed: Payment succeeds
-    Tentative --> CleanedUp: Abandoned (30 min)
+    Tentative --> CleanedUp: Abandoned (24h)
 
     [*] --> Tentative2: Reschedule marks slots tentative
     Tentative2 --> Confirmed: Consultant approves new slots
@@ -295,7 +294,7 @@ stateDiagram-v2
     state Tentative {
         direction LR
         Created --> PendingPayment
-        PendingPayment --> Expired: No payment in 30 min
+        PendingPayment --> Expired: No payment in 24h
     }
 ```
 
@@ -303,5 +302,5 @@ stateDiagram-v2
 
 - User deduplication: 5-minute window blocks same-user duplicate attempts
 - Rate limiting: max 3 pending attempts per slot per 30 minutes
-- Cleanup job: runs every 2 hours, releases tentative slots older than 7 days with no successful payment (see [13-cron-jobs-and-background-tasks.md](./13-cron-jobs-and-background-tasks.md))
+- Cleanup job: runs every 2 hours, releases tentative slots older than 24 hours with no successful payment (`TENTATIVE_EXPIRATION_HOURS = 24`, cut from 7 days by #833); users can also self-release via `DELETE /api/checkout/pending/[paymentId]` (#849) (see [13-cron-jobs-and-background-tasks.md](./13-cron-jobs-and-background-tasks.md))
 - Expired payment detection: `APPROVED_PENDING_PAYMENT` consultations with expired payments are treated as available slots

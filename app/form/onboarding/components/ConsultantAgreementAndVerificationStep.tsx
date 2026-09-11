@@ -1,5 +1,6 @@
 "use client";
 
+import * as Sentry from "@sentry/nextjs";
 import React, { useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,6 +14,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import TermsAndPrivacyAgreement from "./TermsAndPrivacyAgreement";
 import type { OnboardingFormData } from "@/utils/onboarding";
+import { IndiaOnlyPayoutNotice } from "@/components/payouts/IndiaOnlyPayoutNotice";
 
 interface ConsultantAgreementAndVerificationStepProps {
   onNext: (data: Partial<OnboardingFormData>) => void;
@@ -87,6 +89,7 @@ export default function ConsultantAgreementAndVerificationStep({
         method: "DELETE",
       });
     } catch (error) {
+      Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "client" } });
       console.error("Failed to delete verification document:", error);
     }
   }, []);
@@ -107,20 +110,12 @@ export default function ConsultantAgreementAndVerificationStep({
       return;
     }
 
-    // LinkedIn URL is required
-    if (!linkedinUrl) {
-      setError("LinkedIn profile URL is required for verification");
-      return;
-    }
-
-    // At least one document is required
-    const completedDocuments = documents.filter((d) => d.status === "uploaded");
-    if (completedDocuments.length === 0) {
-      setError(
-        "Please upload at least one supporting document (certification, degree, license, or ID)",
-      );
-      return;
-    }
+    // LinkedIn and documents are OPTIONAL at submission (#onboarding-ux):
+    // verification itself is asynchronous anyway, so blocking onboarding on it
+    // only adds drop-off. A deferred consultant lands on the dashboard with
+    // PENDING_VERIFICATION and finishes from Settings → Verification; the
+    // server enforces the same policy via shouldSubmitVerification().
+    // Format validation above still guards whatever was entered.
 
     // Merge all data and submit
     const finalData = {
@@ -129,7 +124,7 @@ export default function ConsultantAgreementAndVerificationStep({
       privacyAccepted: true,
       verificationLinkedinUrl: linkedinUrl,
       verificationNotes: notes,
-      verificationDocuments: documents,
+      verificationDocuments: documents.filter((d) => d.status === "uploaded"),
     };
 
     onNext(finalData);
@@ -139,24 +134,33 @@ export default function ConsultantAgreementAndVerificationStep({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-8">
+      {/* Payout eligibility comes before verification deliberately: a
+          consultant who cannot receive INR into an Indian account should learn
+          that here, not after building a profile and earning money. */}
+      <IndiaOnlyPayoutNotice />
+
       {/* Verification Section */}
       <div className="space-y-6">
-        <Alert className="border-blue-200 bg-blue-50">
-          <Shield className="h-4 w-4 text-blue-600" />
-          <AlertTitle className="text-blue-800">
+        <Alert className="border-border bg-muted">
+          <Shield className="h-4 w-4 text-muted-foreground" />
+          <AlertTitle className="text-foreground">
             Profile Verification
           </AlertTitle>
-          <AlertDescription className="text-blue-700">
-            To maintain platform quality, we verify all consultant profiles.
-            Your LinkedIn profile and at least one supporting document are
-            required.
+          <AlertDescription className="text-muted-foreground">
+            We verify all consultant profiles before they appear in the
+            directory. You can add your LinkedIn URL and documents now, or
+            finish this later from your dashboard — your profile is saved either
+            way.
           </AlertDescription>
         </Alert>
 
         {/* LinkedIn URL */}
         <div className="space-y-2">
           <Label htmlFor="linkedinUrl" className="flex items-center gap-1">
-            LinkedIn Profile URL <span className="text-red-500">*</span>
+            LinkedIn Profile URL{" "}
+            <span className="text-muted-foreground/70 text-xs font-normal">
+              (needed to get listed)
+            </span>
           </Label>
           <Input
             id="linkedinUrl"
@@ -170,7 +174,7 @@ export default function ConsultantAgreementAndVerificationStep({
                 : ""
             }
           />
-          <p className="text-xs text-zinc-500">
+          <p className="text-xs text-muted-foreground">
             We use your LinkedIn profile to verify your professional background.
           </p>
           {linkedinUrl && !validateLinkedIn(linkedinUrl) && (
@@ -184,15 +188,18 @@ export default function ConsultantAgreementAndVerificationStep({
         {/* Document Upload */}
         <div className="space-y-2">
           <Label className="flex items-center gap-1">
-            Supporting Documents <span className="text-red-500">*</span>
+            Supporting Documents{" "}
+            <span className="text-muted-foreground/70 text-xs font-normal">
+              (needed to get listed)
+            </span>
           </Label>
-          <div className="bg-zinc-50 p-1 rounded-lg border border-zinc-200 mb-2">
-            <div className="flex items-start gap-2 p-2 text-xs text-zinc-600">
+          <div className="bg-muted p-1 rounded-lg border border-border mb-2">
+            <div className="flex items-start gap-2 p-2 text-xs text-muted-foreground">
               <Info className="w-4 h-4 flex-shrink-0 mt-0.5" />
               <p>
                 Upload at least one document that verifies your expertise:
                 professional certifications, degrees, licenses, or government
-                ID.
+                ID. You can also add these after signing up.
               </p>
             </div>
           </div>
@@ -213,7 +220,7 @@ export default function ConsultantAgreementAndVerificationStep({
         <div className="space-y-2">
           <Label htmlFor="notes" className="flex items-center gap-1">
             Additional Notes{" "}
-            <span className="text-zinc-400 text-xs font-normal">
+            <span className="text-muted-foreground/70 text-xs font-normal">
               (Optional)
             </span>
           </Label>
@@ -225,14 +232,14 @@ export default function ConsultantAgreementAndVerificationStep({
             rows={3}
             maxLength={500}
           />
-          <p className="text-xs text-zinc-500 text-right">
+          <p className="text-xs text-muted-foreground text-right">
             {notes.length}/500 characters
           </p>
         </div>
       </div>
 
       {/* Divider */}
-      <div className="border-t border-zinc-200" />
+      <div className="border-t border-border" />
 
       {/* Agreement Section */}
       <div className="space-y-4">
@@ -256,11 +263,11 @@ export default function ConsultantAgreementAndVerificationStep({
       </div>
 
       {/* Verification Timeline Info */}
-      <div className="bg-zinc-50 rounded-lg p-4 border border-zinc-200">
-        <h4 className="font-medium text-sm text-zinc-900 mb-2">
+      <div className="bg-muted rounded-lg p-4 border border-border">
+        <h4 className="font-medium text-sm text-foreground mb-2">
           What happens next?
         </h4>
-        <ol className="text-sm text-zinc-600 space-y-1 list-decimal list-inside">
+        <ol className="text-sm text-muted-foreground space-y-1 list-decimal list-inside">
           <li>Our team will review your LinkedIn profile and documents</li>
           <li>
             You&apos;ll receive an email notification once the review is complete
@@ -270,8 +277,9 @@ export default function ConsultantAgreementAndVerificationStep({
             directory
           </li>
         </ol>
-        <p className="text-xs text-zinc-500 mt-2">
-          Verification typically takes 1-2 business days.
+        <p className="text-xs text-muted-foreground mt-2">
+          Verification typically takes 1-2 business days. Skipping it now keeps
+          your profile unlisted until you finish from Settings → Verification.
         </p>
       </div>
 
@@ -283,7 +291,7 @@ export default function ConsultantAgreementAndVerificationStep({
       )}
 
       {/* Navigation Buttons */}
-      <div className="flex justify-between pt-4 border-t border-zinc-200">
+      <div className="flex justify-between pt-4 border-t border-border">
         <Button type="button" variant="outline" onClick={onBack}>
           <ChevronLeft className="mr-2 h-4 w-4" />
           Back

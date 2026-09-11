@@ -8,12 +8,24 @@
  * Runs every 30 minutes via cleanup API route.
  */
 
+// Why: tsx does not auto-load .env when this script runs outside the
+// Next.js runtime. Without dotenv/config, DATABASE_URL + STREAM_API_KEY
+// are undefined, PrismaClient throws on first query, and the Stream
+// client fails to initialize. See
+// docs/enterprise/50-operations/03-runbooks.md "Running cron jobs locally".
+import "dotenv/config";
+import { transitionSlotCompletion } from "@/lib/booking/transitions";
 import prisma from "../../lib/prisma";
 import {
   getStreamVideoClient,
   isStreamConfigured,
+  withStreamCircuitBreaker,
 } from "../../lib/stream-client";
+import { STREAM_CALL_TYPE, toCallId } from "../../lib/stream/call-cid";
 import { abortIfMaintenance } from "../../lib/maintenance-cron";
+import { withCronLock } from "../../lib/cron/with-cron-lock";
+import * as Sentry from "@sentry/nextjs";
+import { runJob } from "../../lib/observability/job-sentry";
 
 export interface ReconciliationResult {
   processed: number;
@@ -24,7 +36,14 @@ export interface ReconciliationResult {
   details: string[];
 }
 
+// #476 — entry-level cron lock; fail-open (repeat-safe side effects).
 export async function reconcileOrphanedSessions(): Promise<ReconciliationResult> {
+  return withCronLock("reconcile-orphaned-sessions", { failMode: "open" }, () =>
+    reconcileOrphanedSessionsUnlocked(),
+  );
+}
+
+async function reconcileOrphanedSessionsUnlocked(): Promise<ReconciliationResult> {
   const result: ReconciliationResult = {
     processed: 0,
     reconciled: 0,
@@ -68,9 +87,19 @@ export async function reconcileOrphanedSessions(): Promise<ReconciliationResult>
 
       if (isStreamConfigured()) {
         try {
+          // #1134 P1-5 — this was the one site that did NOT normalise the cid.
+          // `streamCallId` stores the bare id, but three other sites defensively
+          // split on ":" while this passed the raw value straight through, so a
+          // prefixed value always 404'd here and the session was silently
+          // recorded UNVERIFIED. One helper now owns the split.
           const client = getStreamVideoClient();
-          const call = client.video.call("default", session.streamCallId);
-          const response = await call.get();
+          const call = client.video.call(
+            STREAM_CALL_TYPE,
+            toCallId(session.streamCallId),
+          );
+          // #473 — a Stream outage otherwise means 100 sequential 30s timeouts
+          // per run. Fast-fail into the slot-end fallback instead.
+          const response = await withStreamCircuitBreaker(() => call.get());
 
           if (response.call.ended_at) {
             // Stream confirms the call ended
@@ -106,22 +135,23 @@ export async function reconcileOrphanedSessions(): Promise<ReconciliationResult>
       const completionStatus =
         endedReason === "reconciled" ? "COMPLETED" : "UNVERIFIED";
 
-      await prisma.$transaction([
-        prisma.meetingSession.update({
+      const moved = await prisma.$transaction(async (tx) => {
+        await tx.meetingSession.update({
           where: { id: session.id },
           data: { endedAt, endedReason },
-        }),
-        prisma.slotOfAppointment.update({
+        });
+        // CAS (#1319): never overwrite a CANCELLED slot; zero rows is a
+        // legitimate outcome for a reconciler and is reported below.
+        return transitionSlotCompletion(tx, {
           where: { id: session.slotOfAppointmentId },
-          data: {
-            completionStatus,
-            completedAt: endedAt,
-          },
-        }),
-      ]);
+          to: completionStatus,
+          data: { completedAt: endedAt },
+          allowZero: true,
+        });
+      });
 
       result.details.push(
-        `Session ${session.id} (call: ${session.streamCallId}): ${endedReason}`,
+        `Session ${session.id} (call: ${session.streamCallId}): ${endedReason}${moved === 0 ? " (slot not completable, left as is)" : ""}`,
       );
     } catch (error) {
       result.errors++;
@@ -144,8 +174,9 @@ export async function disconnectDatabase(): Promise<void> {
 
 // Allow direct execution
 if (require.main === module) {
-  (async () => {
+  runJob("reconcile-orphaned-sessions", async () => {
     await abortIfMaintenance("reconcile-orphaned-sessions");
+    Sentry.logger.info("job:reconcile-orphaned-sessions started");
     console.log("Starting orphaned session reconciliation...");
 
     try {
@@ -157,12 +188,15 @@ if (require.main === module) {
       console.log(`  Errors: ${result.errors}`);
       console.log(`  Success: ${result.success}`);
 
-      if (!result.success) process.exit(1);
-    } catch (error) {
-      console.error("Fatal error:", error);
-      process.exit(1);
+      Sentry.logger.info("job:reconcile-orphaned-sessions finished", {
+        processed: result.processed,
+        reconciled: result.reconciled,
+        streamNotFound: result.streamNotFound,
+        errors: result.errors,
+      });
+      if (!result.success) process.exitCode = 1;
     } finally {
       await disconnectDatabase();
     }
-  })();
+  });
 }

@@ -149,8 +149,8 @@ export async function GET(
               slotId: weeklySlot.id,
               dateInISO: currentDate.toISOString(),
               dayOfWeek: weeklySlot.startDay,
-              slotStartTimeInUTC: slotStart.toISOString(),
-              slotEndTimeInUTC: slotEnd.toISOString(),
+              startsAt: slotStart.toISOString(),
+              endsAt: slotEnd.toISOString(),
               slotOfAvailabilityId: weeklySlot.id,
               slotOfAppointmentId: "",
               localStartTime: slotStart.toLocaleTimeString(),
@@ -171,8 +171,8 @@ export async function GET(
         slotId: slot.id,
         dateInISO: slot.startsAt.toISOString(),
         dayOfWeek: dayMap[new Date(slot.startsAt).getDay()],
-        slotStartTimeInUTC: slot.startsAt.toISOString(),
-        slotEndTimeInUTC: slot.endsAt.toISOString(),
+        startsAt: slot.startsAt.toISOString(),
+        endsAt: slot.endsAt.toISOString(),
         slotOfAvailabilityId: slot.id,
         slotOfAppointmentId: "",
         localStartTime: new Date(slot.startsAt).toLocaleTimeString(),
@@ -184,8 +184,8 @@ export async function GET(
     // Combine and sort all slots by start time
     const allSlots = [...formattedCustomSlots, ...unallocatedWeeklySlots].sort(
       (a, b) =>
-        new Date(a.slotStartTimeInUTC).getTime() -
-        new Date(b.slotStartTimeInUTC).getTime(),
+        new Date(a.startsAt).getTime() -
+        new Date(b.startsAt).getTime(),
     );
 
     return NextResponse.json({ data: allSlots }, { status: 200 });

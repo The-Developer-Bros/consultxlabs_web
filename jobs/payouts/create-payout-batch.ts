@@ -4,7 +4,7 @@
  * Thin wrapper around the core batch creation logic in scripts/create-payout-batch.ts.
  * Adds GitHub Actions-specific outputs and error handling.
  *
- * TODO #620: Migrate to canonical lib/payments/payouts service once return type
+ * TODO #1332: Migrate to canonical lib/payments/payouts service once return type
  * compatibility is addressed (canonical returns string batchId vs BatchResult).
  *
  * Runs weekly on Mondays at 8:00 PM UTC (1:30 AM IST next day).
@@ -18,6 +18,8 @@ import {
 
 import fs from "fs";
 import { abortIfMaintenance } from "../../lib/maintenance-cron";
+import * as Sentry from "@sentry/nextjs";
+import { runJob } from "../../lib/observability/job-sentry";
 
 /**
  * Output results to GitHub Actions using environment files
@@ -53,6 +55,7 @@ function outputToGitHubActions(result: BatchResult): void {
  */
 async function main(): Promise<void> {
   await abortIfMaintenance("create-payout-batch");
+  Sentry.logger.info("job:create-payout-batch started");
   const startTime = Date.now();
   console.log(
     `🚀 Starting payout batch creation job at ${new Date().toISOString()}`,
@@ -80,34 +83,22 @@ async function main(): Promise<void> {
     outputToGitHubActions(result);
 
     if (result.success) {
+      Sentry.logger.info("job:create-payout-batch finished", {
+        payoutsCreated: result.payoutsCreated,
+        totalAmount: result.totalAmount,
+        autoApproved: result.autoApproved,
+        pendingApproval: result.pendingApproval,
+        skippedNoAccount: result.skippedNoAccount,
+      });
       console.log("🎉 Payout batch creation job completed successfully");
-      process.exit(0);
     } else {
       console.error("❌ Payout batch creation job completed with errors");
-      process.exit(1);
+      process.exitCode = 1;
     }
-  } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : "Unknown error";
-    console.error("💥 Payout batch creation job failed:", errorMessage);
-
-    if (process.env.GITHUB_ACTIONS) {
-      const outputFile = process.env.GITHUB_OUTPUT;
-      if (outputFile) {
-        fs.appendFileSync(outputFile, "success=false\n");
-      }
-      console.log(`::error::Payout batch creation job failed: ${errorMessage}`);
-    }
-
-    process.exit(1);
   } finally {
     await disconnectDatabase();
   }
 }
 
 // Run the job
-main().catch((error) => {
-  console.error("\n❌ Payout batch creation job failed:");
-  console.error(error);
-  process.exit(1);
-});
+runJob("create-payout-batch", main);

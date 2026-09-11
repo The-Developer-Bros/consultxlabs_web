@@ -15,17 +15,24 @@ import type {
   TConsulteeClass,
 } from "@/types/consultee-events";
 import type { MeetingAppointment, MeetingSlot } from "@/lib/meeting";
-import type { BookingStatus } from "@/components/ui/waitlist-status-badge";
+import {
+  getCurrentOrNextSession,
+  groupSlotsIntoRuns,
+  type SessionRun,
+} from "@/lib/appointments/slots";
 
 /**
  * Unified event type for display in the dashboard
  */
 // Collaborator info for co-hosts display
-export interface ProcessedCollaborator {
+interface ProcessedCollaborator {
   name: string;
   image?: string | null;
   role: string;
 }
+
+/** Whether the consultee holds a seat on a group event. */
+export type BookingStatus = "CONFIRMED" | null;
 
 export interface ProcessedEvent {
   id: string;
@@ -36,17 +43,41 @@ export interface ProcessedEvent {
   startsAt: Date;
   endsAt: Date;
   status: string;
-  slots: Array<{ startsAt: Date; endsAt: Date; appointmentId: string }>;
+  slots: ProcessedEventSlot[];
   appointmentId?: string;
   // Data needed for joining meetings
   joinableAppointment?: MeetingAppointment;
   joinableSlot?: MeetingSlot;
-  // Booking status for webinars/classes (CONFIRMED = paid, WAITLISTED/NOTIFIED = on waitlist)
+  // #1061 — the whole run `joinableSlot` anchors, so the card can ask
+  // getSessionJoinState for a real state (including `ended`) instead of
+  // re-deriving a time window from one row.
+  joinableSession?: SessionRun<ProcessedSlot> | null;
+  // Registration state for webinars/classes. There is no queue any more —
+  // either the consultee holds a seat or the row is a plain event card.
   bookingStatus?: BookingStatus;
-  waitlistPosition?: number;
   // Collaborators (co-hosts) for webinars/classes
   collaborators?: ProcessedCollaborator[];
+  // Org sponsorship — `Appointment.organizationId` (null = personal).
+  // Drives the "Sponsored by <Org>" pill on the Home card so org-funded
+  // sessions are visually distinct from personal bookings.
+  organizationId?: string | null;
 }
+
+/**
+ * A slot row as this tab carries it: `MeetingSlot` (what the join helper
+ * needs) plus the two fields the session helpers read. Dropping them made
+ * `groupSlotsIntoRuns` treat cancelled rows as live and left the card unable
+ * to see that the host had ended the call — both silently, because they are
+ * optional on `SessionSlotLike` (#1061).
+ */
+export type ProcessedSlot = MeetingSlot & {
+  completionStatus?: string | null;
+  meetingSession?: {
+    id: string;
+    endedAt: Date | string | null;
+    endedReason: string | null;
+  } | null;
+};
 
 /**
  * Internal type for tracking slots with their raw data
@@ -54,14 +85,54 @@ export interface ProcessedEvent {
 interface SlotWithContext {
   startsAt: Date;
   endsAt: Date;
-  rawSlot: MeetingSlot;
+  rawSlot: ProcessedSlot;
   appointmentId: string;
 }
 
 /**
- * Find the next upcoming slot from a list of slots
+ * A slot as the card's session list carries it.
+ *
+ * #1199 — this used to be `{ startsAt, endsAt, appointmentId }` and nothing
+ * more, which is exactly the shape that cannot answer "is this one session or
+ * two". The identity, the tentative flag and the completion status ride along
+ * now so the month view can group on runs like every other surface does.
  */
-function findNextSlot(slots: SlotWithContext[]): SlotWithContext | null {
+export type ProcessedEventSlot = {
+  id: string;
+  startsAt: Date;
+  endsAt: Date;
+  appointmentId: string;
+  isTentative: boolean;
+  completionStatus: string | null;
+};
+
+function toEventSlot(slot: SlotWithContext): ProcessedEventSlot {
+  return {
+    id: slot.rawSlot.id,
+    startsAt: slot.startsAt,
+    endsAt: slot.endsAt,
+    appointmentId: slot.appointmentId,
+    isTentative: Boolean(slot.rawSlot.isTentative),
+    completionStatus: slot.rawSlot.completionStatus ?? null,
+  };
+}
+
+/** A picked session: the run, plus its anchor row in list-item shape. */
+interface SessionPick extends SlotWithContext {
+  run: SessionRun<ProcessedSlot> | null;
+}
+
+/**
+ * The session that is live or next up, spanning its whole run of slot rows.
+ *
+ * #1061 — this used to return the first slot whose `startsAt` was in the
+ * FUTURE. From minute 0 of a one-hour session that is the second half-hour
+ * row, so Home greyed Join out while the session was live and then, once the
+ * second row's own window opened, dropped the consultee into a different room
+ * from the consultant. `startsAt`/`endsAt` now describe the run, and
+ * `rawSlot` is the run's anchor — the row the video room is keyed to.
+ */
+function findNextSlot(slots: SlotWithContext[]): SessionPick | null {
   if (slots.length === 0) return null;
 
   const now = new Date();
@@ -69,24 +140,76 @@ function findNextSlot(slots: SlotWithContext[]): SlotWithContext | null {
     (a, b) => a.startsAt.getTime() - b.startsAt.getTime(),
   );
 
-  // Find first upcoming slot, or fall back to most recent past slot
-  return (
-    sortedSlots.find((s) => s.startsAt > now) ??
-    sortedSlots[sortedSlots.length - 1]
+  const run = getCurrentOrNextSession(
+    slots.map((s) => ({ ...s.rawSlot, appointmentId: s.appointmentId })),
+    now,
   );
+  const anchor = run
+    ? slots.find((s) => s.rawSlot.id === run.anchor.id)
+    : undefined;
+  if (run && anchor) {
+    return { ...anchor, startsAt: run.startsAt, endsAt: run.endsAt, run };
+  }
+
+  // Every row was cancelled/rescheduled: keep the old shape so the card still
+  // renders (with Join inert) instead of vanishing from Home.
+  const fallback =
+    sortedSlots.find((s) => s.startsAt > now) ??
+    sortedSlots[sortedSlots.length - 1];
+  return { ...fallback, run: null };
+}
+
+/** Slot rows in the shape `findNextSlot` groups on. */
+function toSlotContexts(
+  slots: Array<{
+    id: string;
+    startsAt: Date | string;
+    endsAt: Date | string | null;
+    isTentative: boolean;
+    appointmentId: string | null;
+    completionStatus?: string | null;
+    meetingSession?: {
+    id: string;
+    endedAt: Date | string | null;
+    endedReason: string | null;
+  } | null;
+  }>,
+  appointmentId: string,
+): SlotWithContext[] {
+  return slots.map((slot) => ({
+    startsAt: new Date(slot.startsAt),
+    endsAt: new Date(slot.endsAt ?? slot.startsAt),
+    rawSlot: {
+      id: slot.id,
+      startsAt: slot.startsAt,
+      endsAt: slot.endsAt,
+      isTentative: slot.isTentative,
+      appointmentId: slot.appointmentId,
+      // Both are already selected by the events read
+      // (lib/data/consultee-events-read.ts): the slot include is unfiltered,
+      // and `meetingSession: { id, endedAt }` is explicit on all four types.
+      completionStatus: slot.completionStatus ?? null,
+      meetingSession: slot.meetingSession ?? null,
+    },
+    appointmentId,
+  }));
 }
 
 /**
  * Process a consultation into a ProcessedEvent
  */
-export function processConsultation(
+function processConsultation(
   consultation: TConsultationWithPlan,
 ): ProcessedEvent | null {
   const slots = consultation.appointment?.slotsOfAppointment;
   if (!slots || slots.length === 0) return null;
 
-  const firstSlot = slots[0];
   const appointmentId = consultation.appointment?.id ?? "";
+  const slotContexts = toSlotContexts(slots, appointmentId);
+  // #1061 — the card's time range and its Join target are the whole session,
+  // not the first 30-minute row of it.
+  const session = findNextSlot(slotContexts);
+  if (!session) return null;
 
   // Build meeting appointment
   const joinableAppointment: MeetingAppointment = {
@@ -111,14 +234,7 @@ export function processConsultation(
     },
   };
 
-  // Build meeting slot
-  const joinableSlot: MeetingSlot = {
-    id: firstSlot.id,
-    startsAt: firstSlot.startsAt,
-    endsAt: firstSlot.endsAt,
-    isTentative: firstSlot.isTentative,
-    appointmentId: firstSlot.appointmentId,
-  };
+  const joinableSlot: MeetingSlot = session.rawSlot;
 
   return {
     id: consultation.id,
@@ -128,43 +244,30 @@ export function processConsultation(
       consultation.consultationPlan?.consultantProfile?.user?.name ?? "Expert",
     consultantImage:
       consultation.consultationPlan?.consultantProfile?.user?.image,
-    startsAt: new Date(firstSlot.startsAt),
-    endsAt: new Date(firstSlot.endsAt ?? firstSlot.startsAt),
-    status: consultation.requestStatus ?? "PENDING",
-    slots: slots.map((s) => ({
-      startsAt: new Date(s.startsAt),
-      endsAt: new Date(s.endsAt ?? s.startsAt),
-      appointmentId,
-    })),
+    startsAt: session.startsAt,
+    endsAt: session.endsAt,
+    status: consultation.status ?? "PENDING",
+    slots: slotContexts.map(toEventSlot),
     appointmentId,
     joinableAppointment,
     joinableSlot,
+    joinableSession: session.run,
+    organizationId: consultation.appointment?.organizationId ?? null,
   };
 }
 
 /**
  * Process a subscription into a ProcessedEvent
  */
-export function processSubscription(
+function processSubscription(
   subscription: TSubscriptionWithPlan,
 ): ProcessedEvent | null {
   const allSlots: SlotWithContext[] = [];
 
   subscription.appointments?.forEach((appointment) => {
-    appointment.slotsOfAppointment?.forEach((slot) => {
-      allSlots.push({
-        startsAt: new Date(slot.startsAt),
-        endsAt: new Date(slot.endsAt ?? slot.startsAt),
-        rawSlot: {
-          id: slot.id,
-          startsAt: slot.startsAt,
-          endsAt: slot.endsAt,
-          isTentative: slot.isTentative,
-          appointmentId: slot.appointmentId,
-        },
-        appointmentId: appointment.id,
-      });
-    });
+    allSlots.push(
+      ...toSlotContexts(appointment.slotsOfAppointment ?? [], appointment.id),
+    );
   });
 
   if (allSlots.length === 0) return null;
@@ -211,38 +314,30 @@ export function processSubscription(
       subscription.subscriptionPlan?.consultantProfile?.user?.image,
     startsAt: nextSlot.startsAt,
     endsAt: nextSlot.endsAt,
-    status: subscription.requestStatus ?? "PENDING",
-    slots: allSlots.map((s) => ({ startsAt: s.startsAt, endsAt: s.endsAt, appointmentId: s.appointmentId })),
+    status: subscription.status ?? "PENDING",
+    slots: allSlots.map(toEventSlot),
     appointmentId: nextSlot.appointmentId,
     joinableAppointment,
     joinableSlot: nextSlot.rawSlot,
+    joinableSession: nextSlot.run,
+    organizationId: nextAppointment?.organizationId ?? null,
   };
 }
 
 /**
  * Process a webinar into a ProcessedEvent
  */
-export function processWebinar(
-  webinar: TConsulteeWebinar,
-): ProcessedEvent | null {
+function processWebinar(webinar: TConsulteeWebinar): ProcessedEvent | null {
   const allSlots: SlotWithContext[] = [];
   const appointmentId = webinar.appointment?.id ?? "";
 
   // Get slots from the appointment
-  webinar.appointment?.slotsOfAppointment?.forEach((slot) => {
-    allSlots.push({
-      startsAt: new Date(slot.startsAt),
-      endsAt: new Date(slot.endsAt ?? slot.startsAt),
-      rawSlot: {
-        id: slot.id,
-        startsAt: slot.startsAt,
-        endsAt: slot.endsAt,
-        isTentative: slot.isTentative,
-        appointmentId: slot.appointmentId,
-      },
+  allSlots.push(
+    ...toSlotContexts(
+      webinar.appointment?.slotsOfAppointment ?? [],
       appointmentId,
-    });
-  });
+    ),
+  );
 
   if (allSlots.length === 0) return null;
 
@@ -268,26 +363,11 @@ export function processWebinar(
     },
   };
 
-  // Determine booking status
-  // If user has appointment with slots, they're confirmed (paid)
-  // Otherwise check waitlist status
-  const hasConfirmedSlot =
-    (webinar.appointment?.slotsOfAppointment?.length ?? 0) > 0;
-  const waitlistEntry = webinar.waitlist?.[0]; // User's waitlist entry (filtered by API)
-
-  let bookingStatus: BookingStatus = null;
-  let waitlistPosition: number | undefined;
-
-  if (hasConfirmedSlot) {
-    bookingStatus = "CONFIRMED";
-  } else if (waitlistEntry) {
-    if (waitlistEntry.status === "NOTIFIED") {
-      bookingStatus = "NOTIFIED";
-    } else if (waitlistEntry.status === "WAITING") {
-      bookingStatus = "WAITLISTED";
-      waitlistPosition = waitlistEntry.position ?? undefined;
-    }
-  }
+  // Registered = the consultee is connected to at least one session slot.
+  const bookingStatus: BookingStatus =
+    (webinar.appointment?.slotsOfAppointment?.length ?? 0) > 0
+      ? "CONFIRMED"
+      : null;
 
   // Extract collaborators
   const collaborators: ProcessedCollaborator[] = (
@@ -308,39 +388,27 @@ export function processWebinar(
     startsAt: nextSlot.startsAt,
     endsAt: nextSlot.endsAt,
     status: webinar.status ?? "APPROVED",
-    slots: allSlots.map((s) => ({ startsAt: s.startsAt, endsAt: s.endsAt, appointmentId: s.appointmentId })),
+    slots: allSlots.map(toEventSlot),
     appointmentId,
     joinableAppointment,
     joinableSlot: nextSlot.rawSlot,
+    joinableSession: nextSlot.run,
     bookingStatus,
-    waitlistPosition,
     collaborators,
+    organizationId: webinar.appointment?.organizationId ?? null,
   };
 }
 
 /**
  * Process a class into a ProcessedEvent
  */
-export function processClass(
-  classEvent: TConsulteeClass,
-): ProcessedEvent | null {
+function processClass(classEvent: TConsulteeClass): ProcessedEvent | null {
   const allSlots: SlotWithContext[] = [];
 
   classEvent.appointments?.forEach((appointment) => {
-    appointment.slotsOfAppointment?.forEach((slot) => {
-      allSlots.push({
-        startsAt: new Date(slot.startsAt),
-        endsAt: new Date(slot.endsAt ?? slot.startsAt),
-        rawSlot: {
-          id: slot.id,
-          startsAt: slot.startsAt,
-          endsAt: slot.endsAt,
-          isTentative: slot.isTentative,
-          appointmentId: slot.appointmentId,
-        },
-        appointmentId: appointment.id,
-      });
-    });
+    allSlots.push(
+      ...toSlotContexts(appointment.slotsOfAppointment ?? [], appointment.id),
+    );
   });
 
   if (allSlots.length === 0) return null;
@@ -372,28 +440,12 @@ export function processClass(
     },
   };
 
-  // Determine booking status
-  // If user has appointment with slots, they're confirmed (paid)
-  // Otherwise check waitlist status
-  const hasConfirmedSlot =
-    classEvent.appointments?.some(
+  const bookingStatus: BookingStatus =
+    (classEvent.appointments?.some(
       (a) => (a.slotsOfAppointment?.length ?? 0) > 0,
-    ) ?? false;
-  const waitlistEntry = classEvent.waitlist?.[0]; // User's waitlist entry (filtered by API)
-
-  let bookingStatus: BookingStatus = null;
-  let waitlistPosition: number | undefined;
-
-  if (hasConfirmedSlot) {
-    bookingStatus = "CONFIRMED";
-  } else if (waitlistEntry) {
-    if (waitlistEntry.status === "NOTIFIED") {
-      bookingStatus = "NOTIFIED";
-    } else if (waitlistEntry.status === "WAITING") {
-      bookingStatus = "WAITLISTED";
-      waitlistPosition = waitlistEntry.position ?? undefined;
-    }
-  }
+    ) ?? false)
+      ? "CONFIRMED"
+      : null;
 
   // Extract collaborators
   const collaborators: ProcessedCollaborator[] = (
@@ -414,13 +466,14 @@ export function processClass(
     startsAt: nextSlot.startsAt,
     endsAt: nextSlot.endsAt,
     status: classEvent.status ?? "APPROVED",
-    slots: allSlots.map((s) => ({ startsAt: s.startsAt, endsAt: s.endsAt, appointmentId: s.appointmentId })),
+    slots: allSlots.map(toEventSlot),
     appointmentId: nextSlot.appointmentId,
     joinableAppointment,
     joinableSlot: nextSlot.rawSlot,
+    joinableSession: nextSlot.run,
     bookingStatus,
-    waitlistPosition,
     collaborators,
+    organizationId: nextAppointment?.organizationId ?? null,
   };
 }
 
@@ -428,41 +481,40 @@ export function processClass(
  * A session is a group of contiguous slots belonging to the same appointment.
  */
 export interface SessionGroup {
+  /** The run's anchor row. Two runs can share an appointmentId, so keys do too. */
+  id: string;
   appointmentId: string;
   startTime: Date;
   endTime: Date;
   status: "completed" | "upcoming";
 }
 
-/** Group an event's slots by appointmentId into sessions with time-based status. */
+/**
+ * Group an event's slots into sessions with a time-based status.
+ *
+ * #1199 — this grouped by appointmentId alone, which says a booking is one
+ * session no matter when its rows sit. A subscription's Tuesday 09:00 and
+ * Thursday 16:00 sittings therefore merged into a single phantom session
+ * running from Tuesday morning to Thursday afternoon, and the "Sessions
+ * Completed" stat counted the pair as one. `groupSlotsIntoRuns` is the
+ * definition every other surface uses: contiguous rows, same appointment, same
+ * tentative flag, with cancelled and rescheduled rows dropped rather than left
+ * to bridge two runs that never touched.
+ */
 export function groupSlotsIntoSessions(
   slots: ProcessedEvent["slots"],
 ): SessionGroup[] {
   const now = new Date();
-  const groups = new Map<string, ProcessedEvent["slots"]>();
-
-  for (const slot of slots) {
-    const key = slot.appointmentId;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(slot);
-  }
-
-  return Array.from(groups.entries())
-    .map(([appointmentId, sessionSlots]) => {
-      const sorted = sessionSlots.sort(
-        (a, b) => a.startsAt.getTime() - b.startsAt.getTime(),
-      );
-      const endTime = sorted[sorted.length - 1].endsAt;
-      return {
-        appointmentId,
-        startTime: sorted[0].startsAt,
-        endTime,
-        status: (endTime < now ? "completed" : "upcoming") as
-          | "completed"
-          | "upcoming",
-      };
-    })
-    .sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
+  // Already sorted by start time by groupSlotsIntoRuns.
+  return groupSlotsIntoRuns(slots).map((run) => ({
+    id: run.anchor.id,
+    appointmentId: run.anchor.appointmentId,
+    startTime: run.startsAt,
+    endTime: run.endsAt,
+    status: (run.endsAt < now ? "completed" : "upcoming") as
+      | "completed"
+      | "upcoming",
+  }));
 }
 
 /**

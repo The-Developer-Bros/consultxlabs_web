@@ -49,14 +49,6 @@ This is the most critical post-maintenance step for financial integrity.
   - Filter by time range covering the maintenance window
   - **Action**: Note any failed deliveries for manual reconciliation
 
-- [ ] **Lemon Squeezy**: Check webhook delivery logs
-  - Path: Lemon Squeezy Dashboard > Webhooks
-  - Review any failures during the maintenance window
-
-- [ ] **XFlow**: Check webhook delivery logs
-  - Path: XFlow merchant portal
-  - Review any failures during the maintenance window
-
 ## 4. Run Critical Reconciliation Jobs
 
 Manually trigger these jobs in order. Use the admin system jobs dashboard or run directly:

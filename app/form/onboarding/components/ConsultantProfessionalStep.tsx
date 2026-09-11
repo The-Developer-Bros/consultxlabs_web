@@ -153,9 +153,9 @@ export default function ConsultantProfessionalStep({
 
         <TabsContent value="experience" className="mt-4">
           <div className="space-y-6">
-            <Alert className="border-blue-200 bg-blue-50 mb-4">
-              <Info className="h-4 w-4 text-blue-600" />
-              <AlertDescription className="text-blue-700">
+            <Alert className="border-border bg-muted mb-4">
+              <Info className="h-4 w-4 text-muted-foreground" />
+              <AlertDescription className="text-muted-foreground">
                 Adding your professional background builds trust with potential
                 clients. Profiles with work experience and certifications
                 receive significantly more bookings. You can always add these

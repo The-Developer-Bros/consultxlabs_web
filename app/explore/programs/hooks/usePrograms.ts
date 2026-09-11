@@ -14,7 +14,7 @@ import {
   type ProgramFilters,
   type ClassPlanProgram,
   type WebinarPlanProgram,
-} from "../utils";
+} from "@/lib/explore/programs";
 import {
   buildFilterParams,
   fetchPlans,

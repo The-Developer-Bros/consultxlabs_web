@@ -1,195 +1,190 @@
 "use client";
 
+import { MotionConfig } from "framer-motion";
 import { ArrowRight } from "lucide-react";
 import Link from "next/link";
+import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 
+import {
+  UseCaseCadence,
+  UseCaseCategories,
+  UseCaseChecklist,
+  UseCaseClosing,
+  UseCaseComparison,
+  UseCaseDecoder,
+  UseCaseFaqs,
+  UseCaseHero,
+  UseCaseMatrix,
+  UseCasePains,
+  UseCaseSessions,
+  UseCaseTimeline,
+  type UseCaseCategoriesData,
+  type UseCaseClosingData,
+  type UseCaseCta,
+  type UseCaseComparisonData,
+  type UseCaseFaq,
+  type UseCaseHeroData,
+  type UseCaseSectionData,
+} from "./UseCaseSections";
+
+export type { UseCaseIcon } from "./UseCaseSections";
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-interface PainPoint {
-  title: string;
-  description: string;
-}
+/**
+ * The section that carries the segment's distinctive argument. Each of the four
+ * pages picks a different renderer so they read as four pages, not one template
+ * with the nouns swapped.
+ */
+export type UseCaseSpine = UseCaseSectionData & {
+  variant: "timeline" | "decoder" | "matrix" | "cadence";
+};
 
-interface Solution {
-  title: string;
-  description: string;
-}
-
-interface CategoryLink {
-  label: string;
-  href: string;
-}
+export type UseCaseSectionKey =
+  | "pains"
+  | "spine"
+  | "sessions"
+  | "checklist"
+  | "comparison"
+  | "categories"
+  | "faqs";
 
 export interface UseCasePageData {
-  /** Main headline */
-  title: string;
-  /** Subtitle / value proposition */
-  subtitle: string;
-  /** Primary CTA label (default: "Get Started") */
-  ctaLabel?: string;
-  /** Primary CTA href (default: "/auth/signup") */
-  ctaHref?: string;
-  /** 3-4 pain points the audience faces */
-  painPoints: PainPoint[];
-  /** 3-4 ways Familiarise solves those pain points */
-  solutions: Solution[];
-  /** Expert categories relevant to this audience */
-  categories: CategoryLink[];
-  /** Bottom CTA section headline */
-  bottomCtaTitle: string;
-  /** Bottom CTA section description */
-  bottomCtaDescription: string;
+  hero: UseCaseHeroData;
+  pains: UseCaseSectionData;
+  spine: UseCaseSpine;
+  sessions: UseCaseSectionData;
+  /** Optional — only pages with a genuine pre-flight list use it. */
+  checklist?: UseCaseSectionData;
+  comparison: UseCaseComparisonData;
+  categories: UseCaseCategoriesData;
+  faqs: {
+    eyebrow: string;
+    title: string;
+    intro: string;
+    items: UseCaseFaq[];
+  };
+  closing: UseCaseClosingData;
+  /** Body order. Ordering is part of the argument, so each page sets its own. */
+  order: UseCaseSectionKey[];
 }
 
-// ─── Layout Component ────────────────────────────────────────────────────────
+// ─── Sticky mobile CTA ───────────────────────────────────────────────────────
 
-export default function UseCasePageLayout({ data }: { data: UseCasePageData }) {
-  const ctaLabel = data.ctaLabel ?? "Get Started";
-  const ctaHref = data.ctaHref ?? "/auth/signup";
+/**
+ * These are long, high-consideration pages and the hero CTA scrolls away within
+ * one screen on a phone. Appears only once the hero is behind you, so it never
+ * competes with the CTA already on screen.
+ */
+function StickyMobileCta({ cta }: { cta: UseCaseCta }) {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const onScroll = () => setVisible(window.scrollY > 600);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
 
   return (
-    <div className="w-full">
-      {/* Hero */}
-      <section className="bg-zinc-950 text-white py-20 md:py-28">
-        <div className="container mx-auto px-4 md:px-6 text-center max-w-3xl">
-          <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight mb-6">
-            {data.title}
-          </h1>
-          <p className="text-lg md:text-xl text-zinc-400 mb-8 leading-relaxed">
-            {data.subtitle}
-          </p>
-          <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-            <Link href={ctaHref}>
-              <Button
-                size="lg"
-                className="bg-white text-zinc-900 hover:bg-zinc-200 px-8 h-12 text-base"
-              >
-                {ctaLabel}
-                <ArrowRight className="w-4 h-4 ml-2" />
-              </Button>
-            </Link>
-            <Link href="/explore/experts">
-              <Button
-                variant="outline"
-                size="lg"
-                className="bg-transparent border-zinc-600 text-white hover:bg-zinc-800 px-8 h-12 text-base"
-              >
-                Browse Experts
-              </Button>
-            </Link>
-          </div>
-        </div>
-      </section>
-
-      {/* Pain Points */}
-      <section className="py-16 md:py-24 bg-white">
-        <div className="container mx-auto px-4 md:px-6 max-w-5xl">
-          <h2 className="text-3xl md:text-4xl font-bold text-center mb-4">
-            The Challenge
-          </h2>
-          <p className="text-zinc-500 text-center mb-12 max-w-2xl mx-auto">
-            Common problems that hold you back — and why generic solutions
-            don&apos;t cut it.
-          </p>
-          <div className="grid md:grid-cols-2 gap-6">
-            {data.painPoints.map((point, i) => (
-              <div
-                key={i}
-                className="p-6 rounded-2xl border border-zinc-200 bg-zinc-50"
-              >
-                <div className="w-10 h-10 rounded-xl bg-red-50 text-red-500 flex items-center justify-center font-bold text-lg mb-4">
-                  {i + 1}
-                </div>
-                <h3 className="text-lg font-semibold text-zinc-900 mb-2">
-                  {point.title}
-                </h3>
-                <p className="text-sm text-zinc-600 leading-relaxed">
-                  {point.description}
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* Solutions */}
-      <section className="py-16 md:py-24 bg-zinc-50">
-        <div className="container mx-auto px-4 md:px-6 max-w-5xl">
-          <h2 className="text-3xl md:text-4xl font-bold text-center mb-4">
-            How Familiarise Helps
-          </h2>
-          <p className="text-zinc-500 text-center mb-12 max-w-2xl mx-auto">
-            Real guidance from real experts — not AI-generated advice or
-            pre-recorded videos.
-          </p>
-          <div className="grid md:grid-cols-2 gap-6">
-            {data.solutions.map((solution, i) => (
-              <div
-                key={i}
-                className="p-6 rounded-2xl border border-zinc-200 bg-white"
-              >
-                <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-lg mb-4">
-                  {i + 1}
-                </div>
-                <h3 className="text-lg font-semibold text-zinc-900 mb-2">
-                  {solution.title}
-                </h3>
-                <p className="text-sm text-zinc-600 leading-relaxed">
-                  {solution.description}
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* Featured Categories */}
-      {data.categories.length > 0 && (
-        <section className="py-16 md:py-24 bg-white">
-          <div className="container mx-auto px-4 md:px-6 max-w-4xl text-center">
-            <h2 className="text-3xl md:text-4xl font-bold mb-4">
-              Explore Experts by Domain
-            </h2>
-            <p className="text-zinc-500 mb-10 max-w-2xl mx-auto">
-              Find verified consultants in the fields that matter to you.
-            </p>
-            <div className="flex flex-wrap justify-center gap-3">
-              {data.categories.map((cat) => (
-                <Link
-                  key={cat.href}
-                  href={cat.href}
-                  className="px-5 py-2.5 rounded-full border border-zinc-200 text-sm font-medium text-zinc-700 hover:bg-zinc-900 hover:text-white hover:border-zinc-900 transition-colors"
-                >
-                  {cat.label}
-                </Link>
-              ))}
-            </div>
-          </div>
-        </section>
-      )}
-
-      {/* Bottom CTA */}
-      <section className="py-20 md:py-28 bg-zinc-950 text-white">
-        <div className="container mx-auto px-4 md:px-6 text-center max-w-2xl">
-          <h2 className="text-3xl md:text-4xl font-bold mb-4">
-            {data.bottomCtaTitle}
-          </h2>
-          <p className="text-zinc-400 mb-8 leading-relaxed">
-            {data.bottomCtaDescription}
-          </p>
-          <Link href={ctaHref}>
-            <Button
-              size="lg"
-              className="bg-white text-zinc-900 hover:bg-zinc-200 px-8 h-12 text-base"
-            >
-              {ctaLabel}
-              <ArrowRight className="w-4 h-4 ml-2" />
-            </Button>
-          </Link>
-        </div>
-      </section>
+    <div
+      className={`md:hidden fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card/95 backdrop-blur-sm p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] transition-transform duration-300 ${
+        visible ? "translate-y-0" : "translate-y-full"
+      }`}
+      aria-hidden={!visible}
+    >
+      <Button asChild size="lg" className="w-full h-12 text-base">
+        <Link href={cta.href} tabIndex={visible ? undefined : -1}>
+          {cta.label}
+          <ArrowRight className="w-4 h-4 ml-2" />
+        </Link>
+      </Button>
     </div>
+  );
+}
+
+// ─── Layout ──────────────────────────────────────────────────────────────────
+
+export default function UseCasePageLayout({ data }: { data: UseCasePageData }) {
+  const renderSection = (key: UseCaseSectionKey) => {
+    switch (key) {
+      case "pains":
+        return <UseCasePains key={key} data={data.pains} />;
+      case "spine":
+        switch (data.spine.variant) {
+          case "timeline":
+            return <UseCaseTimeline key={key} data={data.spine} />;
+          case "decoder":
+            return <UseCaseDecoder key={key} data={data.spine} />;
+          case "matrix":
+            return <UseCaseMatrix key={key} data={data.spine} />;
+          case "cadence":
+            return <UseCaseCadence key={key} data={data.spine} />;
+        }
+        return null;
+      case "sessions":
+        return <UseCaseSessions key={key} data={data.sessions} />;
+      case "checklist":
+        return data.checklist ? (
+          <UseCaseChecklist key={key} data={data.checklist} />
+        ) : null;
+      case "comparison":
+        return <UseCaseComparison key={key} data={data.comparison} />;
+      case "categories":
+        return <UseCaseCategories key={key} data={data.categories} />;
+      case "faqs":
+        return (
+          <UseCaseFaqs
+            key={key}
+            eyebrow={data.faqs.eyebrow}
+            title={data.faqs.title}
+            intro={data.faqs.intro}
+            items={data.faqs.items}
+          />
+        );
+    }
+  };
+
+  // Not for a rich result — Google retired FAQ rich results in May 2026
+  // (https://developers.google.com/search/docs/appearance/structured-data/faqpage).
+  // FAQPage is still a valid type that crawlers and answer engines parse, and
+  // these pages are the site's main organic-search surface, so it is cheap to
+  // keep emitting.
+  const faqJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: data.faqs.items.map((faq) => ({
+      "@type": "Question",
+      name: faq.question,
+      acceptedAnswer: { "@type": "Answer", text: faq.answer },
+    })),
+  };
+
+  return (
+    // reducedMotion="user" makes framer-motion honour the OS "reduce motion"
+    // setting for every motion component below: transform animations are
+    // dropped, opacity fades are kept. Set once here rather than per-variant so
+    // a newly added animated block can't miss it.
+    <MotionConfig reducedMotion="user">
+      {/* Bottom padding on mobile so the fixed CTA bar doesn't cover the last
+          section — it sits above the content, not in flow. */}
+      <div className="w-full pb-24 md:pb-0">
+        <script
+          type="application/ld+json"
+          // Escape `<` so a `</script>` inside any FAQ answer can't close this
+          // block and inject markup. Copy is hardcoded today, but this is a
+          // script-injection sink and the guard costs nothing.
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify(faqJsonLd).replace(/</g, "\\u003c"),
+          }}
+        />
+        <UseCaseHero data={data.hero} />
+        {data.order.map(renderSection)}
+        <UseCaseClosing data={data.closing} />
+        <StickyMobileCta cta={data.hero.primaryCta} />
+      </div>
+    </MotionConfig>
   );
 }

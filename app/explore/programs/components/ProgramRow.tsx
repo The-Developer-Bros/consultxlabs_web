@@ -2,7 +2,7 @@
 
 import { memo, useRef } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { Program } from "../utils";
+import { Program } from "@/lib/explore/programs";
 import ProgramCard, { ProgramBadge } from "./ProgramCard";
 
 interface ProgramRowProps {
@@ -13,12 +13,12 @@ interface ProgramRowProps {
 
 function SkeletonCard() {
   return (
-    <div className="flex-shrink-0 w-[320px] md:w-[360px] rounded-2xl border border-zinc-200 overflow-hidden">
-      <div className="aspect-[16/10] bg-zinc-200 animate-pulse" />
+    <div className="flex-shrink-0 w-[320px] md:w-[360px] rounded-2xl border border-border overflow-hidden">
+      <div className="aspect-[16/10] bg-muted animate-pulse" />
       <div className="p-4 space-y-3">
-        <div className="h-5 bg-zinc-200 rounded animate-pulse w-3/4" />
-        <div className="h-4 bg-zinc-100 rounded animate-pulse w-full" />
-        <div className="h-5 bg-zinc-200 rounded animate-pulse w-1/4" />
+        <div className="h-5 bg-muted rounded animate-pulse w-3/4" />
+        <div className="h-4 bg-muted rounded animate-pulse w-full" />
+        <div className="h-5 bg-muted rounded animate-pulse w-1/4" />
       </div>
     </div>
   );
@@ -53,17 +53,17 @@ function ProgramRowImpl({ programs, badge, isLoading }: ProgramRowProps) {
       {/* Scroll buttons */}
       <button
         onClick={() => scroll("left")}
-        className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-4 z-10 w-10 h-10 rounded-full bg-white border border-zinc-200 shadow-lg flex items-center justify-center opacity-0 group-hover/row:opacity-100 transition-opacity hover:bg-zinc-50"
+        className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-4 z-10 w-10 h-10 rounded-full bg-card border border-border shadow-lg flex items-center justify-center opacity-0 group-hover/row:opacity-100 transition-opacity hover:bg-muted"
         aria-label="Scroll left"
       >
-        <ChevronLeft className="w-5 h-5 text-zinc-700" />
+        <ChevronLeft className="w-5 h-5 text-muted-foreground" />
       </button>
       <button
         onClick={() => scroll("right")}
-        className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-4 z-10 w-10 h-10 rounded-full bg-white border border-zinc-200 shadow-lg flex items-center justify-center opacity-0 group-hover/row:opacity-100 transition-opacity hover:bg-zinc-50"
+        className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-4 z-10 w-10 h-10 rounded-full bg-card border border-border shadow-lg flex items-center justify-center opacity-0 group-hover/row:opacity-100 transition-opacity hover:bg-muted"
         aria-label="Scroll right"
       >
-        <ChevronRight className="w-5 h-5 text-zinc-700" />
+        <ChevronRight className="w-5 h-5 text-muted-foreground" />
       </button>
 
       {/* Scrollable row */}

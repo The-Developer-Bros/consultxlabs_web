@@ -3,7 +3,7 @@
  * Used by admin/tickets, staff/tickets pages and their API routes.
  */
 
-export interface TicketUser {
+interface TicketUser {
   id: string;
   name: string | null;
   email: string | null;
@@ -24,7 +24,7 @@ export interface TicketResponse {
   } | null;
 }
 
-export interface TicketAttachment {
+interface TicketAttachment {
   id: string;
   fileName: string;
   originalName: string;
@@ -34,9 +34,9 @@ export interface TicketAttachment {
   uploadedAt: string;
 }
 
-export interface LinkedConsultation {
+interface LinkedConsultation {
   id: string;
-  requestStatus: string;
+  status: string;
   consultationPlan: {
     title: string;
     price: number;
@@ -63,7 +63,13 @@ export interface LinkedPayment {
 
 export interface LinkedRefund {
   id: string;
-  amount: number;
+  /**
+   * `Refund.amountPaise` — the ticket route selects exactly that. This said
+   * `amount`, a field no Refund payload carries. Nothing renders it yet, so it
+   * was a primed "₹NaN" rather than a live one; exported so the schema-drift
+   * test can hold it to the schema.
+   */
+  amountPaise: number;
   currency: string;
   status: string;
   reason: string | null;
@@ -72,6 +78,11 @@ export interface LinkedRefund {
 
 export interface Ticket {
   id: string;
+  /**
+   * #705 — the speakable reference (FAM-2026-000123). Null on tickets minted
+   * before the counter existed; surfaces fall back to a truncated id there.
+   */
+  referenceNumber?: string | null;
   title: string;
   description: string;
   priority: "LOW" | "MEDIUM" | "HIGH" | "URGENT";

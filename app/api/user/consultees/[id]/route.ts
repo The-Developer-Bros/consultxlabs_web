@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import * as Sentry from "@sentry/nextjs";
 import prisma from "@/lib/prisma";
 import {
   requireApiAuth,
@@ -54,6 +55,10 @@ export async function GET(
 
     return NextResponse.json({ data: consultee }, { status: 200 });
   } catch (error) {
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "user" } },
+    );
     if (error instanceof Error) {
       console.error("Error: ", error.stack);
     }
@@ -114,13 +119,17 @@ export async function POST(
         user: { connect: { id: id } },
       },
       include: {
-        consultantReviews: true,
+        consultantReviews: { where: { deletedAt: null } },
         user: true,
       },
     });
 
     return NextResponse.json(createdConsultee, { status: 201 });
   } catch (error) {
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "user" } },
+    );
     console.error("Error creating consultee:", error);
     return NextResponse.json(
       {
@@ -181,13 +190,17 @@ export async function PATCH(
         budgetPreference: body.budgetPreference,
       },
       include: {
-        consultantReviews: true,
+        consultantReviews: { where: { deletedAt: null } },
         user: true,
       },
     });
 
     return NextResponse.json(updatedConsultee, { status: 200 });
   } catch (error) {
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "user" } },
+    );
     console.error("Error updating consultee:", error);
     return NextResponse.json(
       {
@@ -238,13 +251,17 @@ export async function DELETE(
     const deletedConsultee = await prisma.consulteeProfile.delete({
       where: { id: id },
       include: {
-        consultantReviews: true,
+        consultantReviews: { where: { deletedAt: null } },
         user: true,
       },
     });
 
     return NextResponse.json(deletedConsultee, { status: 200 });
   } catch (error) {
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "user" } },
+    );
     console.error("Error deleting consultee:", error);
     return NextResponse.json(
       {

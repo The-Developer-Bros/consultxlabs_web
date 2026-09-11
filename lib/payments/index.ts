@@ -1,6 +1,6 @@
 /**
  * Payments Module - Main Exports
- * Unified payment gateway abstraction for Stripe, Razorpay, LemonSqueezy, and XFlow
+ * Unified payment gateway abstraction for Stripe and Razorpay
  */
 
 import { PaymentGateway } from "@prisma/client";
@@ -34,6 +34,8 @@ import {
   listRazorpayRefunds,
 } from "./core/razorpay";
 
+import { assertGatewayUsable } from "./validation/gateway-guards";
+
 import {
   createMockPaymentIntent,
   cancelMockPayment,
@@ -45,7 +47,6 @@ import {
 
 // Re-export types
 export * from "./core/types";
-export * from "./core/transactions";
 
 // ============================================================================
 // Unified Payment Intent Operations
@@ -66,6 +67,14 @@ export async function createPaymentIntent(
     return createMockPaymentIntent(params);
   }
 
+  // #1351 — the second door into a live charge. routeGateway fences the
+  // checkout route, but the approval-payment path (a consultant approving a
+  // request mints an intent from a stored PaymentGateway value, never through
+  // the router) reaches this switch directly. Guard here so both doors share
+  // one fence. Mock payments are exempt on purpose: they move no money and the
+  // dev Mock Pay button still names a gateway.
+  assertGatewayUsable(paymentGateway, "create a payment intent");
+
   // Route to correct gateway
   switch (paymentGateway) {
     case "STRIPE":
@@ -73,22 +82,6 @@ export async function createPaymentIntent(
 
     case "RAZORPAY":
       return createRazorpayOrder(params);
-
-    case "LEMON_SQUEEZY":
-      // TODO: Implement when LemonSqueezy KYC is complete
-      throw new PaymentError(
-        "LemonSqueezy integration not yet available - KYC pending",
-        "NOT_IMPLEMENTED",
-        "LEMON_SQUEEZY",
-      );
-
-    case "XFLOW":
-      // TODO: Implement when XFlow is ready for production
-      throw new PaymentError(
-        "XFlow integration not yet available",
-        "NOT_IMPLEMENTED",
-        "XFLOW",
-      );
 
     default:
       throw new PaymentError(
@@ -315,8 +308,6 @@ export function getPaymentGateway(paymentIntentId: string): PaymentGateway {
     // Extract gateway from mock ID
     if (paymentIntentId.includes("cs_mock")) return "STRIPE";
     if (paymentIntentId.includes("order_mock")) return "RAZORPAY";
-    if (paymentIntentId.includes("ls_mock")) return "LEMON_SQUEEZY";
-    if (paymentIntentId.includes("xf_mock")) return "XFLOW";
   }
 
   if (paymentIntentId.startsWith("cs_") || paymentIntentId.startsWith("pi_")) {
@@ -334,42 +325,4 @@ export function getPaymentGateway(paymentIntentId: string): PaymentGateway {
     `Cannot determine gateway for payment: ${paymentIntentId}`,
     "UNKNOWN_GATEWAY",
   );
-}
-
-/**
- * Convert amount to smallest currency unit
- */
-export function convertAmountToSmallestUnit(
-  amount: number,
-  currency: string,
-): number {
-  const multipliers: Record<string, number> = {
-    USD: 100, // cents
-    EUR: 100, // cents
-    GBP: 100, // pence
-    JPY: 1, // yen has no smaller unit
-    INR: 100, // paise
-    NGN: 100, // kobo
-  };
-
-  return Math.round(amount * (multipliers[currency] || 100));
-}
-
-/**
- * Convert from smallest currency unit to base unit
- */
-export function convertAmountFromSmallestUnit(
-  amount: number,
-  currency: string,
-): number {
-  const multipliers: Record<string, number> = {
-    USD: 100,
-    EUR: 100,
-    GBP: 100,
-    JPY: 1,
-    INR: 100,
-    NGN: 100,
-  };
-
-  return amount / (multipliers[currency] || 100);
 }

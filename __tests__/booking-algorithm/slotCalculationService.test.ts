@@ -312,7 +312,7 @@ describe("SlotCalculationService.calculateRequiredSlots", () => {
     it("should throw when dates are missing", () => {
       expect(() =>
         SlotCalculationService.calculateRequiredSlots("subscription", {
-          callsPerWeek: 2,
+          sessionsPerWeek: 2,
         }),
       ).toThrow("Start date and end date are required");
     });
@@ -323,7 +323,7 @@ describe("SlotCalculationService.calculateRequiredSlots", () => {
         SlotCalculationService.calculateRequiredSlots("subscription", {
           schedulingPeriodStartsAt: new Date("2025-01-06"),
           schedulingPeriodEndsAt: new Date("2025-01-31"),
-          callsPerWeek: 2,
+          sessionsPerWeek: 2,
           sessionDurationInHours: 1,
         }),
       ).toBe(16);
@@ -334,13 +334,13 @@ describe("SlotCalculationService.calculateRequiredSlots", () => {
         SlotCalculationService.calculateRequiredSlots("subscription", {
           schedulingPeriodStartsAt: new Date("2025-01-06"),
           schedulingPeriodEndsAt: new Date("2025-01-31"),
-          callsPerWeek: 1,
+          sessionsPerWeek: 1,
           sessionDurationInHours: 1.5,
         }),
       ).toBe(12);
     });
 
-    it("should default to 1 call/week when callsPerWeek missing", () => {
+    it("should default to 1 call/week when sessionsPerWeek missing", () => {
       const consoleSpy = jest.spyOn(console, "warn").mockImplementation();
       // 4 weeks × 1 call × 2 slots = 8
       expect(
@@ -360,7 +360,7 @@ describe("SlotCalculationService.calculateRequiredSlots", () => {
         SlotCalculationService.calculateRequiredSlots("subscription", {
           schedulingPeriodStartsAt: new Date("2025-01-06"),
           schedulingPeriodEndsAt: new Date("2025-01-31"),
-          callsPerWeek: 2,
+          sessionsPerWeek: 2,
         }),
       ).toBe(16);
       consoleSpy.mockRestore();
@@ -371,13 +371,13 @@ describe("SlotCalculationService.calculateRequiredSlots", () => {
     it("should throw when dates are missing", () => {
       expect(() =>
         SlotCalculationService.calculateRequiredSlots("class", {
-          callsPerWeek: 3,
+          sessionsPerWeek: 3,
           sessionDurationInHours: 1,
         }),
       ).toThrow("Start date and end date are required");
     });
 
-    it("should throw when callsPerWeek is missing", () => {
+    it("should throw when sessionsPerWeek is missing", () => {
       expect(() =>
         SlotCalculationService.calculateRequiredSlots("class", {
           schedulingPeriodStartsAt: new Date("2025-01-06"),
@@ -392,7 +392,7 @@ describe("SlotCalculationService.calculateRequiredSlots", () => {
         SlotCalculationService.calculateRequiredSlots("class", {
           schedulingPeriodStartsAt: new Date("2025-01-06"),
           schedulingPeriodEndsAt: new Date("2025-01-31"),
-          callsPerWeek: 2,
+          sessionsPerWeek: 2,
         }),
       ).toThrow("Session duration must be a positive number");
     });
@@ -402,7 +402,7 @@ describe("SlotCalculationService.calculateRequiredSlots", () => {
         SlotCalculationService.calculateRequiredSlots("class", {
           schedulingPeriodStartsAt: new Date("2025-01-06"),
           schedulingPeriodEndsAt: new Date("2025-01-31"),
-          callsPerWeek: 3,
+          sessionsPerWeek: 3,
           sessionDurationInHours: 1,
         }),
       ).toBe(24);
@@ -488,35 +488,35 @@ describe("SlotCalculationService.groupSlotsByWeek", () => {
     expect(grouped.size).toBe(2);
   });
 
-  it("should use UTC-based week boundaries (not local timezone)", () => {
+  it("should use scheduling-timezone week boundaries (default Asia/Kolkata), not the process timezone", () => {
     // Saturday Jan 4 23:30 UTC = Sunday Jan 5 in UTC+1 or later timezones
     // Sunday Jan 5 00:30 UTC = same week as Saturday in a Sunday-start system
     // Both should be in the same UTC week (week starting Sunday Jan 5 would be wrong)
-    const saturdayLateUTC = {
-      startTime: new Date("2025-01-04T23:30:00Z"), // Saturday UTC
-      endTime: new Date("2025-01-05T00:00:00Z"),
+    // ADR B9 — buckets are scheduling-timezone (default Asia/Kolkata) weeks.
+    // 18:29Z Saturday is 23:59 IST Saturday (old week); 18:30Z is 00:00 IST
+    // Sunday (new week).
+    const saturdayLateIST = {
+      startTime: new Date("2025-01-04T18:29:00Z"),
+      endTime: new Date("2025-01-04T18:59:00Z"),
       isAvailable: true,
       isBooked: false,
     };
-    const sundayEarlyUTC = {
-      startTime: new Date("2025-01-05T00:30:00Z"), // Sunday UTC
-      endTime: new Date("2025-01-05T01:00:00Z"),
+    const sundayEarlyIST = {
+      startTime: new Date("2025-01-04T18:30:00Z"),
+      endTime: new Date("2025-01-04T19:00:00Z"),
       isAvailable: true,
       isBooked: false,
     };
 
     const grouped = SlotCalculationService.groupSlotsByWeek([
-      saturdayLateUTC,
-      sundayEarlyUTC,
+      saturdayLateIST,
+      sundayEarlyIST,
     ]);
-    // Saturday belongs to week starting Dec 29 (Sun), Sunday starts new week Jan 5
+    // Saturday belongs to week of Dec 29 (Sun), Sunday starts new week Jan 5
     expect(grouped.size).toBe(2);
 
-    // Verify week keys use UTC dates
-    const keys = Array.from(grouped.keys());
-    expect(keys.every((k) => k.includes("2024") || k.includes("2025"))).toBe(
-      true,
-    );
+    const keys = Array.from(grouped.keys()).sort();
+    expect(keys).toEqual(["2024-12-29", "2025-01-05"]);
   });
 });
 
@@ -590,7 +590,7 @@ describe("SlotCalculationService.calculateProgress", () => {
       "subscription",
       {
         sessionDurationInHours: 1,
-        callsPerWeek: 2,
+        sessionsPerWeek: 2,
         schedulingPeriodStartsAt: new Date("2025-01-06"),
         schedulingPeriodEndsAt: new Date("2025-01-31"),
       },

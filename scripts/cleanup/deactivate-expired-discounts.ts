@@ -19,6 +19,7 @@
  */
 
 import prisma from "../../lib/prisma";
+import { withCronLock } from "@/lib/cron/with-cron-lock";
 
 export interface ExpiredDiscountsResult {
   success: boolean;
@@ -168,7 +169,15 @@ async function deactivateMaxUsesReached(): Promise<{
 /**
  * Main function to deactivate expired discount codes
  */
+// #476 — locked at the core so every entry (GH Actions / HTTP) shares one
+// mutual exclusion; fail-open: repeat-safe side effects, lock is belt-and-braces.
 export async function deactivateExpiredDiscounts(): Promise<ExpiredDiscountsResult> {
+  return withCronLock("deactivate-expired-discounts", { failMode: "open" }, () =>
+    deactivateExpiredDiscountsUnlocked(),
+  );
+}
+
+async function deactivateExpiredDiscountsUnlocked(): Promise<ExpiredDiscountsResult> {
   const allErrors: string[] = [];
   const allCodes: string[] = [];
 

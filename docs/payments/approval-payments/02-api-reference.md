@@ -2,7 +2,7 @@
 
 ## Approval Endpoints
 
-### PATCH /api/events/consultations/[consultationId]
+### PATCH /api/bookings/consultations/[consultationId]
 
 Approve or update consultation request status.
 
@@ -10,7 +10,7 @@ Approve or update consultation request status.
 
 ```typescript
 {
-  status: RequestStatus; // APPROVED, REJECTED, etc.
+  status: AppointmentStatus; // APPROVED, REJECTED, etc. (renamed from `RequestStatus`)
 }
 ```
 
@@ -20,7 +20,7 @@ Approve or update consultation request status.
 {
   "data": {
     "id": "clx123abc",
-    "requestStatus": "APPROVED_PENDING_PAYMENT",
+    "status": "APPROVED_PENDING_PAYMENT",
     "requestNotes": "...[System] Payment link generated: https://...",
     "consultationPlan": { ... },
     "requestedBy": { ... },
@@ -40,7 +40,7 @@ Approve or update consultation request status.
 {
   "data": {
     "id": "clx123abc",
-    "requestStatus": "APPROVED",
+    "status": "APPROVED",
     "consultationPlan": { ... },
     "requestedBy": { ... },
     "appointment": { ... }
@@ -85,14 +85,14 @@ Approve or update consultation request status.
 **Example**:
 
 ```bash
-curl -X PATCH https://familiarise.com/api/events/consultations/clx123abc \
+curl -X PATCH https://familiarise.com/api/bookings/consultations/clx123abc \
   -H "Content-Type: application/json" \
   -d '{"status": "APPROVED"}'
 ```
 
 ---
 
-### PATCH /api/events/subscriptions/[subscriptionId]
+### PATCH /api/bookings/subscriptions/[subscriptionId]
 
 Approve or update subscription request status.
 
@@ -100,7 +100,7 @@ Approve or update subscription request status.
 
 ```typescript
 {
-  status: RequestStatus; // APPROVED, REJECTED, etc.
+  status: AppointmentStatus; // APPROVED, REJECTED, etc. (renamed from `RequestStatus`)
 }
 ```
 
@@ -110,7 +110,7 @@ Approve or update subscription request status.
 {
   "data": {
     "id": "clx456def",
-    "requestStatus": "APPROVED_PENDING_PAYMENT",
+    "status": "APPROVED_PENDING_PAYMENT",
     "requestNotes": "...[System] Payment link generated: https://...",
     "subscriptionPlan": { ... },
     "requestedBy": { ... },
@@ -130,7 +130,7 @@ Approve or update subscription request status.
 {
   "data": {
     "id": "clx456def",
-    "requestStatus": "APPROVED",
+    "status": "APPROVED",
     "subscriptionPlan": { ... },
     "requestedBy": { ... },
     "appointments": [ ... ]
@@ -387,8 +387,8 @@ Create payment intent for approved consultations/subscriptions.
   subscriptionId?: string;
   planId: string;
   paymentGateway: "STRIPE";
-  slotStartTimeInUTC?: string;
-  slotEndTimeInUTC?: string;
+  startsAt?: string;    // renamed from `slotStartTimeInUTC`
+  endsAt?: string;      // renamed from `slotEndTimeInUTC`
   schedulingPeriodStartsAt?: string;
   schedulingPeriodEndsAt?: string;
   notes?: string;
@@ -415,8 +415,8 @@ const paymentResult = await createApprovalPaymentIntent({
   consultationId: "clx123abc",
   planId: "clxPlan123",
   paymentGateway: PaymentGateway.STRIPE,
-  slotStartTimeInUTC: "2025-01-20T14:00:00.000Z",
-  slotEndTimeInUTC: "2025-01-20T14:30:00.000Z",
+  startsAt: "2025-01-20T14:00:00.000Z",   // renamed from `slotStartTimeInUTC`
+  endsAt: "2025-01-20T14:30:00.000Z",     // renamed from `slotEndTimeInUTC`
   notes: "Career transition consultation",
 });
 ```
@@ -478,8 +478,8 @@ Content-Type: application/json
 
 | Endpoint                                           | Role Required              |
 | -------------------------------------------------- | -------------------------- |
-| PATCH /api/events/consultations/[id]               | CONSULTANT (owner)         |
-| PATCH /api/events/subscriptions/[id]               | CONSULTANT (owner)         |
+| PATCH /api/bookings/consultations/[id]               | CONSULTANT (owner)         |
+| PATCH /api/bookings/subscriptions/[id]               | CONSULTANT (owner)         |
 | GET /api/dashboard/consultee/[id]/pending-payments | CONSULTEE (owner) or ADMIN |
 | GET /api/dashboard/admin/approval-payments         | ADMIN                      |
 | GET /api/cleanup/approval-payments                 | ADMIN or Cron              |
@@ -592,7 +592,7 @@ Stripe retries failed webhooks:
 
 ```bash
 # 1. Approve consultation
-curl -X PATCH http://localhost:3000/api/events/consultations/test-id \
+curl -X PATCH http://localhost:3000/api/bookings/consultations/test-id \
   -H "Content-Type: application/json" \
   -d '{"status": "APPROVED"}'
 

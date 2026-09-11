@@ -13,13 +13,13 @@ import {
 export default function PrivacyPolicyPage() {
   return (
     <section className="w-full">
-      <div className="container mx-auto px-4 md:px-6 py-8">
+      <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Hero Section */}
         <div className="text-center mb-12">
           <div className="flex justify-center mb-4">
-            <Shield className="h-16 w-16 text-blue-600" />
+            <Shield className="h-16 w-16 text-foreground" />
           </div>
-          <h1 className="text-4xl md:text-5xl font-bold mb-4">
+          <h1 className="text-fluid-4xl md:text-fluid-5xl font-bold tracking-tight mb-4">
             {PAGE_META.privacy.title}
           </h1>
           <p className="text-muted-foreground max-w-3xl mx-auto">
@@ -27,10 +27,10 @@ export default function PrivacyPolicyPage() {
           </p>
         </div>
 
-        <div className="max-w-4xl mx-auto">
-          <Card>
+        <div className="max-w-3xl mx-auto">
+          <Card className="shadow-elevation-1">
             <CardHeader>
-              <CardTitle className="text-2xl">Privacy Policy</CardTitle>
+              <CardTitle className="text-fluid-2xl">Privacy Policy</CardTitle>
               <p className="text-sm text-muted-foreground">
                 Last Updated: {POLICY_DATES.privacyLastUpdated}
               </p>
@@ -383,15 +383,19 @@ export default function PrivacyPolicyPage() {
                 8. Children's Privacy
               </h2>
               <p>
-                Our services are not intended for children under the age of 13.
-                We do not knowingly collect personal information from children
-                under 13. If you are a parent or guardian and believe your child
-                has provided us with personal information, please contact us
-                immediately, and we will take steps to delete such information.
+                Under the Digital Personal Data Protection Act, 2023, a child is
+                anyone who has not completed eighteen years of age. Our services
+                are not intended for children, and we do not knowingly collect
+                personal information from anyone under 18. We ask for your date
+                of birth during onboarding solely to confirm that you are not a
+                child — a purpose expressly permitted by Part B, item 6 of the
+                Fourth Schedule to the Digital Personal Data Protection Rules,
+                2025.
               </p>
               <p>
-                Users between the ages of 13 and 18 must have parental or
-                guardian consent to use our services.
+                If you are a parent or guardian and believe your child has
+                provided us with personal information, please contact us
+                immediately and we will take steps to delete it.
               </p>
 
               <Separator className="my-6" />
@@ -479,13 +483,10 @@ export default function PrivacyPolicyPage() {
                   <strong>Company Name:</strong> {COMPANY_INFO.name}
                 </p>
                 <p>
-                  <strong>Address:</strong> {COMPANY_INFO.address}
-                </p>
-                <p>
                   <strong>Email:</strong>{" "}
                   <a
                     href={getMailtoLink()}
-                    className="text-blue-600 hover:underline"
+                    className="font-medium text-foreground underline underline-offset-4 hover:no-underline"
                   >
                     {COMPANY_INFO.email}
                   </a>
@@ -494,7 +495,7 @@ export default function PrivacyPolicyPage() {
                   <strong>Contact Form:</strong>{" "}
                   <a
                     href="/contactus"
-                    className="text-blue-600 hover:underline"
+                    className="font-medium text-foreground underline underline-offset-4 hover:no-underline"
                   >
                     Contact Us
                   </a>
@@ -503,7 +504,7 @@ export default function PrivacyPolicyPage() {
 
               <Separator className="my-6" />
 
-              <div className="bg-blue-50 dark:bg-blue-950 p-6 rounded-lg mt-8">
+              <div className="bg-secondary border border-border p-6 rounded-lg mt-8">
                 <h3 className="text-lg font-semibold mb-2">
                   Your Privacy Matters
                 </h3>

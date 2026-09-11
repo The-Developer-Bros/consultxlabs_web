@@ -18,7 +18,7 @@ graph LR
     subgraph "Direct Resend Path"
         A1[Auth Emails] --> R[Resend API]
         A2[Payment Emails] --> R
-        A3[Waitlist Emails] --> R
+        A3[Newsletter Emails] --> R
         R --> T[React Email Templates]
         T --> D[Email Delivery]
     end
@@ -40,7 +40,7 @@ graph LR
 | -------------------------------------------------------------- | ----------------------------------------------------------------- |
 | Auth emails (welcome, password reset, account linked)          | Appointment lifecycle (booked, cancelled, rescheduled, completed) |
 | Payment transactional (payment link, success, failed)          | Support tickets (created, updated, response)                      |
-| Waitlist lifecycle (joined, spot available, expiring, expired) | Feedback and reviews                                              |
+| Newsletter opt-in (confirm, welcome)                           | Feedback and reviews                                              |
 | Any email that doesn't need in-app/push delivery               | Trial sessions, subscriptions                                     |
 |                                                                | Consultant-specific (booking requests, verification, payouts)     |
 |                                                                | Admin/system (announcements, new applications)                    |
@@ -60,14 +60,9 @@ lib/email.ts
 ├── sendAccountLinkedEmail()   -- from: security@familiarise.com
 ├── sendPaymentLinkEmail()     -- from: payments@familiarise.com
 ├── sendPaymentSuccessEmail()  -- from: payments@familiarise.com
-└── sendPaymentFailedEmail()   -- from: payments@familiarise.com
-
-lib/waitlist/notifications.ts
-├── getResendClient()                  -- Separate lazy singleton
-├── sendWaitlistJoinedEmail()          -- from: notifications@familiarise.com
-├── sendWaitlistSpotAvailableEmail()   -- from: notifications@familiarise.com
-├── sendWaitlistExpiringEmail()        -- from: notifications@familiarise.com
-└── sendWaitlistExpiredEmail()         -- from: notifications@familiarise.com
+├── sendPaymentFailedEmail()   -- from: payments@familiarise.com
+├── sendWaitlistConfirmEmail() -- from: newsletter@familiarise.com
+└── sendWaitlistWelcomeEmail() -- from: newsletter@familiarise.com
 ```
 
 ### Email Rendering Pipeline
@@ -101,7 +96,7 @@ sequenceDiagram
 | `onboarding@`    | Welcome emails                  |
 | `security@`      | Password reset, account linking |
 | `payments@`      | Payment link, success, failure  |
-| `notifications@` | Waitlist emails                 |
+| `newsletter@`    | Newsletter opt-in + broadcasts  |
 
 ---
 
@@ -204,7 +199,6 @@ notifyVerificationStatusChanged(consultantUserId, payload)  -> triggerWorkflow
 notifyPayoutProcessed(consultantUserId, payload)            -> triggerWorkflow
 notifyGeneralAnnouncement(payload)                -> triggerBroadcastWorkflow
 notifyNewConsultantApplication(adminUserIds[], payload)  -> triggerForMultiple
-notifyWaitlistSpotAvailable(userId, payload)      -> triggerWorkflow
 notifyDisputeCreated(userIds[], payload)          -> triggerForMultiple
 notifyDisputeResolved(userIds[], payload)         -> triggerForMultiple
 notifyRecordingAvailable(userIds[], payload)      -> triggerForMultiple
@@ -357,6 +351,8 @@ This pattern ensures:
 1. Core business operations (payments, bookings) always succeed even if Novu is down
 2. Email delivery failures don't cause transaction rollbacks
 3. The user gets their booking/payment confirmation regardless of notification status
+
+For Novu triggers this remains a true fire-and-forget: a failed call is logged and forgotten. As of #474 the direct Resend transactional emails behave differently on failure. When a Resend send throws — typically a transient provider outage — the sender no longer drops the message. Instead it persists the already-rendered message (subject, HTML and text body, recipient, from and reply-to) to the `FailedEmail` table via `recordFailedEmail()` in `lib/email.ts`. A retry worker, `jobs/email/retry-failed-emails.ts`, then re-sends that stored message verbatim — no re-render — on a fixed backoff schedule of one minute, five minutes, thirty minutes, two hours, and eight hours. After the fifth attempt is exhausted the row is moved to the `DEAD_LETTER` status, where it remains operator-replayable because the rendered message is still on the row. The calling operation still never blocks or rolls back; the difference is that a transient failure is now captured and replayed rather than silently lost.
 
 ---
 

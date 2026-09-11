@@ -233,7 +233,7 @@ const result = await prisma.$transaction(async (tx) => {
   });
 
   // Idempotency check
-  if (current.requestStatus === RequestStatus.APPROVED_PENDING_PAYMENT) {
+  if (current.status === AppointmentStatus.APPROVED_PENDING_PAYMENT) {
     return { duplicate: true };
   }
 
@@ -609,7 +609,7 @@ grep "Evidence submission error" /var/log/application.log
 
 ```typescript
 // The cleanup job re-checks status inside transaction (lines 47-55)
-if (consultation.requestStatus !== RequestStatus.APPROVED_PENDING_PAYMENT) {
+if (consultation.status !== AppointmentStatus.APPROVED_PENDING_PAYMENT) {
   return false; // Already processed or status changed
 }
 ```

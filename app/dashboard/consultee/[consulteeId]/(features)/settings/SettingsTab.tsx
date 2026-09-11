@@ -1,19 +1,22 @@
 "use client";
 
-import { Button } from "components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "components/ui/card";
-import { Input } from "components/ui/input";
-import { Label } from "components/ui/label";
-import { Textarea } from "components/ui/textarea";
+import * as Sentry from "@sentry/nextjs";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "components/ui/select";
+} from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { NotificationPreferencesPanel } from "@/components/notifications";
+import { EmptyState } from "@/components/dashboard/DataCard";
+import { Settings as SettingsIcon } from "lucide-react";
 import React, { useEffect, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { createConsulteeQueries } from "@/lib/dashboard-queries";
@@ -197,7 +200,15 @@ export default function SettingsTab({ consulteeId }: SettingsTabProps) {
           }),
         });
         if (!bgResponse.ok) {
-          console.error("Failed to update education/work experience");
+          // Profile saved but background details didn't — say so instead of
+          // reporting blanket success; the form stays dirty for a retry.
+          toast({
+            title: "Partially saved",
+            description:
+              "Your profile was saved, but education/work experience failed to update. Please try saving again.",
+            variant: "destructive",
+          });
+          return;
         }
       }
 
@@ -207,7 +218,8 @@ export default function SettingsTab({ consulteeId }: SettingsTabProps) {
       });
 
       refetch();
-    } catch {
+    } catch (error) {
+      Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "client" } });
       toast({
         title: "Error",
         description: "Failed to save settings. Please try again.",
@@ -221,9 +233,11 @@ export default function SettingsTab({ consulteeId }: SettingsTabProps) {
   if (isLoading) {
     return (
       <div className="space-y-6">
-        <div className="bg-white rounded-xl p-8 shadow-sm border border-gray-100 mb-6">
-          <h2 className="text-3xl font-bold text-gray-900">Settings</h2>
-          <p className="mt-2 text-gray-600">
+        <div className="bg-card rounded-xl p-6 shadow-sm border border-border mb-6 sm:p-8">
+          <h2 className="text-fluid-3xl font-bold tracking-tight text-foreground">
+            Settings
+          </h2>
+          <p className="mt-2 text-muted-foreground">
             Manage your account settings and preferences
           </p>
         </div>
@@ -233,12 +247,12 @@ export default function SettingsTab({ consulteeId }: SettingsTabProps) {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="animate-pulse space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="h-16 bg-gray-200 rounded"></div>
-                <div className="h-16 bg-gray-200 rounded"></div>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div className="h-16 bg-muted rounded"></div>
+                <div className="h-16 bg-muted rounded"></div>
               </div>
-              <div className="h-32 bg-gray-200 rounded"></div>
-              <div className="h-16 bg-gray-200 rounded"></div>
+              <div className="h-32 bg-muted rounded"></div>
+              <div className="h-16 bg-muted rounded"></div>
             </div>
           </CardContent>
         </Card>
@@ -246,11 +260,30 @@ export default function SettingsTab({ consulteeId }: SettingsTabProps) {
     );
   }
 
+  // In-page error state — the old toast-only path left a form rendering
+  // nulls after a failed load, which read like empty settings.
+  if (error && !consulteeData) {
+    return (
+      <EmptyState
+        icon={SettingsIcon}
+        title="Couldn't load your settings"
+        description="Something went wrong while fetching your profile."
+        action={
+          <Button variant="outline" onClick={() => refetch()}>
+            Retry
+          </Button>
+        }
+      />
+    );
+  }
+
   return (
     <div className="space-y-6">
-      <div className="bg-white rounded-xl p-8 shadow-sm border border-gray-100 mb-6">
-        <h2 className="text-3xl font-bold text-gray-900">Settings</h2>
-        <p className="mt-2 text-gray-600">
+      <div className="bg-card rounded-xl p-6 shadow-sm border border-border mb-6 sm:p-8">
+        <h2 className="text-fluid-3xl font-bold tracking-tight text-foreground">
+          Settings
+        </h2>
+        <p className="mt-2 text-muted-foreground">
           Manage your account settings and preferences
         </p>
       </div>
@@ -260,7 +293,7 @@ export default function SettingsTab({ consulteeId }: SettingsTabProps) {
           <CardTitle>Profile Settings</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="preferredLanguage">Preferred Language</Label>
               <Input
@@ -358,7 +391,7 @@ export default function SettingsTab({ consulteeId }: SettingsTabProps) {
           <CardTitle>Career Preferences</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="budgetPreference">Budget Preference</Label>
               <Select
@@ -415,11 +448,7 @@ export default function SettingsTab({ consulteeId }: SettingsTabProps) {
       <NotificationPreferencesPanel />
 
       <div className="flex justify-end">
-        <Button
-          onClick={handleSave}
-          className="bg-blue-600 hover:bg-blue-700"
-          disabled={isSaving}
-        >
+        <Button onClick={handleSave} disabled={isSaving}>
           {isSaving ? "Saving..." : "Save Changes"}
         </Button>
       </div>

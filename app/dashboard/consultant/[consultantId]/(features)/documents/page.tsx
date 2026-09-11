@@ -1,7 +1,7 @@
 "use client";
 
-import { use } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { use, useState } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { DashboardErrorBoundary } from "@/components/DashboardErrorBoundary";
 import { TableSkeleton } from "@/components/dashboard/DashboardSkeletons";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -17,6 +17,8 @@ import {
   AlertCircle,
 } from "lucide-react";
 
+const DEFAULT_PAGE_SIZE = 10;
+
 export default function DocumentsPage({
   params,
 }: {
@@ -24,16 +26,39 @@ export default function DocumentsPage({
 }) {
   const { consultantId } = use(params);
 
-  // Use useQuery directly (documents are not currently prefetched, but using consistent pattern)
+  // Pagination + filter state lifted up from DocumentsTab so the React Query
+  // key depends on them. This is what makes server-side pagination work with
+  // `keepPreviousData` for smooth Previous/Next transitions (issue #346).
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [typeFilter, setTypeFilter] = useState<string>("all");
+
+  const apiStatus = statusFilter === "all" ? undefined : statusFilter;
+  const apiType = typeFilter === "all" ? undefined : typeFilter;
+  const offset = (page - 1) * pageSize;
+
   const {
-    data: documents,
+    data: documentsPage,
     isLoading,
     error,
     refetch,
     isRefetching,
+    isPlaceholderData,
   } = useQuery({
-    queryKey: ["documents", consultantId],
-    queryFn: () => fetchDocuments(consultantId),
+    queryKey: [
+      "documents",
+      consultantId,
+      { page, pageSize, status: apiStatus, type: apiType },
+    ],
+    queryFn: () =>
+      fetchDocuments(consultantId, {
+        limit: pageSize,
+        offset,
+        status: apiStatus,
+        appointmentType: apiType,
+      }),
+    placeholderData: keepPreviousData,
     staleTime: 2 * 60 * 1000,
     gcTime: 10 * 60 * 1000,
     retry: (failureCount, error) => {
@@ -207,7 +232,28 @@ export default function DocumentsPage({
   return (
     <DashboardErrorBoundary>
       <div className="min-w-0 overflow-x-hidden">
-        <DocumentsTab documents={documents || []} onRefresh={refetch} />
+        <DocumentsTab
+          documentsPage={documentsPage}
+          isPlaceholderData={isPlaceholderData}
+          onRefresh={refetch}
+          page={page}
+          pageSize={pageSize}
+          onPageChange={setPage}
+          onPageSizeChange={(next) => {
+            setPageSize(next);
+            setPage(1);
+          }}
+          statusFilter={statusFilter}
+          typeFilter={typeFilter}
+          onStatusFilterChange={(next) => {
+            setStatusFilter(next);
+            setPage(1);
+          }}
+          onTypeFilterChange={(next) => {
+            setTypeFilter(next);
+            setPage(1);
+          }}
+        />
       </div>
     </DashboardErrorBoundary>
   );

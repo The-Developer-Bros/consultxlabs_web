@@ -15,5 +15,3 @@ export const ReviewVerificationSchema = z.object({
     )
     .optional(),
 });
-
-export type ReviewVerificationInput = z.infer<typeof ReviewVerificationSchema>;

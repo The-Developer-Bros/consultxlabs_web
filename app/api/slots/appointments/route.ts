@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import { AppointmentsType, Prisma, RequestStatus } from "@prisma/client";
+import { AppointmentsType } from "@prisma/client";
 import { requireApiAuth, isPrivileged } from "@/lib/auth-helpers";
+import { resolveOrgScope } from "@/lib/api/scope/parse";
+import { getConsultantAppointments } from "@/lib/data/consultant-appointments";
+import { computeWeeklyConfirmedCallCounts } from "@/lib/booking/weekly-call-counts";
 
 export async function GET(request: NextRequest) {
   const authResult = await requireApiAuth();
@@ -58,7 +61,7 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  // Validate statuses — consultation/subscription use RequestStatus enum,
+  // Validate statuses — consultation/subscription use AppointmentStatus enum,
   // webinar/class use their own event lifecycle statuses
   const validRequestStatuses = [
     "PENDING",
@@ -76,13 +79,19 @@ export async function GET(request: NextRequest) {
     "COMPLETED",
     "CANCELLED",
   ];
-  if (consultationStatus && !validRequestStatuses.includes(consultationStatus)) {
+  if (
+    consultationStatus &&
+    !validRequestStatuses.includes(consultationStatus)
+  ) {
     return NextResponse.json(
       { error: "Invalid consultation status" },
       { status: 400 },
     );
   }
-  if (subscriptionStatus && !validRequestStatuses.includes(subscriptionStatus)) {
+  if (
+    subscriptionStatus &&
+    !validRequestStatuses.includes(subscriptionStatus)
+  ) {
     return NextResponse.json(
       { error: "Invalid subscription status" },
       { status: 400 },
@@ -101,16 +110,41 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  // #674 personal-vs-org scope filter. The leak this closes: a consultant
+  // who hosts under Acme + Zeta would see appointments from both orgs in
+  // a single "Appointments" tab regardless of which org context the
+  // dashboard had selected. Filter via the denormalized
+  // Appointment.organizationId column populated by the #674 backfill.
+  const callerMembershipsForScope = await prisma.membership.findMany({
+    where: { userId: session.user.id, status: "ACTIVE" },
+    select: { organizationId: true, status: true, role: true },
+  });
+  const scopeResolution = resolveOrgScope({
+    raw: searchParams.get("orgScope"),
+    memberships: callerMembershipsForScope,
+    userRole: session.user.role,
+    userId: session.user.id,
+    // Self-scoped: non-admin callers are already locked to their own
+    // profileId via `hasOwnFilter` above, so `?orgScope=all` here just
+    // means "all of MY data" — safe for any role.
+    allowAllForOwner: true,
+  });
+  if (!scopeResolution.ok) {
+    return NextResponse.json(
+      { error: scopeResolution.message, code: scopeResolution.code },
+      { status: scopeResolution.status },
+    );
+  }
   try {
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
 
-    const appointments = await getAppointments(
-      type as AppointmentsType | undefined,
+    const appointments = await getConsultantAppointments({
+      type: type as AppointmentsType | undefined,
       consultantProfileId,
       consulteeProfileId,
       userId,
-      {
+      statuses: {
         consultation: consultationStatus || undefined,
         subscription: subscriptionStatus || undefined,
         webinar: webinarStatus || undefined,
@@ -118,473 +152,44 @@ export async function GET(request: NextRequest) {
       },
       startDate,
       endDate,
-      {
+      eventIds: {
         webinarId,
         classId,
         consultationId,
         subscriptionId,
       },
-    );
+      // #674 defect 13 / B2B gap 9 — the Scope goes down whole. The
+      // hand-rolled projection this replaces tested only `kind === "org"`, so
+      // an org member below `operations.read` (resolved to `orgMember`) fell
+      // through to the empty filter and got every org's appointments plus
+      // their personal ones — the opposite of picking one org.
+      scope: scopeResolution.scope,
+    });
 
-    return NextResponse.json({ data: appointments });
+    // #997 Phase 3 — opt-in aggregate, only computed when the caller scopes
+    // to a single subscription and states its per-call slot count (both
+    // already known client-side from the plan config — no extra DB read).
+    const slotsPerCallParam = searchParams.get("slotsPerCall");
+    const slotsPerCall = slotsPerCallParam
+      ? parseInt(slotsPerCallParam, 10)
+      : NaN;
+    const weeklyConfirmedCallCounts =
+      subscriptionId && Number.isFinite(slotsPerCall) && slotsPerCall > 0
+        ? computeWeeklyConfirmedCallCounts(
+            appointments,
+            subscriptionId,
+            slotsPerCall,
+          )
+        : undefined;
+
+    return NextResponse.json({
+      data: appointments,
+      ...(weeklyConfirmedCallCounts ? { weeklyConfirmedCallCounts } : {}),
+    });
   } catch (error) {
     console.error("Error fetching appointments:", error);
     return NextResponse.json(
       { error: "An error occurred while fetching appointments" },
-      { status: 500 },
-    );
-  }
-}
-
-async function getAppointments(
-  type?: AppointmentsType,
-  consultantProfileId?: string | null,
-  consulteeProfileId?: string | null,
-  userId?: string | null,
-  statuses?: {
-    consultation?: string;
-    subscription?: string;
-    webinar?: string;
-    class?: string;
-  },
-  startDate?: string | null,
-  endDate?: string | null,
-  eventIds?: {
-    webinarId?: string | null;
-    classId?: string | null;
-    consultationId?: string | null;
-    subscriptionId?: string | null;
-  },
-) {
-  const whereClause: Prisma.AppointmentWhereInput = {};
-
-  // Date range filtering for appointments. This is the primary filter.
-  // It looks for appointments where any of its slots overlap with the given date range.
-  // Also includes appointments with no slots (they'll be shown but sorted to the end)
-  if (startDate && endDate) {
-    whereClause.OR = [
-      // Appointments with slots overlapping the date range
-      {
-        slotsOfAppointment: {
-          some: {
-            AND: [
-              { startsAt: { lt: new Date(endDate) } },
-              { endsAt: { gt: new Date(startDate) } },
-            ],
-          },
-        },
-      },
-      // OR appointments with no slots at all
-      {
-        slotsOfAppointment: {
-          none: {},
-        },
-      },
-    ];
-  }
-
-  const userFilterClauses: Prisma.AppointmentWhereInput[] = [];
-  if (consultantProfileId) {
-    userFilterClauses.push({
-      OR: [
-        {
-          consultation: {
-            consultationPlan: { consultantProfileId },
-          },
-        },
-        {
-          subscription: {
-            subscriptionPlan: { consultantProfileId },
-          },
-        },
-        {
-          webinar: {
-            webinarPlan: { consultantProfileId },
-          },
-        },
-        {
-          // Collaborated webinars (co-host, moderator, etc.)
-          webinar: {
-            webinarPlan: {
-              collaborators: {
-                some: {
-                  consultantProfileId,
-                  status: "ACCEPTED",
-                },
-              },
-            },
-          },
-        },
-        {
-          class: {
-            classPlan: { consultantProfileId },
-          },
-        },
-        {
-          // Collaborated classes (co-instructor, TA, etc.)
-          class: {
-            classPlan: {
-              collaborators: {
-                some: {
-                  consultantProfileId,
-                  status: "ACCEPTED",
-                },
-              },
-            },
-          },
-        },
-      ],
-    });
-  }
-
-  if (consulteeProfileId) {
-    userFilterClauses.push({
-      OR: [
-        {
-          consultation: {
-            requestedBy: { id: consulteeProfileId },
-          },
-        },
-        {
-          subscription: {
-            requestedBy: { id: consulteeProfileId },
-          },
-        },
-        {
-          slotsOfAppointment: {
-            some: {
-              user: { some: { consulteeProfileId: consulteeProfileId } },
-            },
-          },
-        },
-      ],
-    });
-  }
-
-  if (userId) {
-    userFilterClauses.push({
-      slotsOfAppointment: {
-        some: {
-          user: {
-            some: {
-              id: userId,
-            },
-          },
-        },
-      },
-    });
-  }
-
-  if (userFilterClauses.length > 0) {
-    whereClause.AND = userFilterClauses;
-  }
-
-  if (type) {
-    whereClause.appointmentType = type;
-  }
-
-  // Filter by specific event IDs
-  if (eventIds?.webinarId) {
-    whereClause.webinar = { id: eventIds.webinarId };
-  }
-  if (eventIds?.classId) {
-    whereClause.class = { id: eventIds.classId };
-  }
-  if (eventIds?.consultationId) {
-    whereClause.consultation = { id: eventIds.consultationId };
-  }
-  if (eventIds?.subscriptionId) {
-    whereClause.subscription = { id: eventIds.subscriptionId };
-  }
-
-  // FIX #551: Apply status filters that were previously parsed but never used.
-  // Build an OR clause so appointments matching ANY of the provided status
-  // filters are returned (allows fetching e.g., APPROVED consultations AND
-  // SCHEDULED webinars in one call).
-  const statusFilters: Prisma.AppointmentWhereInput[] = [];
-  if (statuses?.consultation) {
-    statusFilters.push({
-      consultation: { requestStatus: statuses.consultation as RequestStatus },
-    });
-  }
-  if (statuses?.subscription) {
-    statusFilters.push({
-      subscription: { requestStatus: statuses.subscription as RequestStatus },
-    });
-  }
-  if (statuses?.webinar) {
-    statusFilters.push({
-      webinar: { status: statuses.webinar as Prisma.EnumWebinarStatusFilter },
-    });
-  }
-  if (statuses?.class) {
-    statusFilters.push({
-      class: { status: statuses.class as Prisma.EnumClassStatusFilter },
-    });
-  }
-  if (statusFilters.length > 0) {
-    // Combine with existing AND clauses
-    const existingAnd = whereClause.AND
-      ? Array.isArray(whereClause.AND)
-        ? whereClause.AND
-        : [whereClause.AND]
-      : [];
-    whereClause.AND = [...existingAnd, { OR: statusFilters }];
-  }
-
-  const appointments = await prisma.appointment.findMany({
-    where: whereClause,
-    include: {
-      slotsOfAppointment: {
-        orderBy: { startsAt: "asc" },
-        include: {
-          user: true,
-          meetingSession: {
-            select: { id: true, endedAt: true },
-          },
-        },
-      },
-      consultation: {
-        include: {
-          consultationPlan: {
-            include: {
-              consultantProfile: {
-                include: {
-                  user: true,
-                },
-              },
-            },
-          },
-          requestedBy: {
-            include: {
-              user: true,
-            },
-          },
-        },
-      },
-      subscription: {
-        select: {
-          id: true,
-          subscriptionPlan: {
-            include: {
-              consultantProfile: {
-                include: {
-                  user: true,
-                },
-              },
-            },
-          },
-          requestedBy: {
-            include: {
-              user: true,
-            },
-          },
-          schedulingPeriodStartsAt: true,
-          schedulingPeriodEndsAt: true,
-          requestStatus: true,
-        },
-      },
-      webinar: {
-        include: {
-          webinarPlan: {
-            include: {
-              consultantProfile: {
-                include: {
-                  user: true,
-                },
-              },
-              collaborators: {
-                where: { status: "ACCEPTED" },
-                include: {
-                  consultantProfile: {
-                    include: {
-                      user: {
-                        select: {
-                          id: true,
-                          name: true,
-                          image: true,
-                        },
-                      },
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-      class: {
-        include: {
-          classPlan: {
-            include: {
-              consultantProfile: {
-                include: {
-                  user: true,
-                },
-              },
-              collaborators: {
-                where: { status: "ACCEPTED" },
-                include: {
-                  consultantProfile: {
-                    include: {
-                      user: {
-                        select: {
-                          id: true,
-                          name: true,
-                          image: true,
-                        },
-                      },
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-  });
-
-  // Sort appointments by slot start time
-  // Include appointments with 0 slots (push them to the end)
-  return appointments.sort((a, b) => {
-    const aTime = a.slotsOfAppointment?.[0]?.startsAt;
-    const bTime = b.slotsOfAppointment?.[0]?.startsAt;
-
-    // Appointments without slots go to the end
-    if (!aTime && !bTime) return 0;
-    if (!aTime) return 1;
-    if (!bTime) return -1;
-
-    return new Date(aTime).getTime() - new Date(bTime).getTime();
-  });
-}
-
-export async function POST(request: NextRequest) {
-  const authResult = await requireApiAuth();
-  if (authResult.error) return authResult.error;
-  const { session } = authResult;
-
-  // Only privileged users (admin/staff) can directly create appointments.
-  // Normal booking goes through the checkout flow which has its own validation.
-  if (!isPrivileged(session.user.role)) {
-    return NextResponse.json(
-      { error: "Forbidden: appointment creation requires admin/staff role" },
-      { status: 403 },
-    );
-  }
-
-  try {
-    const body = await request.json();
-    const { appointmentType, slotsOfAppointment, ...appointmentData } = body;
-
-    if (!appointmentType || !slotsOfAppointment?.createMany?.data?.length) {
-      return NextResponse.json(
-        { error: "Missing required fields" },
-        { status: 400 },
-      );
-    }
-
-    const data: Prisma.AppointmentCreateInput = {
-      appointmentType,
-      ...appointmentData,
-      slotsOfAppointment: {
-        create: slotsOfAppointment.createMany.data.map(
-          (slot: {
-            startsAt: string;
-            endsAt: string;
-            type?: "WEEKLY" | "CUSTOM";
-          }) => ({
-            startsAt: new Date(slot.startsAt),
-            endsAt: new Date(slot.endsAt),
-            type: slot.type || "WEEKLY", // Default to WEEKLY if not specified
-          }),
-        ),
-      },
-    };
-
-    const newAppointment = await prisma.appointment.create({
-      data,
-      include: {
-        slotsOfAppointment: {
-          include: {
-            user: true,
-          },
-        },
-        consultation: {
-          include: {
-            consultationPlan: {
-              include: {
-                consultantProfile: {
-                  include: {
-                    user: true,
-                  },
-                },
-              },
-            },
-            requestedBy: {
-              include: {
-                user: true,
-              },
-            },
-          },
-        },
-        subscription: {
-          select: {
-            id: true,
-            subscriptionPlan: {
-              include: {
-                consultantProfile: {
-                  include: {
-                    user: true,
-                  },
-                },
-              },
-            },
-            requestedBy: {
-              include: {
-                user: true,
-              },
-            },
-            schedulingPeriodStartsAt: true,
-            schedulingPeriodEndsAt: true,
-            requestStatus: true,
-          },
-        },
-        webinar: {
-          include: {
-            webinarPlan: {
-              include: {
-                consultantProfile: {
-                  include: {
-                    user: true,
-                  },
-                },
-              },
-            },
-          },
-        },
-        class: {
-          include: {
-            classPlan: {
-              include: {
-                consultantProfile: {
-                  include: {
-                    user: true,
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    });
-
-    return NextResponse.json({ data: newAppointment }, { status: 201 });
-  } catch (error) {
-    console.error("Error creating appointment:", error);
-    return NextResponse.json(
-      { error: "An error occurred while creating the appointment" },
       { status: 500 },
     );
   }

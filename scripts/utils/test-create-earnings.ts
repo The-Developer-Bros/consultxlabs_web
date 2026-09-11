@@ -34,8 +34,8 @@ interface CreateEarningsResult {
   paymentId: string;
   consultantProfileId?: string;
   grossAmount: number;
-  consultantShare: number;
-  platformFee: number;
+  consultantSharePaise: number;
+  platformFeePaise: number;
   status: EarningStatus;
   error?: string;
 }
@@ -153,8 +153,8 @@ async function createEarningsForPayment(
       success: false,
       paymentId,
       grossAmount: 0,
-      consultantShare: 0,
-      platformFee: 0,
+      consultantSharePaise: 0,
+      platformFeePaise: 0,
       status: EarningStatus.PENDING,
       error: `Payment not found: ${paymentId}`,
     };
@@ -167,8 +167,8 @@ async function createEarningsForPayment(
       paymentId,
       earningsId: firstEarning.id,
       grossAmount: firstEarning.grossAmount,
-      consultantShare: firstEarning.consultantShare,
-      platformFee: firstEarning.platformFee,
+      consultantSharePaise: firstEarning.consultantSharePaise,
+      platformFeePaise: firstEarning.platformFeePaise,
       status: firstEarning.status,
       error: `Earnings already exist for payment ${paymentId}`,
     };
@@ -179,8 +179,8 @@ async function createEarningsForPayment(
       success: false,
       paymentId,
       grossAmount: payment.amount,
-      consultantShare: 0,
-      platformFee: 0,
+      consultantSharePaise: 0,
+      platformFeePaise: 0,
       status: EarningStatus.PENDING,
       error: `No appointment linked to payment ${paymentId}`,
     };
@@ -198,8 +198,8 @@ async function createEarningsForPayment(
       success: false,
       paymentId,
       grossAmount: payment.amount,
-      consultantShare: 0,
-      platformFee: 0,
+      consultantSharePaise: 0,
+      platformFeePaise: 0,
       status: EarningStatus.PENDING,
       error: `No consultant profile found for payment ${paymentId}`,
     };
@@ -207,10 +207,10 @@ async function createEarningsForPayment(
 
   // Calculate amounts
   const grossAmount = payment.amount;
-  const platformFee = Math.round(
+  const platformFeePaise = Math.round(
     (grossAmount * PAYOUT_CONSTANTS.PLATFORM_FEE_PERCENTAGE) / 100,
   );
-  const consultantShare = grossAmount - platformFee;
+  const consultantSharePaise = grossAmount - platformFeePaise;
 
   // Calculate hold period
   const appointmentTypeKey = getAppointmentTypeKey(
@@ -228,8 +228,8 @@ async function createEarningsForPayment(
     console.log(`  Payment: ${paymentId}`);
     console.log(`  Consultant: ${consultantProfile.id}`);
     console.log(`  Gross: ₹${(grossAmount / 100).toFixed(2)}`);
-    console.log(`  Platform Fee: ₹${(platformFee / 100).toFixed(2)}`);
-    console.log(`  Consultant Share: ₹${(consultantShare / 100).toFixed(2)}`);
+    console.log(`  Platform Fee: ₹${(platformFeePaise / 100).toFixed(2)}`);
+    console.log(`  Consultant Share: ₹${(consultantSharePaise / 100).toFixed(2)}`);
     console.log(`  Status: ${status}`);
     console.log(`  Hold Until: ${holdUntil.toISOString()}`);
 
@@ -238,8 +238,8 @@ async function createEarningsForPayment(
       paymentId,
       consultantProfileId: consultantProfile.id,
       grossAmount,
-      consultantShare,
-      platformFee,
+      consultantSharePaise,
+      platformFeePaise,
       status,
     };
   }
@@ -250,18 +250,10 @@ async function createEarningsForPayment(
       consultantProfileId: consultantProfile.id,
       paymentId: payment.id,
       grossAmount,
-      platformFee,
-      consultantShare,
+      platformFeePaise,
+      consultantSharePaise,
       status,
       holdUntil,
-    },
-  });
-
-  // Update consultant's pending revenue
-  await prisma.consultantProfile.update({
-    where: { id: consultantProfile.id },
-    data: {
-      pendingRevenue: { increment: consultantShare },
     },
   });
 
@@ -271,8 +263,8 @@ async function createEarningsForPayment(
     paymentId,
     consultantProfileId: consultantProfile.id,
     grossAmount,
-    consultantShare,
-    platformFee,
+    consultantSharePaise,
+    platformFeePaise,
     status,
   };
 }
@@ -377,7 +369,7 @@ async function main(): Promise<void> {
     if (result.success) {
       console.log(`✅ ${paymentId}: Created earnings`);
       console.log(
-        `   Amount: ₹${(result.grossAmount / 100).toFixed(2)} → Consultant: ₹${(result.consultantShare / 100).toFixed(2)}`,
+        `   Amount: ₹${(result.grossAmount / 100).toFixed(2)} → Consultant: ₹${(result.consultantSharePaise / 100).toFixed(2)}`,
       );
     } else {
       console.log(`⚠️  ${paymentId}: ${result.error}`);
@@ -396,11 +388,11 @@ async function main(): Promise<void> {
 
   if (successful.length > 0) {
     const totalConsultantShare = successful.reduce(
-      (sum, r) => sum + r.consultantShare,
+      (sum, r) => sum + r.consultantSharePaise,
       0,
     );
     const totalPlatformFee = successful.reduce(
-      (sum, r) => sum + r.platformFee,
+      (sum, r) => sum + r.platformFeePaise,
       0,
     );
     console.log(

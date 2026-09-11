@@ -11,7 +11,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/components/dashboard/StatusBadge";
+import { trialStatusBadge } from "@/lib/labels/session-labels";
 import {
   Select,
   SelectContent,
@@ -45,13 +46,14 @@ import {
 } from "@/components/ui/tooltip";
 import Link from "next/link";
 import { cn } from "@/utils/tailwind";
-import { useRouter } from "next/navigation";
-import { useStreamVideoClient } from "@stream-io/video-react-sdk";
+// #248: no static Stream SDK / lib/meeting import — the shared hook
+// lazy-loads both at click time. Type-only imports are erased.
+import type { MeetingSlot } from "@/lib/meeting";
+import { useLazyJoinMeeting } from "@/hooks/scheduling/useLazyJoinMeeting";
 import {
-  getOrCreateAppointmentMeeting,
-  type MeetingAppointment,
-  type MeetingSlot,
-} from "@/lib/meeting";
+  CONSULTANT_JOIN_WINDOW_MS,
+  getJoinableSession,
+} from "@/lib/appointments/slots";
 import {
   TrialScheduleCalendar,
   SelectedSlot,
@@ -75,7 +77,7 @@ interface TrialSession {
   subscriptionPlan: {
     id: string;
     title: string;
-    freeTrialDurationMinutes: number;
+    trialDurationMinutes: number;
   };
   appointment: {
     id: string;
@@ -94,7 +96,7 @@ interface TrialSession {
 interface SubscriptionPlan {
   id: string;
   title: string;
-  freeTrialEnabled: boolean;
+  trialEnabled: boolean;
 }
 
 function formatStatus(status: string): string {
@@ -109,30 +111,28 @@ function maskEmail(email: string): string {
   return `${visible}***@${domain}`;
 }
 
-const statusColors: Record<string, string> = {
-  PENDING: "bg-yellow-100 text-yellow-800",
-  SCHEDULED: "bg-purple-100 text-purple-800",
-  COMPLETED: "bg-green-100 text-green-800",
-  CONVERTED: "bg-emerald-100 text-emerald-800",
-  CANCELLED: "bg-gray-100 text-gray-800",
-  REJECTED: "bg-red-100 text-red-800",
-};
-
+// Badge colours come from lib/labels/session-labels (single source of
+// truth); the label stays formatStatus() so REJECTED reads "Declined" on
+// the consultant side (they did the declining — "Rejected" reads wrong).
 const statusBgColors: Record<string, string> = {
   PENDING: "bg-yellow-50 hover:bg-yellow-100 border-yellow-200",
+  // Same amber family as PENDING — both are "waiting", and the label says who
+  // we're waiting on.
+  AWAITING_PAYMENT: "bg-amber-50 hover:bg-amber-100 border-amber-200",
   SCHEDULED: "bg-purple-50 hover:bg-purple-100 border-purple-200",
   COMPLETED: "bg-green-50 hover:bg-green-100 border-green-200",
   CONVERTED: "bg-emerald-50 hover:bg-emerald-100 border-emerald-200",
-  CANCELLED: "bg-gray-50 hover:bg-gray-100 border-gray-200",
+  CANCELLED: "bg-zinc-50 hover:bg-zinc-100 border-zinc-200",
   REJECTED: "bg-red-50 hover:bg-red-100 border-red-200",
 };
 
 const statusTextColors: Record<string, string> = {
   PENDING: "text-yellow-700",
+  AWAITING_PAYMENT: "text-amber-700",
   SCHEDULED: "text-purple-700",
   COMPLETED: "text-green-700",
   CONVERTED: "text-emerald-700",
-  CANCELLED: "text-gray-700",
+  CANCELLED: "text-zinc-700",
   REJECTED: "text-red-700",
 };
 
@@ -140,8 +140,7 @@ export function TrialsTab() {
   const params = useParams();
   const consultantId = params.consultantId as string;
   const { toast } = useToast();
-  const router = useRouter();
-  const client = useStreamVideoClient();
+  const joinMeeting = useLazyJoinMeeting();
 
   const [trials, setTrials] = useState<TrialSession[]>([]);
   const [loading, setLoading] = useState(true);
@@ -258,7 +257,7 @@ export function TrialsTab() {
       }
       const { data } = await response.json();
       setSubscriptionPlans(
-        data.filter((p: SubscriptionPlan) => p.freeTrialEnabled),
+        data.filter((p: SubscriptionPlan) => p.trialEnabled),
       );
     } catch (error) {
       console.error("Error fetching subscription plans:", error);
@@ -304,9 +303,18 @@ export function TrialsTab() {
         throw new Error(errorData.error || "Failed to schedule trial");
       }
 
+      // A paid trial is NOT scheduled by accepting — it moves to
+      // AWAITING_PAYMENT and the learner gets a pay-link. Saying "scheduled"
+      // would tell the consultant to expect someone who may never pay.
+      const result = await response.json().catch(() => null);
+      const awaitingPayment =
+        result?.data?.status === "AWAITING_PAYMENT";
+
       toast({
         title: "Success",
-        description: "Trial session approved and scheduled",
+        description: awaitingPayment
+          ? "Trial approved. The slot is held while the learner pays — it confirms once payment lands, and is released if they don't pay in time."
+          : "Trial session approved and scheduled",
       });
 
       setShowScheduleDialog(false);
@@ -406,35 +414,32 @@ export function TrialsTab() {
     });
   };
 
-  // Check if a trial session is joinable (within 10 mins before start and before end time)
+  /**
+   * #1270 — was a hand-rolled 10-minute comparison against
+   * `slotsOfAppointment[0]`. Two things were wrong with it: the host window is
+   * 15 minutes everywhere else, and reading one row treats a 30-minute slot as
+   * the whole session, so a longer trial stopped being joinable half an hour
+   * in (#1061). The shared session helper answers both.
+   */
   const isTrialJoinable = (trial: TrialSession): boolean => {
-    if (
-      trial.status !== "SCHEDULED" ||
-      !trial.appointment?.slotsOfAppointment?.[0]
-    ) {
-      return false;
-    }
-
-    const slot = trial.appointment.slotsOfAppointment[0];
-    const now = new Date();
-    const startTime = new Date(slot.startsAt);
-    const endTime = new Date(slot.endsAt);
-    const joinWindowStart = new Date(startTime.getTime() - 10 * 60 * 1000); // 10 mins before
-
-    return now >= joinWindowStart && now <= endTime;
+    if (trial.status !== "SCHEDULED") return false;
+    const appointment = trial.appointment;
+    if (!appointment) return false;
+    return (
+      getJoinableSession(
+        // `groupSlotsIntoRuns` buckets rows by appointment and the trials
+        // payload omits the FK, so without stamping it every 30-minute row
+        // would be its own session (#1061).
+        appointment.slotsOfAppointment.map((slot) => ({
+          ...slot,
+          appointmentId: appointment.id,
+        })),
+        { joinWindowMs: CONSULTANT_JOIN_WINDOW_MS },
+      ) !== null
+    );
   };
 
   const handleJoinMeeting = async (trial: TrialSession) => {
-    if (!client) {
-      toast({
-        title: "Not signed in",
-        description:
-          "Video client not initialized. Please sign in to join the meeting.",
-        variant: "destructive",
-      });
-      return;
-    }
-
     if (!trial.appointment?.slotsOfAppointment?.[0]) {
       toast({
         title: "Unable to join",
@@ -445,37 +450,18 @@ export function TrialsTab() {
     }
 
     setIsJoining(trial.id);
-    try {
-      const slot = trial.appointment.slotsOfAppointment[0];
-      // Create a minimal appointment object for the meeting helper
-      const appointmentForMeeting: MeetingAppointment = {
+    const slot = trial.appointment.slotsOfAppointment[0];
+    // Minimal appointment shape for the meeting helper; the shared hook
+    // lazy-loads the Stream SDK at click time (#248).
+    const navigating = await joinMeeting(
+      {
         id: trial.appointment.id,
         appointmentType: "TRIAL",
         slotsOfAppointment: trial.appointment.slotsOfAppointment,
-      };
-
-      const meetingId = await getOrCreateAppointmentMeeting(
-        client,
-        appointmentForMeeting,
-        slot as MeetingSlot,
-      );
-
-      toast({
-        title: "Joining meeting",
-        description: "You will now be redirected to the meeting room.",
-      });
-
-      router.push(`/meetings/${meetingId}`);
-    } catch (error) {
-      console.error("Error joining meeting:", error);
-      toast({
-        title: "Error joining meeting",
-        description:
-          error instanceof Error ? error.message : "Unknown error occurred",
-        variant: "destructive",
-      });
-      setIsJoining(null);
-    }
+      },
+      slot as MeetingSlot,
+    );
+    if (!navigating) setIsJoining(null);
   };
 
   const handleRefresh = async () => {
@@ -503,6 +489,8 @@ export function TrialsTab() {
 
   const statusOrder = [
     "PENDING",
+    // Sits between PENDING and SCHEDULED — it's the step in between.
+    "AWAITING_PAYMENT",
     "SCHEDULED",
     "COMPLETED",
     "CONVERTED",
@@ -514,16 +502,21 @@ export function TrialsTab() {
     <TooltipProvider>
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">
-            Free Trial Requests
+          <h1 className="text-2xl font-bold text-zinc-900">
+            Trial Requests
           </h1>
-          <p className="text-gray-600 mt-1">
+          <p className="text-zinc-600 mt-1">
             Manage trial session requests from potential subscribers
           </p>
         </div>
-        <Button variant="outline" onClick={handleRefresh} disabled={isRefreshing}>
+        <Button
+          variant="outline"
+          onClick={handleRefresh}
+          disabled={isRefreshing}
+          className="w-full sm:w-auto"
+        >
           <RefreshCw
             className={`h-4 w-4 mr-2 ${isRefreshing ? "animate-spin" : ""}`}
           />
@@ -576,7 +569,7 @@ export function TrialsTab() {
       <div className="flex flex-col sm:flex-row gap-3">
         {/* Search */}
         <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
           <Input
             placeholder="Search by name or email..."
             value={search}
@@ -586,7 +579,7 @@ export function TrialsTab() {
           {search && (
             <button
               onClick={() => setSearch("")}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
             >
               <X className="h-4 w-4" />
             </button>
@@ -601,6 +594,7 @@ export function TrialsTab() {
           <SelectContent>
             <SelectItem value="all">All Statuses</SelectItem>
             <SelectItem value="PENDING">Pending</SelectItem>
+            <SelectItem value="AWAITING_PAYMENT">Awaiting payment</SelectItem>
             <SelectItem value="SCHEDULED">Scheduled</SelectItem>
             <SelectItem value="COMPLETED">Completed</SelectItem>
             <SelectItem value="CONVERTED">Converted</SelectItem>
@@ -647,7 +641,7 @@ export function TrialsTab() {
 
       {/* Results count */}
       {total > 0 && (
-        <p className="text-sm text-gray-600">
+        <p className="text-sm text-zinc-600">
           Showing {(page - 1) * limit + 1}-{Math.min(page * limit, total)} of{" "}
           {total} trials
         </p>
@@ -656,19 +650,19 @@ export function TrialsTab() {
       {/* Trial Requests List */}
       {loading ? (
         <div className="flex items-center justify-center h-64">
-          <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         </div>
       ) : trials.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center">
-            <Gift className="h-12 w-12 mx-auto text-gray-400 mb-4" />
-            <h3 className="text-lg font-medium text-gray-900 mb-2">
+            <Gift className="h-12 w-12 mx-auto text-zinc-400 mb-4" />
+            <h3 className="text-lg font-medium text-zinc-900 mb-2">
               No trial requests
             </h3>
-            <p className="text-gray-600">
+            <p className="text-zinc-600">
               {statusFilter !== "all" || planFilter !== "all" || debouncedSearch
                 ? "No trial requests match your filters"
-                : "You don't have any trial requests yet. Enable free trials on your subscription plans to start receiving requests."}
+                : "You don't have any trial requests yet. Enable trials on your subscription plans to start receiving requests."}
             </p>
             {(statusFilter !== "all" ||
               planFilter !== "all" ||
@@ -705,7 +699,7 @@ export function TrialsTab() {
                       />
                     ) : (
                       <div className="h-10 w-10 bg-blue-100 rounded-full flex items-center justify-center">
-                        <User className="h-5 w-5 text-blue-600" />
+                        <User className="h-5 w-5 text-muted-foreground" />
                       </div>
                     )}
                     <div>
@@ -717,35 +711,34 @@ export function TrialsTab() {
                       </CardDescription>
                     </div>
                   </div>
-                  <Badge
-                    className={statusColors[trial.status] || "bg-gray-100"}
-                  >
-                    {formatStatus(trial.status)}
-                  </Badge>
+                  <StatusBadge
+                    {...trialStatusBadge(trial.status)}
+                    label={formatStatus(trial.status)}
+                  />
                 </div>
               </CardHeader>
               <CardContent className="pt-0">
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                  <div className="flex items-center gap-2 text-sm text-gray-600">
+                  <div className="flex items-center gap-2 text-sm text-zinc-600">
                     <Gift className="h-4 w-4" />
                     <span>{trial.subscriptionPlan.title}</span>
                   </div>
-                  <div className="flex items-center gap-2 text-sm text-gray-600">
+                  <div className="flex items-center gap-2 text-sm text-zinc-600">
                     <Clock className="h-4 w-4" />
                     <span>
-                      {trial.subscriptionPlan.freeTrialDurationMinutes} min
+                      {trial.subscriptionPlan.trialDurationMinutes} min
                       trial
                     </span>
                   </div>
-                  <div className="flex items-center gap-2 text-sm text-gray-600">
+                  <div className="flex items-center gap-2 text-sm text-zinc-600">
                     <Calendar className="h-4 w-4" />
                     <span>Requested {formatDate(trial.requestedAt)}</span>
                   </div>
                 </div>
 
                 {trial.notes && (
-                  <div className="bg-gray-50 rounded-lg p-3 mb-4">
-                    <p className="text-sm text-gray-700">
+                  <div className="bg-zinc-50 rounded-lg p-3 mb-4">
+                    <p className="text-sm text-zinc-700">
                       <span className="font-medium">Notes: </span>
                       {trial.notes}
                     </p>
@@ -834,7 +827,11 @@ export function TrialsTab() {
                         </TooltipTrigger>
                         {!isTrialJoinable(trial) && (
                           <TooltipContent>
-                            <p>Available 10 minutes before the scheduled time</p>
+                            <p>
+                              Available{" "}
+                              {CONSULTANT_JOIN_WINDOW_MS / 60_000} minutes
+                              before the scheduled time
+                            </p>
                           </TooltipContent>
                         )}
                       </Tooltip>
@@ -874,7 +871,7 @@ export function TrialsTab() {
           {/* Pagination */}
           {totalPages > 1 && (
             <div className="flex items-center justify-between mt-6 pt-4 border-t">
-              <p className="text-sm text-gray-600">
+              <p className="text-sm text-zinc-600">
                 Page {page} of {totalPages}
               </p>
               <div className="flex items-center gap-2">
@@ -905,24 +902,26 @@ export function TrialsTab() {
 
       {/* Schedule Dialog with Calendar */}
       <Dialog open={showScheduleDialog} onOpenChange={setShowScheduleDialog}>
-        <DialogContent className="max-w-4xl">
+        <DialogContent className="max-w-4xl max-h-[90dvh] overflow-hidden flex flex-col">
           <VisuallyHidden>
             <DialogTitle>Schedule Trial Session</DialogTitle>
           </VisuallyHidden>
           {selectedTrial && (
-            <TrialScheduleCalendar
-              consultantId={consultantId}
-              trialDurationMinutes={
-                selectedTrial.subscriptionPlan.freeTrialDurationMinutes
-              }
-              onSlotSelect={handleSlotSelected}
-              onCancel={() => {
-                setShowScheduleDialog(false);
-                setSelectedTrial(null);
-              }}
-              isProcessing={isProcessing}
-              consulteeUserName={selectedTrial.consulteeProfile.user.name}
-            />
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <TrialScheduleCalendar
+                consultantId={consultantId}
+                trialDurationMinutes={
+                  selectedTrial.subscriptionPlan.trialDurationMinutes
+                }
+                onSlotSelect={handleSlotSelected}
+                onCancel={() => {
+                  setShowScheduleDialog(false);
+                  setSelectedTrial(null);
+                }}
+                isProcessing={isProcessing}
+                consulteeUserName={selectedTrial.consulteeProfile.user.name}
+              />
+            </div>
           )}
         </DialogContent>
       </Dialog>

@@ -14,6 +14,8 @@ import {
 } from "../../scripts/cleanup/cleanup-auth-tokens";
 import fs from "fs";
 import { abortIfMaintenance } from "../../lib/maintenance-cron";
+import * as Sentry from "@sentry/nextjs";
+import { runJob } from "../../lib/observability/job-sentry";
 
 /**
  * Output results to GitHub Actions
@@ -46,6 +48,7 @@ function outputToGitHubActions(result: AuthTokenCleanupResult): void {
  */
 async function main(): Promise<void> {
   await abortIfMaintenance("cleanup-auth-tokens");
+  Sentry.logger.info("job:cleanup-auth-tokens started");
   console.log("🧹 Starting auth token cleanup job...");
   console.log(`Timestamp: ${new Date().toISOString()}`);
 
@@ -68,15 +71,19 @@ async function main(): Promise<void> {
 
     outputToGitHubActions(result);
 
+    Sentry.logger.info("job:cleanup-auth-tokens finished", {
+      verificationTokensDeleted: result.verificationTokensDeleted,
+      sessionsDeleted: result.sessionsDeleted,
+      passwordResetTokensCleared: result.passwordResetTokensCleared,
+      totalCleaned: result.totalCleaned,
+    });
+
     if (!result.success) {
-      process.exit(1);
+      process.exitCode = 1;
     }
-  } catch (error) {
-    console.error("❌ Fatal error in auth token cleanup:", error);
-    process.exit(1);
   } finally {
     await disconnectDatabase();
   }
 }
 
-main();
+runJob("cleanup-auth-tokens", main);

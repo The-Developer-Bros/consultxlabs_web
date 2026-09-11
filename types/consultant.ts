@@ -42,7 +42,15 @@ export type TConsultantProfile = Prisma.ConsultantProfileGetPayload<{
  */
 export interface IConsultantCardData {
   id: string;
-  rating: number;
+  /**
+   * #705 — the PUBLISHED score. Null until the consultant has
+   * MIN_RATED_UNITS_FOR_PUBLIC_SCORE distinct rated sessions, so one review
+   * cannot define a new consultant.
+   */
+  rating: number | null;
+  /** How many reviews the score is based on. Always shown, even when the score
+   *  is suppressed — "3 reviews" is honest, an average of three is not. */
+  reviewCount?: number;
   headline: string | null;
   experience: number | null;
   description: string | null;
@@ -65,49 +73,23 @@ export interface IConsultantCardData {
   subDomains: { id: string; name: string }[];
   tags: { id: string; name: string }[];
   reviews?: { rating: number }[];
+  organizationBadge?: {
+    name: string;
+    slug: string;
+    logo: string | null;
+  } | null;
   subscriptionPlans?: Array<{
     id: string;
     title: string;
     price: number;
     priceCurrency: string;
     durationInMonths: number;
-    callsPerWeek: number | null;
+    sessionsPerWeek: number | null;
     emailSupport: string | null;
     totalSessions: number | null;
+    /** Whether this plan offers a trial at all. */
+    trialEnabled: boolean;
+    /** 0 = free intro call; >0 = paid trial. Drives the card's Trial CTA. */
+    trialPriceInPaise: number;
   }>;
 }
-
-/**
- * Data shape for the expert detail page.
- * Includes plans and slots for booking flow, but NOT reviews
- * (reviews are fetched separately and passed as a distinct prop).
- */
-export type TConsultantDetailData = Prisma.ConsultantProfileGetPayload<{
-  include: {
-    user: {
-      select: {
-        id: true;
-        name: true;
-        image: true;
-        profileDisplayImage: true;
-        bio: true;
-        city: true;
-        country: true;
-        linkedinUrl: true;
-        timezone: true;
-        workExperiences: true;
-        education: true;
-        certifications: true;
-      };
-    };
-    domain: true;
-    subDomains: true;
-    tags: true;
-    slotsOfAvailabilityWeekly: true;
-    slotsOfAvailabilityCustom: true;
-    consultationPlans: true;
-    subscriptionPlans: { include: { subscriptionContents: true } };
-    webinarPlans: true;
-    classPlans: true;
-  };
-}>;

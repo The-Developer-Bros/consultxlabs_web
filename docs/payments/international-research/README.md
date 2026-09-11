@@ -52,6 +52,6 @@
 ## Related Documents
 
 - [International Payments Guide (Existing)](../payouts/04-international-payments.md)
-- [Tax Compliance Guide (Existing)](../../finances/07-tax-compliance-india.md)
+- [Tax Compliance Guide (Existing)](../../finances/06-tax-compliance-india.md)
 - [TopMate Competitor Analysis (Existing)](../../competition/competitors/01-topmate-io.md)
 - [Multi-Currency Guardrails MVP](../../) (referenced in MEMORY.md but directory not found)

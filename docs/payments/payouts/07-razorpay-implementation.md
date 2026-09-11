@@ -1,5 +1,7 @@
 # Technical Payout Implementation Guide
 
+> 🟡 **Warning — this file describes Razorpay Route, not the live pipeline (no issue filed yet).** This guide describes Razorpay **Route** (Linked Accounts + Transfers), whereas the production payout code path uses **RazorpayX Payouts** (Contacts → Fund Accounts → Payouts) in [`lib/payments/payouts/razorpay-payouts.ts`](../../../lib/payments/payouts/razorpay-payouts.ts). The two products have different entities, webhooks, and state machines, so this file must not be used as a reference for the live pipeline. For the org/B2B side see [`docs/enterprise/10-money-and-ledger/07-payout-pipeline.md`](../../enterprise/10-money-and-ledger/07-payout-pipeline.md) and [`06-earnings-lifecycle.md`](../../enterprise/10-money-and-ledger/06-earnings-lifecycle.md).
+
 ## Overview
 
 This document provides the technical implementation details for automating consultant payouts using Razorpay Route. It builds upon the existing payment infrastructure in the codebase.

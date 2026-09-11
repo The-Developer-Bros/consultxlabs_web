@@ -33,7 +33,7 @@
 5. "Fixes" slots by clearing tentative flags or marking double bookings
 6. **Result**: Corrupted slot state, potential double bookings or lost reservations
 
-**Current mitigation**: None. Cron jobs bypass middleware entirely.
+**Current mitigation**: `abortIfMaintenance()` guard in every cron job exits cleanly on OFFLINE. A job already mid-run when OFFLINE activates will finish its current work (guard is entry-time only).
 
 ### Scenario 3: Abandoned Payment Cleanup During Migration
 
@@ -48,7 +48,7 @@
 5. Some of these are valid payments where appointment creation was delayed by maintenance
 6. **Result**: Valid payments cancelled, users charged then refunded
 
-**Current mitigation**: None.
+**Current mitigation**: `abortIfMaintenance()` guard exits on OFFLINE at job startup. Same entry-time caveat as Scenario 2.
 
 ### Scenario 4: Active Video Call Drops During OFFLINE
 
@@ -100,8 +100,8 @@
 | #   | Scenario                                   | Likelihood            | Financial Impact                          | Current Mitigation             | Recommended Mitigation                           |
 | --- | ------------------------------------------ | --------------------- | ----------------------------------------- | ------------------------------ | ------------------------------------------------ |
 | 1   | Payment succeeds, appointment fails        | Medium                | HIGH (user charged, no service)           | Webhook retries (3 days)       | Pre-flight: block checkout 5 min before OFFLINE  |
-| 2   | Slot reconciliation during migration       | High                  | HIGH (corrupted slot state)               | None                           | Cron job maintenance guard                       |
-| 3   | Abandoned payment cleanup during migration | High                  | MEDIUM (valid payments cancelled)         | None                           | Cron job maintenance guard                       |
+| 2   | Slot reconciliation during migration       | Low (guard at entry)  | HIGH (corrupted slot state)               | `abortIfMaintenance()` on OFFLINE | Mid-run jobs still complete; keep settling window |
+| 3   | Abandoned payment cleanup during migration | Low (guard at entry)  | MEDIUM (valid payments cancelled)         | `abortIfMaintenance()` on OFFLINE | Same entry-time caveat                           |
 | 4   | Active video call quality degradation      | Low                   | LOW (session continues, features limited) | Stream external infrastructure | Pre-flight: check active calls                   |
 | 5   | Checkout during DEGRADED with escalation   | Medium                | HIGH (payment/schema mismatch)            | None                           | Block writes in DEGRADED mode                    |
 | 6   | Payout processing during maintenance       | Low (timing-specific) | HIGH (incorrect payouts)                  | None                           | Never schedule maintenance on Monday 8-10 PM UTC |

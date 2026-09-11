@@ -6,6 +6,36 @@ When an appointment is cancelled, the payment system must handle potential refun
 
 ---
 
+## Pre-Payment (Pending) Self-Cancel (#849)
+
+Before a payment has been completed, the user holds a **tentative slot** but no money has moved. In this window the user can self-cancel immediately without admin involvement:
+
+**Endpoint:** `DELETE /api/checkout/pending/[paymentId]`
+
+**Who can call:** The owner of the `paymentId` (session-scoped; 401 if not owner).
+
+**Rate limit:** 10 requests/minute per user.
+
+**What happens:**
+1. A single Serializable transaction CAS-claims the payment (`PENDING → EXPIRED`). If the payment is already SUCCEEDED/EXPIRED/FAILED, the CAS matches zero rows and the endpoint returns a 409 — payment has already been settled.
+2. Referral credits applied to this payment are reversed.
+3. Tentative slots are released per-type:
+   - **Class** — all of the caller's tentative slots across every session of the class.
+   - **Webinar** — the caller's single tentative slot on the appointment.
+   - **Consultation / Subscription** — all tentative slots on the appointment (1:1, so this is just the one slot).
+4. The parent consultation/subscription status transitions to `CANCELLED` (narrow from-set: `PENDING` or `APPROVED_PENDING_PAYMENT` only). An `APPROVED` parent blocks the cancel — post-payment cancellations use the standard cancellation path below.
+5. Post-commit, best-effort: the gateway payment intent / order is cancelled. Failure does not roll back the database cancel.
+6. Write conflicts from Serializable retry exhaustion → **409 Conflict** (not 500).
+
+**Response:**
+```json
+{ "success": true, "slotsReleased": 1 }
+```
+
+**Distinct from post-payment cancellation:** The flow below (admin-initiated cancellation + refund) applies only after `payment.paymentStatus = SUCCEEDED`. Pre-payment self-cancel uses the endpoint above; there is no refund because no money moved.
+
+---
+
 ## Cancellation → Refund Flow
 
 ```
@@ -15,7 +45,6 @@ When an appointment is cancelled, the payment system must handle potential refun
                    │
                    ├─→ Appointment deleted
                    ├─→ Slots deleted
-                   ├─→ Waitlist notified (if webinar/class)
                    │
                    └─→ NO automatic refund
                        │
@@ -105,19 +134,6 @@ When a refund succeeds, consultant earnings must be reversed. This happens **asy
 \*Can be force-refunded with `forceRefund: true` — platform absorbs the loss.
 
 **Code location:** `lib/payments/payouts/earnings-service.ts` → `refundEarnings()`
-
----
-
-## Waitlist Payment Implications
-
-When a webinar or class appointment is cancelled:
-
-1. `handleSlotOpening()` notifies the next person in the waitlist queue
-2. Notification expires after 48 hours
-3. If they accept: redirected to checkout for a **new payment** (the original payment is NOT transferred)
-4. If they decline or skip: next person in queue is notified
-
-**Key:** Waitlist acceptance requires a completely new payment. The cancelled appointment's refund (if issued) goes back to the original payer.
 
 ---
 

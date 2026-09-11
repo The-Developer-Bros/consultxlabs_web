@@ -70,18 +70,20 @@ https://your-domain.com/api/stream
 
 ## Authentication
 
-Most endpoints require authentication via NextAuth session.
+Most endpoints require an authenticated Better Auth session.
 
 ### Session-Based Authentication
 
 **How it Works:**
 
 ```typescript
-import { getServerSession } from "next-auth";
+import { headers } from "next/headers";
+
+import { auth } from "@/lib/auth";
 import authOptions from "@/app/api/auth/[...nextauth]/options";
 
 // In API route
-const session = await getServerSession(authOptions);
+const session = await auth.api.getSession({ headers: await headers() });
 
 if (!session?.user?.id) {
   return NextResponse.json(
@@ -94,7 +96,7 @@ if (!session?.user?.id) {
 **Client-Side Request:**
 
 ```typescript
-// NextAuth automatically includes session cookie
+// Better Auth includes the session cookie automatically
 const response = await fetch("/api/stream/search?term=john");
 ```
 
@@ -518,10 +520,8 @@ Provides comprehensive debugging information about a user's Stream Chat connecti
     webinarPlanTitle: string,
     consultantId: string,
     participantIds: string[],
-    waitlistParticipantIds: string[],
     appointmentParticipantIds: string[],
     participantBreakdown: {
-      fromWaitlist: number,
       fromAppointments: number,
       totalUnique: number
     }
@@ -533,10 +533,8 @@ Provides comprehensive debugging information about a user's Stream Chat connecti
     classPlanTitle: string,
     consultantId: string,
     participantIds: string[],
-    waitlistParticipantIds: string[],
     appointmentParticipantIds: string[],
     participantBreakdown: {
-      fromWaitlist: number,
       fromAppointments: number,
       totalUnique: number
     }
@@ -611,10 +609,8 @@ console.log(result);
       "webinarPlanTitle": "Advanced React Workshop",
       "consultantId": "user-123",
       "participantIds": ["user-456", "user-789", "user-012"],
-      "waitlistParticipantIds": ["user-456", "user-012"],
       "appointmentParticipantIds": ["user-789", "user-012"],
       "participantBreakdown": {
-        "fromWaitlist": 2,
         "fromAppointments": 2,
         "totalUnique": 3
       }

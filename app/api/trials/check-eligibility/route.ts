@@ -1,4 +1,6 @@
+import * as Sentry from "@sentry/nextjs";
 import prisma from "@/lib/prisma";
+import { blocksNewTrialRequest } from "@/lib/trials/eligibility";
 import { NextRequest, NextResponse } from "next/server";
 import { requireApiAuth, isPrivileged } from "@/lib/auth-helpers";
 
@@ -58,13 +60,15 @@ export async function GET(request: NextRequest) {
     // If specific plan is requested, check if it has trial enabled
     let planTrialEnabled = true;
     let planTrialDuration = 30;
+    let planTrialPriceInPaise = 0;
 
     if (subscriptionPlanId) {
       const plan = await prisma.subscriptionPlan.findUnique({
         where: { id: subscriptionPlanId },
         select: {
-          freeTrialEnabled: true,
-          freeTrialDurationMinutes: true,
+          trialEnabled: true,
+          trialDurationMinutes: true,
+          trialPriceInPaise: true,
           title: true,
         },
       });
@@ -76,48 +80,59 @@ export async function GET(request: NextRequest) {
         );
       }
 
-      planTrialEnabled = plan.freeTrialEnabled;
-      planTrialDuration = plan.freeTrialDurationMinutes;
+      planTrialEnabled = plan.trialEnabled;
+      planTrialDuration = plan.trialDurationMinutes;
+      planTrialPriceInPaise = plan.trialPriceInPaise;
     }
 
     // Get all plans with trial enabled for this consultant
     const plansWithTrialEnabled = await prisma.subscriptionPlan.findMany({
       where: {
         consultantProfileId,
-        freeTrialEnabled: true,
+        trialEnabled: true,
       },
       select: {
         id: true,
         title: true,
-        freeTrialDurationMinutes: true,
+        trialDurationMinutes: true,
+        trialPriceInPaise: true,
       },
     });
 
-    const isEligible = !existingTrial && planTrialEnabled;
+    // A prior trial only blocks if it's live or was actually delivered — a
+    // declined, withdrawn or lapsed-unpaid trial frees the pair. See
+    // lib/trials/eligibility.ts for the abuse trade-off this represents.
+    const blockingTrial =
+      existingTrial && blocksNewTrialRequest(existingTrial.status)
+        ? existingTrial
+        : null;
+    const isEligible = !blockingTrial && planTrialEnabled;
 
     return NextResponse.json({
       data: {
         isEligible,
-        hasExistingTrial: !!existingTrial,
-        existingTrial: existingTrial
+        hasExistingTrial: !!blockingTrial,
+        existingTrial: blockingTrial
           ? {
-              id: existingTrial.id,
-              status: existingTrial.status,
-              subscriptionPlanId: existingTrial.subscriptionPlanId,
-              requestedAt: existingTrial.requestedAt,
+              id: blockingTrial.id,
+              status: blockingTrial.status,
+              subscriptionPlanId: blockingTrial.subscriptionPlanId,
+              requestedAt: blockingTrial.requestedAt,
             }
           : null,
         planTrialEnabled,
         planTrialDuration,
+        planTrialPriceInPaise,
         plansWithTrialEnabled,
         reason: !isEligible
-          ? existingTrial
+          ? blockingTrial
             ? "You have already requested or completed a trial with this consultant"
-            : "This plan does not offer free trials"
+            : "This plan does not offer trials"
           : null,
       },
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "trials" } });
     console.error("Error checking trial eligibility:", error);
     return NextResponse.json(
       { error: "An error occurred while checking trial eligibility" },

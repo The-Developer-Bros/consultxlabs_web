@@ -2,9 +2,13 @@ name: Reconcile Document Storage
 
 on:
   schedule:
-    # Run daily at 2 AM UTC
-    - cron: "0 2 * * *"
+    # Daily 02:35 UTC. #709 — off cleanup-abandoned-org-top-ups (02:00).
+    - cron: "35 2 * * *"
   workflow_dispatch: # Allow manual triggering
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   reconcile-document-storage:
@@ -12,8 +16,16 @@ jobs:
     timeout-minutes: 30
 
     env:
+      # #1066 — jobs run as bare Node processes, so Sentry.init only sees
+      # what the step env carries. Without the DSN the runner initialises
+      # a disabled client and every captureException is a no-op again.
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
       # Database connection (required for Prisma)
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # #476 cron locks load lib/redis at import — every job entry needs these
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
       DIRECT_URL: ${{ secrets.DIRECT_URL }}
 
       # Supabase credentials (required for storage operations)
@@ -37,10 +49,13 @@ jobs:
         run: npx prisma generate
 
       - name: Reconcile document storage
-        run: npx tsx jobs/cleanup/reconcile-document-storage.ts
+        run: npx --yes tsx@4.23.1 jobs/cleanup/reconcile-document-storage.ts
 
       - name: Notify on failure
         if: failure()
-        run: |
-          echo "Document storage reconciliation job failed"
-          # Add notification logic here (Slack, email, etc.)
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          # Fallback sink — Slack has never been provisioned, so this is
+          # what actually pages today. See 07-required-secrets.md.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "reconcile-document-storage"

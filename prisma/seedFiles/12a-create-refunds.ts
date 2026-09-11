@@ -49,10 +49,6 @@ function generateRefundId(gateway: PaymentGateway): string {
       return `re_${faker.string.alphanumeric(24)}`;
     case "RAZORPAY":
       return `rfnd_${faker.string.alphanumeric(14)}`;
-    case "LEMON_SQUEEZY":
-      return `rf_${faker.string.alphanumeric(16)}`;
-    case "XFLOW":
-      return `XF-RF-${faker.string.alphanumeric(10).toUpperCase()}`;
     case "CARD":
       return `card_rf_${faker.string.alphanumeric(12)}`;
     default:
@@ -129,7 +125,7 @@ export async function createRefunds(): Promise<void> {
 
       await prisma.refund.create({
         data: {
-          amount: refundAmount,
+          amountPaise: refundAmount,
           currency: payment.currency,
           reason,
           status,

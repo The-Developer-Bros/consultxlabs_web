@@ -8,46 +8,23 @@
  * Schedule: Every 15 minutes (via GitHub Actions or external cron)
  */
 
-import { NextRequest, NextResponse } from "next/server";
+import { cleanupRoute, parseLimitParam } from "@/lib/cron/cleanup-route";
 import { cascadeRefundToEarnings } from "@/scripts/refunds/cascade-refund-earnings";
+import { cascadeRunFailed } from "@/scripts/refunds/cascade-run-outcome";
 
-export async function GET(req: NextRequest): Promise<NextResponse> {
-  try {
-    // Verify cron secret to prevent unauthorized access
-    const authHeader = req.headers.get("authorization");
-    const cronSecret =
-      process.env.CRON_SECRET || process.env.VERCEL_CRON_SECRET;
-
-    if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
-      console.warn("Unauthorized refund-earning cascade attempt");
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    console.log("🔄 Starting refund-earning cascade via API...");
-
-    const result = await cascadeRefundToEarnings();
-
-    console.log("✅ Refund-earning cascade completed:", {
-      totalProcessed: result.totalProcessed,
-      updatedCount: result.updatedCount,
-      skippedCount: result.skippedCount,
-      errorCount: result.errorCount,
-    });
-
-    return NextResponse.json(result);
-  } catch (error) {
-    console.error("Error in refund-earning cascade:", error);
-    return NextResponse.json(
-      {
-        error: "Failed to cascade refund to earnings",
-        details: error instanceof Error ? error.message : String(error),
-      },
-      { status: 500 },
-    );
-  }
-}
-
-// Also support POST for manual triggering
-export async function POST(req: NextRequest): Promise<NextResponse> {
-  return GET(req);
-}
+export const { GET, POST } = cleanupRoute({
+  job: "cascade-refund-earnings",
+  run: (req) => cascadeRefundToEarnings({ limit: parseLimitParam(req) }),
+  summarize: (r) => ({
+    totalProcessed: r.totalProcessed,
+    updatedCount: r.updatedCount,
+    skippedCount: r.skippedCount,
+    errorCount: r.errorCount,
+  }),
+  // PM-34 — result.success === false means some SUCCEEDED refunds failed
+  // their cascade; an unconditional 200 told the cron's health check
+  // everything was fine and it never paged. Mirror the other money crons
+  // (e.g. appointment-reminders) with a 500 on a failed run.
+  status: (result) => (cascadeRunFailed(result) ? 500 : 200),
+  failureMessage: "Failed to cascade refund to earnings",
+});

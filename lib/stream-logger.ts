@@ -3,6 +3,8 @@
  * Provides conditional logging based on environment and structured output
  */
 
+import * as Sentry from "@sentry/nextjs";
+
 type LogLevel = "debug" | "info" | "warn" | "error";
 
 interface LogContext {
@@ -76,9 +78,16 @@ export const streamLogger = {
     };
     console.error(formatMessage("Stream:ERROR", message, errorContext));
 
-    // In production, could send to error tracking service (Sentry, etc.)
     if (!isDevelopment && error instanceof Error) {
-      // Example: Sentry.captureException(error, { extra: context });
+      Sentry.captureException(error, {
+        tags: { subsystem: "stream" },
+        contexts: {
+          stream: {
+            channelId: context?.channelId,
+            operation: context?.operation,
+          },
+        },
+      });
     }
   },
 
@@ -113,66 +122,3 @@ export const streamLogger = {
     }
   },
 };
-
-/**
- * Create a scoped logger with preset context
- */
-export function createScopedLogger(scope: string, defaultContext?: LogContext) {
-  return {
-    debug(message: string, context?: LogContext): void {
-      streamLogger.debug(`[${scope}] ${message}`, {
-        ...defaultContext,
-        ...context,
-      });
-    },
-    info(message: string, context?: LogContext): void {
-      streamLogger.info(`[${scope}] ${message}`, {
-        ...defaultContext,
-        ...context,
-      });
-    },
-    warn(message: string, context?: LogContext): void {
-      streamLogger.warn(`[${scope}] ${message}`, {
-        ...defaultContext,
-        ...context,
-      });
-    },
-    error(
-      message: string,
-      error?: Error | unknown,
-      context?: LogContext,
-    ): void {
-      streamLogger.error(`[${scope}] ${message}`, error, {
-        ...defaultContext,
-        ...context,
-      });
-    },
-  };
-}
-
-/**
- * Measure and log execution time of an async function
- */
-export async function withTiming<T>(
-  operation: string,
-  fn: () => Promise<T>,
-  context?: LogContext,
-): Promise<T> {
-  const start = Date.now();
-  try {
-    const result = await fn();
-    streamLogger.timing(operation, Date.now() - start, {
-      ...context,
-      success: true,
-    });
-    return result;
-  } catch (error) {
-    streamLogger.timing(operation, Date.now() - start, {
-      ...context,
-      success: false,
-    });
-    throw error;
-  }
-}
-
-export default streamLogger;

@@ -1,175 +1,100 @@
 # Collaborator Scheduling Approaches
 
-This document outlines three approaches to collaborator scheduling visibility and control, from simplest (current) to most complex (future).
+This document records the three considered approaches to collaborator scheduling visibility and control, from what is implemented today to the most involved future option. It was refreshed on 2026-08-14; the material change since the original write-up is that the current approach is no longer purely advisory on the webinar path — co-host availability is **enforced** when a webinar is scheduled (#784 AE-2), while class scheduling remains advisory because no class route calls the guard.
 
 ---
 
-## 1. View-Only (Current MVP)
+## 1. View-only, with enforced availability (current)
 
-### What We Implemented
+### What is implemented
 
-Collaborators with **ACCEPTED** status see a read-only schedule section on each active collaboration card in the Collaborations dashboard page.
+Scheduling remains exclusively the host's action, and two things are true for collaborators:
 
-### What Collaborators See
+1. **They can see the schedule.** Collaborators with `ACCEPTED` status get a read-only schedule section on each active collaboration card in the Collaborations dashboard page.
+2. **They cannot be double-booked by it — on webinars.** When the host schedules a webinar, the proposed window is checked against every accepted co-host's confirmed commitments, and a clash is rejected with HTTP 409 rather than silently proceeding (`assertCollaboratorsAvailable` in `lib/collaborators/availability.ts`, called from `app/api/bookings/webinars/crud-with-plan/route.ts` — see [01-architecture.md §5](./01-architecture.md#5-scheduling-with-enforced-co-host-availability)). Class plans have no such guard: no route under `app/api/bookings/classes/` calls the function, so a class co-instructor can still be scheduled over an existing commitment. For classes, therefore, point 2 does not yet hold, and the visibility described in point 1 remains the only protection a co-instructor has.
 
-**Webinar collaborations:**
+### What collaborators see
 
-- Event status badge (Scheduled / Live) and tentative indicator
-- Event date and time (from the first upcoming slot)
-- Duration (from plan's `durationInHours`)
-- Participant count vs. max capacity
-- Plan owner name
-- Count of additional upcoming events ("+N more events")
+For webinar collaborations the card shows the event status badge and tentative indicator, the date and time of the first upcoming slot, the duration from the plan's `durationInHours`, the participant count against capacity, the plan owner's name, and a "+N more events" count. For class collaborations it shows the class status badge, the scheduling period, the session count and cadence (e.g. "1h/session, 2x/week"), the participant count, and the next upcoming session.
 
-**Class collaborations:**
+### How it works
 
-- Class status badge (Scheduled / In Progress)
-- Scheduling period (start date to end date)
-- Session count (completed/scheduled vs. total from plan)
-- Session frequency and duration (e.g., "1h/session, 2x/week")
-- Participant count vs. max capacity
-- Next upcoming session date and time
+On the backend, `getMyCollaborations` (`lib/collaborators/service.ts`) includes each plan's nested `webinars`/`classes` with their appointments and `slotsOfAppointment`, limited to the five most recent `SCHEDULED`/`IN_PROGRESS` events, plus the plan owner via `consultantProfile.user`. On the frontend, `InvitationsPanel` and the `ScheduleSummaries` components render the expandable schedule section and handle the empty states — no events yet, an event without a time slot, a class with no sessions.
 
-### How It Works
+The edge cases render as follows.
 
-**Backend** (`lib/collaborators/service.ts`):
-
-- `getMyCollaborations` expanded to include nested `webinars` / `classes` with their `appointment` and `slotsOfAppointment` data
-- Only fetches events with status `SCHEDULED` or `IN_PROGRESS`
-- Limited to 5 most recent events per plan
-- Includes plan owner via `consultantProfile.user`
-
-**Frontend** (`components/collaborators/InvitationsPanel.tsx`):
-
-- Active collaboration cards are clickable to expand/collapse a "Schedule" section
-- `WebinarSchedule` and `ClassSchedule` components render event details in a grid layout
-- Handles edge cases: no events scheduled, event exists but no time slot, class with no sessions yet
-
-### Edge Cases Handled
-
-| Scenario                                          | Display                             |
-| ------------------------------------------------- | ----------------------------------- |
-| No webinar events exist                           | "No events scheduled yet"           |
-| Webinar exists but no appointment/slot            | "Event exists but no time slot set" |
-| No class instances exist                          | "No classes scheduled yet"          |
-| Class exists but no scheduling period or sessions | "Sessions not yet scheduled"        |
+| Scenario | Display |
+| --- | --- |
+| No webinar events exist | "No events scheduled yet" |
+| Webinar exists but no appointment/slot | "Event exists but no time slot set" |
+| No class instances exist | "No classes scheduled yet" |
+| Class exists but no scheduling period or sessions | "Sessions not yet scheduled" |
 
 ---
 
-## 2. View + Suggest (Future Option)
+## 2. View + suggest (future option)
 
 ### Concept
 
-Collaborators can **view** the schedule (as above) and additionally **suggest** schedule changes. The plan owner reviews and approves/rejects suggestions. This preserves host authority while giving collaborators a voice.
+Collaborators view the schedule as above and can additionally **suggest** changes; the plan owner approves or rejects. This preserves host authority while giving collaborators a voice.
 
-### Required DB Changes
+### Required DB changes
 
-New model:
+A new model would carry the suggestion lifecycle. Sketch (not implemented; field names indicative):
 
 ```prisma
 model ScheduleSuggestion {
-  id          String   @id @default(cuid())
-  type        SuggestionType
-  status      SuggestionStatus @default(PENDING)
+  id     String           @id @default(cuid())
+  type   SuggestionType   // NEW_EVENT | RESCHEDULE | CANCEL
+  status SuggestionStatus @default(PENDING) // PENDING | APPROVED | REJECTED
 
-  // What they're suggesting
   suggestedStartsAt DateTime?
   suggestedEndsAt   DateTime?
   reason            String?
 
-  // Who suggested it
   suggestedByProfileId String
   suggestedByProfile   ConsultantProfile @relation(fields: [suggestedByProfileId], references: [id])
 
-  // What plan/event it's for
+  // Same XOR discipline as Collaborator (#784): exactly one plan FK set.
   webinarPlanId String?
   classPlanId   String?
 
-  // Owner response
-  respondedAt   DateTime?
-  responseNote  String?
+  respondedAt  DateTime?
+  responseNote String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-}
-
-enum SuggestionType {
-  NEW_EVENT
-  RESCHEDULE
-  CANCEL
-}
-
-enum SuggestionStatus {
-  PENDING
-  APPROVED
-  REJECTED
 }
 ```
 
 ### Workflow
 
-1. Collaborator clicks "Suggest Change" next to a scheduled event
-2. Modal opens with date/time picker and a reason field
-3. Suggestion is created with `PENDING` status
-4. Notification sent to plan owner via Novu
-5. Owner sees suggestion in their Event Planner or a dedicated "Suggestions" tab
-6. Owner approves (auto-applies the change) or rejects (with optional note)
-7. Collaborator receives notification of the outcome
-
-### Notification Integration
-
-- `SCHEDULE_SUGGESTION_CREATED` - sent to plan owner
-- `SCHEDULE_SUGGESTION_RESOLVED` - sent to suggesting collaborator
+The loop would run: collaborator opens "Suggest change" on a scheduled event → a modal captures times and a reason → the suggestion is created `PENDING` → the owner is notified (Novu) and sees it in their planner → approving applies the change (which itself passes through the AE-2 availability guard), rejecting records a note → the collaborator is notified of the outcome. Note that the schema freezes before launch (see the schema-freeze decision), so this model must be added before the freeze or wait for a post-launch migration window.
 
 ---
 
-## 3. Full Editing for Senior Roles (Future Option)
+## 3. Full editing for senior roles (future option)
 
 ### Concept
 
-Senior collaborators (CO_HOST for webinars, CO_INSTRUCTOR for classes) get direct scheduling permissions. They can create, reschedule, and cancel events without owner approval.
+Senior collaborators (`CO_HOST` for webinars, `CO_INSTRUCTOR` for classes) would schedule directly, without owner approval.
 
-### Permission Model
+### Required changes
 
-Add a `canScheduleOnPlan` permission check:
-
-```typescript
-function canScheduleOnPlan(
-  role: string,
-  planType: "webinar" | "class",
-): boolean {
-  if (planType === "webinar") {
-    return role === "CO_HOST";
-  }
-  return role === "CO_INSTRUCTOR";
-}
-```
-
-### Required Changes
-
-1. **Authorization layer**: PATCH/POST/DELETE endpoints for events need to check collaborator permissions alongside owner auth
-2. **Event Planner tab**: Add a filtered view showing only plans the collaborator has scheduling access to
-3. **Optimistic locking**: Add a `version` field to events to handle race conditions when multiple people edit
-4. **Audit trail**: Log who created/modified each event for accountability
-
-### Race Condition Considerations
-
-- Two collaborators (or owner + collaborator) could try to schedule the same time slot
-- Solution: Use database-level unique constraints on slot times per plan, plus optimistic locking with version checks
-- Alternative: Use Prisma's `@@unique` constraint on `[appointmentId, startsAt]` in `SlotOfAppointment`
+Four pieces of work would be needed: an authorization layer on the event CRUD endpoints that honors a collaborator-scheduling grant alongside owner auth (most naturally a fifth typed boolean in the #768 pattern, not a role-derived rule); a filtered Event Planner view for plans the collaborator can schedule on; concurrency control between two schedulers (the existing slot exclusion constraint plus the AE-2 guard already provide the DB-level backstop; an optimistic `version` column would improve the UX of conflicts); and an audit trail of who created or modified each event.
 
 ---
 
-## Competitor Research
+## Competitor research
 
-| Platform            | Scheduling Model                                                     |
-| ------------------- | -------------------------------------------------------------------- |
-| **Zoom**            | Only meeting host can schedule; co-hosts have in-meeting powers only |
-| **Thinkific**       | Course admin can manage schedule; instructors cannot                 |
-| **TopMate**         | Single-host model, no collaborator concept                           |
-| **Google Calendar** | Shared calendars with granular read/write permissions per user       |
-| **Calendly**        | Team events allow round-robin but scheduling is admin-controlled     |
+The original survey of comparable platforms still stands and is retained for context.
 
-**Industry consensus**: Most platforms keep scheduling as a host/admin-only action. Google Calendar's granular permission model is the closest analog to Approach 3, but it's designed for general calendaring, not event management.
+| Platform | Scheduling model |
+| --- | --- |
+| Zoom | Only the meeting host schedules; co-hosts have in-meeting powers only |
+| Thinkific | Course admin manages the schedule; instructors cannot |
+| TopMate | Single-host model, no collaborator concept |
+| Google Calendar | Shared calendars with granular read/write permissions per user |
+| Calendly | Team events allow round-robin but scheduling is admin-controlled |
 
-**Recommendation**: Approach 1 (view-only) is the right MVP. Consider Approach 2 (suggest) if collaborator feedback indicates scheduling friction. Approach 3 should only be built if there's clear demand from power users running large multi-instructor programs.
+The industry consensus keeps scheduling as a host/admin-only action, which supports the current approach. Approach 2 is the next step if collaborator feedback shows scheduling friction; approach 3 should only be built on clear demand from power users running large multi-instructor programs.

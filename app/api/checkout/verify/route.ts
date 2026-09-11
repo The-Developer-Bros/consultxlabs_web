@@ -1,10 +1,13 @@
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { getSession } from "@/lib/auth-server";
-import { razorpayClient } from "@/lib/payments/core/razorpay";
+import { getRazorpayClient } from "@/lib/payments/core/razorpay";
+import { routeCapturedPayment } from "@/app/api/webhooks/razorpay-dispatch";
 
 export async function GET(req: NextRequest) {
   try {
+    const razorpayClient = getRazorpayClient();
     // Check authentication
     const session = await getSession();
     if (!session?.user) {
@@ -71,8 +74,15 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // L4 FIX: On-demand sync — fetch latest status from Razorpay API
-    // Placed AFTER ownership check to prevent unauthorized status updates
+    // L4 FIX: On-demand sync — fetch latest status from Razorpay API.
+    // Placed AFTER ownership check to prevent unauthorized status updates.
+    //
+    // ADR 21 — this used to flip the row to SUCCEEDED with a bare updateMany,
+    // which made the later `payment.captured` webhook short-circuit on its
+    // already-SUCCEEDED early-return and skip appointment confirmation,
+    // earnings, and the `booking:<paymentId>` journal entry. It now drives the
+    // same idempotent pipeline the webhook drives, so a sync can only ever
+    // produce the complete outcome or none of it.
     if (
       shouldSync &&
       payment.paymentStatus === "PENDING" &&
@@ -82,14 +92,30 @@ export async function GET(req: NextRequest) {
       try {
         const rzpOrder = await razorpayClient.orders.fetch(paymentIntent);
         if (rzpOrder.status === "paid") {
-          await prisma.payment.updateMany({
-            where: { paymentIntent, paymentStatus: "PENDING" },
-            data: {
-              paymentStatus: "SUCCEEDED",
-              description: "Synced from Razorpay API (on-demand)",
-            },
+          // Resolve the captured payment so the parity check and the
+          // notes-based routing both see gateway truth, exactly as the
+          // webhook does.
+          const orderPayments =
+            await razorpayClient.orders.fetchPayments(paymentIntent);
+          const captured =
+            orderPayments.items?.find((p) => p.status === "captured") ??
+            orderPayments.items?.[0];
+
+          await routeCapturedPayment({
+            orderId: paymentIntent,
+            notes: Object.fromEntries(
+              Object.entries(captured?.notes ?? rzpOrder.notes ?? {}).map(
+                ([k, v]) => [k, String(v)],
+              ),
+            ),
+            amountPaise:
+              captured?.amount !== undefined
+                ? Number(captured.amount)
+                : undefined,
+            gatewayPaymentId: captured?.id,
           });
-          // Re-read payment to reflect updated status
+
+          // Re-read payment to reflect the pipeline's outcome
           const updated = await prisma.payment.findUnique({
             where: { paymentIntent },
           });
@@ -98,6 +124,13 @@ export async function GET(req: NextRequest) {
           }
         }
       } catch (syncError) {
+        // Non-fatal: the webhook and the stuck-event sweeper remain the durable
+        // path. Report so a systematically failing sync is visible rather than
+        // silently leaving buyers on a spinner.
+        Sentry.captureException(
+          syncError instanceof Error ? syncError : new Error(String(syncError)),
+          { tags: { subsystem: "payments" } },
+        );
         console.warn(
           `Failed to sync payment status from Razorpay for ${paymentIntent}:`,
           syncError,
@@ -145,6 +178,10 @@ export async function GET(req: NextRequest) {
       createdAt: payment.createdAt,
     });
   } catch (error) {
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "checkout" } },
+    );
     console.error("Payment verification error:", error);
     return NextResponse.json(
       { error: "Internal server error" },

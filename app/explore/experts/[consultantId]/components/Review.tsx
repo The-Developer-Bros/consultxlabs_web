@@ -1,21 +1,25 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { TConsultantReview } from "@/types/review";
+import { TPublicConsultantReview } from "@/types/review";
 import Image from "next/image";
 
 import { StarIcon } from "lucide-react";
 import React from "react";
 
-const Review: React.FC<Readonly<TConsultantReview>> = ({
+const Review: React.FC<Readonly<TPublicConsultantReview>> = ({
   consulteeProfile,
   createdAt,
   rating,
   reviewDescription,
 }) => {
-  const reviewerName = consulteeProfile?.user?.name || "Anonymous";
+  // "Verified client" rather than "Anonymous": the trust here comes from the
+  // review being welded to a paid, attended session, and that is worth saying
+  // out loud when the name is withheld. The server has already removed the
+  // name — this is the label for that, not the mechanism.
+  const reviewerName = consulteeProfile?.user?.name || "Verified client";
   const reviewerImage = consulteeProfile?.user?.image || null;
 
   return (
-    <div className="flex items-start space-x-4 p-4 bg-white rounded-lg shadow-sm">
+    <div className="flex items-start space-x-4 p-4 bg-card rounded-lg shadow-sm">
       <Avatar className="w-10 h-10">
         {reviewerImage && (
           <AvatarImage src={reviewerImage} alt={reviewerName} />
@@ -25,10 +29,10 @@ const Review: React.FC<Readonly<TConsultantReview>> = ({
       <div className="flex-1">
         <div className="flex items-center justify-between mb-2">
           <div>
-            <h4 className="text-md font-semibold text-zinc-800">
+            <h4 className="text-md font-semibold text-foreground">
               {reviewerName}
             </h4>
-            <p className="text-xs text-zinc-500">
+            <p className="text-xs text-muted-foreground">
               {new Date(createdAt).toLocaleDateString("en-IN")}
             </p>
           </div>
@@ -36,22 +40,22 @@ const Review: React.FC<Readonly<TConsultantReview>> = ({
             {[...Array(5)].map((_, i) => (
               <StarIcon
                 key={`star-${rating}-${i}`}
-                className={`w-4 h-4 ${i < rating ? "text-yellow-400" : "text-zinc-200"}`}
+                className={`w-4 h-4 ${i < rating ? "text-yellow-400" : "text-muted"}`}
               />
             ))}
           </div>
         </div>
-        <p className="text-sm text-zinc-600 leading-relaxed">
+        <p className="text-sm text-muted-foreground leading-relaxed">
           {reviewDescription}
         </p>
-        <div className="flex items-center gap-1.5 mt-3 pt-3 border-t border-zinc-100">
+        <div className="flex items-center gap-1.5 mt-3 pt-3 border-t border-border">
           <Image
             src="/avif/static/assets/logos/images/logos/Familiarise-logos_transparent.avif"
             alt="Familiarise"
             width={14}
             height={14}
           />
-          <span className="text-[10px] text-zinc-400">
+          <span className="text-[10px] text-muted-foreground/70">
             Reviewed on Familiarise
           </span>
         </div>

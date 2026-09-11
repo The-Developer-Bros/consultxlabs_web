@@ -94,6 +94,55 @@ export function buildAdminScalarData(data: AdminProfileCreateData) {
 }
 
 // ============================================================================
+// VERIFICATION POLICY (pure)
+// ============================================================================
+
+/** Minimal shape of the verification-related fields on an onboarding body.
+ *  Structural typing keeps this importable from both the server pipeline and
+ *  tests without touching the "server-only" module graph. */
+export interface VerificationSignals {
+  verificationLinkedinUrl?: string;
+  verificationDocuments?: unknown[];
+}
+
+/**
+ * Does this entry carry enough data for submitVerificationRequest to actually
+ * persist or link it? Pure and structural so the deferral policy below and
+ * the server-side persistence filters can never disagree on what counts as a
+ * real document — mirrors exactly the two branches that create/link rows:
+ *   - an existing record uploaded earlier via /api/verification/documents
+ *   - an onboarding upload carrying its storage URL
+ * An empty object like `{}` satisfies neither, so it must not start a review.
+ */
+export function isPersistableVerificationDoc(doc: unknown): boolean {
+  if (typeof doc !== "object" || doc === null) return false;
+  const d = doc as Record<string, unknown>;
+  return Boolean(
+    (d.id && !d.isOnboardingUpload) ||
+      d.isOnboardingUpload ||
+      (!d.id && d.fileUrl),
+  );
+}
+
+/**
+ * Decide whether a consultant submission carries everything the verification
+ * review needs. Both signals are required for an immediate review; anything
+ * less defers to the dashboard's VerificationSection, which already owns the
+ * post-onboarding submit/resubmit loop (#onboarding-ux).
+ */
+export function shouldSubmitVerification(body: VerificationSignals): {
+  hasDocuments: boolean;
+  hasLinkedin: boolean;
+} {
+  return {
+    hasDocuments:
+      Array.isArray(body.verificationDocuments) &&
+      body.verificationDocuments.some(isPersistableVerificationDoc),
+    hasLinkedin: Boolean(body.verificationLinkedinUrl?.trim()),
+  };
+}
+
+// ============================================================================
 // PROFESSIONAL BACKGROUND VALIDATION
 // ============================================================================
 

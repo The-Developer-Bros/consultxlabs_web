@@ -127,7 +127,7 @@ export function makeSubscriptionPlan(overrides: Record<string, any> = {}) {
   return {
     id: "plan-1",
     title: "Test Plan",
-    callsPerWeek: 2,
+    sessionsPerWeek: 2,
     sessionDurationInHours: 1,
     durationInMonths: 1,
     ...overrides,

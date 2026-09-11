@@ -81,14 +81,14 @@ export default function ChangePasswordPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-100 dark:bg-gray-950">
-      <div className="w-full max-w-md p-8 space-y-6 bg-white rounded-lg shadow-md dark:bg-gray-900">
+    <div className="min-h-screen flex items-center justify-center bg-muted px-4 dark:bg-gray-950">
+      <div className="w-full max-w-md p-8 space-y-6 bg-card rounded-lg shadow-md dark:bg-gray-900">
         <div className="text-center">
-          <GlobeIcon className="mx-auto h-12 w-auto text-gray-900 dark:text-gray-100" />
-          <h2 className="mt-6 text-3xl font-extrabold text-gray-900 dark:text-white">
+          <GlobeIcon className="mx-auto h-12 w-auto text-foreground dark:text-gray-100" />
+          <h2 className="mt-6 text-fluid-3xl font-extrabold tracking-tight text-foreground dark:text-white">
             Change Password
           </h2>
-          <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+          <p className="mt-2 text-sm text-muted-foreground dark:text-gray-400">
             Enter your current password and choose a new one.
           </p>
         </div>
@@ -101,7 +101,7 @@ export default function ChangePasswordPage() {
               name="current-password"
               type="password"
               required
-              className="mt-1 appearance-none rounded-md relative block w-full px-3 py-2 border border-gray-300 dark:border-gray-700 placeholder-gray-500 dark:placeholder-gray-400 text-gray-900 dark:text-white focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
+              className="mt-1 appearance-none rounded-md relative block w-full px-3 py-2 border border-border dark:border-gray-700 placeholder:text-muted-foreground dark:placeholder-gray-400 text-foreground dark:text-white focus:outline-none focus:ring-ring focus:border-ring focus:z-10 sm:text-sm"
               placeholder="Current password"
               value={currentPassword}
               onChange={(e) => setCurrentPassword(e.target.value)}
@@ -116,7 +116,7 @@ export default function ChangePasswordPage() {
               name="new-password"
               type="password"
               required
-              className="mt-1 appearance-none rounded-md relative block w-full px-3 py-2 border border-gray-300 dark:border-gray-700 placeholder-gray-500 dark:placeholder-gray-400 text-gray-900 dark:text-white focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
+              className="mt-1 appearance-none rounded-md relative block w-full px-3 py-2 border border-border dark:border-gray-700 placeholder:text-muted-foreground dark:placeholder-gray-400 text-foreground dark:text-white focus:outline-none focus:ring-ring focus:border-ring focus:z-10 sm:text-sm"
               placeholder="New password (min 8 characters)"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
@@ -131,7 +131,7 @@ export default function ChangePasswordPage() {
               name="confirm-new-password"
               type="password"
               required
-              className="mt-1 appearance-none rounded-md relative block w-full px-3 py-2 border border-gray-300 dark:border-gray-700 placeholder-gray-500 dark:placeholder-gray-400 text-gray-900 dark:text-white focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
+              className="mt-1 appearance-none rounded-md relative block w-full px-3 py-2 border border-border dark:border-gray-700 placeholder:text-muted-foreground dark:placeholder-gray-400 text-foreground dark:text-white focus:outline-none focus:ring-ring focus:border-ring focus:z-10 sm:text-sm"
               placeholder="Confirm new password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
@@ -142,7 +142,7 @@ export default function ChangePasswordPage() {
           <div>
             <Button
               type="submit"
-              className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-600"
+              className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-primary-foreground bg-primary hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-ring"
               disabled={isLoading}
             >
               {isLoading ? "Changing..." : "Change Password"}
@@ -153,7 +153,7 @@ export default function ChangePasswordPage() {
         <div className="text-sm text-center">
           <Link
             href="/dashboard"
-            className="font-medium text-indigo-600 hover:text-indigo-500 dark:text-indigo-400 dark:hover:text-indigo-300"
+            className="font-medium text-foreground hover:text-muted-foreground"
           >
             Back to Dashboard
           </Link>

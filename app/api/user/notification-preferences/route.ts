@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/nextjs";
 import prisma from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 import { requireApiAuth } from "@/lib/auth-helpers";
@@ -43,6 +44,7 @@ export async function GET() {
       },
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "auth" } });
     console.error("Error fetching notification preferences:", error);
     return NextResponse.json(
       { error: "Failed to fetch notification preferences" },
@@ -101,6 +103,7 @@ export async function PUT(request: NextRequest) {
       },
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "auth" } });
     console.error("Error updating notification preferences:", error);
     return NextResponse.json(
       { error: "Failed to update notification preferences" },

@@ -65,7 +65,6 @@ export async function checkoutAction(
 | Payment status          | Stays `PENDING` until webhook confirms                  | Set to `SUCCEEDED` immediately in the same transaction               |
 | Appointment creation    | Created with `isTentative = true`, confirmed by webhook | Created with `isTentative = true`, payment marked `SUCCEEDED` inline |
 | Webhook dependency      | Required -- appointment not confirmed without it        | Not required -- status updated directly in `handleCheckout`          |
-| Waitlist update         | Handled by webhook                                      | Handled inline when `fromWaitlist` is set                            |
 
 **File**: `lib/payments/operations/checkout.ts` (lines ~1527-1533)
 
@@ -82,7 +81,6 @@ if (isMockPayment) {
 
 - **Local development**: Avoid requiring real gateway credentials or webhook tunnels.
 - **Integration tests**: Test end-to-end booking creation without payment infrastructure.
-- **Waitlist flows**: The mock flag is used in conjunction with `fromWaitlist` for waitlist-to-booking conversion.
 
 > **Note**: Mock payments still create real `Payment` records with `isMockPayment = true` in the database. The `handlePaymentSuccess` handler in `lib/payments/webhooks/handlers.ts` is shared by both webhook-driven and mock payment flows.
 
@@ -100,13 +98,12 @@ The seeder runs in numbered phases. Booking-relevant phases:
 | ----- | --------------------------------- | ------------------------------------------------------------------------------------ |
 | 1     | `1a-create-users`                 | Consultant and consultee user accounts with profiles                                 |
 | 4a    | `4a-create-consultation-plans`    | Consultation plans with duration and pricing                                         |
-| 4b    | `4b-create-subscription-plans`    | Subscription plans with `callsPerWeek`, `sessionDurationInHours`, `durationInMonths` |
+| 4b    | `4b-create-subscription-plans`    | Subscription plans with `sessionsPerWeek`, `sessionDurationInHours`, `durationInMonths` |
 | 4c    | `4c-create-webinar-plans`         | Webinar plans with duration                                                          |
-| 4d    | `4d-create-class-plans`           | Class plans with `meetingsPerWeek` and class contents                                |
+| 4d    | `4d-create-class-plans`           | Class plans with `sessionsPerWeek` and class contents                                |
 | 5a    | `5a-create-slots-of-availability` | Weekly and custom availability slots for consultants                                 |
 | 6a    | `6a-create-appointments`          | Appointments with slot records across all event types                                |
 | 8b    | `8b-create-payments`              | Payment records linked to appointments                                               |
-| 10a   | `10a-create-waitlists`            | Waitlist entries for webinars and classes                                            |
 
 ### Running the Seeder
 
@@ -130,7 +127,7 @@ npm run db:seed:validation
 npx prisma studio
 ```
 
-Prisma Studio lets you browse all tables, filter by fields like `isTentative`, `requestStatus`, and `appointmentType`, and inspect relationships.
+Prisma Studio lets you browse all tables, filter by fields like `isTentative`, `status`, and `appointmentType`, and inspect relationships.
 
 ---
 
@@ -139,31 +136,31 @@ Prisma Studio lets you browse all tables, filter by fields like `isTentative`, `
 ### a. Create and Approve a Consultation
 
 1. **Seed or create** a consultant with availability and a consultation plan.
-2. **Checkout**: Call `checkoutAction` with `appointmentType: "CONSULTATION"`, a valid `planId`, and `slotStartTimeInUTC`/`slotEndTimeInUTC` within the consultant's availability. Set `isMockPayment: true` for local dev.
-3. **Verify**: The consultation should have `requestStatus: "PENDING"` and a tentative appointment.
+2. **Checkout**: Call `checkoutAction` with `appointmentType: "CONSULTATION"`, a valid `planId`, and `startsAt`/`endsAt` within the consultant's availability. Set `isMockPayment: true` for local dev.
+3. **Verify**: The consultation should have `status: "PENDING"` and a tentative appointment.
 4. **Approve**: Use the consultant's dashboard Requests tab, or call `SlotAllocationService.allocate` directly with `mode: "requested"` to confirm the requested slots.
-5. **Result**: `requestStatus` transitions to `APPROVED`, `isTentative` is cleared on all slots.
+5. **Result**: `status` transitions to `APPROVED`, `isTentative` is cleared on all slots.
 
 ### b. Set Up a Subscription with Slot Allocation
 
-1. **Create subscription**: Checkout a subscription plan. This creates a subscription with `requestStatus: "PENDING"` and a placeholder appointment.
+1. **Create subscription**: Checkout a subscription plan. This creates a subscription with `status: "PENDING"` and a placeholder appointment.
 2. **Auto allocation**: Call `SlotAllocationService.allocate({ eventType: "subscription", eventId, mode: "auto" })`. The service finds consecutive slots across weeks within the scheduling period and creates one appointment per session.
 3. **Manual allocation**: Call with `mode: "manual"` and provide explicit `slots` array (ISO strings). Slots must be in multiples of `slotsPerCall` (e.g., 2 for 1-hour sessions).
-4. **Verify**: Check that `callsPerWeek` is not exceeded per Sunday-Saturday week. Use `SubscriptionValidationService.validateSubscriptionSlots` to validate before allocating.
+4. **Verify**: Check that `sessionsPerWeek` is not exceeded per Sunday-Saturday week. Use `SubscriptionValidationService.validateSubscriptionSlots` to validate before allocating.
 
-### c. Enroll in a Webinar and Test Waitlist
+### c. Enroll in a Webinar and Test Capacity
 
 1. **Checkout** a webinar plan with `isMockPayment: true`.
 2. **Allocate slots**: Use `mode: "auto"` or `mode: "manual"` with consecutive slots matching the webinar duration.
 3. **Fill capacity**: Enroll enough users to reach `maxParticipants`.
-4. **Waitlist**: The next enrollment attempt should create a waitlist entry. Cancel an existing enrollment to trigger `handleSlotOpening`, which notifies waitlisted users.
+4. **Sold out**: The next enrollment attempt should fail with "Webinar is full". Raise the webinar's `maxParticipants` from the planner and confirm registration reopens.
 
 ### d. Cancel a Booking and Verify Refund Cascade
 
 1. **POST** to `/api/appointments/{appointmentId}/cancel` with optional `reason` and `notes`.
 2. **Verify**:
-   - Consultation/subscription: `requestStatus` set to `CANCELLED`, `cancellationReason` and `cancelledBy` recorded.
-   - Webinar/class: `status` set to `CANCELLED`, `handleSlotOpening` called to notify waitlist.
+   - Consultation/subscription: `status` set to `CANCELLED`, `cancellationReason` and `cancelledBy` recorded.
+   - Webinar/class: `status` set to `CANCELLED`.
    - Slots deleted (`slotOfAppointment.deleteMany`), then appointment deleted.
    - `notifyAppointmentCancelled` fired to both consultant and consultee.
 
@@ -172,7 +169,7 @@ Prisma Studio lets you browse all tables, filter by fields like `isTentative`, `
 1. **POST** to `/api/appointments/{appointmentId}/reschedule?type=SUBSCRIPTION` with optional `slotIds` array in the body.
    - No `slotIds`: marks **all** subscription slots as tentative (entire booking reschedule).
    - With `slotIds`: marks only specified slots as tentative (individual/multiple session reschedule).
-2. **Verify**: Affected slots have `isTentative = true`, subscription `requestStatus` reverts to `PENDING`.
+2. **Verify**: Affected slots have `isTentative = true`. Only an entire-subscription reschedule (no `slotIds`) reverts the subscription `status` to `PENDING`; a partial reschedule of specific sessions (with `slotIds`) leaves the subscription status untouched and re-tentatives only those slots.
 3. **Re-allocate**: Consultant selects new slots via the Requests tab (uses `mode: "requested"`).
 
 **24-hour restriction**: Rescheduling is blocked if any affected slot starts within 24 hours. The API returns a `400` with details.
@@ -230,8 +227,8 @@ npx jest --coverage
 | `slotAllocationService.test.ts`  | `SlotAllocationService.allocate` -- mode routing (auto/manual/requested), duplicate detection, slot count validation, appointment creation, event data extraction, status updates, existing appointment deletion                                                                                                                                                                                         |
 | `slotCalculationService.test.ts` | `SlotCalculationService` -- week counting (`countWeeks`), `startOfWeekSunday`, duration validation, `calculateRequiredSlots` for all event types, `getSlotsPerCall`, `groupSlotsByDay`/`groupSlotsByWeek`, progress calculation                                                                                                                                                                          |
 | `slotValidationService.test.ts`  | `SlotValidationService.validate` -- future slot checks (5-second buffer), weekly/custom schedule matching, scheduling period boundaries, conflict detection, event-specific rules (consultation: same-day + consecutive, webinar: consecutive, class: weekly limits + session grouping), 30-minute fixed slot duration                                                                                   |
-| `allocationAlgorithms.test.ts`   | `AllocationAlgorithms` -- `manualAllocate` (validation, business rules), `autoAllocate` (consultation/webinar/subscription strategies, preference filtering: morning/afternoon/evening/weekends), `preAllocate` (requested slot validation and delegation)                                                                                                                                               |
-| `rescheduleCancel.test.ts`       | Reschedule and cancel API routes -- authentication (401), 404 handling, 24-hour policy enforcement, per-type slot marking (CONSULTATION/SUBSCRIPTION/WEBINAR/CLASS), partial vs entire reschedule, `CancelAppointmentSchema` validation, cancellation data recording, waitlist notifications, `cleanupTentativeSlots` script                                                                             |
+| `allocationAlgorithms.test.ts`   | `AllocationAlgorithms` -- `manualAllocate` (validation, business rules) and `allocateRequestedSlots` (requested slot validation and delegation; formerly `preAllocate`). Auto mode is not covered here: the client auto-allocator was deleted in #997/#1132, and the server's picks are tested in `slotAllocationService.test.ts` and `preference-scored-allocation.test.ts`.                                                                                                                                               |
+| `rescheduleCancel.test.ts`       | Reschedule and cancel API routes -- authentication (401), 404 handling, 24-hour policy enforcement, per-type slot marking (CONSULTATION/SUBSCRIPTION/WEBINAR/CLASS), partial vs entire reschedule, `CancelAppointmentSchema` validation, cancellation data recording, `cleanupTentativeSlots` script                                                                             |
 | `subscriptionValidation.test.ts` | `SubscriptionValidationService` -- week key format consistency (Bug A fix), appointment-per-call counting (Bug B fix), weekly limit enforcement (Bug C fix), scheduling period validation, weekly info generation, `getAvailableWeeksForSubscription`, `canScheduleInWeek`, incomplete proposed call detection, `excludeAppointmentIds`                                                                  |
 | `calendarUtils.test.ts`          | Calendar utilities -- `mapWeeklySlots`/`mapCustomSlots` (interval generation, UTC consistency), `slotsOverlap`, `getSlotStatus` (booking detection, partial booking, conflicts), `formatSlotsForAPI`, `validateSelectedSlots` (all event types), `groupSlotsByWeek`, `validateSlotDistribution`, `validateDayBasedConsecutiveSlots`, `calculateCallProgress`, `getAppointmentTitle`/`getAppointmentUser` |
 | `booking.mockData.ts`            | Shared mock data factories -- `makeTimeSlot`, `makeConsecutiveTimeSlots`, `makeWeekOfAvailability`, `makeSubscriptionPlan`/`makeSubscription`, `makeAppointmentWithSlots`, `makeMockPrisma`, `makeConsultantData`, `makeWeeklyAvailabilitySlot`/`makeCustomAvailabilitySlot`                                                                                                                             |
@@ -259,7 +256,7 @@ curl -X GET http://localhost:3000/api/cleanup/{job-name} \
 | Endpoint                                   | Schedule                         | Purpose                                                                    |
 | ------------------------------------------ | -------------------------------- | -------------------------------------------------------------------------- |
 | `/api/cleanup/auto-complete-appointments`  | `0 * * * *` (hourly)             | Transitions appointments to `COMPLETED` after session ends (1-hour buffer) |
-| `/api/cleanup/tentative-slots`             | `0 */2 * * *` (every 2h)         | Deletes tentative slots older than 7 days with no successful payment       |
+| `/api/cleanup/tentative-slots`             | `0 */2 * * *` (every 2h)         | Deletes tentative slots older than 24 hours with no successful payment     |
 | `/api/cleanup/stale-pending-consultations` | `30 * * * *` (hourly at :30)     | Cleans up consultations stuck in `PENDING` state                           |
 | `/api/cleanup/invalid-appointments`        | `0 * * * *` (hourly)             | Detects and removes duplicate or invalid appointment records               |
 | `/api/cleanup/expire-stale-requests`       | `0 1 * * *` (daily at 01:00 UTC) | Expires unanswered consultation/subscription requests                      |

@@ -10,6 +10,7 @@ import {
   createMockLogger,
   createMockChannelCache,
 } from "./__mocks__/stream-mocks";
+import { DM_ELIGIBLE_STATUSES } from "@/lib/stream/dm-eligibility-statuses";
 
 // Create mock instances
 const mockPrisma = createMockPrisma();
@@ -26,6 +27,10 @@ jest.mock("../../lib/prisma", () => ({
 
 jest.mock("../../lib/stream-client", () => ({
   getStreamChatClient: jest.fn(() => mockStreamClient),
+  // #473 — pass-through breaker (closed-state behaviour): run the operation
+  // directly so existing assertions on the Stream calls still hold.
+  withStreamCircuitBreaker: jest.fn((op: () => unknown) => op()),
+  StreamUnavailableError: class StreamUnavailableError extends Error {},
 }));
 
 jest.mock("../../lib/stream-logger", () => ({
@@ -39,12 +44,31 @@ jest.mock("../../actions/stream/chat/user.action", () => ({
   upsertUsersToStream: jest.fn().mockResolvedValue({ users: {} }),
 }));
 
+// syncUserEventChannels is session-gated (F-HIGH-1 sibling); mocking
+// auth-server also keeps jest away from lib/auth's better-auth ESM imports.
+// Default: privileged staff, which passes the self-or-privileged gate for
+// every userId these tests drive.
+const mockGetSession = jest.fn();
+jest.mock("../../lib/auth-server", () => ({
+  getSession: (disableCookieCache?: boolean) =>
+    mockGetSession(disableCookieCache),
+}));
+
+// auth-helpers imports next/server (NextResponse), which needs the fetch
+// globals jest's node env lacks — mirror the real one-liner instead.
+jest.mock("../../lib/auth-helpers", () => ({
+  isPrivileged: (role?: string | null) => role === "ADMIN" || role === "STAFF",
+}));
+
 describe("Event Channel Actions", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockStreamClient.channel.mockReturnValue(mockChannel);
     mockStreamClient.queryChannels.mockResolvedValue([]);
     mockCache.initialSyncCompletedUsers.clear();
+    mockGetSession.mockResolvedValue({
+      user: { id: "staff-user", role: "ADMIN" },
+    });
   });
 
   describe("checkEventChannelExists", () => {
@@ -198,6 +222,90 @@ describe("Event Channel Actions", () => {
       expect(mockCache.markMembership).toHaveBeenCalled();
     });
 
+    it("adopts the winner's channel when creation loses the race (F-HIGH-3)", async () => {
+      mockCache.getMembershipCached.mockReturnValue(false);
+      // First addMembers miss → fall through to creation; second call is the
+      // post-adoption membership retry against the winner's channel.
+      mockChannel.addMembers
+        .mockRejectedValueOnce(new Error("Channel not found"))
+        .mockResolvedValueOnce({});
+      const duplicateError = new Error(
+        'GetOrCreateChannel failed: "channel already exists"',
+      );
+      mockChannel.create.mockRejectedValueOnce(duplicateError);
+
+      mockPrisma.webinar.findUnique.mockResolvedValue({
+        id: "web-race",
+        webinarPlan: {
+          title: "Raced Webinar",
+          consultantProfile: { user: { id: "consultant-1" } },
+        },
+        appointment: {
+          slotsOfAppointment: [{ user: [{ id: "user-3" }] }],
+        },
+      });
+
+      const { addUserToEventChannel } =
+        await import("../../actions/stream/chat/event-channel.action");
+
+      const result = await addUserToEventChannel(
+        "webinar",
+        "web-race",
+        "raced-user",
+      );
+
+      expect(result.success).toBe(true);
+      expect(mockChannel.addMembers).toHaveBeenCalledWith(["raced-user"]);
+      expect(mockCache.markMembership).toHaveBeenCalledWith(
+        "webinar-web-race",
+        "raced-user",
+        true,
+      );
+    });
+
+    it("leaves membership UNCACHED when the post-adoption retry fails", async () => {
+      mockCache.getMembershipCached.mockReturnValue(false);
+      // First miss → creation attempt; adoption wins; then BOTH membership
+      // attempts fail.
+      mockChannel.addMembers
+        .mockRejectedValueOnce(new Error("Channel not found"))
+        .mockRejectedValueOnce(new Error("retry failed too"));
+      mockChannel.create.mockRejectedValueOnce(
+        new Error('GetOrCreateChannel failed: "channel already exists"'),
+      );
+
+      mockPrisma.webinar.findUnique.mockResolvedValue({
+        id: "web-race-2",
+        webinarPlan: {
+          title: "Raced Webinar 2",
+          consultantProfile: { user: { id: "consultant-1" } },
+        },
+        appointment: {
+          slotsOfAppointment: [{ user: [{ id: "user-3" }] }],
+        },
+      });
+
+      const { addUserToEventChannel } =
+        await import("../../actions/stream/chat/event-channel.action");
+
+      // Still resolves — a failed join must not fail the caller; the next
+      // sync reconciles.
+      const result = await addUserToEventChannel(
+        "webinar",
+        "web-race-2",
+        "unlucky-user",
+      );
+      expect(result.success).toBe(true);
+
+      // But nothing may cache "is member": a cached true would suppress every
+      // future add attempt until the TTL lapses.
+      expect(mockCache.markMembership).not.toHaveBeenCalledWith(
+        "webinar-web-race-2",
+        "unlucky-user",
+        true,
+      );
+    });
+
     it("should create new channel when addMembers fails and event exists", async () => {
       mockCache.getMembershipCached.mockReturnValue(false);
       mockChannel.addMembers.mockRejectedValue(new Error("Channel not found"));
@@ -212,7 +320,6 @@ describe("Event Channel Actions", () => {
             user: { id: "consultant-1" },
           },
         },
-        waitlist: [{ userId: "user-1" }, { userId: "user-2" }],
         appointment: {
           slotsOfAppointment: [{ user: [{ id: "user-3" }] }],
         },
@@ -302,7 +409,6 @@ describe("Event Channel Actions", () => {
             user: { id: "consultant-1" },
           },
         },
-        waitlist: [{ userId: "user-1" }],
         appointments: [
           {
             slotsOfAppointment: [
@@ -336,7 +442,6 @@ describe("Event Channel Actions", () => {
           title: "Test Class",
           consultantProfile: null,
         },
-        waitlist: [],
         appointments: [],
       });
 
@@ -423,90 +528,6 @@ describe("Event Channel Actions", () => {
     });
   });
 
-  describe("getUserEventChannels", () => {
-    it("should query and return user channels", async () => {
-      mockStreamClient.queryChannels.mockResolvedValue([
-        {
-          id: "webinar-123",
-          type: "team",
-          data: { name: "Test Webinar" },
-          state: { members: { user1: {}, user2: {} } },
-        },
-        {
-          id: "consultation-456",
-          type: "messaging",
-          data: { name: "Test Consultation" },
-          state: { members: { user1: {}, consultant: {} } },
-        },
-      ]);
-
-      const { getUserEventChannels } =
-        await import("../../actions/stream/chat/event-channel.action");
-
-      const channels = await getUserEventChannels("user1");
-
-      expect(mockStreamClient.queryChannels).toHaveBeenCalledWith(
-        { members: { $in: ["user1"] } },
-        { last_message_at: -1 },
-        { limit: 100 },
-      );
-      expect(channels).toHaveLength(2);
-      expect(channels[0].id).toBe("webinar-123");
-      expect(channels[0].type).toBe("team");
-      expect(channels[0].memberCount).toBe(2);
-    });
-
-    it("should return empty array when user has no channels", async () => {
-      mockStreamClient.queryChannels.mockResolvedValue([]);
-
-      const { getUserEventChannels } =
-        await import("../../actions/stream/chat/event-channel.action");
-
-      const channels = await getUserEventChannels("user-no-channels");
-
-      expect(channels).toHaveLength(0);
-    });
-
-    it("should handle channel with undefined name", async () => {
-      mockStreamClient.queryChannels.mockResolvedValue([
-        {
-          id: "test-channel",
-          type: "team",
-          data: {},
-          state: { members: { user1: {} } },
-        },
-      ]);
-
-      const { getUserEventChannels } =
-        await import("../../actions/stream/chat/event-channel.action");
-
-      const channels = await getUserEventChannels("user1");
-
-      expect(channels[0].name).toBeUndefined();
-    });
-
-    it("should throw on empty user ID", async () => {
-      const { getUserEventChannels } =
-        await import("../../actions/stream/chat/event-channel.action");
-
-      await expect(getUserEventChannels("")).rejects.toThrow();
-    });
-
-    it("should throw and log error when query fails", async () => {
-      mockStreamClient.queryChannels.mockRejectedValue(new Error("API error"));
-
-      const { getUserEventChannels } =
-        await import("../../actions/stream/chat/event-channel.action");
-
-      await expect(getUserEventChannels("user1")).rejects.toThrow("API error");
-      expect(mockLogger.error).toHaveBeenCalledWith(
-        "Failed to get user event channels",
-        expect.any(Error),
-        expect.any(Object),
-      );
-    });
-  });
-
   describe("syncUserEventChannels", () => {
     it("should skip when user already synced", async () => {
       mockCache.initialSyncCompletedUsers.add("user-already-synced");
@@ -518,6 +539,50 @@ describe("Event Channel Actions", () => {
 
       expect(result.success).toBe(true);
       expect(result.skipped).toBe(true);
+      expect(mockPrisma.user.findUnique).not.toHaveBeenCalled();
+    });
+
+    it("rejects syncing another user's channels as a non-privileged caller", async () => {
+      mockGetSession.mockResolvedValue({
+        user: { id: "attacker", role: "USER" },
+      });
+
+      const { syncUserEventChannels } =
+        await import("../../actions/stream/chat/event-channel.action");
+
+      await expect(syncUserEventChannels("victim-user")).rejects.toThrow(
+        "Forbidden: cannot sync channels for another user",
+      );
+      // The gate fires before ANY Stream/DB work happens.
+      expect(mockPrisma.user.findUnique).not.toHaveBeenCalled();
+      // And it reads the session with the cookie cache disabled, so a
+      // just-demoted/banned identity cannot ride a stale cached session.
+      expect(mockGetSession).toHaveBeenCalledWith(true);
+    });
+
+    it("rejects unauthenticated callers outright", async () => {
+      mockGetSession.mockResolvedValue(null);
+
+      const { syncUserEventChannels } =
+        await import("../../actions/stream/chat/event-channel.action");
+
+      await expect(syncUserEventChannels("anyone")).rejects.toThrow(
+        "Unauthorized: sign in to sync channels",
+      );
+      expect(mockPrisma.user.findUnique).not.toHaveBeenCalled();
+    });
+
+    it("rejects a banned user even when syncing their own channels", async () => {
+      mockGetSession.mockResolvedValue({
+        user: { id: "banned-user", role: "USER", banned: true },
+      });
+
+      const { syncUserEventChannels } =
+        await import("../../actions/stream/chat/event-channel.action");
+
+      await expect(syncUserEventChannels("banned-user")).rejects.toThrow(
+        "Forbidden: account suspended",
+      );
       expect(mockPrisma.user.findUnique).not.toHaveBeenCalled();
     });
 
@@ -599,7 +664,13 @@ describe("Event Channel Actions", () => {
       );
     });
 
-    it("should handle partial failures gracefully", async () => {
+    // Was "should handle partial failures gracefully", asserting the add
+    // pass's success/fail tally. That pass is gone: the sync no longer creates
+    // or joins channels, it only removes memberships the user is no longer
+    // entitled to. `POST /api/stream/channels/open` provisions on demand
+    // instead, so the sync's unbounded per-pair Stream calls — which grew with
+    // every COMPLETED booking, forever — are not paid on dashboard load.
+    it("creates no channels — the add pass is retired", async () => {
       mockPrisma.user.findUnique.mockResolvedValue({
         consultantProfileId: null,
         consulteeProfileId: "consultee-123",
@@ -623,14 +694,7 @@ describe("Event Channel Actions", () => {
         },
       ]);
       mockPrisma.subscription.findMany.mockResolvedValue([]);
-
       mockCache.getMembershipCached.mockReturnValue(false);
-      // Pair 1 addMembers succeeds; pair 2 addMembers rejects (falls through to create)
-      mockChannel.addMembers
-        .mockResolvedValueOnce({})
-        .mockRejectedValueOnce(new Error("addMembers failed"));
-      // Pair 2's fallthrough create also fails → pair 2 counted as failed
-      mockChannel.create.mockRejectedValueOnce(new Error("Create failed"));
 
       const { syncUserEventChannels } =
         await import("../../actions/stream/chat/event-channel.action");
@@ -638,8 +702,12 @@ describe("Event Channel Actions", () => {
       const result = await syncUserEventChannels("user-with-failures");
 
       expect(result.success).toBe(true);
-      expect(result.channelsSynced).toBe(1);
-      expect(result.failed).toBe(1);
+      // Both pairs are still EXPECTED — that set drives the stale-removal pass
+      // and must stay complete, or the reconciler evicts live conversations.
+      expect(result.channelsSynced).toBe(2);
+      // The point of the change: no Stream writes for those two pairs.
+      expect(mockChannel.create).not.toHaveBeenCalled();
+      expect(mockChannel.addMembers).not.toHaveBeenCalled();
     });
 
     it("should throw on invalid user ID", async () => {
@@ -685,9 +753,9 @@ describe("Event Channel Actions", () => {
         consultantProfileId: null,
         consulteeProfileId: "consultee-123",
       });
-      mockPrisma.webinar.findMany
-        .mockResolvedValueOnce([{ id: "waitlist-webinar" }])
-        .mockResolvedValueOnce([{ id: "appointment-webinar" }]);
+      mockPrisma.webinar.findMany.mockResolvedValueOnce([
+        { id: "appointment-webinar" },
+      ]);
       mockPrisma.class.findMany.mockResolvedValue([]);
       mockPrisma.consultation.findMany.mockResolvedValue([]);
       mockPrisma.subscription.findMany.mockResolvedValue([]);
@@ -699,8 +767,8 @@ describe("Event Channel Actions", () => {
 
       await syncUserEventChannels("consultee-user");
 
-      // Should have been called twice - once for waitlist, once for appointments
-      expect(mockPrisma.webinar.findMany).toHaveBeenCalledTimes(2);
+      // One query: webinars the consultee holds a slot on.
+      expect(mockPrisma.webinar.findMany).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -759,7 +827,14 @@ describe("Event Channel Actions", () => {
       expect(mockPrisma.consultation.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({
-            requestStatus: { in: ["APPROVED", "SCHEDULED"] },
+            // Asserted against the shared constant, not a literal. These two
+            // assertions are exactly what would have caught the divergence
+            // that caused the bug — the reconciler pinned to a narrower set
+            // than the search routes used — except that they pinned the
+            // narrow side, so widening search sailed past them. Referencing
+            // DM_ELIGIBLE_STATUSES means the two can no longer drift apart
+            // without this failing.
+            status: { in: [...DM_ELIGIBLE_STATUSES] },
           }),
         }),
       );
@@ -810,10 +885,226 @@ describe("Event Channel Actions", () => {
       expect(mockPrisma.subscription.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({
-            requestStatus: { in: ["APPROVED", "SCHEDULED"] },
+            // Asserted against the shared constant, not a literal. These two
+            // assertions are exactly what would have caught the divergence
+            // that caused the bug — the reconciler pinned to a narrower set
+            // than the search routes used — except that they pinned the
+            // narrow side, so widening search sailed past them. Referencing
+            // DM_ELIGIBLE_STATUSES means the two can no longer drift apart
+            // without this failing.
+            status: { in: [...DM_ELIGIBLE_STATUSES] },
           }),
         }),
       );
+    });
+  });
+
+  // #1270 — Stream answers `queryChannels` with at most 30 rows regardless of
+  // the `limit` passed. Both call sites paged with `while (page.length === 100)`
+  // and therefore stopped after one page, so a user's 31st channel onwards was
+  // invisible to reconciliation: a DM that should have been revoked was never
+  // even looked at.
+  describe("queryChannels pagination (#1270)", () => {
+    /** Serve `total` channel ids, 30 at a time, exactly as Stream does. */
+    const serveCappedPages = (total: number, idAt = (i: number) => `dm-${i}`) =>
+      mockStreamClient.queryChannels.mockImplementation(
+        async (
+          _filter: unknown,
+          _sort: unknown,
+          opts: { limit: number; offset: number },
+        ) => {
+          const served = Math.min(opts.limit, 30);
+          return Array.from({ length: total }, (_, i) => ({
+            id: idAt(i),
+            type: "messaging",
+            data: {},
+            state: { members: {} },
+            removeMembers: jest.fn().mockResolvedValue({}),
+          })).slice(opts.offset, opts.offset + served);
+        },
+      );
+
+    it("revokes a stale DM sitting past the first page", async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        consultantProfileId: null,
+        consulteeProfileId: "consultee-123",
+      });
+      mockPrisma.webinar.findMany.mockResolvedValue([]);
+      mockPrisma.class.findMany.mockResolvedValue([]);
+      mockPrisma.consultation.findMany.mockResolvedValue([]);
+      mockPrisma.subscription.findMany.mockResolvedValue([]);
+
+      // 41 memberships, none of them expected. The old walk saw the first 30.
+      const removeMembers = jest.fn().mockResolvedValue({});
+      mockStreamClient.queryChannels.mockImplementation(
+        async (
+          _filter: unknown,
+          _sort: unknown,
+          opts: { limit: number; offset: number },
+        ) =>
+          Array.from({ length: 41 }, (_, i) => ({
+            id: `dm-stale-${i}`,
+            removeMembers,
+          })).slice(opts.offset, opts.offset + Math.min(opts.limit, 30)),
+      );
+
+      const { syncUserEventChannels } =
+        await import("../../actions/stream/chat/event-channel.action");
+
+      const result = await syncUserEventChannels("leaky-user");
+
+      // All 41, not 30. The eleven past the page boundary are the leak.
+      expect(result.staleChannelsRemoved).toBe(41);
+      expect(removeMembers).toHaveBeenCalledTimes(41);
+    });
+
+    it("sorts by created_at so offset paging is not walking a moving list", async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        consultantProfileId: null,
+        consulteeProfileId: "consultee-123",
+      });
+      mockPrisma.webinar.findMany.mockResolvedValue([]);
+      mockPrisma.class.findMany.mockResolvedValue([]);
+      mockPrisma.consultation.findMany.mockResolvedValue([]);
+      mockPrisma.subscription.findMany.mockResolvedValue([]);
+      mockStreamClient.queryChannels.mockResolvedValue([]);
+
+      const { syncUserEventChannels } =
+        await import("../../actions/stream/chat/event-channel.action");
+
+      await syncUserEventChannels("sorted-user");
+
+      // Stream's default sort is `last_message_at`, which changes underneath a
+      // multi-page walk and can hide a channel entirely.
+      expect(mockStreamClient.queryChannels).toHaveBeenCalledWith(
+        { members: { $in: ["sorted-user"] } },
+        { created_at: 1 },
+        { limit: 30, offset: 0 },
+      );
+    });
+
+    it("reports a partial reconcile instead of claiming a clean sweep", async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        consultantProfileId: null,
+        consulteeProfileId: "consultee-123",
+      });
+      mockPrisma.webinar.findMany.mockResolvedValue([]);
+      mockPrisma.class.findMany.mockResolvedValue([]);
+      mockPrisma.consultation.findMany.mockResolvedValue([]);
+      mockPrisma.subscription.findMany.mockResolvedValue([]);
+      // More memberships than Stream's offset ceiling will ever serve.
+      serveCappedPages(3000, (i) => `webinar-kept-${i}`);
+
+      const { syncUserEventChannels } =
+        await import("../../actions/stream/chat/event-channel.action");
+
+      await syncUserEventChannels("whale-user");
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("truncated"),
+        expect.objectContaining({ userId: "whale-user" }),
+      );
+    });
+  });
+
+  // #1270 — `channel.create()` carries its roster in the request body and
+  // Stream caps that at 100 members. `Webinar.maxParticipants` is unbounded, so
+  // a 150-seat webinar's first attendee to open chat hit a rejected create and
+  // got no chat at all.
+  describe("oversized event rosters (#1270)", () => {
+    const seatWebinar = (seats: number) => {
+      mockPrisma.webinar.findUnique.mockResolvedValue({
+        id: "web-big",
+        webinarPlan: {
+          title: "Sold Out Webinar",
+          consultantProfile: { user: { id: "consultant-1" } },
+        },
+        appointment: {
+          slotsOfAppointment: [
+            {
+              user: Array.from({ length: seats }, (_, i) => ({
+                id: `attendee-${i}`,
+              })),
+            },
+          ],
+        },
+      });
+    };
+
+    it("creates with 100 members and adds the rest in chunks", async () => {
+      mockCache.getMembershipCached.mockReturnValue(false);
+      // Miss on the existing-channel add, so we fall through to creation.
+      mockChannel.addMembers.mockRejectedValueOnce(
+        new Error("Channel not found"),
+      );
+      mockChannel.addMembers.mockResolvedValue({});
+      seatWebinar(150);
+
+      const { addUserToEventChannel } =
+        await import("../../actions/stream/chat/event-channel.action");
+
+      const result = await addUserToEventChannel(
+        "webinar",
+        "web-big",
+        "late-joiner",
+      );
+
+      expect(result.success).toBe(true);
+
+      // The create() body must be within Stream's ceiling.
+      const createData = mockStreamClient.channel.mock.calls.at(-1)?.[2] as {
+        members: string[];
+      };
+      expect(createData.members).toHaveLength(100);
+
+      // 152 unique members (host + joiner + 150 attendees) → 52 in follow-ups.
+      const followUps = mockChannel.addMembers.mock.calls
+        .slice(1)
+        .map(([batch]: [string[]]) => batch);
+      expect(followUps.map((b: string[]) => b.length)).toEqual([52]);
+      expect([...createData.members, ...followUps.flat()]).toHaveLength(152);
+    });
+
+    it("puts the host and the joining attendee in the atomic create", async () => {
+      mockCache.getMembershipCached.mockReturnValue(false);
+      mockChannel.addMembers.mockRejectedValueOnce(
+        new Error("Channel not found"),
+      );
+      mockChannel.addMembers.mockResolvedValue({});
+      seatWebinar(400);
+
+      const { addUserToEventChannel } =
+        await import("../../actions/stream/chat/event-channel.action");
+
+      await addUserToEventChannel("webinar", "web-big", "late-joiner");
+
+      const createData = mockStreamClient.channel.mock.calls.at(-1)?.[2] as {
+        members: string[];
+      };
+      // Whoever triggered the create must not be the one stranded in a
+      // follow-up request that can fail on its own.
+      expect(createData.members.slice(0, 2)).toEqual([
+        "consultant-1",
+        "late-joiner",
+      ]);
+    });
+
+    it("leaves an ordinary two-person roster on the single create call", async () => {
+      mockCache.getMembershipCached.mockReturnValue(false);
+      mockChannel.addMembers.mockRejectedValueOnce(
+        new Error("Channel not found"),
+      );
+      mockChannel.addMembers.mockResolvedValue({});
+      seatWebinar(1);
+
+      const { addUserToEventChannel } =
+        await import("../../actions/stream/chat/event-channel.action");
+
+      await addUserToEventChannel("webinar", "web-big", "attendee-0");
+
+      // One failed probe, and no follow-up: chunking must not cost an extra
+      // request on the shape every channel actually has.
+      expect(mockChannel.addMembers).toHaveBeenCalledTimes(1);
     });
   });
 });

@@ -8,6 +8,8 @@
  * expired during maintenance.
  */
 
+import * as Sentry from "@sentry/nextjs";
+
 import prisma from "@/lib/prisma";
 import redis from "@/lib/redis";
 
@@ -70,7 +72,8 @@ export async function restoreDiscountCodes(): Promise<RestoreResult> {
   let ids: string[];
   try {
     ids = typeof raw === "string" ? JSON.parse(raw) : raw;
-  } catch {
+  } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "maintenance" } });
     await redis.del(REDIS_KEY);
     return { restored: 0, expiredDuringMaintenance: 0 };
   }

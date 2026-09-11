@@ -19,10 +19,10 @@ const INITIAL_DISPLAY = 9;
 
 function SkeletonCard() {
   return (
-    <div className="rounded-xl border border-zinc-200 p-5 animate-pulse">
-      <div className="w-10 h-10 bg-zinc-200 rounded-lg mb-3" />
-      <div className="h-5 bg-zinc-200 rounded w-3/4 mb-2" />
-      <div className="h-4 bg-zinc-100 rounded w-1/2" />
+    <div className="rounded-xl border border-border p-5 animate-pulse">
+      <div className="w-10 h-10 bg-muted rounded-lg mb-3" />
+      <div className="h-5 bg-muted rounded w-3/4 mb-2" />
+      <div className="h-4 bg-muted rounded w-1/2" />
     </div>
   );
 }
@@ -56,15 +56,15 @@ function DomainGridImpl({
           <button
             key={domain.id}
             onClick={() => onDomainSelect(domain.id)}
-            className="group text-left rounded-xl border border-zinc-200 bg-white p-5 hover:border-zinc-300 hover:shadow-md transition-all duration-200"
+            className="group text-left rounded-xl border border-border bg-card p-5 hover:border-border hover:shadow-md transition-all duration-200"
           >
-            <div className="w-10 h-10 rounded-lg bg-zinc-100 group-hover:bg-zinc-900 flex items-center justify-center mb-3 transition-colors">
-              <Briefcase className="w-5 h-5 text-zinc-500 group-hover:text-white transition-colors" />
+            <div className="w-10 h-10 rounded-lg bg-muted group-hover:bg-primary flex items-center justify-center mb-3 transition-colors">
+              <Briefcase className="w-5 h-5 text-muted-foreground group-hover:text-primary-foreground transition-colors" />
             </div>
-            <h3 className="font-semibold text-zinc-900 text-sm mb-1 line-clamp-1">
+            <h3 className="font-semibold text-foreground text-sm mb-1 line-clamp-1">
               {domain.name}
             </h3>
-            <p className="text-xs text-zinc-500">
+            <p className="text-xs text-muted-foreground">
               {domain.consultantCount}{" "}
               {domain.consultantCount === 1 ? "expert" : "experts"}
             </p>
@@ -76,7 +76,7 @@ function DomainGridImpl({
         <div className="flex justify-center mt-6">
           <button
             onClick={() => setExpanded(!expanded)}
-            className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-zinc-600 bg-zinc-100 rounded-lg hover:bg-zinc-200 transition-colors"
+            className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-muted-foreground bg-muted rounded-lg hover:bg-muted/80 transition-colors"
           >
             {expanded ? (
               <>

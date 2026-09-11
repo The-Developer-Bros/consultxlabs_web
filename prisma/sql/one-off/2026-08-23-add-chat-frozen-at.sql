@@ -1,0 +1,32 @@
+-- Freeze ledger columns for the Stream chat-channel lifecycle cron (#1134 P1-17).
+--
+-- ONE-OFF, and deliberately not a sidecar. Sidecars under prisma/sql/ are
+-- re-applied to every database because `prisma db push` never creates them.
+-- This is the opposite case: schema.prisma already declares chatFrozenAt on
+-- Webinar and Class, so any database built from scratch via `db push` comes
+-- out right on its own. Only the live shared database needed correcting, and
+-- re-running this against an already-corrected one is a no-op thanks to
+-- IF NOT EXISTS.
+--
+-- Why it is needed at all: PR #1222 added the columns to schema.prisma to fix
+-- the 2026-08-23 UpdateChannelPartial rate-limit incident (the daily expire
+-- cron re-froze every 7-90d-old channel daily; ~308 no-op calls in one minute
+-- breached Stream's app-wide 300/min cap). The repo manages schema with
+-- `prisma db push`, not committed migrations, so this file is the durable
+-- record of the DDL that was applied to production BEFORE the first post-fix
+-- cron run — without the columns, loadEndedEvents would select a field that
+-- does not exist and the whole job would fail.
+--
+-- Applied to the live Supabase project pzmbxqdgibfkhjwzeprf on 2026-08-23 via
+-- the Supabase MCP (`add_chat_frozen_at_ledger`), then verified in
+-- information_schema: both columns present, type `timestamp with time zone`,
+-- zero NOT NULL, no default — matching the Prisma `DateTime?` declaration.
+--
+-- Safety, verified against the live database on 2026-08-23 before writing this:
+--   * Additive-only: two nullable columns on plain tables. No views,
+--     functions, triggers or generated columns depend on either table's shape
+--     changing; existing rows read as NULL (= "not yet frozen"), which is the
+--     correct pre-ledger semantic.
+--   * Zero rows carried a value beforehand by construction (new column).
+ALTER TABLE "Webinar" ADD COLUMN IF NOT EXISTS "chatFrozenAt" TIMESTAMPTZ;
+ALTER TABLE "Class" ADD COLUMN IF NOT EXISTS "chatFrozenAt" TIMESTAMPTZ;

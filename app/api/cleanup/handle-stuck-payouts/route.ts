@@ -7,46 +7,17 @@
  * Schedule: Every 4 hours (via GitHub Actions or external cron)
  */
 
-import { NextRequest, NextResponse } from "next/server";
+import { cleanupRoute } from "@/lib/cron/cleanup-route";
 import { handleStuckPayouts } from "@/scripts/payouts/handle-stuck-payouts";
 
-export async function GET(req: NextRequest): Promise<NextResponse> {
-  try {
-    // Verify cron secret to prevent unauthorized access
-    const authHeader = req.headers.get("authorization");
-    const cronSecret =
-      process.env.CRON_SECRET || process.env.VERCEL_CRON_SECRET;
-
-    if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
-      console.warn("Unauthorized stuck payouts handler attempt");
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    console.log("🔄 Starting stuck payouts handler via API...");
-
-    const result = await handleStuckPayouts();
-
-    console.log("✅ Stuck payouts handler completed:", {
-      totalProcessed: result.totalProcessed,
-      reconciledCount: result.reconciledCount,
-      retriedCount: result.retriedCount,
-      failedCount: result.failedCount,
-    });
-
-    return NextResponse.json(result, { status: result.success ? 200 : 500 });
-  } catch (error) {
-    console.error("Error in stuck payouts handler:", error);
-    return NextResponse.json(
-      {
-        error: "Failed to handle stuck payouts",
-        details: error instanceof Error ? error.message : String(error),
-      },
-      { status: 500 },
-    );
-  }
-}
-
-// Also support POST for manual triggering
-export async function POST(req: NextRequest): Promise<NextResponse> {
-  return GET(req);
-}
+export const { GET, POST } = cleanupRoute({
+  job: "handle-stuck-payouts",
+  run: () => handleStuckPayouts(),
+  summarize: (r) => ({
+    totalProcessed: r.totalProcessed,
+    reconciledCount: r.reconciledCount,
+    retriedCount: r.retriedCount,
+    failedCount: r.failedCount,
+  }),
+  failureMessage: "Failed to handle stuck payouts",
+});

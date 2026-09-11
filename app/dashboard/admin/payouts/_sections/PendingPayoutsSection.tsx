@@ -14,6 +14,10 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
+import {
+  ResponsiveTable,
+  type ResponsiveColumn,
+} from "@/components/ui/responsive-table";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Check, X, Loader2 } from "lucide-react";
@@ -38,7 +42,15 @@ async function fetchPendingPayouts(): Promise<PayoutListResponse> {
   return response.json() as Promise<PayoutListResponse>;
 }
 
-async function approvePayout(id: string): Promise<Payout> {
+type PayoutActionResult = { success: boolean; message: string };
+
+/**
+ * The route answers with `{ success, message }`, not a Payout. These were typed
+ * `Promise<Payout>` and cast to match, which no caller noticed only because
+ * both mutations discard the value — the first `onSuccess: (data) => ...` to
+ * read `data.amount` would have got undefined from a type promising a number.
+ */
+async function approvePayout(id: string): Promise<PayoutActionResult> {
   const response = await fetch(`/api/admin/payouts/${id}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -48,10 +60,13 @@ async function approvePayout(id: string): Promise<Payout> {
     const error = await response.json();
     throw new Error(error.error || "Failed to approve payout");
   }
-  return response.json() as Promise<Payout>;
+  return response.json() as Promise<PayoutActionResult>;
 }
 
-async function rejectPayout(id: string, reason: string): Promise<Payout> {
+async function rejectPayout(
+  id: string,
+  reason: string,
+): Promise<PayoutActionResult> {
   const response = await fetch(`/api/admin/payouts/${id}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -61,7 +76,7 @@ async function rejectPayout(id: string, reason: string): Promise<Payout> {
     const error = await response.json();
     throw new Error(error.error || "Failed to reject payout");
   }
-  return response.json() as Promise<Payout>;
+  return response.json() as Promise<PayoutActionResult>;
 }
 
 export default function PendingPayoutsSection() {
@@ -122,14 +137,125 @@ export default function PendingPayoutsSection() {
     }
   };
 
+  const columns: ResponsiveColumn<Payout>[] = [
+    {
+      key: "consultant",
+      header: "Consultant",
+      primary: true,
+      cell: (payout) => (
+        <div>
+          <p className="text-sm font-medium text-foreground">
+            {payout.consultantName}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {payout.consultantEmail}
+          </p>
+        </div>
+      ),
+    },
+    {
+      key: "amount",
+      header: "Amount",
+      cell: (payout) => (
+        <span className="text-sm font-semibold text-foreground">
+          {(payout.amount / 100).toLocaleString("en-IN", {
+            style: "currency",
+            currency: payout.currency,
+          })}
+        </span>
+      ),
+    },
+    {
+      key: "method",
+      header: "Method",
+      cell: (payout) => (
+        <span className="text-sm text-muted-foreground">{payout.method}</span>
+      ),
+    },
+    {
+      key: "earnings",
+      header: "Earnings",
+      cell: (payout) => (
+        <span className="text-sm text-muted-foreground">
+          {payout.earningsCount} earnings
+        </span>
+      ),
+    },
+    {
+      key: "dueBy",
+      header: "Due by (MSME)",
+      cell: (payout) => {
+        if (!payout.mustPayByDate) {
+          return <span className="text-sm text-muted-foreground">—</span>;
+        }
+        const due = new Date(payout.mustPayByDate);
+        const daysLeft = Math.ceil(
+          (due.getTime() - Date.now()) / 86_400_000,
+        );
+        // <5 days (or overdue) is the §43B(h) alert window — flag it red.
+        const urgent = daysLeft < 5;
+        return (
+          <span
+            className={
+              urgent
+                ? "text-sm font-semibold text-destructive"
+                : "text-sm text-muted-foreground"
+            }
+          >
+            {due.toLocaleDateString()}
+            {urgent && (
+              <span className="ml-1">
+                ({daysLeft < 0 ? "overdue" : `${daysLeft}d`})
+              </span>
+            )}
+          </span>
+        );
+      },
+    },
+    {
+      key: "date",
+      header: "Date",
+      cell: (payout) => (
+        <span className="text-sm text-muted-foreground">
+          {new Date(payout.createdAt).toLocaleDateString()}
+        </span>
+      ),
+    },
+  ];
+
+  const renderRowActions = (payout: Payout) => (
+    <div className="flex gap-2">
+      <Button
+        size="sm"
+        variant="outline"
+        className="text-green-600 border-green-600 hover:bg-green-50 dark:text-green-400 dark:border-green-400 dark:hover:bg-green-950/40"
+        onClick={() => handleApprove(payout)}
+      >
+        <Check className="w-4 h-4 mr-1" />
+        Approve
+      </Button>
+      <Button
+        size="sm"
+        variant="outline"
+        className="text-red-600 border-red-600 hover:bg-red-50 dark:text-red-400 dark:border-red-400 dark:hover:bg-red-950/40"
+        onClick={() => handleReject(payout)}
+      >
+        <X className="w-4 h-4 mr-1" />
+        Reject
+      </Button>
+    </div>
+  );
+
   if (error) {
     return (
       <Card className="w-full">
         <CardHeader>
-          <CardTitle className="text-red-600">Error</CardTitle>
+          <CardTitle className="text-red-600 dark:text-red-400">
+            Error
+          </CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-gray-700">
+          <p className="text-muted-foreground">
             {error instanceof Error
               ? error.message
               : "Failed to load payouts"}
@@ -154,90 +280,18 @@ export default function PendingPayoutsSection() {
                 <Skeleton key={i} className="h-16 w-full" />
               ))}
             </div>
-          ) : data?.payouts?.length > 0 ? (
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-gray-50 border-b">
-                  <tr>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Consultant
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Amount
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Method
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Earnings
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Date
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {data.payouts.map((payout: Payout) => (
-                    <tr key={payout.id} className="hover:bg-gray-50">
-                      <td className="px-4 py-3">
-                        <div>
-                          <p className="text-sm font-medium text-gray-900">
-                            {payout.consultantName}
-                          </p>
-                          <p className="text-xs text-gray-500">
-                            {payout.consultantEmail}
-                          </p>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-sm font-semibold text-gray-900">
-                        {(payout.amount / 100).toLocaleString("en-IN", {
-                          style: "currency",
-                          currency: payout.currency,
-                        })}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-700">
-                        {payout.method}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-700">
-                        {payout.earningsCount} earnings
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-500">
-                        {new Date(payout.createdAt).toLocaleDateString()}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex gap-2">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="text-green-600 border-green-600 hover:bg-green-50"
-                            onClick={() => handleApprove(payout)}
-                          >
-                            <Check className="w-4 h-4 mr-1" />
-                            Approve
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="text-red-600 border-red-600 hover:bg-red-50"
-                            onClick={() => handleReject(payout)}
-                          >
-                            <X className="w-4 h-4 mr-1" />
-                            Reject
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
           ) : (
-            <div className="text-center py-12">
-              <p className="text-gray-500">No pending payouts</p>
-            </div>
+            <ResponsiveTable<Payout>
+              columns={columns}
+              rows={data.payouts}
+              getRowId={(p) => p.id}
+              rowActions={renderRowActions}
+              empty={
+                <div className="text-center py-12">
+                  <p className="text-muted-foreground">No pending payouts</p>
+                </div>
+              }
+            />
           )}
         </CardContent>
       </Card>
@@ -265,7 +319,7 @@ export default function PendingPayoutsSection() {
             <AlertDialogAction
               onClick={confirmApprove}
               disabled={approveMutation.isPending}
-              className="bg-green-600 hover:bg-green-700"
+              className="bg-green-600 hover:bg-green-700 dark:bg-green-600 dark:hover:bg-green-700"
             >
               {approveMutation.isPending && (
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
@@ -301,7 +355,7 @@ export default function PendingPayoutsSection() {
             <AlertDialogAction
               onClick={confirmReject}
               disabled={rejectMutation.isPending || !rejectReason.trim()}
-              className="bg-red-600 hover:bg-red-700"
+              className="bg-red-600 hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700"
             >
               {rejectMutation.isPending && (
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />

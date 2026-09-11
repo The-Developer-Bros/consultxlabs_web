@@ -36,11 +36,10 @@ flowchart TB
     subgraph PIPE1["PIPELINE 1: Resend Direct — LIVE"]
         direction TB
         P1_LIB["lib/email.ts\n6 functions"]
-        P1_WAIT["lib/waitlist/notifications.ts\n4 functions"]
         subgraph P1_TEMPLATES["10 React Email Templates"]
             P1_T1["emails/auth/\nWelcomeEmail\nPasswordResetEmail\nAccountLinkedEmail"]
             P1_T2["emails/payments/\nPaymentLinkEmail\nPaymentSuccessEmail\nPaymentFailedEmail"]
-            P1_T3["emails/waitlist/\nJoined | SpotAvailable\nExpiring | Expired"]
+            P1_T3["emails/waitlist/\nConfirm | Welcome"]
         end
         P1_RENDER["@react-email/render\nJSX → HTML string"]
     end
@@ -121,7 +120,6 @@ flowchart TB
 
     %% Pipeline 1 internal
     P1_LIB --> P1_RENDER
-    P1_WAIT --> P1_RENDER
     P1_RENDER --> DEL_RESEND
 
     %% Pipeline 2 internal
@@ -163,7 +161,7 @@ flowchart TB
 
 ### Pipeline 1: Resend Direct — LIVE
 
-**Purpose:** Transactional emails that are tightly coupled to auth, payment, and waitlist flows. These bypass Novu because they don't need multi-channel delivery (no in-app, no push).
+**Purpose:** Transactional emails that are tightly coupled to auth, payment, and newsletter flows. These bypass Novu because they don't need multi-channel delivery (no in-app, no push).
 
 **How it works:**
 
@@ -182,10 +180,8 @@ flowchart TB
 | PaymentLinkEmail           | `payments@familiarise.com`      | Consultant approves consultation/subscription request |
 | PaymentSuccessEmail        | `payments@familiarise.com`      | Stripe/Razorpay payment webhook                       |
 | PaymentFailedEmail         | `payments@familiarise.com`      | Stripe/Razorpay failure webhook                       |
-| WaitlistJoinedEmail        | `notifications@familiarise.com` | User joins a full event's waitlist                    |
-| WaitlistSpotAvailableEmail | `notifications@familiarise.com` | Spot opens up                                         |
-| WaitlistExpiringEmail      | `notifications@familiarise.com` | 12h reminder before expiry                            |
-| WaitlistExpiredEmail       | `notifications@familiarise.com` | 48h window expired                                    |
+| WaitlistConfirmEmail       | `newsletter@familiarise.com`    | Double opt-in confirmation for a newsletter signup    |
+| WaitlistWelcomeEmail       | `newsletter@familiarise.com`    | Sent once the confirm link is clicked                 |
 
 **Design system:** White card on `#f5f5f5` background, black CTA button, `-apple-system` font stack, `16px` body, `28px` heading.
 
@@ -211,7 +207,7 @@ flowchart TB
 | Tier        | Workflows                                                                                                                                                                                                                                                                                    | Status                                                                 |
 | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
 | Tier 1 (16) | appointment-booked, appointment-cancelled, appointment-reminder, payment-success, payment-failed, new-booking-request, subscription-started, subscription-cancelled, trial-session-\* (4), support-ticket-created, support-ticket-response, new-review-received, verification-status-changed | Template specs ready in `docs/notifications/03-novu-template-specs.md` |
-| Tier 2 (8)  | appointment-rescheduled, appointment-completed, refund-processed, payout-processed, collaborator-invited/accepted/removed, new-consultant-application                                                                                                                                        | Triggers wired, Dashboard config deferred                              |
+| Tier 2 (9)  | appointment-rescheduled, appointment-completed, appointment-partially-scheduled, refund-processed, payout-processed, collaborator-invited/accepted/removed, new-consultant-application                                                                                                                                        | Triggers wired, Dashboard config deferred                              |
 | Tier 3 (16) | subscription-renewed, referral-_, maintenance-_, dispute-_, recording-_, general-announcement, feedback-received, etc.                                                                                                                                                                       | Functions exist, wiring deferred                                       |
 
 **Trigger wiring (which business logic calls which notification):**
@@ -224,7 +220,7 @@ flowchart TB
 | `app/api/cleanup/appointment-reminders/route.ts`            | appointmentReminder (cron)                                     |
 | `scripts/appointments/auto-complete-appointments.ts`        | appointmentCompleted (cron)                                    |
 | `app/api/slots/request-for-approval/route.ts`               | newBookingRequest                                              |
-| `app/api/events/subscriptions/`                             | subscriptionStarted, subscriptionCancelled                     |
+| `app/api/bookings/subscriptions/`                             | subscriptionStarted, subscriptionCancelled                     |
 | `app/api/trials/route.ts` + `[trialId]/route.ts`            | trialSession\* (4)                                             |
 | `app/api/user/support-tickets/route.ts`                     | supportTicketCreated                                           |
 | `app/api/staff/support-tickets/[id]/responses/route.ts`     | supportTicketResponse                                          |
@@ -418,7 +414,7 @@ flowchart LR
 
 | Component                                      | Files                                                                                                            |
 | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Resend email client                            | `lib/email.ts`, `lib/waitlist/notifications.ts`                                                                  |
+| Resend email client                            | `lib/email.ts`                                                                                                   |
 | 10 React Email templates                       | `emails/auth/`, `emails/payments/`, `emails/waitlist/`                                                           |
 | Novu client + service + workflows + subscriber | `lib/novu/*.ts`                                                                                                  |
 | Novu React provider + bell icon + sync hook    | `providers/NovuProvider.tsx`, `components/notifications/NotificationInbox.tsx`, `hooks/useNovuSubscriberSync.ts` |

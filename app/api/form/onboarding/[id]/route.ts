@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import { processOnboardingData } from "@/utils/onboarding-server";
 import { getSession } from "@/lib/auth-server";
@@ -33,6 +34,7 @@ export async function PATCH(
       user: result.user,
     });
   } catch (error: unknown) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "form" } });
     console.error("Error updating onboarding information:", error);
     if (error instanceof Error) {
       console.error("Error message:", error.message);

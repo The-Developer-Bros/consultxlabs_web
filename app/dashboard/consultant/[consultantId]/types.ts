@@ -21,7 +21,7 @@ export interface IDocument {
     | "NEEDS_REVISION";
   reviewNotes: string | null;
   reviewedAt: Date | null;
-  reviewedBy?: string | null;
+  reviewedById?: string | null;
   uploadedAt: Date;
   // Upload role - who uploaded this document
   uploadedByRole: DocumentUploadRole;
@@ -33,6 +33,10 @@ export interface IDocument {
     uploadedByRole: DocumentUploadRole;
   } | null;
   responseDocuments?: IDocument[];
+  // Threaded review versioning — 1 = original upload; the highest number in
+  // a thread (rootDocumentId) is the current version.
+  rootDocumentId?: string | null;
+  versionNo?: number;
   // Client/appointment context
   clientName: string;
   clientId: string;
@@ -42,25 +46,6 @@ export interface IDocument {
   title: string;
   invoiceNo: string;
   tag: string;
-}
-
-export interface IPlanMaterial {
-  id: string;
-  fileName: string;
-  originalName: string;
-  fileSize: number;
-  mimeType: string;
-  fileUrl: string;
-  storagePath: string;
-  description: string | null;
-  order: number;
-  // Plan references (one will be set)
-  consultationPlanId?: string | null;
-  subscriptionPlanId?: string | null;
-  webinarPlanId?: string | null;
-  classPlanId?: string | null;
-  uploadedAt: Date;
-  updatedAt?: Date;
 }
 
 export interface IActivity {
@@ -83,45 +68,10 @@ export interface IApproval {
   time: string;
 }
 
-// Base props for components that need badge styling
-export interface WithBadgeStyle {
-  getBadgeStyle: (badge: string) => string;
-}
-
 // Props for each tab component
 export interface HomeTabProps {
   appointments: TAppointment[];
   onUpdate?: () => void;
-}
-
-// Trial session type for appointments tab
-export interface ScheduledTrial {
-  id: string;
-  status: string;
-  notes: string | null;
-  requestedAt: string;
-  consulteeProfile: {
-    id: string;
-    user: {
-      id: string;
-      name: string;
-      email: string;
-      image: string | null;
-    };
-  };
-  subscriptionPlan: {
-    id: string;
-    title: string;
-    freeTrialDurationMinutes: number;
-  };
-  appointment: {
-    id: string;
-    slotsOfAppointment: Array<{
-      id: string;
-      startsAt: string;
-      endsAt: string;
-    }>;
-  } | null;
 }
 
 export interface UnscheduledClass {
@@ -132,7 +82,7 @@ export interface UnscheduledClass {
   classPlan: {
     id: string;
     title: string;
-    meetingsPerWeek: number;
+    sessionsPerWeek: number;
     sessionDurationInHours: number;
     totalSessions: number;
     consultantProfile?: {
@@ -162,76 +112,71 @@ export interface UnscheduledWebinar {
   appointment: null | undefined;
 }
 
-export interface AppointmentsTabProps {
-  appointments: TAppointment[];
-  badgeStyles: BadgeStyleMap;
-  scheduledTrials?: ScheduledTrial[];
-  consultantId?: string;
-  onUpdate?: () => void;
-  unscheduledClasses?: UnscheduledClass[];
-  unscheduledWebinars?: UnscheduledWebinar[];
-}
-
+/**
+ * Loading/error state for an auxiliary section fed by its own query
+ * (trials / unscheduled classes / unscheduled webinars). Each section
+ * renders its own skeleton and inline retry so one slow or failed query
+ * can't blank the whole appointments page.
+ */
 export interface RequestsTabProps {
   approvals: IApproval[];
   onUpdate?: () => void;
 }
 
-export interface DocumentsTabProps {
-  documents: IDocument[];
+/**
+ * Pagination envelope returned by the consultant documents API (issue #346).
+ * Defined here so both the fetch helper and the UI can import it.
+ */
+export interface DocumentsPagination {
+  limit: number;
+  offset: number;
+  totalCount: number;
+  totalPages: number;
+  currentPage: number;
+  hasNextPage: boolean;
+  hasPrevPage: boolean;
 }
 
-// Props for reusable components
-export interface AppointmentCardProps {
-  appointment: TAppointment;
-  badgeStyles: BadgeStyleMap;
+export interface DocumentsMetadata {
+  pendingCount: number;
+  reviewingCount: number;
+  needsRevisionCount: number;
+  completedCount: number;
+}
+
+export interface DocumentsPage {
+  data: IDocument[];
+  pagination: DocumentsPagination;
+  metadata: DocumentsMetadata;
+  count?: number;
+  message?: string;
+  consultant?: string;
+  filters?: {
+    status?: string | null;
+    appointmentType?: string | null;
+  };
+}
+
+export interface DocumentsTabProps {
+  documentsPage: DocumentsPage | undefined;
+  isPlaceholderData: boolean;
+
+  // Pagination
+  page: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: number) => void;
+
+  // Filters (lifted up into the page component)
+  statusFilter: string;
+  typeFilter: string;
+  onStatusFilterChange: (status: string) => void;
+  onTypeFilterChange: (type: string) => void;
 }
 
 export interface ClientActivityProps {
   activities: IActivity[];
 }
-
-// Utility type for badge styles
-export type BadgeStyleMap = { [key: string]: string };
-
-// Constants for badge styles
-export const BADGE_STYLES: BadgeStyleMap = {
-  Completed: "bg-gray-400 text-white",
-  Cancelled: "bg-stone-400 text-white",
-  "In Progress": "bg-emerald-600 text-white",
-  "Starting soon": "bg-amber-500 text-white",
-  "Meeting in 5 min": "bg-red-500 text-white",
-  Today: "bg-blue-600 text-white",
-  Tomorrow: "bg-purple-500 text-white",
-  "In week": "bg-green-500 text-white",
-  "In month": "bg-yellow-500 text-white",
-  "In year": "bg-orange-500 text-white",
-  "Not Scheduled": "bg-orange-600 text-white",
-  default: "bg-gray-500 text-white",
-};
-
-/**
- * Gets the badge style for a status string with pattern matching.
- * Handles dynamic statuses like "In 3 days", "In 2 weeks" that don't
- * have exact keys in BADGE_STYLES.
- */
-export const getBadgeStyle = (status: string): string => {
-  if (BADGE_STYLES[status]) return BADGE_STYLES[status];
-  if (status.startsWith("In ") && status.includes("day"))
-    return "bg-green-500 text-white";
-  if (status.startsWith("In ") && status.includes("week"))
-    return "bg-green-500 text-white";
-  return BADGE_STYLES.default;
-};
-
-// Constants for time calculations
-export const TIME_CONSTANTS = {
-  MINUTES_IN_HOUR: 60,
-  HOURS_IN_DAY: 24,
-  DAYS_IN_WEEK: 7,
-  DAYS_IN_MONTH: 30.44, // Average days in a month
-  DAYS_IN_YEAR: 365.25, // Account for leap years
-};
 
 // Enum for section names
 export enum DashboardSection {
@@ -239,7 +184,7 @@ export enum DashboardSection {
   Chats = "Chats",
   Appointments = "Appointments",
   Requests = "Requests",
-  Trials = "Free Trials",
+  Trials = "Trials",
   Documents = "Documents for Review",
   Help = "Help",
   Settings = "Settings",

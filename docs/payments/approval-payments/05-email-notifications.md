@@ -416,11 +416,11 @@ export async function sendPaymentLinkEmail({
 ### 1. Approval Endpoints
 
 ```typescript
-// app/api/events/consultations/[consultationId]/route.ts
+// app/api/bookings/consultations/[consultationId]/route.ts
 export async function PATCH(request, { params }) {
   // ... approval logic ...
 
-  if (status === RequestStatus.APPROVED && !hasPayment) {
+  if (status === AppointmentStatus.APPROVED && !hasPayment) {
     // Generate payment link
     const paymentResult = await generatePaymentLink(consultation);
 

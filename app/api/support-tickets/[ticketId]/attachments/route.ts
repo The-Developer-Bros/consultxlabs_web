@@ -14,6 +14,7 @@ import {
 import { UserRole } from "@prisma/client";
 
 import { getSession } from "@/lib/auth-server";
+import * as Sentry from "@sentry/nextjs";
 interface RouteParams {
   params: Promise<{ ticketId: string }>;
 }
@@ -62,6 +63,7 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
 
     return NextResponse.json({ attachments });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "support" } });
     console.error("Error fetching attachments:", error);
     return NextResponse.json(
       { error: "Failed to fetch attachments" },
@@ -177,6 +179,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
       { status: 201 },
     );
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "support" } });
     console.error("Error uploading attachment:", error);
     return NextResponse.json(
       { error: "Failed to upload attachment" },
@@ -246,6 +249,7 @@ export async function DELETE(req: NextRequest, { params }: RouteParams) {
 
     return NextResponse.json({ message: "Attachment deleted successfully" });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "support" } });
     console.error("Error deleting attachment:", error);
     return NextResponse.json(
       { error: "Failed to delete attachment" },

@@ -85,8 +85,6 @@ export const PasswordResetEmail = ({
   );
 };
 
-export default PasswordResetEmail;
-
 // Styles
 const main = {
   backgroundColor: "#f5f5f5",

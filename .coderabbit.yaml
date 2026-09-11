@@ -1,0 +1,88 @@
+# CodeRabbit configuration — tuned for maximum review depth on a money-critical
+# Next.js/TypeScript codebase. Reference: https://docs.coderabbit.ai/reference/configuration
+language: en-US
+# Hard-capped at 250 characters by CodeRabbit's schema. Over it, the WHOLE file
+# fails validation and every review silently falls back to defaults (#1223 shipped
+# it at 259). Count before editing.
+tone_instructions: >-
+  Fintech codebase moving real money (B2C consultations, B2B org billing,
+  Razorpay/RazorpayX/Stripe). Aggressively flag correctness, rounding,
+  idempotency, authorization and race-condition risk: money bugs mean
+  double payouts or lost funds.
+reviews:
+  # assertive = deepest review profile (more findings, including nitpicks).
+  profile: assertive
+  request_changes_workflow: false # reviews stay non-blocking; we triage comments via our own flow
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true
+  review_details: true
+  changed_files_summary: true
+  sequence_diagrams: true
+  estimate_code_review_effort: true
+  assess_linked_issues: true
+  related_issues: true
+  related_prs: true
+  suggested_labels: true
+  poem: false
+  abort_on_close: true
+  auto_review:
+    enabled: true
+    auto_incremental_review: true # re-review on every push
+    auto_pause_after_reviewed_commits: 0 # never auto-pause long trains
+    drafts: false
+    ignore_title_keywords: ["WIP", "[skip review]", "DO NOT MERGE"]
+    labels: ["!do-not-review"]
+  path_instructions:
+    - path: "lib/payments/**"
+      instructions: |
+        Money-critical code. Verify: integer paise only (no float arithmetic on
+        amounts); BigInt-safe conversions at boundaries; idempotency keys on every
+        mutating payment/refund/payout operation; status transitions use CAS
+        conditional updateMany (never read-then-write); refunds reconcile against
+        captured amounts; gateway calls never sit inside DB transactions;
+        Serializable isolation + bounded retries where concurrent money writers
+        interleave; error paths never leave money state ambiguous (no silent
+        partial application); no secrets logged.
+    - path: "app/api/webhooks/**"
+      instructions: |
+        Webhook handlers. Verify: raw-body signature verification (timing-safe)
+        BEFORE parsing/trusting payload; event deduplication so replayed
+        deliveries cannot double-apply effects; terminal-status guards against
+        out-of-order/stale events; safe retries that never duplicate side
+        effects; unhandled event types return 2xx; no PII/card data in logs.
+    - path: "app/api/**"
+      instructions: |
+        Route handlers: authz checked per handler (session + role + org scoping),
+        inputs validated with zod, correct status codes, no internal error leaks.
+    - path: "**/*.test.ts"
+      instructions: |
+        Edge cases that must be covered for money tests: zero/negative amounts,
+        currency mismatch, concurrent invocations, expired signatures/orders,
+        partial refunds, idempotent replays.
+  # Static analyzers — correctness/security set. Style-duplicating linters
+  # (biome/oxlint) left off: repo already runs ESLint in CI.
+  # Belongs under `reviews`, not at the root — #1223 put it at the root, where
+  # the schema rejects it as an unknown top-level key.
+  tools:
+    eslint: { enabled: true }
+    reactDoctor: { enabled: true }
+    semgrep: { enabled: true }
+    gitleaks: { enabled: true }
+    trufflehog: { enabled: true }
+    presidio: { enabled: true } # PII detector — cards/PANs must not leak
+    actionlint: { enabled: true }
+    zizmor: { enabled: true } # GitHub Actions security (the cron fleet lives there)
+    yamllint: { enabled: true }
+    squawk: { enabled: true } # unsafe-Postgres-migration detection for prisma/sql sidecars
+    sqlfluff: { enabled: true }
+    prismaLint: { enabled: true }
+    ast-grep: { essential_rules: true }
+    github-checks: { enabled: true }
+  path_filters:
+    - "!**/package-lock.json"
+chat:
+  auto_reply: true
+knowledge_base:
+  opt_out: false
+  learnings:
+    scope: local

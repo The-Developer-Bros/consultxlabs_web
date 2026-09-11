@@ -125,10 +125,10 @@ export default function ConsultantVerificationForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       {/* Header Info */}
-      <Alert className="border-blue-200 bg-blue-50">
-        <Shield className="h-4 w-4 text-blue-600" />
-        <AlertTitle className="text-blue-800">Profile Verification</AlertTitle>
-        <AlertDescription className="text-blue-700">
+      <Alert className="border-border bg-muted">
+        <Shield className="h-4 w-4 text-muted-foreground" />
+        <AlertTitle className="text-foreground">Profile Verification</AlertTitle>
+        <AlertDescription className="text-muted-foreground">
           To maintain the quality of our platform, we verify all consultant
           profiles. Your LinkedIn profile and at least one supporting document
           (certification, degree, license, or ID) are required.
@@ -152,7 +152,7 @@ export default function ConsultantVerificationForm({
               : ""
           }
         />
-        <p className="text-xs text-zinc-500">
+        <p className="text-xs text-muted-foreground">
           We use your LinkedIn profile to verify your professional background.
         </p>
         {linkedinUrl && !validateLinkedIn(linkedinUrl) && (
@@ -168,8 +168,8 @@ export default function ConsultantVerificationForm({
         <Label className="flex items-center gap-1">
           Supporting Documents <span className="text-red-500">*</span>
         </Label>
-        <div className="bg-zinc-50 p-1 rounded-lg border border-zinc-200 mb-2">
-          <div className="flex items-start gap-2 p-2 text-xs text-zinc-600">
+        <div className="bg-muted p-1 rounded-lg border border-border mb-2">
+          <div className="flex items-start gap-2 p-2 text-xs text-muted-foreground">
             <Info className="w-4 h-4 flex-shrink-0 mt-0.5" />
             <p>
               Upload at least one document that verifies your expertise:
@@ -192,7 +192,7 @@ export default function ConsultantVerificationForm({
       <div className="space-y-2">
         <Label htmlFor="notes" className="flex items-center gap-1">
           Additional Notes{" "}
-          <span className="text-zinc-400 text-xs font-normal">(Optional)</span>
+          <span className="text-muted-foreground/70 text-xs font-normal">(Optional)</span>
         </Label>
         <Textarea
           id="notes"
@@ -202,7 +202,7 @@ export default function ConsultantVerificationForm({
           rows={3}
           maxLength={500}
         />
-        <p className="text-xs text-zinc-500 text-right">
+        <p className="text-xs text-muted-foreground text-right">
           {notes.length}/500 characters
         </p>
       </div>
@@ -215,11 +215,11 @@ export default function ConsultantVerificationForm({
       )}
 
       {/* Verification Timeline Info */}
-      <div className="bg-zinc-50 rounded-lg p-4 border border-zinc-200">
-        <h4 className="font-medium text-sm text-zinc-900 mb-2">
+      <div className="bg-muted rounded-lg p-4 border border-border">
+        <h4 className="font-medium text-sm text-foreground mb-2">
           What happens next?
         </h4>
-        <ol className="text-sm text-zinc-600 space-y-1 list-decimal list-inside">
+        <ol className="text-sm text-muted-foreground space-y-1 list-decimal list-inside">
           <li>Our team will review your LinkedIn profile and documents</li>
           <li>
             You&apos;ll receive an email notification once the review is
@@ -230,13 +230,13 @@ export default function ConsultantVerificationForm({
             directory
           </li>
         </ol>
-        <p className="text-xs text-zinc-500 mt-2">
+        <p className="text-xs text-muted-foreground mt-2">
           Verification typically takes 1-2 business days.
         </p>
       </div>
 
       {/* Navigation Buttons */}
-      <div className="flex justify-between pt-4 border-t border-zinc-200">
+      <div className="flex justify-between pt-4 border-t border-border">
         <Button type="button" variant="outline" onClick={onBack}>
           <ChevronLeft className="mr-2 h-4 w-4" />
           Back

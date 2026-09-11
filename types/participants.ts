@@ -10,17 +10,3 @@ export interface ParticipantUser {
   email?: string | null;
   image?: string | null;
 }
-
-/** Waitlist entry in participant views — shared by webinar + class participant pages. */
-export interface WaitlistParticipant {
-  id: string;
-  user: {
-    id: string;
-    name: string | null;
-    email: string | null;
-    image: string | null;
-  };
-  joinedAt: string;
-  status: string;
-  position: number | null;
-}

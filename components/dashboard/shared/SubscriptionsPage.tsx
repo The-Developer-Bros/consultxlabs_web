@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,13 +14,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  ResponsiveTable,
+  type ResponsiveColumn,
+} from "@/components/ui/responsive-table";
+import { DashboardHeader } from "@/components/dashboard/PageScaffold";
 import {
   Search,
   RefreshCw,
@@ -30,7 +28,6 @@ import {
   AlertTriangle,
   Users,
 } from "lucide-react";
-import { useToast } from "@/hooks/use-toast";
 import type {
   SubscriptionListItem,
   SubscriptionListResponse,
@@ -45,7 +42,7 @@ const getStatusColor = (status: string) => {
     case "expired":
       return "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300";
     default:
-      return "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300";
+      return "bg-muted text-muted-foreground";
   }
 };
 
@@ -79,6 +76,9 @@ const formatDate = (dateString: string | null) => {
   });
 };
 
+const EMPTY_STATS = { activeCount: 0, expiringCount: 0, expiredCount: 0 };
+const LIMIT = 20;
+
 export interface SubscriptionsPageProps {
   /** API endpoint for fetching subscriptions */
   apiEndpoint?: string;
@@ -93,23 +93,9 @@ export function SubscriptionsPage({
   title = "Subscriptions",
   description = "View platform subscriptions (read-only)",
 }: SubscriptionsPageProps) {
-  const { toast } = useToast();
-  const [subscriptions, setSubscriptions] = useState<SubscriptionListItem[]>(
-    [],
-  );
-  const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [page, setPage] = useState(1);
-  const [total, setTotal] = useState(0);
-  const [hasMore, setHasMore] = useState(false);
-  const [stats, setStats] = useState({
-    activeCount: 0,
-    expiringCount: 0,
-    expiredCount: 0,
-  });
-  const limit = 20;
-
   const [debouncedSearch, setDebouncedSearch] = useState("");
 
   useEffect(() => {
@@ -120,65 +106,118 @@ export function SubscriptionsPage({
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  const fetchSubscriptions = useCallback(async () => {
-    setLoading(true);
-    try {
+  const { data, isPending, isFetching, isError, refetch } = useQuery({
+    queryKey: [
+      "admin-subscriptions",
+      apiEndpoint,
+      page,
+      debouncedSearch,
+      statusFilter,
+    ],
+    queryFn: async (): Promise<SubscriptionListResponse> => {
       const params = new URLSearchParams();
-      params.set("limit", limit.toString());
-      params.set("offset", ((page - 1) * limit).toString());
+      params.set("limit", LIMIT.toString());
+      params.set("offset", ((page - 1) * LIMIT).toString());
       if (debouncedSearch) params.set("search", debouncedSearch);
       if (statusFilter !== "all") params.set("status", statusFilter);
 
       const response = await fetch(`${apiEndpoint}?${params}`);
       if (!response.ok) throw new Error("Failed to fetch subscriptions");
+      return response.json();
+    },
+    // Keep the previous page visible while the next one loads instead of
+    // flashing a spinner over the whole table on every page/filter change.
+    placeholderData: keepPreviousData,
+  });
 
-      const data: SubscriptionListResponse = await response.json();
-      setSubscriptions(data.subscriptions);
-      setStats(data.stats);
-      setTotal(data.pagination.total);
-      setHasMore(data.pagination.hasMore);
-    } catch (error) {
-      console.error("Error fetching subscriptions:", error);
-      toast({
-        title: "Error",
-        description: "Failed to load subscriptions",
-        variant: "destructive",
-      });
-    } finally {
-      setLoading(false);
-    }
-  }, [page, debouncedSearch, statusFilter, toast, apiEndpoint]);
+  const subscriptions = data?.subscriptions ?? [];
+  const stats = data?.stats ?? EMPTY_STATS;
+  const total = data?.pagination.total ?? 0;
+  const hasMore = data?.pagination.hasMore ?? false;
+  const totalPages = Math.ceil(total / LIMIT);
 
-  useEffect(() => {
-    fetchSubscriptions();
-  }, [fetchSubscriptions]);
-
-  const totalPages = Math.ceil(total / limit);
+  const columns: ResponsiveColumn<SubscriptionListItem>[] = [
+    {
+      key: "user",
+      header: "User",
+      primary: true,
+      cell: (subscription) => (
+        <div>
+          <p className="font-medium">{subscription.userName}</p>
+          <p className="text-xs text-muted-foreground/70">
+            {subscription.userEmail}
+          </p>
+        </div>
+      ),
+    },
+    {
+      key: "consultant",
+      header: "Consultant",
+      className: "text-sm text-muted-foreground",
+      cell: (subscription) => subscription.consultantName || "-",
+    },
+    {
+      key: "amount",
+      header: "Amount",
+      className: "font-medium",
+      cell: (subscription) =>
+        formatCurrency(subscription.amount, subscription.currency),
+    },
+    {
+      key: "period",
+      header: "Period",
+      cell: (subscription) => (
+        <div className="text-sm">
+          <p>{formatDate(subscription.startDate)}</p>
+          <p className="text-muted-foreground/70">
+            to {formatDate(subscription.endDate)}
+          </p>
+        </div>
+      ),
+    },
+    {
+      key: "status",
+      header: "Status",
+      cell: (subscription) => (
+        <Badge
+          className={`${getStatusColor(subscription.status)} gap-1`}
+          variant="secondary"
+        >
+          {getStatusIcon(subscription.status)}
+          {subscription.status.replace(/_/g, " ")}
+        </Badge>
+      ),
+    },
+    {
+      key: "gateway",
+      header: "Gateway",
+      className: "text-sm text-muted-foreground",
+      cell: (subscription) => subscription.gateway,
+    },
+  ];
 
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-zinc-900 dark:text-zinc-100">
-            {title}
-          </h1>
-          <p className="text-zinc-500 dark:text-zinc-400">{description}</p>
-        </div>
-        <Button
-          variant="outline"
-          onClick={fetchSubscriptions}
-          disabled={loading}
-        >
-          <RefreshCw
-            className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`}
-          />
-          Refresh
-        </Button>
-      </div>
+      <DashboardHeader
+        title={title}
+        subtitle={description}
+        actions={
+          <Button
+            variant="outline"
+            onClick={() => refetch()}
+            disabled={isFetching}
+          >
+            <RefreshCw
+              className={`h-4 w-4 mr-2 ${isFetching ? "animate-spin" : ""}`}
+            />
+            Refresh
+          </Button>
+        }
+      />
 
       {/* Stats */}
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardContent className="p-4 flex items-center gap-4">
             <div className="p-2 rounded-lg bg-green-50 dark:bg-green-950">
@@ -186,7 +225,7 @@ export function SubscriptionsPage({
             </div>
             <div>
               <p className="text-2xl font-bold">{stats.activeCount}</p>
-              <p className="text-sm text-zinc-500">Active</p>
+              <p className="text-sm text-muted-foreground">Active</p>
             </div>
           </CardContent>
         </Card>
@@ -205,7 +244,7 @@ export function SubscriptionsPage({
               <p className="text-2xl font-bold text-yellow-600">
                 {stats.expiringCount}
               </p>
-              <p className="text-sm text-zinc-500">Expiring Soon</p>
+              <p className="text-sm text-muted-foreground">Expiring Soon</p>
             </div>
           </CardContent>
         </Card>
@@ -216,18 +255,20 @@ export function SubscriptionsPage({
             </div>
             <div>
               <p className="text-2xl font-bold">{stats.expiredCount}</p>
-              <p className="text-sm text-zinc-500">Expired</p>
+              <p className="text-sm text-muted-foreground">Expired</p>
             </div>
           </CardContent>
         </Card>
-        <Card className="bg-gradient-to-r from-purple-50 to-indigo-50 dark:from-purple-950/20 dark:to-indigo-950/20">
+        <Card>
           <CardContent className="p-4 flex items-center gap-4">
-            <div className="p-2 rounded-lg bg-purple-100 dark:bg-purple-900">
-              <Users className="h-5 w-5 text-purple-600" />
+            <div className="p-2 rounded-lg bg-muted">
+              <Users className="h-5 w-5 text-foreground" />
             </div>
             <div>
-              <p className="text-2xl font-bold text-purple-600">{total}</p>
-              <p className="text-sm text-zinc-500">Total Subscriptions</p>
+              <p className="text-2xl font-bold text-foreground">{total}</p>
+              <p className="text-sm text-muted-foreground">
+                Total Subscriptions
+              </p>
             </div>
           </CardContent>
         </Card>
@@ -237,8 +278,8 @@ export function SubscriptionsPage({
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-col sm:flex-row gap-4">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
+            <div className="relative min-w-0 flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground/70" />
               <Input
                 placeholder="Search by user name or email..."
                 className="pl-9"
@@ -271,76 +312,43 @@ export function SubscriptionsPage({
       <Card>
         <CardHeader>
           <CardTitle className="text-lg flex items-center gap-2">
-            <RefreshCw className="h-5 w-5 text-purple-600" />
+            <RefreshCw className="h-5 w-5 text-foreground" />
             Subscriptions ({total})
           </CardTitle>
         </CardHeader>
-        <CardContent className="p-0">
-          {loading ? (
-            <div className="flex items-center justify-center h-64">
-              <Loader2 className="h-8 w-8 animate-spin text-zinc-400" />
+        <CardContent className="p-0 sm:p-6 sm:pt-0">
+          {isError && !data ? (
+            <div className="flex flex-col items-center justify-center h-64 gap-3 text-center">
+              <div className="flex items-center gap-2 text-destructive">
+                <AlertTriangle className="h-5 w-5" />
+                <span>Failed to load subscriptions.</span>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                onClick={() => refetch()}
+              >
+                <RefreshCw className="h-4 w-4" />
+                Retry
+              </Button>
             </div>
-          ) : subscriptions.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-64 text-zinc-500">
-              <RefreshCw className="h-12 w-12 mb-4 text-zinc-300" />
-              <p>No subscriptions found</p>
+          ) : isPending ? (
+            <div className="flex items-center justify-center h-64">
+              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground/70" />
             </div>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>User</TableHead>
-                  <TableHead>Consultant</TableHead>
-                  <TableHead>Amount</TableHead>
-                  <TableHead>Period</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Gateway</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {subscriptions.map((subscription) => (
-                  <TableRow key={subscription.id}>
-                    <TableCell>
-                      <div>
-                        <p className="font-medium">{subscription.userName}</p>
-                        <p className="text-xs text-zinc-400">
-                          {subscription.userEmail}
-                        </p>
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-sm text-zinc-600 dark:text-zinc-400">
-                      {subscription.consultantName || "-"}
-                    </TableCell>
-                    <TableCell className="font-medium">
-                      {formatCurrency(
-                        subscription.amount,
-                        subscription.currency,
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <div className="text-sm">
-                        <p>{formatDate(subscription.startDate)}</p>
-                        <p className="text-zinc-400">
-                          to {formatDate(subscription.endDate)}
-                        </p>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        className={`${getStatusColor(subscription.status)} gap-1`}
-                        variant="secondary"
-                      >
-                        {getStatusIcon(subscription.status)}
-                        {subscription.status.replace(/_/g, " ")}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-sm text-zinc-600 dark:text-zinc-400">
-                      {subscription.gateway}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+            <ResponsiveTable<SubscriptionListItem>
+              columns={columns}
+              rows={subscriptions}
+              getRowId={(s) => s.id}
+              empty={
+                <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
+                  <RefreshCw className="h-12 w-12 mb-4 text-muted-foreground/40" />
+                  <p>No subscriptions found</p>
+                </div>
+              }
+            />
           )}
         </CardContent>
       </Card>
@@ -348,8 +356,8 @@ export function SubscriptionsPage({
       {/* Pagination */}
       {totalPages > 1 && (
         <div className="flex items-center justify-between">
-          <div className="text-sm text-zinc-500">
-            Showing {(page - 1) * limit + 1} to {Math.min(page * limit, total)}{" "}
+          <div className="text-sm text-muted-foreground">
+            Showing {(page - 1) * LIMIT + 1} to {Math.min(page * LIMIT, total)}{" "}
             of {total}
           </div>
           <div className="flex gap-2">

@@ -86,8 +86,6 @@ export const WelcomeEmail = ({
   );
 };
 
-export default WelcomeEmail;
-
 // Styles
 const main = {
   backgroundColor: "#f5f5f5",

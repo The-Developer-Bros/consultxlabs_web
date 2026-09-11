@@ -4,6 +4,7 @@
  */
 "use client"; // Mark as a Client Component
 
+import { useToast } from "@/hooks/use-toast";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,12 +27,19 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { NotificationPreferencesPanel } from "@/components/notifications";
+import { SettingsSkeleton } from "@/components/dashboard/DashboardSkeletons";
 import {
   CookiePreference,
   NotificationPreference,
   StaffProfile,
   User,
 } from "@prisma/client"; // Import types
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { AlertTriangle, RefreshCw } from "lucide-react";
 import { ChangeEvent, use, useEffect, useState } from "react";
 
 // Define a type for the user with preferences
@@ -53,40 +61,36 @@ type PageProps = {
 export default function StaffSettingsPage({ params }: Readonly<PageProps>) {
   const resolvedParams = use(params);
   const { staffId } = resolvedParams;
-  const [staffData, setStaffData] = useState<StaffData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [isSaving, setIsSaving] = useState(false); // To disable buttons during save
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
 
   // Fetch data on component mount
-  useEffect(() => {
-    const fetchData = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const response = await fetch(`/api/user/staff/${staffId}`);
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(
-            errorData.error ||
-              `Failed to fetch staff data: ${response.statusText}`,
-          );
-        }
-        const result = await response.json();
-        // API returns { data: StaffProfile } with user nested inside
-        setStaffData(result.data);
-      } catch (err: unknown) {
-        const errorMessage =
-          err instanceof Error ? err.message : "An unknown error occurred";
-        setError(errorMessage);
-        console.error("Fetch error:", err);
-      } finally {
-        setLoading(false);
+  const { data, isPending, isError, refetch } = useQuery({
+    queryKey: ["staff-settings", staffId],
+    queryFn: async (): Promise<StaffData> => {
+      const response = await fetch(`/api/user/staff/${staffId}`);
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(
+          errorData.error ||
+            `Failed to fetch staff data: ${response.statusText}`,
+        );
       }
-    };
+      const result = await response.json();
+      // API returns { data: StaffProfile } with user nested inside
+      return result.data;
+    },
+  });
 
-    fetchData();
-  }, [staffId]);
+  // Local editable form state, seeded from the query result.
+  const [staffData, setStaffData] = useState<StaffData | null>(null);
+
+  // Seed the form once, on initial load. Later refetches (e.g. the invalidation
+  // after a successful save) must NOT clobber in-progress edits — the save's own
+  // onSuccess updates staffData explicitly with the server response.
+  useEffect(() => {
+    if (data && !staffData) setStaffData(data);
+  }, [data, staffData]);
 
   // Handle input changes for user fields (name, email, phone, address, image)
   const handleUserInputChange = (
@@ -177,54 +181,53 @@ export default function StaffSettingsPage({ params }: Readonly<PageProps>) {
     });
   };
 
-  // Generic save handler - sends only changed data for a specific section
-  const handleSave = async (
-    section: "personal" | "role" | "account" | "preferences",
-  ) => {
-    if (!staffData) return;
-    setIsSaving(true);
-    setError(null);
+  // Generic save mutation - sends only changed data for a specific section
+  const saveMutation = useMutation({
+    mutationFn: async (
+      section: "personal" | "role" | "account" | "preferences",
+    ): Promise<{
+      section: "personal" | "role" | "account" | "preferences";
+      updatedData: StaffData;
+    }> => {
+      // Build payload - API expects flat object with both user and profile fields
+      let payload: Record<string, unknown> = {};
 
-    // Build payload - API expects flat object with both user and profile fields
-    let payload: Record<string, unknown> = {};
+      // Construct payload based on section
+      switch (section) {
+        case "personal":
+          payload = {
+            name: staffData!.user.name,
+            email: staffData!.user.email,
+            phone: staffData!.user.phone,
+            address: staffData!.user.address,
+            image: staffData!.user.image,
+          };
+          break;
+        case "role":
+          payload = {
+            department: staffData!.department,
+            position: staffData!.position,
+          };
+          break;
+        case "account":
+          payload = {
+            timezone: staffData!.user.timezone,
+          };
+          break;
+        case "preferences":
+          payload = {
+            allNotifications:
+              staffData!.user.notificationPreferences?.allNotifications,
+            mentions: staffData!.user.notificationPreferences?.mentions,
+            directMessages:
+              staffData!.user.notificationPreferences?.directMessages,
+            updates: staffData!.user.notificationPreferences?.updates,
+            analytics: staffData!.user.cookiePreferences?.analytics,
+            marketing: staffData!.user.cookiePreferences?.marketing,
+          };
+          break;
+      }
 
-    // Construct payload based on section
-    switch (section) {
-      case "personal":
-        payload = {
-          name: staffData.user.name,
-          email: staffData.user.email,
-          phone: staffData.user.phone,
-          address: staffData.user.address,
-          image: staffData.user.image,
-        };
-        break;
-      case "role":
-        payload = {
-          department: staffData.department,
-          position: staffData.position,
-        };
-        break;
-      case "account":
-        payload = {
-          timezone: staffData.user.timezone,
-        };
-        break;
-      case "preferences":
-        payload = {
-          allNotifications:
-            staffData.user.notificationPreferences?.allNotifications,
-          mentions: staffData.user.notificationPreferences?.mentions,
-          directMessages:
-            staffData.user.notificationPreferences?.directMessages,
-          updates: staffData.user.notificationPreferences?.updates,
-          analytics: staffData.user.cookiePreferences?.analytics,
-          marketing: staffData.user.cookiePreferences?.marketing,
-        };
-        break;
-    }
-
-    try {
       const response = await fetch(`/api/user/staff/${staffId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -239,41 +242,64 @@ export default function StaffSettingsPage({ params }: Readonly<PageProps>) {
       }
 
       const updatedData: StaffData = await response.json();
+      return { section, updatedData };
+    },
+    onSuccess: ({ section, updatedData }) => {
       setStaffData(updatedData); // Update state with response data
-      alert(
-        `${section.charAt(0).toUpperCase() + section.slice(1)} settings saved successfully!`,
-      ); // Simple feedback
-    } catch (err: unknown) {
+      toast({
+        title: "Settings saved",
+        description: `${section.charAt(0).toUpperCase() + section.slice(1)} settings updated.`,
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["staff-settings", staffId],
+      });
+    },
+    onError: (err: unknown, section) => {
       const errorMessage =
         err instanceof Error
           ? err.message
           : `An error occurred while saving ${section} settings`;
-      setError(errorMessage);
-      console.error("Save error:", err);
-      alert(`Error saving ${section} settings: ${errorMessage}`); // Simple feedback
-    } finally {
-      setIsSaving(false);
-    }
+      toast({
+        title: `Couldn't save ${section} settings`,
+        description: errorMessage,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleSave = (
+    section: "personal" | "role" | "account" | "preferences",
+  ) => {
+    if (!staffData) return;
+    saveMutation.mutate(section);
   };
 
   // Render loading/error states
-  if (loading) {
-    return (
-      <div className="flex justify-center items-center min-h-screen">
-        Loading...
-      </div>
-    );
+  if (isPending || (Boolean(data) && !staffData)) {
+    return <SettingsSkeleton />;
   }
-  if (error) {
+  if (isError && !data) {
     return (
-      <div className="flex justify-center items-center min-h-screen text-red-500">
-        Error: {error}
+      <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+        <div className="flex items-center gap-2 text-destructive">
+          <AlertTriangle className="h-5 w-5" />
+          <span>Failed to load settings.</span>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-2"
+          onClick={() => refetch()}
+        >
+          <RefreshCw className="h-4 w-4" />
+          Retry
+        </Button>
       </div>
     );
   }
   if (!staffData) {
     return (
-      <div className="flex justify-center items-center min-h-screen">
+      <div className="flex items-center justify-center py-16">
         Staff member not found.
       </div>
     );
@@ -296,11 +322,11 @@ export default function StaffSettingsPage({ params }: Readonly<PageProps>) {
               .join("") ?? "ST"}
           </AvatarFallback>
         </Avatar>
-        <div>
-          <h1 className="text-2xl font-bold text-zinc-900 dark:text-zinc-100">
+        <div className="min-w-0 space-y-1">
+          <h1 className="text-fluid-2xl font-semibold tracking-tight text-foreground">
             Settings
           </h1>
-          <p className="text-zinc-500 dark:text-zinc-400">
+          <p className="text-fluid-sm text-muted-foreground">
             Manage profile and account settings for{" "}
             {staffData.user.name ?? `Staff ID: ${staffId}`}.
           </p>
@@ -373,8 +399,11 @@ export default function StaffSettingsPage({ params }: Readonly<PageProps>) {
             </div>
           </CardContent>
           <CardFooter className="border-t px-6 py-4">
-            <Button onClick={() => handleSave("personal")} disabled={isSaving}>
-              {isSaving ? "Saving..." : "Save Personal Info"}
+            <Button
+              onClick={() => handleSave("personal")}
+              disabled={saveMutation.isPending}
+            >
+              {saveMutation.isPending ? "Saving..." : "Save Personal Info"}
             </Button>
           </CardFooter>
         </Card>
@@ -410,8 +439,11 @@ export default function StaffSettingsPage({ params }: Readonly<PageProps>) {
             </div>
           </CardContent>
           <CardFooter className="border-t px-6 py-4">
-            <Button onClick={() => handleSave("role")} disabled={isSaving}>
-              {isSaving ? "Saving..." : "Save Role Info"}
+            <Button
+              onClick={() => handleSave("role")}
+              disabled={saveMutation.isPending}
+            >
+              {saveMutation.isPending ? "Saving..." : "Save Role Info"}
             </Button>
           </CardFooter>
         </Card>
@@ -449,8 +481,11 @@ export default function StaffSettingsPage({ params }: Readonly<PageProps>) {
             </div>
           </CardContent>
           <CardFooter className="border-t px-6 py-4">
-            <Button onClick={() => handleSave("account")} disabled={isSaving}>
-              {isSaving ? "Saving..." : "Save Account Settings"}
+            <Button
+              onClick={() => handleSave("account")}
+              disabled={saveMutation.isPending}
+            >
+              {saveMutation.isPending ? "Saving..." : "Save Account Settings"}
             </Button>
           </CardFooter>
         </Card>
@@ -620,9 +655,9 @@ export default function StaffSettingsPage({ params }: Readonly<PageProps>) {
           <CardFooter className="border-t px-6 py-4">
             <Button
               onClick={() => handleSave("preferences")}
-              disabled={isSaving}
+              disabled={saveMutation.isPending}
             >
-              {isSaving ? "Saving..." : "Save Preferences"}
+              {saveMutation.isPending ? "Saving..." : "Save Preferences"}
             </Button>
           </CardFooter>
         </Card>

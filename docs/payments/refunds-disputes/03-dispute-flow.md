@@ -1,5 +1,7 @@
 # Dispute Handling Flow
 
+> **Moved (org/B2B side):** The organization-side documentation for disputes now lives in [`docs/enterprise/10-money-and-ledger/11-disputes.md`](../../enterprise/10-money-and-ledger/11-disputes.md). This file keeps the consumer-marketplace (B2C) and gateway-generic details only.
+
 ## Overview
 
 Disputes (chargebacks) occur when a customer contacts their bank/card issuer to reverse a payment. The system tracks dispute lifecycle and supports evidence submission for Stripe disputes.
@@ -20,10 +22,13 @@ stateDiagram-v2
     UNDER_REVIEW --> WON: Decision: Merchant Wins
     UNDER_REVIEW --> LOST: Decision: Customer Wins
     UNDER_REVIEW --> CHARGE_REFUNDED: Merchant Refunded
+    NEEDS_RESPONSE --> CLOSED: Razorpay closed (no verdict)
+    UNDER_REVIEW --> CLOSED: Razorpay closed (no verdict)
 
     WON --> [*]
     LOST --> [*]
     CHARGE_REFUNDED --> [*]
+    CLOSED --> [*]
     WARNING_CLOSED --> [*]
 ```
 
@@ -48,6 +53,7 @@ stateDiagram-v2
 | `WON`             | Merchant won the dispute              | None (terminal)                 |
 | `LOST`            | Customer won, funds returned          | None (terminal)                 |
 | `CHARGE_REFUNDED` | Merchant voluntarily refunded         | None (terminal)                 |
+| `CLOSED`          | Razorpay: ended without a verdict (details provided or refund made) | None (terminal) |
 
 ---
 
@@ -151,6 +157,11 @@ await prisma.dispute.update({
 - No transaction wrapping (unlike refunds)
 - External API call is outside any transaction
 - Evidence submission doesn't have race condition risks
+- The Stripe-only gate in the excerpt above mirrors the current code
+  (`app/api/payments/disputes/route.ts`): Razorpay now exposes contest/accept
+  APIs (see the Razorpay section below), but our evidence-submission route is
+  not wired to them yet — that wiring is tracked in the launch-residuals
+  register (#863)
 
 ---
 
@@ -172,17 +183,20 @@ await prisma.dispute.update({
 
 ### Razorpay
 
-**Limited API Support:**
+**API support (updated 2026-06):**
 
-- NO direct dispute API
-- Disputes handled via Razorpay Dashboard
-- Only webhook notifications available
+- Razorpay now exposes dispute APIs: `POST /v1/disputes/:id/accept` and `PATCH /v1/disputes/:id/contest` (this doc previously claimed no API existed)
+- Webhook notifications cover created / action_required / under_review / won / lost / closed
+- Our reconcile cron still routes Razorpay disputes to manual review — wiring it to the contest/accept APIs is tracked in the launch-residuals register; see `docs/enterprise/10-money-and-ledger/11-disputes.md` §3
 
 **Webhook Events:**
 
 - `payment.dispute.created`
+- `payment.dispute.action_required`
+- `payment.dispute.under_review`
 - `payment.dispute.won`
 - `payment.dispute.lost`
+- `payment.dispute.closed` (maps to the terminal `CLOSED` status)
 
 ---
 
@@ -329,11 +343,11 @@ const urgentDisputes = await prisma.dispute.count({
 
 When a dispute is resolved in the customer's favor (status: `LOST`), the `handle-lost-disputes` cron job now uses the canonical `refundEarnings(paymentId, { forceRefund: true })` path instead of manual inline logic. This ensures:
 
-1. **TDS reversal records** are correctly created for already-paid earnings
+1. **TDS reversal records** are correctly created for already-paid earnings, via the shared `recordTdsReversal` helper, which writes a negative `isReversal` `TDSRecord` (#813)
 2. **`totalRevenue`** is decremented on the consultant profile for PAID earnings
 3. **Consistent behavior** with the refund flow (proportional reversal, `refundedShareAmount` tracking)
 
-Previously, lost-dispute handling used manual logic that could miss TDS reversals and leave `totalRevenue` stale.
+Previously, lost-dispute handling used manual logic that could miss TDS reversals and leave `totalRevenue` stale. Because `recordTdsReversal` caps cumulative reversals at the original withholding, an app-side refund followed by a lost chargeback on the same payment no longer double-reverses the TDS — the second cascade adds nothing once the first has reversed it.
 
 ---
 

@@ -1,4 +1,44 @@
 import { z } from "zod";
+import type { SupportThreadCategory, SupportThreadStatus } from "@prisma/client";
+
+/**
+ * Support-thread intents and statuses — ONE definition, previously transcribed
+ * into three separate route files where every copy had lost DOCUMENTS. Since
+ * `documentsFlow` (lib/support/flows.ts) carries no `available` gate, the GET
+ * offered "Session materials" on every appointment and the POST rejected every
+ * press. Which intents are OFFERED is the flow registry's decision; these
+ * schemas only have to accept whatever it can emit, so no narrowing applies.
+ *
+ * Guarded in both directions without importing the Prisma client at runtime
+ * (this module is pulled into client bundles and jsdom tests):
+ *   - `satisfies` below fails to compile on a typo or a removed member;
+ *   - __tests__/support/intent-offer-accept-parity.test.ts runs in the node
+ *     environment and fails if Prisma gains a member missing from these lists.
+ */
+const SUPPORT_THREAD_CATEGORIES = [
+  "CANCEL_REFUND",
+  "RESCHEDULE",
+  "NO_SHOW",
+  "TECHNICAL",
+  "DOCUMENTS",
+  "PAYMENT_STATUS",
+  "RECORDING_ACCESS",
+  "QUALITY_COMPLAINT",
+  "SPONSORSHIP_BILLING",
+  "ORG_ADMIN_DISPUTE",
+  "OTHER",
+] as const satisfies readonly SupportThreadCategory[];
+
+const SUPPORT_THREAD_STATUSES = [
+  "OPEN",
+  "IN_PROGRESS",
+  "ESCALATED",
+  "RESOLVED",
+  "CLOSED",
+] as const satisfies readonly SupportThreadStatus[];
+
+export const SupportThreadCategoryEnum = z.enum(SUPPORT_THREAD_CATEGORIES);
+export const SupportThreadStatusEnum = z.enum(SUPPORT_THREAD_STATUSES);
 
 export const CancellationReasonEnum = z.enum([
   "SCHEDULE_CONFLICT",
@@ -53,6 +93,18 @@ export const SupportIssueTypeEnum = z.enum([
   "OTHER",
 ]);
 
+/**
+ * Statuses a CLIENT may request via PATCH /api/trials/[trialId].
+ *
+ * Deliberately narrower than the Prisma `TrialSessionStatus` enum:
+ * AWAITING_PAYMENT is server-set only — the accept handler assigns it and the
+ * Razorpay webhook clears it — so accepting it from a request body would let a
+ * caller mark their own trial as awaiting payment, or worse, sidestep the pay
+ * step. Cancelling one still works, because CANCELLED is listed.
+ *
+ * This list is hand-maintained rather than z.nativeEnum(TrialSessionStatus)
+ * precisely so the omission is a decision instead of drift.
+ */
 export const TrialSessionStatusEnum = z.enum([
   "PENDING",
   "SCHEDULED",
@@ -72,13 +124,3 @@ export const RequestStatusEnum = z.enum([
   "CANCELLED",
   "EXPIRED",
 ]);
-
-export type CancellationReasonType = z.infer<typeof CancellationReasonEnum>;
-export type ProfileVerificationStatusType = z.infer<
-  typeof ProfileVerificationStatusEnum
->;
-export type SupportTicketStatusType = z.infer<typeof SupportTicketStatusEnum>;
-export type SupportPriorityType = z.infer<typeof SupportPriorityEnum>;
-export type SupportIssueTypeType = z.infer<typeof SupportIssueTypeEnum>;
-export type TrialSessionStatusType = z.infer<typeof TrialSessionStatusEnum>;
-export type RequestStatusType = z.infer<typeof RequestStatusEnum>;

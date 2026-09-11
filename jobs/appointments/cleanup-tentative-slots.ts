@@ -14,6 +14,8 @@ import {
 } from "../../scripts/appointments/cleanup-tentative-slots";
 import fs from "fs";
 import { abortIfMaintenance } from "../../lib/maintenance-cron";
+import * as Sentry from "@sentry/nextjs";
+import { runJob } from "../../lib/observability/job-sentry";
 
 /**
  * Output results to GitHub Actions
@@ -50,6 +52,7 @@ function outputToGitHubActions(result: TentativeSlotCleanupResult): void {
  */
 async function main(): Promise<void> {
   await abortIfMaintenance("cleanup-tentative-slots");
+  Sentry.logger.info("job:cleanup-tentative-slots started");
   console.log("🧹 Starting tentative slot cleanup job...");
   console.log(`Timestamp: ${new Date().toISOString()}`);
 
@@ -69,14 +72,17 @@ async function main(): Promise<void> {
     outputToGitHubActions(result);
 
     if (!result.success) {
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
-  } catch (error) {
-    console.error("❌ Fatal error in tentative slot cleanup:", error);
-    process.exit(1);
+
+    Sentry.logger.info("job:cleanup-tentative-slots finished", {
+      slotsReleased: result.slotsReleased,
+      appointmentsAffected: result.appointmentsAffected,
+    });
   } finally {
     await disconnectDatabase();
   }
 }
 
-main();
+runJob("cleanup-tentative-slots", main);

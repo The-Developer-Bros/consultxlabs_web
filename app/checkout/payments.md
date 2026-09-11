@@ -225,13 +225,7 @@ const checkoutSchema = z.object({
   slotStartTimeInUTC: z.string().optional(),
   slotEndTimeInUTC: z.string().optional(),
   notes: z.string().optional(),
-  paymentGateway: z.enum([
-    "STRIPE",
-    "RAZORPAY",
-    "LEMON_SQUEEZY",
-    "XFLOW",
-    "CARD",
-  ]),
+  paymentGateway: z.enum(["STRIPE", "RAZORPAY", "CARD"]),
   slotOfAvailabilityWeeklyId: z.string().optional(),
 });
 ```
@@ -499,7 +493,7 @@ try {
 
 ### Planned Features
 
-1. **Additional Payment Gateways**: Lemon Squeezy, XFlow integration
+1. **Additional Payment Gateways**: Dodo Payments (post-MVP, evaluation pending)
 2. **Recurring Payments**: Automatic subscription renewals
 3. **Partial Refunds**: Pro-rated cancellation handling
 4. **Payment Analytics**: Revenue tracking and reporting

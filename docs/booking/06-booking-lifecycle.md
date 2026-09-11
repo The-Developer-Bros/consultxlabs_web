@@ -123,9 +123,6 @@ erDiagram
     TrialSession }o--|| ConsulteeProfile : "requested by"
     TrialSession }o--o| Subscription : "converts to"
 
-    Webinar ||--o{ Waitlist : "has"
-    Class ||--o{ Waitlist : "has"
-    Waitlist }o--|| User : "belongs to"
 
     Appointment ||--o{ Earnings : "generates"
     Payment ||--o| Invoice : "generates"
@@ -259,7 +256,7 @@ sequenceDiagram
 
 | Record              | Key Fields                                                                                                            | Notes                                                          |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `Consultation`      | `requestStatus=PENDING` (or `APPROVED` for mock), `bookingSource=DIRECT_CHECKOUT`, `requestedById=consulteeProfileId` | The source record for the event                                |
+| `Consultation`      | `status=PENDING` (or `APPROVED` for mock), `bookingSource=DIRECT_CHECKOUT`, `requestedById=consulteeProfileId` | The source record for the event                                |
 | `Appointment`       | `appointmentType=CONSULTATION`, `consultationId`                                                                      | Container for time slots                                       |
 | `SlotOfAppointment` | `startsAt`, `endsAt`, `isTentative=true` (or `false` for mock)                                                        | The actual time reservation. Tentative until payment confirmed |
 
@@ -361,7 +358,7 @@ sequenceDiagram
 
 | Record                              | Key Fields                                                                                                     | Notes                                                                                          |
 | ----------------------------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `Subscription`                      | `requestStatus=PENDING`, `bookingSource=DIRECT_CHECKOUT`, `schedulingPeriodStartsAt`, `schedulingPeriodEndsAt` | Always PENDING regardless of skipPayment flag. Stays PENDING until consultant allocates.       |
+| `Subscription`                      | `status=PENDING`, `bookingSource=DIRECT_CHECKOUT`, `schedulingPeriodStartsAt`, `schedulingPeriodEndsAt` | Always PENDING regardless of skipPayment flag. Stays PENDING until consultant allocates.       |
 | `Appointment` (placeholder)         | `appointmentType=SUBSCRIPTION`, `subscriptionId`, NO `slotsOfAppointment`                                      | A placeholder so the webhook can use the NEW flow. Consultant creates real appointments later. |
 | `TrialSession` (updated, if exists) | `status=CONVERTED`, `convertedToSubscriptionId=subscription.id`                                                | Only if a completed trial exists for the same consultee+consultant pair.                       |
 
@@ -426,13 +423,12 @@ sequenceDiagram
 
     rect rgb(255, 249, 220)
         Note over SYS,DB: handleWebinarCheckout (checkout.ts L1126)
-        SYS->>DB: Fetch webinar with plan, waitlist, appointment (with all slots + users)
+        SYS->>DB: Fetch webinar with plan and appointment (with all slots + users)
         SYS->>DB: Count participants excluding consultant (countWebinarParticipants)
 
         alt Capacity reached (currentParticipants >= maxParticipants)
             alt Mock payment (skipPayment=true)
-                SYS->>DB: CREATE Waitlist entry
-                SYS-->>CE: Webinar is full - added to waitlist
+                SYS-->>CE: Webinar is full (sold out)
             else Real payment
                 SYS-->>CE: Webinar is full
             end
@@ -464,9 +460,6 @@ sequenceDiagram
     rect rgb(230, 230, 255)
         Note over WH,DB: handlePaymentSuccess Phase 2
         WH->>DB: Create earnings + invoice
-        opt fromWaitlist metadata present
-            WH->>DB: markWaitlistAsBooked
-        end
         WH->>CE: Novu: payment-success, appointment-booked
     end
 
@@ -543,13 +536,12 @@ sequenceDiagram
 
     rect rgb(255, 249, 220)
         Note over SYS,DB: handleClassCheckout (checkout.ts L1256)
-        SYS->>DB: Fetch class with plan, waitlist, ALL appointments (with all slots + users)
+        SYS->>DB: Fetch class with plan and ALL appointments (with all slots + users)
         SYS->>DB: countUniqueParticipants across all appointments
 
         alt Capacity reached
             alt Mock payment
-                SYS->>DB: CREATE Waitlist entry
-                SYS-->>CE: Class is full - added to waitlist
+                SYS-->>CE: Class is full (sold out)
             else Real payment
                 SYS-->>CE: Class is full
             end
@@ -743,7 +735,6 @@ flowchart TD
 
     subgraph "Phase 2: Post-Transaction"
         O[Create earnings record] --> P[Create invoice]
-        P --> Q[Update waitlist if applicable]
         Q --> R[Send Novu notifications]
     end
 
@@ -761,7 +752,7 @@ flowchart TD
 The system creates the slot BEFORE payment with `isTentative = true`. This means:
 
 1. **The slot is visible to validation queries** -- Other users attempting to book the same time will see it is taken (tentative slots are included in availability checks). This prevents double-booking.
-2. **The slot can be cleaned up** -- If payment never completes, a cron job runs every 2 hours to delete tentative slots older than 7 days. The slot is not permanently blocked.
+2. **The slot can be cleaned up** -- If payment never completes, a cron job runs every 2 hours to delete tentative slots older than 24 hours (`TENTATIVE_EXPIRATION_HOURS = 24`, reduced from 7 days by #833). Users can also release their own hold immediately via `DELETE /api/checkout/pending/[paymentId]` (#849). The slot is not permanently blocked.
 3. **The payment metadata includes the appointmentId** -- When the webhook arrives, it knows exactly which appointment to confirm. No guessing, no race conditions.
 
 ### Why Two Phases in the Webhook Handler?
@@ -780,7 +771,6 @@ The webhook handler (`handlePaymentSuccess`) deliberately splits work into two p
 
 - Create earnings record
 - Create invoice
-- Update waitlist status
 - Send Novu push/in-app notifications
 
 The reason for this split is transaction timeout. Prisma transactions have a default timeout of 5 seconds. If earnings creation involves complex queries or the Novu API is slow, including them in the transaction could cause it to time out, which would roll back the payment confirmation -- a catastrophic outcome (the user was charged but the system thinks it failed).
@@ -793,7 +783,7 @@ This is a real-world failure mode. The payment gateway charged the user but the 
 
 1. The payment record stays `PENDING` in the database
 2. The slot stays `isTentative = true`
-3. After 7 days, the `cleanup-tentative-slots` cron job deletes the tentative slot
+3. After 24 hours, the `cleanup-tentative-slots` cron job deletes the tentative slot
 4. The payment gateway's dashboard shows the charge succeeded
 
 Resolution: The admin must manually reconcile. The system provides a `sync-payment-earnings` background job and admin dashboard for this purpose. In the future, a webhook retry mechanism from the gateway should handle most cases.
@@ -871,9 +861,9 @@ The `bookingSource` field on Consultation and Subscription records is set to `"D
 
 ## 8. Status Transitions
 
-### 8a. RequestStatus (Consultations and Subscriptions)
+### 8a. AppointmentStatus (Consultations and Subscriptions)
 
-Used by `Consultation.requestStatus` and `Subscription.requestStatus`. This is the most complex status enum because it covers both approval and direct checkout paths.
+Used by `Consultation.status` and `Subscription.status`. This is the most complex status enum because it covers both approval and direct checkout paths.
 
 ```mermaid
 stateDiagram-v2
@@ -992,7 +982,7 @@ stateDiagram-v2
     [*] --> tentative_false: Created during checkout (mock/free) or by consultant
 
     tentative_true --> tentative_false: Webhook confirms payment
-    tentative_true --> DELETED: Cleanup cron (7 days, no payment)
+    tentative_true --> DELETED: Cleanup cron (24 hours, no payment)
     tentative_true --> DELETED: Payment failure handler
 
     tentative_false --> [*]: Slot is confirmed and permanent
@@ -1017,7 +1007,7 @@ This section covers what happens when things go wrong. Understanding these scena
 5. Calls `cleanupFailedPaymentAppointment()` which deletes the tentative slots
 6. Sends failure notification to consultee
 
-**Safety net**: Even if the failure webhook is missed, the `cleanup-tentative-slots` cron runs every 2 hours and removes tentative slots with no successful payment after 7 days.
+**Safety net**: Even if the failure webhook is missed, the `cleanup-tentative-slots` cron runs every 2 hours and removes tentative slots with no successful payment after 24 hours (`TENTATIVE_EXPIRATION_HOURS = 24`).
 
 **Source**: `handlePaymentFailure()` at `lib/payments/webhooks/handlers.ts` line 486.
 
@@ -1033,7 +1023,7 @@ This section covers what happens when things go wrong. Understanding these scena
 
 The reason this works is that tentative slots ARE counted in capacity checks. The `countWebinarParticipants()` function counts ALL SlotOfAppointment records in the shared appointment, including tentative ones. Additionally, a distributed lock is acquired during checkout to serialize concurrent requests.
 
-If User A's payment fails, the tentative slot is cleaned up and the spot opens for the next user (potentially notified via waitlist processing).
+If User A's payment fails, the abandoned-checkout cleanup disconnects them from the event's slots and the seat is free again.
 
 ### 9c. Duplicate Checkout Attempt
 
@@ -1145,7 +1135,6 @@ Notifications are sent via Novu workflows. All workflow IDs are defined in `lib/
 
 | Lifecycle Event         | Novu Workflow ID          | Recipients             | Trigger Point              | Source           |
 | ----------------------- | ------------------------- | ---------------------- | -------------------------- | ---------------- |
-| Waitlist spot available | `waitlist-spot-available` | Consultee              | Waitlist processing script | Waitlist scripts |
 | Recording available     | `recording-available`     | Consultee + Consultant | Recording upload           | Recording routes |
 
 **Important**: All Novu notifications in the webhook handler are sent as fire-and-forget (`void notifyPaymentSuccess(...)`) with try-catch wrappers. Notification failures are logged but never roll back the payment transaction. The reason for this design is that a failed push notification should never cause a successful payment to appear as failed.
@@ -1163,10 +1152,9 @@ Background jobs run on schedules via GitHub Actions and are also exposed as API 
 | Action                                     | Schedule      | What It Does                                                                                          | Criteria                                                   | Source                                                        |
 | ------------------------------------------ | ------------- | ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------- |
 | **Auto-complete appointments**             | Hourly        | Marks events as COMPLETED when all sessions have ended                                                | All SlotOfAppointment.endsAt < (now - 1 hour)              | `scripts/appointments/auto-complete-appointments.ts`          |
-| **Cleanup tentative slots**                | Every 2 hours | Deletes `isTentative=true` slots with no successful payment                                           | Tentative slot created > 7 days ago, payment not SUCCEEDED | `scripts/appointments/cleanup-tentative-slots.ts`             |
+| **Cleanup tentative slots**                | Every 2 hours | Deletes `isTentative=true` slots with no successful payment                                           | Tentative slot created > 24 hours ago, payment not SUCCEEDED (`TENTATIVE_EXPIRATION_HOURS = 24`) | `scripts/appointments/cleanup-tentative-slots.ts`             |
 | **Expire stale requests**                  | Daily         | Sets PENDING requests to EXPIRED after 30 days; sets APPROVED_PENDING_PAYMENT to EXPIRED after 7 days | No activity within threshold                               | `scripts/appointments/expire-stale-requests.ts`               |
 | **Cleanup stale pending consultations**    | Hourly        | Cancels APPROVED/APPROVED_PENDING_PAYMENT consultations with no payment activity after 7 days         | No payment record or payment stuck in PENDING              | `scripts/appointments/cleanup-stale-pending-consultations.ts` |
-| **Process expired waitlist notifications** | Hourly        | Expires waitlist entries where user did not respond in time, notifies next person in queue            | Notification sent > response window                        | `scripts/waitlist/process-expired-notifications.ts`           |
 | **Sync payment earnings**                  | Periodic      | Safety net: finds payments with SUCCEEDED status but no earnings record, creates missing earnings     | Payment.status=SUCCEEDED AND no Earnings linked            | `scripts/payments/sync-payment-earnings.ts`                   |
 
 ### Auto-Complete Details by Event Type
@@ -1177,8 +1165,8 @@ The auto-complete cron (`autoCompleteAppointments()`) runs five separate queries
 | ------------------------- | ---------------------------------------------------------------------------------------------- | -------------------------- | ----------------------------------------------------------- |
 | `completeWebinars()`      | SCHEDULED or IN_PROGRESS webinars where every slot's endsAt < bufferTime                       | Status -> COMPLETED        | None                                                        |
 | `completeClasses()`       | SCHEDULED or IN_PROGRESS classes where every appointment's every slot's endsAt < bufferTime    | Status -> COMPLETED        | None                                                        |
-| `completeConsultations()` | APPROVED or SCHEDULED consultations where every slot's endsAt < bufferTime                     | requestStatus -> COMPLETED | None                                                        |
-| `completeSubscriptions()` | APPROVED or SCHEDULED subscriptions where every appointment's every slot's endsAt < bufferTime | requestStatus -> COMPLETED | None                                                        |
+| `completeConsultations()` | APPROVED or SCHEDULED consultations where every slot's endsAt < bufferTime                     | status -> COMPLETED | None                                                        |
+| `completeSubscriptions()` | APPROVED or SCHEDULED subscriptions where every appointment's every slot's endsAt < bufferTime | status -> COMPLETED | None                                                        |
 | `completeTrials()`        | SCHEDULED trials where every slot's endsAt < bufferTime                                        | status -> COMPLETED        | Sets `completedAt`, creates `ActivityLog` (TRIAL_COMPLETED) |
 
 **Buffer time**: 1 hour. The reason for the buffer is to give participants time for post-session activities (filling feedback forms, downloading materials) before the system considers the session complete. The `COMPLETION_BUFFER_HOURS` constant is defined at the top of the auto-complete script.
@@ -1202,8 +1190,8 @@ gantt
     Payment intent expires           :milestone, 30, 30
 
     section Cleanup Windows
-    Tentative slot exists (up to 7d)  :a4, 0, 10080
-    Cleanup cron removes tentative    :milestone, 10080, 10080
+    Tentative slot exists (up to 24h) :a4, 0, 1440
+    Cleanup cron removes tentative    :milestone, 1440, 1440
 
     section Stale Request Windows
     APPROVED_PENDING_PAYMENT (7d)     :a5, 0, 10080
@@ -1250,7 +1238,7 @@ T+16 seconds    handlePaymentSuccess Phase 2 starts
 T+30 minutes    (If payment had not completed) Payment intent expires at gateway
                  Gateway may send a payment_intent.expired webhook
 
-T+7 days        (If payment failed or was abandoned)
+T+24 hours      (If payment failed or was abandoned)
                  cleanup-tentative-slots cron deletes orphaned tentative slot
 
 T+0 to T+weeks  Session takes place at scheduled time
@@ -1285,3 +1273,9 @@ T+30 days       (If request was never acted on)
 | Notification system architecture                                | [../notifications/01-architecture.md](../notifications/01-architecture.md)                                             |
 | Notification workflows and API                                  | [../notifications/02-workflows-and-api.md](../notifications/02-workflows-and-api.md)                                   |
 | Database schema (enums, models)                                 | [../../prisma/schema.prisma](../../prisma/schema.prisma)                                                               |
+
+## Approval-path corrections (2026-08-14, #1169 PR 2)
+
+Three behaviors of the approve flow changed together. First, the payment link is minted **after** the approval transaction commits, never inside it: a gateway round-trip inside the Serializable transaction pinned a pooled connection, could exceed the 30-second budget, and on rollback left a live payment link for an approval that never persisted. If minting fails, the request stays `APPROVED_PENDING_PAYMENT` with no link and the response says so with a 502; approving again re-mints, because while the gateway call itself failed no Payment row exists for the duplicate guard to find. That 502 is reserved for the mint itself. Once a link exists, a failure to write it to `pendingPaymentUrl` or to email it is reported to Sentry and the request still succeeds, because answering with a 502 there would invite a retry that mints a **second** live payment link for the same booking — since #1181 the duplicate guard inside `createApprovalPaymentIntent` does see approval payments (they carry the request-time `appointmentId`, so the guard's walk over appointment payments matches), and its answer to an already-minted PENDING payment is to **reuse** it — returning the same intent instead of minting a parallel order. Second, confirming a paid request's tentative slots excludes `RESCHEDULED` rows, which keep their original `startsAt` — flipping them re-confirmed exactly the time the consultee had asked to move away from. Third, a request that is paid but has no appointment row (its capture webhook has not landed) is **refused** with a 409 rather than papered over: the old fallback fabricated a confirmed slot at now+1h with no availability check, no lock, and no `consultantProfileId`, on the global client, so it even survived the transaction's rollback. The `reconcile-orphaned-confirmations` sweep (#830) settles that state, after which approval succeeds normally.
+
+Approval links also now mint on RAZORPAY across all three request types (#1165), and org sponsorship survives the flow end-to-end (#1166): the request validates an ACTIVE membership of a `canSponsor` organization that is itself transactable (`ACTIVE` or `PENDING_VERIFICATION`, the same standing the checkout path demands), stamps `Appointment.organizationId` at creation, and the approval payment carries the org onto the `Payment` row and gateway metadata. Approval payments now also write the `CARD` funding leg that every `Payment` is required to carry; this was the one gateway path that created a payment with no leg at all, which mattered little while the rows were untagged and matters a great deal now that they carry an organization.

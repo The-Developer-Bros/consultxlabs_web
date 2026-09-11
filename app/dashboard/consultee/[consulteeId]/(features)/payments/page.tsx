@@ -13,12 +13,17 @@ type PageProps = {
 export default function PaymentsPage({ params }: Readonly<PageProps>) {
   const { consulteeId } = use(params);
 
+  // Personal pin, matching the sibling Appointments page (ADR 19). The old
+  // defaultForOrgMember: "all" here papered over the missing attendee arm in
+  // the orgMember scope (#1166 ORG-5); org-funded transactions belong to the
+  // org dashboard's money views. The route defaults personal without
+  // ?orgScope=.
   const {
     data: paymentsData,
     isLoading,
     error,
   } = useQuery({
-    queryKey: ["consultee-payments", consulteeId],
+    queryKey: ["consultee-payments", consulteeId, "personal"] as const,
     queryFn: async () => {
       const res = await fetch(
         `/api/dashboard/consultee/${consulteeId}/payments`,
@@ -28,6 +33,13 @@ export default function PaymentsPage({ params }: Readonly<PageProps>) {
       return json.data;
     },
     staleTime: 2 * 60 * 1000,
+    // E2E-audit P1 fix — this is the only money surface without an SSR
+    // seed, and the global query client sets refetchOnMount/refetchOnWindow
+    // Focus to false, so a purchase made elsewhere in the same SPA session
+    // never appeared here until a full reload. Remounting this tab must
+    // always revalidate: the newest transaction (and REFUNDED flips caused
+    // by auto-refunds) land within one navigation.
+    refetchOnMount: "always",
   });
 
   if (isLoading) {

@@ -14,6 +14,8 @@ import {
 } from "../../scripts/appointments/reconcile-slot-availability";
 import fs from "fs";
 import { abortIfMaintenance } from "../../lib/maintenance-cron";
+import * as Sentry from "@sentry/nextjs";
+import { runJob } from "../../lib/observability/job-sentry";
 
 /**
  * Output results to GitHub Actions
@@ -26,6 +28,8 @@ function outputToGitHubActions(result: SlotReconciliationResult): void {
     const outputs = [
       `tentative_cleared=${result.tentativeFlagsCleared}`,
       `double_bookings=${result.doubleBookingsDetected}`,
+      // #1206 — sessions recovered for partially-scheduled recurring plans.
+      `top_up_sessions_placed=${result.topUps.sessionsPlaced}`,
       `success=${result.success}`,
     ].join("\n");
 
@@ -56,6 +60,7 @@ function outputToGitHubActions(result: SlotReconciliationResult): void {
  */
 async function main(): Promise<void> {
   await abortIfMaintenance("reconcile-slot-availability");
+  Sentry.logger.info("job:reconcile-slot-availability started");
   console.log("🔄 Starting slot availability reconciliation job...");
   console.log(`Timestamp: ${new Date().toISOString()}`);
 
@@ -66,6 +71,9 @@ async function main(): Promise<void> {
     console.log(`   Tentative Flags Cleared: ${result.tentativeFlagsCleared}`);
     console.log(
       `   Double Bookings Detected: ${result.doubleBookingsDetected}`,
+    );
+    console.log(
+      `   Top-ups: ${result.topUps.placed} event(s), ${result.topUps.sessionsPlaced} session(s) placed`,
     );
     console.log(`   Success: ${result.success}`);
 
@@ -94,20 +102,23 @@ async function main(): Promise<void> {
 
     outputToGitHubActions(result);
 
+    Sentry.logger.info("job:reconcile-slot-availability finished", {
+      tentativeFlagsCleared: result.tentativeFlagsCleared,
+      doubleBookingsDetected: result.doubleBookingsDetected,
+      topUpSessionsPlaced: result.topUps.sessionsPlaced,
+    });
+
     // Exit with error if double bookings found (to trigger alerts)
     if (result.doubleBookingsDetected > 0) {
-      process.exit(1);
+      process.exitCode = 1;
     }
 
     if (!result.success) {
-      process.exit(1);
+      process.exitCode = 1;
     }
-  } catch (error) {
-    console.error("❌ Fatal error in slot reconciliation:", error);
-    process.exit(1);
   } finally {
     await disconnectDatabase();
   }
 }
 
-main();
+runJob("reconcile-slot-availability", main);

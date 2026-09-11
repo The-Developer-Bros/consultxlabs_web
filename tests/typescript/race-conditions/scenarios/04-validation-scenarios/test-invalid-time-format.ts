@@ -3,18 +3,21 @@
  * Category: 04 - Validation Scenarios
  *
  * Scenario: Attempt to book with malformed time strings
- * Expected: Lock layer accepts any string keys (validation happens at API layer)
+ * Expected: The interval lock layer REFUSES unparseable times (fail closed)
  *
- * This test validates that the lock layer handles arbitrary time formats gracefully.
- * Note: In production, the API would reject invalid times before reaching the lock layer.
- * This test confirms the lock mechanism itself doesn't break on unusual inputs.
+ * Since #1170, slot lock keys are not opaque strings: times are parsed into
+ * 30-minute atoms, and an unparseable time yields zero atoms, which
+ * lockSlotInterval refuses rather than proceeding without mutual exclusion.
+ * The harness maps that refusal to a 409, the same shape the API layer
+ * returns. In production, validation rejects such input before the lock layer
+ * is ever reached; this test pins the lock layer's own backstop.
  *
- * Each time string is unique, so each booking goes to a different "slot":
- * - consultant-123:not-a-date
- * - consultant-123: (empty)
- * - consultant-123:2024-13-45T99:99:99
+ * Inputs exercised:
+ * - "not-a-date"
+ * - "" (empty)
+ * - "2024-13-45T99:99:99" (malformed ISO)
  *
- * Expected: 3 successes (each is a unique slot key)
+ * Expected: 0 successes, 3 refusals (no lock key is ever constructed)
  */
 
 import {
@@ -46,10 +49,11 @@ async function runTest() {
     concurrentUsers: 3,
     slotTime: "various-invalid",
     consultantId: "",
-    // Each request uses a different time string, so each gets a unique lock key
-    // Lock layer doesn't validate - all 3 succeed with their own unique slots
-    expectedSuccesses: 3,
-    expectedConflicts: 0,
+    // Unparseable times produce zero 30-minute atoms, and lockSlotInterval
+    // refuses a zero-atom interval (fail closed) — the harness reports the
+    // refusal as a 409, so all 3 attempts must land in the conflict column.
+    expectedSuccesses: 0,
+    expectedConflicts: 3,
     expectedErrors: 0,
   };
 
@@ -61,7 +65,7 @@ async function runTest() {
     "Test Cases": "Invalid date string, empty, malformed ISO",
     "Consultant ID": consultantId,
     "Expected Outcome":
-      "All 3 succeed (different time strings = different lock keys)",
+      "All 3 refused (unparseable time = zero lock atoms, fail closed)",
   });
 
   const startTime = Date.now();

@@ -1,8 +1,8 @@
 "use client";
 
 import Image from "next/image";
-import { User, ConsultationPlan, SubscriptionPlan } from "@prisma/client";
-import type { TConsultantDetailData } from "@/types/consultant";
+import { User } from "@prisma/client";
+import type { ConsultantDetailData } from "../types";
 import { TSlotTiming } from "@/types/slots";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import ConsultationPricingToggle from "./ConsultationPricingToggle";
@@ -29,7 +29,7 @@ const getSubscriptionDurationLabel = (durationInMonths: number): string => {
 
 interface ExpertPricingProps {
   userDetails: User;
-  consultantDetails: TConsultantDetailData;
+  consultantDetails: ConsultantDetailData;
   handleConsultationBooking: (consultationPlanId: string) => Promise<void>;
   handleSubscriptionBooking: (
     option: PricingOption,
@@ -70,7 +70,11 @@ export function ExpertPricing({
   >(autoOpenTrial ? "subscriptions" : "consultations");
 
   const formatPricingOptions = (
-    plans: (ConsultationPlan | SubscriptionPlan)[],
+    // Rows from the detail fetcher, not raw Prisma types — keeps price: number (#780)
+    plans: (
+      | ConsultantDetailData["consultationPlans"][number]
+      | ConsultantDetailData["subscriptionPlans"][number]
+    )[],
     type: "consultation" | "subscription",
   ): PricingOption[] => {
     // Count plans per duration so we can disambiguate titles when multiple
@@ -102,28 +106,34 @@ export function ExpertPricing({
           plan.durationInHours,
         );
 
-        let features: string[] = [];
-        switch (plan.durationInHours) {
-          case 1:
-            features = ["Document verification", "1 on 1 call"];
-            break;
-          case 2:
-            features = [
-              "Document verification",
-              "1 on 1 call",
-              "Extended chat facility",
-            ];
-            break;
-          case 4:
-            features = [
-              "Document verification",
-              "1 on 1 call",
-              "Extended chat facility",
-              "Priority support",
-            ];
-            break;
-          default:
-            features = [`${plan.durationInHours} hour consultation`];
+        // The consultant's own inclusions win. The duration switch below is a
+        // placeholder from before `whatsIncluded` existed: it asserted
+        // "Document verification" and "Priority support" for every plan of a
+        // given length, whether or not that consultant offered either.
+        let features: string[] = plan.whatsIncluded ?? [];
+        if (features.length === 0) {
+          switch (plan.durationInHours) {
+            case 1:
+              features = ["Document verification", "1 on 1 call"];
+              break;
+            case 2:
+              features = [
+                "Document verification",
+                "1 on 1 call",
+                "Extended chat facility",
+              ];
+              break;
+            case 4:
+              features = [
+                "Document verification",
+                "1 on 1 call",
+                "Extended chat facility",
+                "Priority support",
+              ];
+              break;
+            default:
+              features = [`${plan.durationInHours} hour consultation`];
+          }
         }
 
         return {
@@ -132,7 +142,10 @@ export function ExpertPricing({
           // Surface the real plan title so duplicate-duration plans
           // (e.g. "Career Strategy Session" vs "[ATEST] Career Strategy
           // Session") stay distinguishable in the panel.
-          description: plan.title || `${plan.durationInHours} hour consultation`,
+          description:
+            plan.subtitle ||
+            plan.title ||
+            `${plan.durationInHours} hour consultation`,
           price: plan.price,
           priceCurrency: plan.priceCurrency || "INR",
           duration: `${plan.durationInHours} hour${plan.durationInHours > 1 ? "s" : ""}`,
@@ -147,19 +160,20 @@ export function ExpertPricing({
         return {
           id: plan.id,
           title: durationLabel,
-          description: plan.title || `${plan.durationInMonths} month subscription`,
+          description:
+            plan.title || `${plan.durationInMonths} month subscription`,
           price: plan.price,
           priceCurrency: plan.priceCurrency || "INR",
           duration: `${plan.durationInMonths}`,
           durationInMonths: plan.durationInMonths,
           totalHours: plan.totalHours,
           totalSessions: plan.totalSessions,
-          callsPerWeek: plan.callsPerWeek,
+          sessionsPerWeek: plan.sessionsPerWeek,
           sessionDurationInHours: plan.sessionDurationInHours,
           features: [
             `${plan.totalHours} total hours`,
             `${plan.totalSessions} sessions`,
-            `${plan.callsPerWeek} call${plan.callsPerWeek > 1 ? "s" : ""} per week`,
+            `${plan.sessionsPerWeek} session${plan.sessionsPerWeek > 1 ? "s" : ""} per week`,
             `${plan.sessionDurationInHours}h per session`,
             `${plan.emailSupport} email support`,
           ],

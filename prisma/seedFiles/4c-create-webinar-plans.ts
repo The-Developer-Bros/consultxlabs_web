@@ -1,6 +1,15 @@
 import { faker } from "@faker-js/faker";
+import { PlanLevel } from "@prisma/client";
 import prisma from "../../lib/prisma";
 import { UserWithProfiles } from "./1a-create-users";
+import {
+  FAQ_POOL,
+  PLAN_SUBTITLES,
+  TARGET_AUDIENCE_POOL,
+  WEBINAR_DESCRIPTIONS,
+  WHATS_INCLUDED_POOL,
+  pick,
+} from "./plan-content";
 
 export async function createWebinarPlans(consultants: UserWithProfiles[]) {
   console.log(
@@ -19,7 +28,7 @@ export async function createWebinarPlans(consultants: UserWithProfiles[]) {
           {
             consultantProfileId: consultant.consultantProfile.id,
             title: "Introduction Webinar",
-            description: faker.lorem.paragraph(),
+            description: pick(WEBINAR_DESCRIPTIONS, i),
             priceCurrency: "INR",
             certificateProvided: false,
             durationInHours: 1,
@@ -32,9 +41,12 @@ export async function createWebinarPlans(consultants: UserWithProfiles[]) {
               "German",
               "Chinese",
             ]),
-            level: "Beginner",
+            level: PlanLevel.BEGINNER,
+            subtitle: pick(PLAN_SUBTITLES, i),
+            targetAudience: pick(TARGET_AUDIENCE_POOL, i),
+            whatsIncluded: pick(WHATS_INCLUDED_POOL, i),
             prerequisites: "None",
-            materialProvided: faker.lorem.sentence(),
+            materialProvided: "Slides and a recording link after the session",
             learningOutcomes: faker.helpers.arrayElements(
               [
                 "Understand basic concepts",
@@ -47,7 +59,7 @@ export async function createWebinarPlans(consultants: UserWithProfiles[]) {
           {
             consultantProfileId: consultant.consultantProfile.id,
             title: "Advanced Topics Webinar",
-            description: faker.lorem.paragraph(),
+            description: pick(WEBINAR_DESCRIPTIONS, i),
             priceCurrency: "INR",
             certificateProvided: false,
             durationInHours: 2,
@@ -60,9 +72,12 @@ export async function createWebinarPlans(consultants: UserWithProfiles[]) {
               "German",
               "Chinese",
             ]),
-            level: "Intermediate",
-            prerequisites: faker.lorem.sentence(),
-            materialProvided: faker.lorem.sentence(),
+            level: PlanLevel.INTERMEDIATE,
+            subtitle: pick(PLAN_SUBTITLES, i),
+            targetAudience: pick(TARGET_AUDIENCE_POOL, i),
+            whatsIncluded: pick(WHATS_INCLUDED_POOL, i),
+            prerequisites: "None — come with a question",
+            materialProvided: "Slides and a recording link after the session",
             learningOutcomes: faker.helpers.arrayElements(
               [
                 "Master advanced techniques",
@@ -75,7 +90,7 @@ export async function createWebinarPlans(consultants: UserWithProfiles[]) {
           {
             consultantProfileId: consultant.consultantProfile.id,
             title: "Expert Workshop Webinar",
-            description: faker.lorem.paragraph(),
+            description: pick(WEBINAR_DESCRIPTIONS, i),
             priceCurrency: "INR",
             certificateProvided: false,
             durationInHours: 3,
@@ -88,9 +103,12 @@ export async function createWebinarPlans(consultants: UserWithProfiles[]) {
               "German",
               "Chinese",
             ]),
-            level: "Advanced",
-            prerequisites: faker.lorem.sentence(),
-            materialProvided: faker.lorem.sentence(),
+            level: PlanLevel.ADVANCED,
+            subtitle: pick(PLAN_SUBTITLES, i),
+            targetAudience: pick(TARGET_AUDIENCE_POOL, i),
+            whatsIncluded: pick(WHATS_INCLUDED_POOL, i),
+            prerequisites: "None — come with a question",
+            materialProvided: "Slides and a recording link after the session",
             learningOutcomes: faker.helpers.arrayElements(
               [
                 "Develop expertise in the field",
@@ -108,7 +126,9 @@ export async function createWebinarPlans(consultants: UserWithProfiles[]) {
         where: { consultantProfileId: consultant.consultantProfile.id },
       });
 
-      for (const plan of webinarPlans) {
+      // FAQs ride along with the topics pass rather than needing a second
+      // one: createMany cannot write either relation inline.
+      for (const [planIndex, plan] of webinarPlans.entries()) {
         await prisma.webinarPlan.update({
           where: { id: plan.id },
           data: {
@@ -116,6 +136,12 @@ export async function createWebinarPlans(consultants: UserWithProfiles[]) {
               connect: faker.helpers
                 .arrayElements(topics, { min: 1, max: 3 })
                 .map((topic) => ({ id: topic.id })),
+            },
+            faqs: {
+              create: pick(FAQ_POOL, i + planIndex).map((faq, order) => ({
+                ...faq,
+                order,
+              })),
             },
           },
         });

@@ -1,10 +1,24 @@
 ---
 name: razorpay-setup
 description: Sets up Razorpay integration from scratch — installs SDK, creates env template, generates singleton client, scaffolds database schema, and configures plan management. Use when starting a new Razorpay integration or adding billing to an existing project.
-tools: Glob, Grep, LS, Read, Edit, Write, Bash, BashOutput, TodoWrite
-model: sonnet
+tools: Glob, Grep, Read, Edit, Write, Bash, BashOutput, TodoWrite
+model: inherit
 color: green
 ---
+
+## Before you start
+
+**Read these first, under `.claude/skills/finance/references/razorpay/`: references/this-repo.md — the integration already exists, so most of this agent's greenfield steps do not apply here.** Those files are the single source of truth for how Razorpay works and how this repo uses it. Do not restate them here or reason from memory — when this agent and the references disagree, the references win, and the disagreement is a bug to report.
+
+Facts that override generic Razorpay advice in this repo:
+
+- The API credentials are `RAZORPAY_KEY_ID` and **`RAZORPAY_SECRET`** — the second one is *not* named `RAZORPAY_KEY_SECRET` here, whatever generic tutorials say (drift-ok). Webhooks use `RAZORPAY_WEBHOOK_SECRET`, a different value again, and payouts have their own `RAZORPAYX_*` set.
+- The webhook endpoint is `app/api/webhooks/razorpay/route.ts`, dispatching through `app/api/webhooks/razorpay-dispatch.ts`. Dedup uses the `WebhookEvent` model.
+- Persistence is **Prisma**, not Drizzle. Amounts are `BigInt` paise.
+- The client is `lib/payments/core/razorpay.ts` and it is **nullable** by design.
+
+
+**Do not scaffold a parallel integration.** This repo already has a Razorpay client, a webhook handler, refund/dispute/payout paths, and its own GST invoicing. Creating `lib/razorpay.ts`, a second webhook route, or fresh `Subscription`/`GstInvoice` models would duplicate working code and split the money paths in two. Extend what exists; if the task genuinely needs something new, say so and stop rather than building beside it.
 
 # Razorpay Integration Setup Agent
 
@@ -103,7 +117,7 @@ Required variables to add:
 ```
 # Razorpay API Keys
 RAZORPAY_KEY_ID=rzp_test_XXXXXXXXXXXXXX
-RAZORPAY_KEY_SECRET=your_razorpay_key_secret
+RAZORPAY_SECRET=your_razorpay_key_secret
 RAZORPAY_WEBHOOK_SECRET=your_razorpay_webhook_secret
 
 # Razorpay public key for client-side checkout (same value as RAZORPAY_KEY_ID)
@@ -155,13 +169,13 @@ if (!process.env.RAZORPAY_KEY_ID) {
   throw new Error("RAZORPAY_KEY_ID environment variable is not set");
 }
 
-if (!process.env.RAZORPAY_KEY_SECRET) {
-  throw new Error("RAZORPAY_KEY_SECRET environment variable is not set");
+if (!process.env.RAZORPAY_SECRET) {
+  throw new Error("RAZORPAY_SECRET environment variable is not set");
 }
 
 export const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
+  key_secret: process.env.RAZORPAY_SECRET,
 });
 ```
 
@@ -371,7 +385,7 @@ Adapt for JavaScript if needed. Match the project's export conventions.
 If the user provided plan details (name, price, interval), create the plans automatically using curl:
 
 ```bash
-curl -s -u $RAZORPAY_KEY_ID:$RAZORPAY_KEY_SECRET \
+curl -s -u $RAZORPAY_KEY_ID:$RAZORPAY_SECRET \
   https://api.razorpay.com/v1/plans \
   -H "Content-Type: application/json" \
   -d '{
@@ -402,7 +416,7 @@ Run a quick health check:
 
 ```bash
 # Test that credentials work
-curl -s -u $RAZORPAY_KEY_ID:$RAZORPAY_KEY_SECRET https://api.razorpay.com/v1/plans?count=1
+curl -s -u $RAZORPAY_KEY_ID:$RAZORPAY_SECRET https://api.razorpay.com/v1/plans?count=1
 ```
 
 If this returns plan data, the setup is working. If it returns 401, the credentials are wrong.

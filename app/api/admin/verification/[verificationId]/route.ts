@@ -4,12 +4,14 @@
  * PATCH /api/admin/verification/[verificationId] - Review verification (approve/reject)
  */
 
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { ConsultantVerificationStatus } from "@prisma/client";
 import { notifyVerificationStatusChanged } from "@/lib/novu";
 import { ReviewVerificationSchema } from "@/schemas/verifications";
 import { requirePrivilegedAuth } from "@/lib/auth-helpers";
+import { purgeExpertSurfaces } from "@/lib/data/public-cache";
 
 interface RouteParams {
   params: Promise<{ verificationId: string }>;
@@ -23,7 +25,6 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
   try {
     const auth = await requirePrivilegedAuth();
     if (auth.error) return auth.error;
-    const session = auth.session;
 
     const { verificationId } = await params;
 
@@ -62,6 +63,7 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
 
     return NextResponse.json({ verification });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "admin" } });
     console.error("Error fetching verification:", error);
     return NextResponse.json(
       { error: "Failed to fetch verification" },
@@ -195,6 +197,11 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
             : []),
     ]);
 
+    // Verification is the de-facto publish switch for a consultant: VERIFIED is
+    // what puts them on the landing page and the experts directory, and any other
+    // status takes them off. Purge now rather than leave the ISR window to expire.
+    purgeExpertSurfaces(verification.consultantProfileId);
+
     // Fire-and-forget: notify consultant of verification status change
     const consultantUserId = verification.consultantProfile?.user?.id;
     if (consultantUserId) {
@@ -215,6 +222,7 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
             : "More information requested",
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "admin" } });
     console.error("Error reviewing verification:", error);
     return NextResponse.json(
       { error: "Failed to review verification" },

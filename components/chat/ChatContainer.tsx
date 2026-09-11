@@ -16,21 +16,18 @@ import { CustomMessage } from "./CustomMessage";
 import { StreamChatErrorBoundary } from "@/components/stream/StreamErrorBoundary";
 import { useMaintenanceState } from "@/providers/MaintenanceProvider";
 import { isEventChannel } from "@/lib/stream-channel-ids";
+import { EmptyState } from "@/components/dashboard/DataCard";
 
-// Empty state component for when no channel is selected
+// Was a hand-rolled near-copy of EmptyState with different dimensions, on a
+// `bg-zinc-50` slab pressed against the sidebar's blue. ChatUnavailable already
+// used the shared one; this matches it.
 const EmptyChannelState = () => (
-  <div className="flex flex-col items-center justify-center h-full w-full p-8 text-center bg-zinc-50">
-    <div className="flex flex-col items-center">
-      <div className="h-20 w-20 rounded-full bg-zinc-100 flex items-center justify-center mb-6">
-        <MessageSquareIcon className="w-10 h-10 text-zinc-400" />
-      </div>
-      <h3 className="text-xl font-semibold text-zinc-900 mb-2">
-        No channel selected
-      </h3>
-      <p className="text-sm text-zinc-500 max-w-xs">
-        Select a channel from the sidebar to start chatting
-      </p>
-    </div>
+  <div className="flex h-full w-full items-center justify-center bg-card p-8">
+    <EmptyState
+      icon={MessageSquareIcon}
+      title="No conversation selected"
+      description="Pick a conversation from the list to start chatting."
+    />
   </div>
 );
 
@@ -89,6 +86,12 @@ export const ChatContainer = () => {
       }
     : { Message: CustomMessage };
 
+  // Threads stay off: no `<Thread>` is mounted and `CustomMessage` replaces the
+  // SDK message UI, so neither the thread panel nor its reply-count button is
+  // ever rendered. Inline quote-reply covers the need. The CSS that used to
+  // `display: none` those elements is gone — it hid them while leaving them in
+  // the tab order. Turning `replies` off on the channel type in the Stream
+  // dashboard is the server-side half of this and is not code in this repo.
   return (
     <StreamChatErrorBoundary>
       <div className="flex-1 flex flex-col h-full">
@@ -97,7 +100,7 @@ export const ChatContainer = () => {
             <CustomChannelHeader />
             <MessageListComponent {...messageListProps} />
             {isChatReadOnly ? (
-              <div className="flex items-center justify-center gap-2 px-4 py-3 bg-yellow-50 border-t border-yellow-200 text-sm text-yellow-800">
+              <div className="flex items-center justify-center gap-2 border-t border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning-foreground">
                 <AlertTriangle className="h-4 w-4 shrink-0" />
                 <span>Chat is temporarily read-only during maintenance.</span>
               </div>

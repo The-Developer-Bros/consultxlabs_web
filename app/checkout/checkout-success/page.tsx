@@ -4,7 +4,9 @@ import { useEffect, useState, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { CheckoutResultSkeleton } from "@/app/checkout/CheckoutSkeletons";
 import { CheckCircle, Clock, Calendar, ArrowRight } from "lucide-react";
+import { reportPaymentsError } from "@/app/checkout/plans/utils";
 interface PaymentDetails {
   paymentIntent: string;
   appointmentType: string;
@@ -25,6 +27,8 @@ function CheckoutSuccessContent() {
     searchParams.get("session_id") || searchParams.get("payment_intent");
 
   useEffect(() => {
+    let cancelled = false;
+
     async function verifyPayment() {
       if (!paymentIntent) {
         console.error("Invalid payment session");
@@ -32,28 +36,68 @@ function CheckoutSuccessContent() {
         return;
       }
 
-      try {
-        // Verify payment status and get appointment details
-        const response = await fetch(
-          `/api/checkout/verify?payment_intent=${encodeURIComponent(paymentIntent)}`,
-        );
-        const data = await response.json();
+      // Booking confirmation is webhook-driven, so at the moment the buyer
+      // lands here the money may well have been captured while the pipeline
+      // (appointment, earnings, journal) has not finished. This page used to
+      // treat that as a FAILURE and bounce to /checkout-failure — telling
+      // someone their payment failed while their card was in fact charged.
+      //
+      // `sync=true` asks the server to drive the canonical pipeline itself
+      // (safe since ADR 21 — it runs the same idempotent handler the webhook
+      // runs), and a short bounded poll covers the case where the webhook wins
+      // the race a moment later. Only after the poll is exhausted do we say
+      // anything, and then it is "still confirming", never "failed".
+      const MAX_ATTEMPTS = 6;
+      const RETRY_DELAY_MS = 1500;
 
-        if (response.ok) {
-          setPaymentDetails(data);
-        } else {
-          console.error(data.message || "Payment verification failed");
-          router.push("/checkout/checkout-failure");
+      for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        if (cancelled) return;
+        try {
+          const response = await fetch(
+            `/api/checkout/verify?payment_intent=${encodeURIComponent(paymentIntent)}&sync=true`,
+          );
+          const data = await response.json();
+
+          if (response.ok) {
+            if (cancelled) return;
+            setPaymentDetails(data);
+            // `UNKNOWN` means the payment is settled but no appointment is
+            setLoading(false);
+            // `UNKNOWN` = settled but no appointment linked yet, which the
+            // getStatusMessage default branch renders as "confirming". Stop
+            // polling once a real type arrives.
+            if (data.appointmentType && data.appointmentType !== "UNKNOWN") {
+              return;
+            }
+          } else if (response.status !== 400) {
+            // 400 is "payment not completed yet" — keep waiting. Anything else
+            // is a real error.
+            console.error(data.message || "Payment verification failed");
+            router.push("/checkout/checkout-failure");
+            return;
+          }
+        } catch (error) {
+          reportPaymentsError(error);
+          console.error("Payment verification error:", error);
         }
-      } catch (error) {
-        console.error("Payment verification error:", error);
-        router.push("/checkout/checkout-failure");
-      } finally {
-        setLoading(false);
+
+        if (attempt < MAX_ATTEMPTS - 1) {
+          await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        }
       }
+
+      // Poll exhausted. Money is captured; the booking just has not
+      // materialised yet. The stuck-webhook sweeper and
+      // reconcile-orphaned-confirmations both re-drive it, so the page keeps
+      // showing "confirming" — never "failed".
+      if (cancelled) return;
+      setLoading(false);
     }
 
     verifyPayment();
+    return () => {
+      cancelled = true;
+    };
   }, [paymentIntent, router]);
 
   const getStatusMessage = (appointmentType: string) => {
@@ -99,40 +143,39 @@ function CheckoutSuccessContent() {
           statusText: "Confirmed",
         };
       default:
+        // Reached when the payment is settled but no appointment is linked
+        // yet. Saying "Confirmed" here would be a lie the buyer acts on — they
+        // would close the tab and expect a session that does not exist. Say
+        // what is actually true: we have the money, the booking is landing.
         return {
-          title: "Payment Successful!",
-          description: "Your payment has been processed successfully.",
-          nextSteps: "You'll receive a confirmation email shortly.",
-          statusIcon: <CheckCircle className="h-6 w-6 text-green-500" />,
-          statusText: "Confirmed",
+          title: "Payment received",
+          description:
+            "We have your payment. Your booking is being confirmed — this usually takes a few seconds.",
+          nextSteps:
+            "You'll get a confirmation email as soon as it's done. If you don't see it within a few minutes, contact support with your payment reference and we'll finish it manually — your payment is safe either way.",
+          statusIcon: <Clock className="h-6 w-6 text-yellow-500" />,
+          statusText: "Confirming your booking",
         };
     }
   };
 
   if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-zinc-50">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-zinc-900"></div>
-      </div>
-    );
+    return <CheckoutResultSkeleton />;
   }
 
   if (!paymentDetails) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-zinc-50">
-        <Card className="w-full max-w-md border-zinc-200 shadow-lg">
+      <div className="min-h-screen flex items-center justify-center bg-muted px-4">
+        <Card className="w-full max-w-md border-border shadow-lg">
           <CardContent className="pt-6">
             <div className="text-center">
-              <h2 className="text-lg font-semibold text-zinc-900 mb-2">
+              <h2 className="text-lg font-semibold text-foreground mb-2">
                 Payment Verification Failed
               </h2>
-              <p className="text-zinc-600 mb-4">
+              <p className="text-muted-foreground mb-4">
                 We couldn&apos;t verify your payment. Please contact support.
               </p>
-              <Button
-                onClick={() => router.push("/dashboard")}
-                className="bg-zinc-900 hover:bg-zinc-800 text-white"
-              >
+              <Button onClick={() => router.push("/dashboard")}>
                 Go to Dashboard
               </Button>
             </div>
@@ -145,43 +188,47 @@ function CheckoutSuccessContent() {
   const statusInfo = getStatusMessage(paymentDetails.appointmentType);
 
   return (
-    <div className="min-h-screen bg-zinc-50 py-12">
+    <div className="min-h-screen bg-muted py-12">
       <div className="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="text-center mb-8">
           <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-emerald-100 flex items-center justify-center">
             <CheckCircle className="h-10 w-10 text-emerald-600" />
           </div>
-          <h1 className="text-3xl font-bold text-zinc-900">
+          <h1 className="text-fluid-3xl font-bold tracking-tight text-foreground">
             {statusInfo.title}
           </h1>
         </div>
 
-        <Card className="mb-6 border-zinc-200 shadow-lg">
-          <CardHeader className="border-b border-zinc-100">
-            <CardTitle className="flex items-center gap-2 text-zinc-900">
-              <Calendar className="h-5 w-5 text-zinc-600" />
+        <Card className="mb-6 border-border shadow-lg">
+          <CardHeader className="border-b border-border">
+            <CardTitle className="flex items-center gap-2 text-foreground">
+              <Calendar className="h-5 w-5 text-muted-foreground" />
               Booking Status
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4 pt-6">
-            <div className="flex items-center justify-between">
-              <span className="text-zinc-600">Status:</span>
-              <div className="flex items-center gap-2">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-muted-foreground">Status:</span>
+              <div className="flex items-center gap-2 min-w-0">
                 {statusInfo.statusIcon}
-                <span className="font-medium text-zinc-900">
+                <span className="font-medium text-foreground">
                   {statusInfo.statusText}
                 </span>
               </div>
             </div>
 
-            <div className="border-t border-zinc-100 pt-4">
-              <p className="text-zinc-700 mb-3">{statusInfo.description}</p>
-              <p className="text-sm text-zinc-500">{statusInfo.nextSteps}</p>
+            <div className="border-t border-border pt-4">
+              <p className="text-muted-foreground mb-3">
+                {statusInfo.description}
+              </p>
+              <p className="text-sm text-muted-foreground/70">
+                {statusInfo.nextSteps}
+              </p>
             </div>
 
             {paymentIntent && (
-              <div className="border-t border-zinc-100 pt-4">
-                <div className="text-sm text-zinc-500 font-mono">
+              <div className="border-t border-border pt-4">
+                <div className="text-sm text-muted-foreground/70 font-mono break-all">
                   Payment ID: {paymentIntent}
                 </div>
               </div>
@@ -189,30 +236,26 @@ function CheckoutSuccessContent() {
           </CardContent>
         </Card>
 
-        <div className="flex gap-4 justify-center">
-          <Button
-            variant="outline"
-            onClick={() => router.push("/dashboard")}
-            className="border-zinc-300 text-zinc-700 hover:bg-zinc-100"
-          >
+        <div className="flex flex-col sm:flex-row gap-4 justify-center">
+          <Button variant="outline" onClick={() => router.push("/dashboard")}>
             Go to Dashboard
           </Button>
 
           <Button
             onClick={() => router.push("/dashboard")}
-            className="flex items-center gap-2 bg-zinc-900 hover:bg-zinc-800 text-white"
+            className="flex items-center justify-center gap-2"
           >
             View Appointments
             <ArrowRight className="h-4 w-4" />
           </Button>
         </div>
 
-        <div className="mt-8 text-center text-sm text-zinc-500">
+        <div className="mt-8 text-center text-sm text-muted-foreground">
           <p>
             Need help? Contact our{" "}
             <a
-              href="/support"
-              className="text-zinc-900 font-medium hover:underline"
+              href="/dashboard"
+              className="text-foreground font-medium hover:underline"
             >
               support team
             </a>
@@ -225,13 +268,7 @@ function CheckoutSuccessContent() {
 
 export default function CheckoutSuccessPage() {
   return (
-    <Suspense
-      fallback={
-        <div className="min-h-screen flex items-center justify-center bg-zinc-50">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-zinc-900"></div>
-        </div>
-      }
-    >
+    <Suspense fallback={<CheckoutResultSkeleton />}>
       <CheckoutSuccessContent />
     </Suspense>
   );

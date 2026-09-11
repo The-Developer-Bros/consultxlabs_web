@@ -11,28 +11,28 @@ export default function Hackathon() {
   return (
     <>
       <div
-        className="relative bg-gray-50/90 py-12 lg:py-16"
+        className="relative bg-muted/90 py-12 lg:py-16"
         style={{ paddingTop: "160px" }}
       >
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid items-center justify-center gap-4 text-center md:gap-10">
             <div className="space-y-3">
-              <h2 className="text-3xl font-bold tracking-tighter sm:text-4xl md:text-5xl">
+              <h2 className="text-fluid-4xl font-bold tracking-tight">
                 Join the Hackathon
               </h2>
-              <p className="mx-auto max-w-[600px] text-gray-500 md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed dark:text-gray-400">
+              <p className="mx-auto max-w-[600px] text-muted-foreground md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed">
                 Get ready to build something amazing. The hackathon is a
                 collaborative event where you can turn your ideas into reality.
               </p>
             </div>
             <div className="mx-auto max-w-sm space-y-2">
               <Input
-                className="w-full border-gray-200 dark:border-gray-800"
+                className="w-full border-border"
                 placeholder="Enter your email"
                 type="email"
               />
               <Button className="w-full">Sign Up</Button>
-              <p className="text-xs text-gray-500 dark:text-gray-400">
+              <p className="text-xs text-muted-foreground">
                 Sign up to receive updates. We'll never share your email.
               </p>
             </div>
@@ -56,11 +56,11 @@ export default function Hackathon() {
           {" "}
           <div className="space-y-3">
             {" "}
-            <h2 className="text-3xl font-bold tracking-tighter sm:text-4xl md:text-5xl">
+            <h2 className="text-fluid-4xl font-bold tracking-tight">
               {" "}
               Hackathon Schedule{" "}
             </h2>{" "}
-            <p className="mx-auto max-w-3xl text-gray-500 md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed dark:text-gray-400">
+            <p className="mx-auto max-w-3xl text-muted-foreground md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed">
               {" "}
               Here's a breakdown of the hackathon schedule. Mark your
               calendars!{" "}
@@ -70,14 +70,14 @@ export default function Hackathon() {
             {" "}
             <div className="grid w-full grid-cols-[1fr_4fr] items-start">
               {" "}
-              <div className="flex w-10 h-10 items-center justify-center rounded-full border border-gray-200 bg-gray-900 text-gray-50 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100">
+              <div className="flex w-10 h-10 items-center justify-center rounded-full border border-border bg-primary text-primary-foreground">
                 {" "}
                 1{" "}
               </div>{" "}
               <div className="space-y-1">
                 {" "}
                 <h3 className="font-semibold">Opening Ceremony</h3>{" "}
-                <p className="text-sm text-gray-500 dark:text-gray-400">
+                <p className="text-sm text-muted-foreground">
                   {" "}
                   Let's kick things off! Join us for the opening ceremony where
                   we'll introduce the judges and go over the rules.{" "}
@@ -86,14 +86,14 @@ export default function Hackathon() {
             </div>{" "}
             <div className="grid w-full grid-cols-[1fr_4fr] items-start">
               {" "}
-              <div className="flex w-10 h-10 items-center justify-center rounded-full border border-gray-200 bg-gray-900 text-gray-50 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100">
+              <div className="flex w-10 h-10 items-center justify-center rounded-full border border-border bg-primary text-primary-foreground">
                 {" "}
                 2{" "}
               </div>{" "}
               <div className="space-y-1">
                 {" "}
                 <h3 className="font-semibold">Hacking Begins</h3>{" "}
-                <p className="text-sm text-gray-500 dark:text-gray-400">
+                <p className="text-sm text-muted-foreground">
                   {" "}
                   It's time to start hacking! You have 24 hours to build
                   something amazing.{" "}
@@ -102,14 +102,14 @@ export default function Hackathon() {
             </div>{" "}
             <div className="grid w-full grid-cols-[1fr_4fr] items-start">
               {" "}
-              <div className="flex w-10 h-10 items-center justify-center rounded-full border border-gray-200 bg-gray-900 text-gray-50 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100">
+              <div className="flex w-10 h-10 items-center justify-center rounded-full border border-border bg-primary text-primary-foreground">
                 {" "}
                 3{" "}
               </div>{" "}
               <div className="space-y-1">
                 {" "}
                 <h3 className="font-semibold">Workshops</h3>{" "}
-                <p className="text-sm text-gray-500 dark:text-gray-400">
+                <p className="text-sm text-muted-foreground">
                   {" "}
                   We'll have a series of workshops on topics like design,
                   pitching, and more. Don't miss out!{" "}
@@ -118,14 +118,14 @@ export default function Hackathon() {
             </div>{" "}
             <div className="grid w-full grid-cols-[1fr_4fr] items-start">
               {" "}
-              <div className="flex w-10 h-10 items-center justify-center rounded-full border border-gray-200 bg-gray-900 text-gray-50 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100">
+              <div className="flex w-10 h-10 items-center justify-center rounded-full border border-border bg-primary text-primary-foreground">
                 {" "}
                 4{" "}
               </div>{" "}
               <div className="space-y-1">
                 {" "}
                 <h3 className="font-semibold">Hacking Ends</h3>{" "}
-                <p className="text-sm text-gray-500 dark:text-gray-400">
+                <p className="text-sm text-muted-foreground">
                   {" "}
                   Time's up! Make sure to submit your projects before the
                   deadline.{" "}
@@ -134,14 +134,14 @@ export default function Hackathon() {
             </div>{" "}
             <div className="grid w-full grid-cols-[1fr_4fr] items-start">
               {" "}
-              <div className="flex w-10 h-10 items-center justify-center rounded-full border border-gray-200 bg-gray-900 text-gray-50 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100">
+              <div className="flex w-10 h-10 items-center justify-center rounded-full border border-border bg-primary text-primary-foreground">
                 {" "}
                 5{" "}
               </div>{" "}
               <div className="space-y-1">
                 {" "}
                 <h3 className="font-semibold">Judging</h3>{" "}
-                <p className="text-sm text-gray-500 dark:text-gray-400">
+                <p className="text-sm text-muted-foreground">
                   {" "}
                   Our judges will review the projects and select the winners.
                   Good luck!{" "}
@@ -150,14 +150,14 @@ export default function Hackathon() {
             </div>{" "}
             <div className="grid w-full grid-cols-[1fr_4fr] items-start">
               {" "}
-              <div className="flex w-10 h-10 items-center justify-center rounded-full border border-gray-200 bg-gray-900 text-gray-50 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100">
+              <div className="flex w-10 h-10 items-center justify-center rounded-full border border-border bg-primary text-primary-foreground">
                 {" "}
                 6{" "}
               </div>{" "}
               <div className="space-y-1">
                 {" "}
                 <h3 className="font-semibold">Closing Ceremony</h3>{" "}
-                <p className="text-sm text-gray-500 dark:text-gray-400">
+                <p className="text-sm text-muted-foreground">
                   {" "}
                   Join us for the closing ceremony where we'll announce the
                   winners and wrap up the hackathon.{" "}
@@ -170,10 +170,10 @@ export default function Hackathon() {
       <section className="w-full py-12 md:py-24 lg:py-32">
         <div className="grid items-center justify-center gap-4 px-4 text-center md:gap-10 lg:px-6">
           <div className="space-y-3">
-            <h2 className="text-3xl font-bold tracking-tighter sm:text-4xl md:text-5xl">
+            <h2 className="text-fluid-4xl font-bold tracking-tight">
               Hackathon Rules
             </h2>
-            <p className="mx-auto max-w-3xl text-gray-500 md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed dark:text-gray-400">
+            <p className="mx-auto max-w-3xl text-muted-foreground md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed">
               Make sure you're familiar with the rules before the hackathon
               begins.
             </p>
@@ -204,11 +204,11 @@ export default function Hackathon() {
           {" "}
           <div className="space-y-3">
             {" "}
-            <h2 className="text-3xl font-bold tracking-tighter sm:text-4xl md:text-5xl">
+            <h2 className="text-fluid-4xl font-bold tracking-tight">
               {" "}
               Judging Criteria{" "}
             </h2>{" "}
-            <p className="mx-auto max-w-3xl text-gray-500 md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed dark:text-gray-400">
+            <p className="mx-auto max-w-3xl text-muted-foreground md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed">
               {" "}
               Your project will be evaluated based on the following
               criteria.{" "}
@@ -218,14 +218,14 @@ export default function Hackathon() {
             {" "}
             <div className="flex w-full items-center space-x-4">
               {" "}
-              <div className="flex w-12 h-12 items-center justify-center rounded-full border border-gray-200 bg-gray-900 text-gray-50 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100">
+              <div className="flex w-12 h-12 items-center justify-center rounded-full border border-border bg-primary text-primary-foreground">
                 {" "}
                 1{" "}
               </div>{" "}
               <div className="space-y-1">
                 {" "}
                 <h3 className="font-semibold">Creativity</h3>{" "}
-                <p className="text-sm text-gray-500 dark:text-gray-400">
+                <p className="text-sm text-muted-foreground">
                   {" "}
                   How original and innovative is the project?{" "}
                 </p>{" "}
@@ -233,14 +233,14 @@ export default function Hackathon() {
             </div>{" "}
             <div className="flex w-full items-center space-x-4">
               {" "}
-              <div className="flex w-12 h-12 items-center justify-center rounded-full border border-gray-200 bg-gray-900 text-gray-50 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100">
+              <div className="flex w-12 h-12 items-center justify-center rounded-full border border-border bg-primary text-primary-foreground">
                 {" "}
                 2{" "}
               </div>{" "}
               <div className="space-y-1">
                 {" "}
                 <h3 className="font-semibold">Functionality</h3>{" "}
-                <p className="text-sm text-gray-500 dark:text-gray-400">
+                <p className="text-sm text-muted-foreground">
                   {" "}
                   Does the project work as intended? Are all features
                   functional?{" "}
@@ -249,14 +249,14 @@ export default function Hackathon() {
             </div>{" "}
             <div className="flex w-full items-center space-x-4">
               {" "}
-              <div className="flex w-12 h-12 items-center justify-center rounded-full border border-gray-200 bg-gray-900 text-gray-50 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100">
+              <div className="flex w-12 h-12 items-center justify-center rounded-full border border-border bg-primary text-primary-foreground">
                 {" "}
                 3{" "}
               </div>{" "}
               <div className="space-y-1">
                 {" "}
                 <h3 className="font-semibold">Design</h3>{" "}
-                <p className="text-sm text-gray-500 dark:text-gray-400">
+                <p className="text-sm text-muted-foreground">
                   {" "}
                   Is the user interface well-designed and user-friendly?{" "}
                 </p>{" "}
@@ -264,14 +264,14 @@ export default function Hackathon() {
             </div>{" "}
             <div className="flex w-full items-center space-x-4">
               {" "}
-              <div className="flex w-12 h-12 items-center justify-center rounded-full border border-gray-200 bg-gray-900 text-gray-50 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100">
+              <div className="flex w-12 h-12 items-center justify-center rounded-full border border-border bg-primary text-primary-foreground">
                 {" "}
                 4{" "}
               </div>{" "}
               <div className="space-y-1">
                 {" "}
                 <h3 className="font-semibold">Innovation</h3>{" "}
-                <p className="text-sm text-gray-500 dark:text-gray-400">
+                <p className="text-sm text-muted-foreground">
                   {" "}
                   Does the project introduce new ideas or approaches?{" "}
                 </p>{" "}
@@ -283,10 +283,10 @@ export default function Hackathon() {
       <section className="w-full py-12 md:py-24 lg:py-32">
         <div className="grid items-center justify-center gap-4 px-4 text-center md:gap-10 lg:px-6">
           <div className="space-y-3">
-            <h2 className="text-3xl font-bold tracking-tighter sm:text-4xl md:text-5xl">
+            <h2 className="text-fluid-4xl font-bold tracking-tight">
               About the Hackathon
             </h2>
-            <p className="mx-auto max-w-3xl text-gray-500 md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed dark:text-gray-400">
+            <p className="mx-auto max-w-3xl text-muted-foreground md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed">
               The hackathon is a collaborative event where you can turn your
               ideas into reality.
             </p>
@@ -326,11 +326,11 @@ export default function Hackathon() {
       <section className="w-full py-12 md:py-24 lg:py-32">
         <div className="grid items-center justify-center gap-4 px-4 text-center md:gap-10 lg:px-6">
           <div className="space-y-3">
-            <h2 className="text-3xl font-bold tracking-tighter sm:text-4xl md:text-5xl">
+            <h2 className="text-fluid-4xl font-bold tracking-tight">
               {" "}
               Contact Us{" "}
             </h2>
-            <p className="mx-auto max-w-3xl text-gray-500 md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed dark:text-gray-400">
+            <p className="mx-auto max-w-3xl text-muted-foreground md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed">
               {" "}
               Have questions about the hackathon? Reach out to our team.{" "}
             </p>
@@ -339,13 +339,13 @@ export default function Hackathon() {
             <Input
               placeholder="Enter your email"
               type="email"
-              className="w-full px-4 py-3 rounded-md border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-4 py-3 rounded-md border border-border focus:outline-none focus:ring-2 focus:ring-ring"
             />
             <Textarea
-              className="w-full min-h-[200px] px-4 py-3 rounded-md border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full min-h-[200px] px-4 py-3 rounded-md border border-border focus:outline-none focus:ring-2 focus:ring-ring"
               placeholder="Your message"
             />
-            <Button className="w-full bg-black text-white px-6 py-3 rounded-md">
+            <Button className="w-full bg-primary text-primary-foreground px-6 py-3 rounded-md">
               {" "}
               Send Message{" "}
             </Button>
@@ -355,10 +355,10 @@ export default function Hackathon() {
       <section className="w-full py-12 md:py-24 lg:py-32">
         <div className="grid items-center justify-center gap-4 px-4 text-center md:gap-10 lg:px-6">
           <div className="space-y-3">
-            <h2 className="text-3xl font-bold tracking-tighter sm:text-4xl md:text-5xl">
+            <h2 className="text-fluid-4xl font-bold tracking-tight">
               Hackathon Imagery
             </h2>
-            <p className="mx-auto max-w-3xl text-gray-500 md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed dark:text-gray-400">
+            <p className="mx-auto max-w-3xl text-muted-foreground md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed">
               Here are some images from our past hackathons.
             </p>
           </div>

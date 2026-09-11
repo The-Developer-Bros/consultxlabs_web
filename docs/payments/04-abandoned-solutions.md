@@ -57,7 +57,7 @@ const abandonedAppointments = await prisma.appointment.findMany({
 
 ### 2. **Enhanced Webhook Handling** 🔄
 
-**File**: `app/api/webhooks/unified/route.ts`
+**Files**: `app/api/webhooks/stripe/route.ts`, `app/api/webhooks/razorpay/route.ts` (dispatch via `app/api/webhooks/razorpay-dispatch.ts`)
 
 **Improvements**:
 

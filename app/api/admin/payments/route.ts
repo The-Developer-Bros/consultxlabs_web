@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { requirePrivilegedAuth } from "@/lib/auth-helpers";
@@ -23,6 +24,10 @@ export async function GET(req: NextRequest) {
       "appointmentType",
     ) as AppointmentsType | null;
     const search = searchParams.get("search");
+    // #674 comment 7 — optional org-scope filter for support staff drilling
+    // into a single tenant's payments. No extra permission gate needed:
+    // the route is already privileged (requirePrivilegedAuth above).
+    const orgId = searchParams.get("orgId");
 
     // Build where clause
     const where: Prisma.PaymentWhereInput = {};
@@ -48,6 +53,10 @@ export async function GET(req: NextRequest) {
       };
     }
 
+    if (orgId) {
+      where.organizationId = orgId;
+    }
+
     // Fetch payments with pagination
     const [payments, total] = await Promise.all([
       prisma.payment.findMany({
@@ -60,6 +69,11 @@ export async function GET(req: NextRequest) {
             select: {
               appointmentType: true,
             },
+          },
+          // #1365 — drives the "Invoice" column; an operator answering "where
+          // is my invoice" should not have to open each payment to find out.
+          consumerInvoice: {
+            select: { id: true, invoiceNumber: true, issuedAt: true },
           },
         },
       }),
@@ -74,6 +88,7 @@ export async function GET(req: NextRequest) {
       totalPages: Math.ceil(total / limit),
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "admin" } });
     console.error("Admin payments list error:", error);
     return NextResponse.json(
       { error: "Failed to fetch payments" },

@@ -13,8 +13,11 @@ import {
   disconnectDatabase,
   type RefundEarningCascadeResult,
 } from "../../scripts/refunds/cascade-refund-earnings";
+import { cascadeRunFailed } from "../../scripts/refunds/cascade-run-outcome";
 import fs from "fs";
 import { abortIfMaintenance } from "../../lib/maintenance-cron";
+import * as Sentry from "@sentry/nextjs";
+import { runJob } from "../../lib/observability/job-sentry";
 
 /**
  * Output results to GitHub Actions
@@ -47,6 +50,7 @@ function outputToGitHubActions(result: RefundEarningCascadeResult): void {
  */
 async function main(): Promise<void> {
   await abortIfMaintenance("cascade-refund-earnings");
+  Sentry.logger.info("job:cascade-refund-earnings started");
   console.log("🔄 Starting refund-earning cascade job...");
   console.log(`Timestamp: ${new Date().toISOString()}`);
 
@@ -67,15 +71,24 @@ async function main(): Promise<void> {
 
     outputToGitHubActions(result);
 
-    if (!result.success) {
-      process.exit(1);
+    // PM-34 — result.success === false means some SUCCEEDED refunds failed
+    // their cascade; a green exit reads as healthy to the cron monitor and
+    // never pages. Non-zero exitCode (NOT process.exit() — that would kill
+    // the Sentry flush; see lib/observability/job-sentry).
+    if (cascadeRunFailed(result)) {
+      process.exitCode = 1;
+      return;
     }
-  } catch (error) {
-    console.error("❌ Fatal error in refund-earning cascade:", error);
-    process.exit(1);
+
+    Sentry.logger.info("job:cascade-refund-earnings finished", {
+      totalProcessed: result.totalProcessed,
+      updatedCount: result.updatedCount,
+      skippedCount: result.skippedCount,
+      errorCount: result.errorCount,
+    });
   } finally {
     await disconnectDatabase();
   }
 }
 
-main();
+runJob("cascade-refund-earnings", main);

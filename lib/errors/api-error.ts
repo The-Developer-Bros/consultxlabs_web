@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/nextjs";
 import { NextResponse } from "next/server";
 
 import {
@@ -24,6 +25,7 @@ export function apiError({
   if (classified.isBusinessError) {
     console.warn(`${tag}${ctx} Business rule: ${classified.errorMessage}`);
   } else {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "api" } });
     console.error(`${tag}${ctx} Unexpected:`, error);
   }
 

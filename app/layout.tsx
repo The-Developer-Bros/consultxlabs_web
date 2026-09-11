@@ -7,18 +7,14 @@ import Navbar from "@/components/Navbar";
 import NavigationProgress from "@/components/NavigationProgress";
 import { Toaster } from "@/components/ui/toaster";
 import { AnnouncementBarProvider } from "@/providers/AnnouncementBarProvider";
+import AuthSyncProvider from "@/providers/AuthSyncProvider";
 import { MaintenanceProvider } from "@/providers/MaintenanceProvider";
 import ReactQueryProvider from "@/providers/ReactQueryProvider";
 import type { Metadata, Viewport } from "next";
-import { Sora } from "next/font/google";
+
+import { sora } from "@/lib/fonts";
 
 import "./globals.css";
-
-const sora = Sora({
-  subsets: ["latin"],
-  variable: "--font-sora",
-  display: "swap",
-});
 
 export const viewport: Viewport = {
   width: "device-width",
@@ -63,18 +59,26 @@ export const metadata: Metadata = {
   },
 };
 
-export default async function RootLayout({
+// Intentionally NO server-side session read here. Calling getSession() invokes
+// headers(), which forces the ENTIRE app to render dynamically — so even the
+// loading.tsx skeletons had to wait on a (cold) server render, which is why a
+// soft navigation sat blank for ~20-30s before the skeleton appeared. Keeping
+// the root layout static lets the shell + loading skeletons prefetch and paint
+// instantly; the Navbar hydrates the session client-side via useSession(), and
+// AuthSyncProvider keeps it live. The brief first-paint unknown state is shown
+// as a neutral placeholder in the Navbar rather than a signed-out flash. (#932)
+export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={sora.variable} suppressHydrationWarning>
+    <html lang="en" className={sora.variable}>
       <body
-        className={`${sora.className} flex flex-col min-h-screen antialiased`}
-        suppressHydrationWarning
+        className={`${sora.className} flex flex-col min-h-svh antialiased`}
       >
         <ReactQueryProvider>
+          <AuthSyncProvider />
           <MaintenanceProvider>
             <AnnouncementBarProvider>
               <NavigationProgress />

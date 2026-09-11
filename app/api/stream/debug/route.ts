@@ -7,8 +7,11 @@
  * Usage: GET /api/stream/debug?userId=USER_ID&secret=YOUR_SECRET
  */
 
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import { getStreamChatClient, isStreamConfigured } from "@/lib/stream-client";
+import { getSession } from "@/lib/auth-server";
+import { isPrivileged } from "@/lib/auth-helpers";
 import { streamLogger } from "@/lib/stream-logger";
 import prisma from "@/lib/prisma";
 
@@ -19,6 +22,23 @@ const DEBUG_SECRET = process.env.STREAM_DEBUG_SECRET;
 export async function GET(req: NextRequest) {
   // Security checks
   const isDev = process.env.NODE_ENV === "development";
+
+  // #1134 P1-12 — this route had NO session check at all. Its only production
+  // gate was a shared secret in the query string — which lands in access logs,
+  // browser history and any Referer header — and it dumps an arbitrary user's
+  // full Stream channel list. A session is now required everywhere, and staff
+  // or admin on top of that, so the secret is defence in depth rather than the
+  // whole defence.
+  const session = await getSession();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!isPrivileged(session.user.role)) {
+    streamLogger.warn("Non-privileged Stream debug attempt", {
+      userId: session.user.id,
+    });
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
 
   if (!isDev && !ALLOW_IN_PRODUCTION) {
     return NextResponse.json(
@@ -32,8 +52,12 @@ export async function GET(req: NextRequest) {
     const url = new URL(req.url);
     const secret = url.searchParams.get("secret");
 
-    if (!secret || secret !== DEBUG_SECRET) {
-      streamLogger.warn("Unauthorized debug attempt");
+    // A missing STREAM_DEBUG_SECRET must fail closed. `secret !== undefined`
+    // would have compared two undefineds and passed.
+    if (!DEBUG_SECRET || !secret || secret !== DEBUG_SECRET) {
+      streamLogger.warn("Unauthorized debug attempt", {
+        userId: session.user.id,
+      });
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
   }
@@ -93,14 +117,14 @@ export async function GET(req: NextRequest) {
               consultationPlan: {
                 consultantProfileId: user.consultantProfileId,
               },
-              requestStatus: "APPROVED",
+              status: "APPROVED",
             },
           })
         : user.consulteeProfileId
           ? prisma.consultation.count({
               where: {
                 requestedById: user.consulteeProfileId,
-                requestStatus: "APPROVED",
+                status: "APPROVED",
               },
             })
           : 0,
@@ -110,14 +134,14 @@ export async function GET(req: NextRequest) {
               subscriptionPlan: {
                 consultantProfileId: user.consultantProfileId,
               },
-              requestStatus: "APPROVED",
+              status: "APPROVED",
             },
           })
         : user.consulteeProfileId
           ? prisma.subscription.count({
               where: {
                 requestedById: user.consulteeProfileId,
-                requestStatus: "APPROVED",
+                status: "APPROVED",
               },
             })
           : 0,
@@ -129,16 +153,11 @@ export async function GET(req: NextRequest) {
           })
         : prisma.webinar.count({
             where: {
-              OR: [
-                { waitlist: { some: { userId } } },
-                {
-                  appointment: {
-                    slotsOfAppointment: {
-                      some: { user: { some: { id: userId } } },
-                    },
-                  },
+              appointment: {
+                slotsOfAppointment: {
+                  some: { user: { some: { id: userId } } },
                 },
-              ],
+              },
             },
           }),
       user.consultantProfileId
@@ -149,18 +168,13 @@ export async function GET(req: NextRequest) {
           })
         : prisma.class.count({
             where: {
-              OR: [
-                { waitlist: { some: { userId } } },
-                {
-                  appointments: {
-                    some: {
-                      slotsOfAppointment: {
-                        some: { user: { some: { id: userId } } },
-                      },
-                    },
+              appointments: {
+                some: {
+                  slotsOfAppointment: {
+                    some: { user: { some: { id: userId } } },
                   },
                 },
-              ],
+              },
             },
           }),
     ]);
@@ -199,6 +213,10 @@ export async function GET(req: NextRequest) {
       }),
     });
   } catch (error) {
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "stream" } },
+    );
     streamLogger.error("Debug endpoint error", error);
     return NextResponse.json(
       {

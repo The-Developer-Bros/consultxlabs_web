@@ -16,10 +16,10 @@ function ExpertCard({ expert }: { expert: IConsultantCardData }) {
       href={`/explore/experts/${expert.id}`}
       className="block flex-shrink-0 w-[300px] mx-3"
     >
-      <Card className="h-full border border-zinc-200 bg-white overflow-hidden group hover:border-zinc-300 transition-all duration-300 hover:-translate-y-1 hover:shadow-xl">
+      <Card className="h-full border border-border bg-card overflow-hidden group hover:border-foreground/30 transition-all duration-300 hover:-translate-y-1 hover:shadow-elevation-3">
         <CardContent className="p-6">
           <div className="flex items-center gap-4 mb-4">
-            <Avatar className="w-16 h-16 border-2 border-zinc-100 shadow-md">
+            <Avatar className="w-16 h-16 border-2 border-border shadow-elevation-2">
               <AvatarImage
                 src={expert.user.image ?? "/placeholder-user.jpg"}
                 alt={expert.user.name ?? "Expert"}
@@ -29,24 +29,30 @@ function ExpertCard({ expert }: { expert: IConsultantCardData }) {
               </AvatarFallback>
             </Avatar>
             <div className="flex-1 min-w-0">
-              <h4 className="font-semibold text-zinc-900 truncate">
+              <h4 className="font-semibold text-foreground truncate">
                 {expert.user.name}
               </h4>
-              <p className="text-sm text-zinc-500 truncate">
+              <p className="text-sm text-muted-foreground truncate">
                 {expert.headline || expert.domain?.name}
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-2 mb-4">
-            <div className="flex items-center gap-1">
-              <Star className="w-4 h-4 fill-zinc-800 text-zinc-800" />
-              <span className="font-medium text-zinc-900">
-                {expert.rating.toFixed(1)}
-              </span>
-            </div>
-            <span className="text-zinc-300">•</span>
-            <span className="text-sm text-zinc-500">{expert.experience}</span>
+            {expert.rating !== null && (
+              <>
+                <div className="flex items-center gap-1">
+                  <Star className="w-4 h-4 fill-foreground text-foreground" />
+                  <span className="font-medium text-foreground">
+                    {expert.rating.toFixed(1)}
+                  </span>
+                </div>
+                <span className="text-muted-foreground/70">•</span>
+              </>
+            )}
+            <span className="text-sm text-muted-foreground">
+              {expert.experience}
+            </span>
           </div>
 
           <div className="flex flex-wrap gap-2">
@@ -54,7 +60,7 @@ function ExpertCard({ expert }: { expert: IConsultantCardData }) {
               <Badge
                 key={tag.id}
                 variant="secondary"
-                className="bg-zinc-100 text-zinc-700 hover:bg-zinc-200 text-xs border-0"
+                className="bg-secondary text-secondary-foreground hover:bg-secondary/80 text-xs border-0"
               >
                 {tag.name}
               </Badge>
@@ -69,7 +75,7 @@ function ExpertCard({ expert }: { expert: IConsultantCardData }) {
 function ExpertLoadingSkeleton() {
   return (
     <div className="flex-shrink-0 w-[300px] mx-3">
-      <Card className="h-[200px] animate-pulse bg-zinc-100 border-0" />
+      <Card className="h-[200px] animate-pulse bg-muted border-0" />
     </div>
   );
 }
@@ -84,7 +90,7 @@ export function FeaturedExpertsSection({
   isLoading,
 }: FeaturedExpertsSectionProps) {
   return (
-    <section className="py-20 md:py-32 bg-white overflow-hidden relative">
+    <section className="py-20 md:py-32 bg-background overflow-hidden relative">
       <div className="absolute inset-0 dot-pattern-light opacity-60" />
 
       <div className="container mx-auto px-4 md:px-6 mb-12 relative z-10">
@@ -98,21 +104,22 @@ export function FeaturedExpertsSection({
           <div>
             <Badge
               variant="secondary"
-              className="mb-4 bg-zinc-100 text-zinc-700 hover:bg-zinc-100 border-0"
+              className="mb-4 bg-secondary text-secondary-foreground hover:bg-secondary border-0"
             >
               Featured Experts
             </Badge>
-            <h2 className="text-3xl md:text-4xl lg:text-5xl font-bold text-zinc-900 mb-2">
-              Learn from <span className="text-zinc-500">industry leaders</span>
+            <h2 className="text-fluid-4xl font-bold text-foreground mb-2 tracking-tight">
+              Learn from{" "}
+              <span className="text-muted-foreground">industry leaders</span>
             </h2>
-            <p className="text-lg text-zinc-600">
+            <p className="text-lg text-muted-foreground">
               Handpicked professionals ready to guide your journey
             </p>
           </div>
           <Link href="/explore/experts">
             <Button
               variant="outline"
-              className="group border-zinc-300 hover:bg-zinc-100"
+              className="group border-border hover:bg-muted"
             >
               View All Experts
               <ChevronRight className="ml-1 w-4 h-4 group-hover:translate-x-1 transition-transform" />
@@ -123,8 +130,8 @@ export function FeaturedExpertsSection({
 
       {/* Marquee */}
       <div className="relative">
-        <div className="absolute left-0 top-0 bottom-0 w-32 bg-gradient-to-r from-white to-transparent z-10" />
-        <div className="absolute right-0 top-0 bottom-0 w-32 bg-gradient-to-l from-white to-transparent z-10" />
+        <div className="absolute left-0 top-0 bottom-0 w-32 bg-gradient-to-r from-background to-transparent z-10" />
+        <div className="absolute right-0 top-0 bottom-0 w-32 bg-gradient-to-l from-background to-transparent z-10" />
 
         <div className="flex animate-marquee">
           {isLoading ? (

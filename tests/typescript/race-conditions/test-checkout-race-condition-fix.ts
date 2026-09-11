@@ -26,7 +26,7 @@
 import { handleCheckout } from "@/lib/payments/operations/checkout";
 import prisma from "@/lib/prisma";
 import { CheckoutInput } from "@/schemas/checkout";
-import { PaymentGateway, PaymentStatus } from "@prisma/client";
+import { PaymentStatus } from "@prisma/client";
 
 // ============================================================================
 // Test Configuration
@@ -53,10 +53,10 @@ const TEST_CONFIG = {
 const createCheckoutInput = (userId: string): CheckoutInput => ({
   appointmentType: "CONSULTATION",
   planId: TEST_CONFIG.PLAN_ID,
-  slotStartTimeInUTC: TEST_CONFIG.SLOT_START,
-  slotEndTimeInUTC: TEST_CONFIG.SLOT_END,
+  startsAt: TEST_CONFIG.SLOT_START,
+  endsAt: TEST_CONFIG.SLOT_END,
   notes: `Test checkout for user ${userId}`,
-  paymentGateway: "STRIPE" as PaymentGateway,
+  paymentGateway: "STRIPE",
 });
 
 // ============================================================================
@@ -101,7 +101,7 @@ async function testConcurrentCheckout() {
       const user = index === 0 ? "User A" : "User B";
       if (result.status === "fulfilled") {
         console.log(`✅ ${user}: SUCCESS`);
-        console.log(`   Payment Intent: ${result.value.paymentIntent.id}`);
+        console.log(`   Payment Intent: ${result.value.paymentIntent?.id ?? "N/A"}`);
       } else {
         console.log(`❌ ${user}: FAILED`);
         console.log(`   Error: ${result.reason.message}`);

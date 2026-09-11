@@ -22,6 +22,7 @@
 import prisma from "../../lib/prisma";
 import { DisputeStatus, EarningStatus } from "@prisma/client";
 import { refundEarnings } from "../../lib/payments/payouts/earnings-service";
+import { withCronLock } from "@/lib/cron/with-cron-lock";
 
 export interface LostDisputeHandlerResult {
   success: boolean;
@@ -37,7 +38,15 @@ export interface LostDisputeHandlerResult {
 /**
  * Find lost disputes with non-REFUNDED earnings and update them
  */
+// #476 — locked at the core so every entry (GH Actions / HTTP) shares one
+// mutual exclusion; fail-closed: money state must not double-run unlocked.
 export async function handleLostDisputes(): Promise<LostDisputeHandlerResult> {
+  return withCronLock("handle-lost-disputes", { failMode: "closed" }, () =>
+    handleLostDisputesUnlocked(),
+  );
+}
+
+async function handleLostDisputesUnlocked(): Promise<LostDisputeHandlerResult> {
   const errors: string[] = [];
   let updatedCount = 0;
   let skippedCount = 0;

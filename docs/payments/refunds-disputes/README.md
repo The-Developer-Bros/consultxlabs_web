@@ -1,5 +1,7 @@
 # Refunds & Disputes System
 
+> **Moved (org/B2B side):** The organization-side documentation for this subsystem now lives in [`docs/enterprise/10-money-and-ledger/10-refunds.md`](../../enterprise/10-money-and-ledger/10-refunds.md) and [`11-disputes.md`](../../enterprise/10-money-and-ledger/11-disputes.md). This file keeps the consumer-marketplace (B2C) and gateway-generic details only.
+
 Documentation for the Familiarise refund and dispute handling system.
 
 **Last Updated**: 2026-03-31

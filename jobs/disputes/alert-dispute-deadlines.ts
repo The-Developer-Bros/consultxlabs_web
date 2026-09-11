@@ -14,6 +14,8 @@ import {
 } from "../../scripts/disputes/alert-dispute-deadlines";
 import fs from "fs";
 import { abortIfMaintenance } from "../../lib/maintenance-cron";
+import * as Sentry from "@sentry/nextjs";
+import { runJob } from "../../lib/observability/job-sentry";
 
 /**
  * Output results to GitHub Actions
@@ -48,6 +50,7 @@ function outputToGitHubActions(result: DisputeDeadlineAlertResult): void {
  */
 async function main(): Promise<void> {
   await abortIfMaintenance("alert-dispute-deadlines");
+  Sentry.logger.info("job:alert-dispute-deadlines started");
   console.log("🔔 Starting dispute deadline alert check...");
   console.log(`Timestamp: ${new Date().toISOString()}`);
 
@@ -68,18 +71,19 @@ async function main(): Promise<void> {
     }
 
     outputToGitHubActions(result);
+    Sentry.logger.info("job:alert-dispute-deadlines finished", {
+      urgentCount: result.urgentCount,
+      criticalCount: result.criticalCount,
+    });
 
     // Exit with error if critical disputes found (to trigger notifications)
     if (result.criticalCount > 0) {
       console.log("\n🚨 Exiting with error status due to critical disputes");
-      process.exit(1);
+      process.exitCode = 1;
     }
-  } catch (error) {
-    console.error("❌ Fatal error in dispute deadline alert:", error);
-    process.exit(1);
   } finally {
     await disconnectDatabase();
   }
 }
 
-main();
+runJob("alert-dispute-deadlines", main);

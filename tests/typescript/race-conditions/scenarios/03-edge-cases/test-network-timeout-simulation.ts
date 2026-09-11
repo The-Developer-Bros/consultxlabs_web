@@ -23,11 +23,13 @@ import {
   generateMarkdownReport,
   resetBookingRegistry,
 } from "../../utilities/test-helpers.js";
+import { thirtyAfter } from "../../utilities/test-helpers.js";
 import {
   lockSlotBooking,
   unlockSlotBooking,
   type ApprovalLock,
 } from "../../../../../utils/appointmentlock.js";
+
 import {
   generateTestSlot,
   generateConsultantId,
@@ -86,13 +88,13 @@ async function runTest() {
     networkDelay: number,
   ): Promise<BookingResult> => {
     const requestStart = Date.now();
-    let lock: ApprovalLock | null = null;
+    let lock: ApprovalLock[] | null = null;
 
     try {
       // Simulate network delay before lock acquisition
       await new Promise((resolve) => setTimeout(resolve, networkDelay));
 
-      lock = await lockSlotBooking(consultantId, slot.start, 15000);
+      lock = await lockSlotBooking(consultantId, slot.start, thirtyAfter(slot.start), 15000);
 
       // Check if slot already booked using SHARED registry
       const slotKey = `${consultantId}:${slot.start}`;

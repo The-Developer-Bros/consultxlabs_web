@@ -3,8 +3,13 @@ name: Reconcile Payment Status
 on:
   schedule:
     # Run every 30 minutes
-    - cron: "*/30 * * * *"
+    # ADR 22 — this schedule is an upper bound on frequency, not a delivered cadence; ADR 27 — the Netlify ticker (netlify/functions/cron-tick.mts) is what actually holds the cadence for the money sweeps.
+    - cron: "18-59/30 * * * *"
   workflow_dispatch: # Allow manual triggering
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   reconcile-payment-status:
@@ -12,14 +17,26 @@ jobs:
     timeout-minutes: 15
 
     env:
+      # #1066 — jobs run as bare Node processes, so Sentry.init only sees
+      # what the step env carries. Without the DSN the runner initialises
+      # a disabled client and every captureException is a no-op again.
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
       # Database connection (required for Prisma)
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      # #476 — fail-closed cron lock: without these the job refuses to run.
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
 
       # Payment gateway credentials
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+      # RAZORPAY_SECRET is the canonical name (lib/payments/core/razorpay.ts
+      # reads only that one); RAZORPAY_KEY_SECRET stays for the legacy readers
+      # in scripts/. Both source the same repo secret — see #677 PM-1.
       RAZORPAY_KEY_ID: ${{ secrets.RAZORPAY_KEY_ID }}
-      RAZORPAY_KEY_SECRET: ${{ secrets.RAZORPAY_KEY_SECRET }}
+      RAZORPAY_SECRET: ${{ secrets.RAZORPAY_SECRET }}
+      RAZORPAY_KEY_SECRET: ${{ secrets.RAZORPAY_SECRET }}
 
     steps:
       - name: Checkout code
@@ -38,10 +55,13 @@ jobs:
         run: npx prisma generate
 
       - name: Run payment status reconciliation
-        run: npx tsx jobs/payments/reconcile-payment-status.ts
+        run: npx --yes tsx@4.23.1 jobs/payments/reconcile-payment-status.ts
 
       - name: Notify on failure
         if: failure()
-        run: |
-          echo "Payment status reconciliation failed"
-          # Add notification logic here (Slack, email, etc.)
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          # Fallback sink — Slack has never been provisioned, so this is
+          # what actually pages today. See 07-required-secrets.md.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "reconcile-payment-status"

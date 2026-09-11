@@ -1,0 +1,45 @@
+name: Load Test (Smoke)
+
+# Manual-only: load tests are run deliberately against a staging clone, never
+# on a schedule against shared/dev data. See load-tests/smoke.js and the
+# capacity ladder (docs/enterprise/50-operations/08-capacity-ladder.md).
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Target base URL (staging clone — never production)"
+        required: true
+      consultant_id:
+        description: "A consultantProfile id with availability in the target DB"
+        required: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install k6
+        run: |
+          sudo gpg --no-default-keyring \
+            --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
+            --keyserver hkp://keyserver.ubuntu.com:80 \
+            --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
+            | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update && sudo apt-get install -y k6
+
+      - name: Run smoke test
+        env:
+          BASE_URL: ${{ github.event.inputs.base_url }}
+          CONSULTANT_ID: ${{ github.event.inputs.consultant_id }}
+          TEST_EMAIL: ${{ secrets.LOAD_TEST_EMAIL }}
+          TEST_PASSWORD: ${{ secrets.LOAD_TEST_PASSWORD }}
+        run: |
+          k6 run \
+            --env BASE_URL="$BASE_URL" \
+            --env TEST_EMAIL="$TEST_EMAIL" \
+            --env TEST_PASSWORD="$TEST_PASSWORD" \
+            --env CONSULTANT_ID="$CONSULTANT_ID" \
+            load-tests/smoke.js

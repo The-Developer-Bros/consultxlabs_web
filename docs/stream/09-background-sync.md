@@ -35,99 +35,60 @@ The Stream user background sync job maintains data consistency between your Pris
 
 ### Schedule
 
-**Execution Time:** Daily at 03:30 UTC (9:00 AM IST)
+The sweep runs daily at 03:40 UTC, which is 09:10 IST. That minute is not
+arbitrary: `scripts/ci/check-workflow-hygiene.ts` costs every shared cron start
+minute against a connection-pool budget, so moving it means checking that guard
+rather than picking a number.
 
-**Trigger Methods:**
+There are three ways to start it. The GitHub Actions schedule is the normal one;
+`workflow_dispatch` on the same workflow is the manual one; and an administrator
+can run it from the staff Jobs page, which posts `stream-sync` to
+`/api/admin/system-jobs/run`. All three call the same core function, so they
+cannot diverge.
 
-1. **Automatic:** GitHub Actions cron schedule
-2. **Manual:** GitHub Actions workflow_dispatch
-3. **Manual:** API endpoint trigger (see [API Endpoints](./10-api-endpoints.md))
+### Where the definition actually lives
 
-### GitHub Actions Workflow
+The workflow is `.github/workflows/stream-sync.yml`, the Actions wrapper is
+`jobs/stream/stream-sync.ts`, and the core is `scripts/stream/stream-sync.ts`.
+Read those rather than a copy pasted here — an earlier version of this document
+carried an inline copy of the workflow, and every field in it had drifted: the
+filename, the schedule, the Node version and the entrypoint path were all wrong,
+and the `package.json` script it quoted pointed at a file that does not exist.
 
-**File Location:** `/.github/workflows/stream_sync.yml`
+The workflow needs `DATABASE_URL` and `DIRECT_URL` for Prisma, `STREAM_API_KEY`
+and `STREAM_API_SECRET` to reach Stream, `UPSTASH_REDIS_REST_URL` and
+`UPSTASH_REDIS_REST_TOKEN` for the cron lock, and the Sentry DSN so that a job
+process — which never runs Next's instrumentation hook — reports its errors
+anywhere. Every one of those names is justified in
+[the required-secrets manifest](../enterprise/50-operations/07-required-secrets.md),
+and CI fails the build if a workflow references a secret that is not listed
+there.
 
-```yaml
-name: Sync Stale Stream Users
+### Locking
 
-on:
-  schedule:
-    # Runs at 03:30 UTC (9:00 AM IST) every day
-    - cron: "30 3 * * *"
-  workflow_dispatch: # Allows manual triggering from the GitHub Actions UI
+The job is fail-closed: without a working Redis lock it refuses to run rather
+than risk two runners soft-deleting Stream users at the same time. The lock has
+a forty-minute time to live, which is longer than the workflow's own
+`timeout-minutes`, so it always outlives any run that can exist. A run that
+finds the lock held exits cleanly rather than reporting a failure, because
+skipping is the correct outcome for every runner that loses that race.
 
-jobs:
-  sync_stream_users:
-    runs-on: ubuntu-latest
-    env:
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      NEXT_PUBLIC_STREAM_API_KEY: ${{ secrets.NEXT_PUBLIC_STREAM_API_KEY }}
-      STREAM_API_SECRET: ${{ secrets.STREAM_API_SECRET }}
+Until #1270 the job held a bespoke Redis lock of its own instead of the fleet's
+`withCronLock`. It excluded correctly, but it was invisible: `withCronLock` is
+what writes the `SystemJobExecution` row and refreshes the fleet heartbeat, so
+the sweep had no recorded last run, no recorded duration, and no presence at all
+in the operator surface. One consequence of the migration is worth stating: on a
+machine with no Upstash credentials the job now throws instead of proceeding
+unlocked, which is the right answer for a job that deletes users.
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
+### Execution environment
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Run Stream User Sync Script
-        run: |
-          echo "Running Stream user sync script..."
-          npm run scripts:stream-sync
-
-      - name: Sync Complete
-        if: success()
-        run: echo "Stream user sync script completed successfully."
-
-      - name: Sync Failed
-        if: failure()
-        run: echo "Stream user sync script failed."
-```
-
-### Required Configuration
-
-**GitHub Secrets:**
-
-Navigate to: **Repository Settings > Secrets and variables > Actions > New repository secret**
-
-| Secret Name                  | Description                       | Example                               |
-| ---------------------------- | --------------------------------- | ------------------------------------- |
-| `DATABASE_URL`               | Prisma database connection string | `postgresql://user:pass@host:5432/db` |
-| `NEXT_PUBLIC_STREAM_API_KEY` | Stream Chat public API key        | `abc123xyz...`                        |
-| `STREAM_API_SECRET`          | Stream Chat secret API key        | `secret456...`                        |
-
-**Package.json Script:**
-
-```json
-{
-  "scripts": {
-    "scripts:stream-sync": "tsx jobs/stream-sync.ts"
-  }
-}
-```
-
-### Execution Environment
-
-**Runtime:** Node.js 20
-
-**Dependencies:**
-
-- `stream-chat`: Stream Chat SDK
-- `@prisma/client`: Database access
-- `tsx`: TypeScript execution
-
-**Timeout:**
-
-- Default GitHub Actions timeout: 360 minutes (6 hours)
-- Stream client timeout: 30 seconds per request
-- Typical execution time: 2-10 minutes (depends on user count)
+The workflow runs Node 22 with `npm ci`, and executes the entrypoint through a
+pinned `tsx`. The Stream client uses a thirty-second per-request timeout, and a
+typical run takes two to ten minutes; the forty-minute lock and the thirty-five
+minute workflow timeout are sized for the pathological case of a hundred
+thousand Stream users, which walks a thousand pages with a half-second pause
+between deletions.
 
 ---
 

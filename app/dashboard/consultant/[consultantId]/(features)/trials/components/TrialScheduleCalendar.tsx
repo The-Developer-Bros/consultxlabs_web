@@ -153,7 +153,7 @@ export function TrialScheduleCalendar({
     // Filter out slots in the past AND allocated slots
     const now = new Date();
     return brokenDownSlots.filter((slot) => {
-      const slotStart = new Date(slot.slotStartTimeInUTC);
+      const slotStart = new Date(slot.startsAt);
       // Exclude past slots and allocated (booked) slots
       return slotStart > now && !slot.isAllocated;
     });
@@ -234,8 +234,8 @@ export function TrialScheduleCalendar({
     }
 
     onSlotSelect({
-      startsAt: new Date(selectedSlot.slotStartTimeInUTC),
-      endsAt: new Date(selectedSlot.slotEndTimeInUTC),
+      startsAt: new Date(selectedSlot.startsAt),
+      endsAt: new Date(selectedSlot.endsAt),
       slotOfAvailabilityId: selectedSlot.slotOfAvailabilityId,
       slotType: selectedSlot.type,
     });
@@ -246,7 +246,7 @@ export function TrialScheduleCalendar({
       {/* Header */}
       <div className="border-b border-gray-200 pb-4">
         <h2 className="text-xl font-semibold text-gray-900">
-          Schedule Free Trial
+          Schedule Trial
         </h2>
         <p className="text-sm text-gray-500 mt-1">
           {consulteeUserName

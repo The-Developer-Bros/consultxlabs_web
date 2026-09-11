@@ -1,0 +1,89 @@
+name: Expire Reschedule Proposals
+
+on:
+  schedule:
+    # Hourly at :45. A proposal's deadline can be as tight as 24h before the
+    # session it concerns, so a daily sweep could let one outlive its session.
+    # The minute is not arbitrary: check-workflow-hygiene rejects a recurring
+    # job that starts alongside another recurring one, because simultaneous
+    # starts stampede the Supavisor pool (#932). :45 was unclaimed across the
+    # whole fleet, including the */10 and */15 step schedules.
+    - cron: "45 * * * *"
+  workflow_dispatch: # Allow manual triggering
+
+# This job reads code and writes to the database. It never pushes, comments or
+# releases, so the default repository token scope is far more than it needs —
+# and it runs holding DATABASE_URL and the Redis credentials.
+permissions:
+  contents: read
+
+# The cron lock already protects the DATABASE from a double run; this stops a
+# queued duplicate consuming a runner to discover that.
+concurrency:
+  group: expire-reschedule-proposals
+  cancel-in-progress: false
+
+jobs:
+  expire-reschedule-proposals:
+    name: Expire reschedule proposals
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      # #1066 — jobs run as bare Node processes, so Sentry.init only sees
+      # what the step env carries. Without the DSN the runner initialises
+      # a disabled client and every captureException is a no-op again.
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
+      # Database connection (required for Prisma)
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # #476 cron locks load lib/redis at import — every job entry needs these
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          # Otherwise the token is left in .git/config for every later step and
+          # every dependency they run. Nothing here needs to talk back to git.
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        # --ignore-scripts: a scheduled job holds DATABASE_URL and the Redis
+        # credentials, so a compromised transitive dependency's postinstall would
+        # run with them. Nothing here needs lifecycle scripts.
+        run: npm ci --ignore-scripts
+
+      - name: Generate Prisma client
+        # --no-install: prisma IS a project dependency, so there is nothing to
+        # fetch and npx must not be allowed to.
+        run: npx --no-install --ignore-scripts prisma generate
+
+      - name: Expire reschedule proposals
+        # Adding tsx as a devDependency to allow --no-install was tried and
+        # reverted: the ~20 @esbuild platform packages it drags into the
+        # lockfile broke the Netlify deploy while leaving GitHub CI and a local
+        # NETLIFY=true build green. So the version is pinned exactly and
+        # lifecycle scripts are refused instead — this job holds DATABASE_URL,
+        # and an on-demand fetch is the one place a postinstall could reach it.
+        # Verified that esbuild still transpiles under --ignore-scripts: its
+        # platform binaries ship as optionalDependencies, not a postinstall
+        # download.
+        run: npx --yes --ignore-scripts tsx@4.23.1 jobs/appointments/expire-reschedule-proposals.ts
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          # Fallback sink — Slack has never been provisioned, so this is
+          # what actually pages today. See 07-required-secrets.md.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "expire-reschedule-proposals"

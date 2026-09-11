@@ -21,7 +21,7 @@ export type OperatorVerificationFilters = {
   limit?: number;
 };
 
-export type OperatorVerificationCounts = {
+type OperatorVerificationCounts = {
   total: number;
   pending: number;
   approved: number;

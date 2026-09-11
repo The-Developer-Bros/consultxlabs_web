@@ -1,7 +1,16 @@
 import { faker } from "@faker-js/faker";
-import { PlanEmailSupport } from "@prisma/client";
+import { PlanEmailSupport, PlanLevel } from "@prisma/client";
 import prisma from "../../lib/prisma";
 import { UserWithProfiles } from "./1a-create-users";
+import {
+  CLASS_CURRICULUM,
+  CLASS_DESCRIPTIONS,
+  FAQ_POOL,
+  PLAN_SUBTITLES,
+  TARGET_AUDIENCE_POOL,
+  WHATS_INCLUDED_POOL,
+  pick,
+} from "./plan-content";
 
 export async function createClassPlans(consultants: UserWithProfiles[]) {
   console.log(`Creating class plans for ${consultants.length} consultants...`);
@@ -20,11 +29,11 @@ export async function createClassPlans(consultants: UserWithProfiles[]) {
           data: {
             consultantProfileId: consultant.consultantProfile.id,
             title: "Beginner Class",
-            description: faker.lorem.paragraph(),
+            description: pick(CLASS_DESCRIPTIONS, i),
             priceCurrency: "INR",
             durationInMonths: 1,
             price: faker.number.int({ min: 1990000, max: 3990000 }), // ₹19900-₹39900 in paise
-            meetingsPerWeek: 1,
+            sessionsPerWeek: 1,
             sessionDurationInHours: 1.0,
             totalSessions: 4, // 1 × 1 × 4
             totalHours: 4.0, // 4 × 1.0
@@ -37,9 +46,9 @@ export async function createClassPlans(consultants: UserWithProfiles[]) {
               "German",
               "Chinese",
             ]),
-            level: "Beginner",
+            level: PlanLevel.BEGINNER,
             prerequisites: "None",
-            materialProvided: faker.lorem.sentence(),
+            materialProvided: "Slides, worked examples and the cohort repo",
             learningOutcomes: faker.helpers.arrayElements(
               [
                 "Understand basic concepts",
@@ -54,27 +63,16 @@ export async function createClassPlans(consultants: UserWithProfiles[]) {
                 .arrayElements(topics, { min: 1, max: 3 })
                 .map((topic) => ({ id: topic.id })),
             },
+            subtitle: pick(PLAN_SUBTITLES, i + 1),
+            targetAudience: pick(TARGET_AUDIENCE_POOL, i + 1),
+            whatsIncluded: pick(WHATS_INCLUDED_POOL, i + 1),
+            faqs: { create: pick(FAQ_POOL, i + 1).map((f, o) => ({ ...f, order: o })) },
             classContents: {
-              create: Array.from(
-                { length: faker.number.int({ min: 3, max: 6 }) },
-                (_, index) => ({
-                  title: faker.lorem.words(3),
-                  description: faker.lorem.paragraph(),
-                  contentType: faker.helpers.arrayElement([
-                    "Video",
-                    "Text",
-                    "Quiz",
-                    "Assignment",
-                  ]),
-                  contentUrl: faker.internet.url(),
-                  order: index + 1,
-                  hoursAllotted: faker.number.float({
-                    min: 1,
-                    max: 5,
-                    multipleOf: 0.5,
-                  }),
-                }),
-              ),
+              create: CLASS_CURRICULUM.map((item, index) => ({
+                ...item,
+                order: index + 1,
+                hoursAllotted: 1.5,
+              })),
             },
           },
         }),
@@ -82,11 +80,11 @@ export async function createClassPlans(consultants: UserWithProfiles[]) {
           data: {
             consultantProfileId: consultant.consultantProfile.id,
             title: "Intermediate Class",
-            description: faker.lorem.paragraph(),
+            description: pick(CLASS_DESCRIPTIONS, i),
             priceCurrency: "INR",
             durationInMonths: 3,
             price: faker.number.int({ min: 3490000, max: 6990000 }), // ₹34900-₹69900 in paise
-            meetingsPerWeek: 2,
+            sessionsPerWeek: 2,
             sessionDurationInHours: 1.5,
             totalSessions: 24, // 2 × 3 × 4
             totalHours: 36.0, // 24 × 1.5
@@ -99,9 +97,9 @@ export async function createClassPlans(consultants: UserWithProfiles[]) {
               "German",
               "Chinese",
             ]),
-            level: "Intermediate",
-            prerequisites: faker.lorem.sentence(),
-            materialProvided: faker.lorem.sentence(),
+            level: PlanLevel.INTERMEDIATE,
+            prerequisites: "Comfortable writing and shipping code on your own",
+            materialProvided: "Slides, worked examples and the cohort repo",
             learningOutcomes: faker.helpers.arrayElements(
               [
                 "Master advanced techniques",
@@ -116,27 +114,16 @@ export async function createClassPlans(consultants: UserWithProfiles[]) {
                 .arrayElements(topics, { min: 1, max: 3 })
                 .map((topic) => ({ id: topic.id })),
             },
+            subtitle: pick(PLAN_SUBTITLES, i + 2),
+            targetAudience: pick(TARGET_AUDIENCE_POOL, i + 2),
+            whatsIncluded: pick(WHATS_INCLUDED_POOL, i + 2),
+            faqs: { create: pick(FAQ_POOL, i + 2).map((f, o) => ({ ...f, order: o })) },
             classContents: {
-              create: Array.from(
-                { length: faker.number.int({ min: 4, max: 8 }) },
-                (_, index) => ({
-                  title: faker.lorem.words(3),
-                  description: faker.lorem.paragraph(),
-                  contentType: faker.helpers.arrayElement([
-                    "Video",
-                    "Text",
-                    "Quiz",
-                    "Assignment",
-                  ]),
-                  contentUrl: faker.internet.url(),
-                  order: index + 1,
-                  hoursAllotted: faker.number.float({
-                    min: 1,
-                    max: 5,
-                    multipleOf: 0.5,
-                  }),
-                }),
-              ),
+              create: CLASS_CURRICULUM.map((item, index) => ({
+                ...item,
+                order: index + 1,
+                hoursAllotted: 1.5,
+              })),
             },
           },
         }),
@@ -144,11 +131,11 @@ export async function createClassPlans(consultants: UserWithProfiles[]) {
           data: {
             consultantProfileId: consultant.consultantProfile.id,
             title: "Advanced Class",
-            description: faker.lorem.paragraph(),
+            description: pick(CLASS_DESCRIPTIONS, i),
             priceCurrency: "INR",
             durationInMonths: 6,
             price: faker.number.int({ min: 4990000, max: 9990000 }), // ₹49900-₹99900 in paise
-            meetingsPerWeek: 3,
+            sessionsPerWeek: 3,
             sessionDurationInHours: 2.0,
             totalSessions: 72, // 3 × 6 × 4
             totalHours: 144.0, // 72 × 2.0
@@ -161,9 +148,9 @@ export async function createClassPlans(consultants: UserWithProfiles[]) {
               "German",
               "Chinese",
             ]),
-            level: "Advanced",
-            prerequisites: faker.lorem.sentence(),
-            materialProvided: faker.lorem.sentence(),
+            level: PlanLevel.ADVANCED,
+            prerequisites: "Comfortable writing and shipping code on your own",
+            materialProvided: "Slides, worked examples and the cohort repo",
             learningOutcomes: faker.helpers.arrayElements(
               [
                 "Develop expertise in the field",
@@ -178,27 +165,16 @@ export async function createClassPlans(consultants: UserWithProfiles[]) {
                 .arrayElements(topics, { min: 1, max: 3 })
                 .map((topic) => ({ id: topic.id })),
             },
+            subtitle: pick(PLAN_SUBTITLES, i + 3),
+            targetAudience: pick(TARGET_AUDIENCE_POOL, i + 3),
+            whatsIncluded: pick(WHATS_INCLUDED_POOL, i + 3),
+            faqs: { create: pick(FAQ_POOL, i + 3).map((f, o) => ({ ...f, order: o })) },
             classContents: {
-              create: Array.from(
-                { length: faker.number.int({ min: 5, max: 10 }) },
-                (_, index) => ({
-                  title: faker.lorem.words(3),
-                  description: faker.lorem.paragraph(),
-                  contentType: faker.helpers.arrayElement([
-                    "Video",
-                    "Text",
-                    "Quiz",
-                    "Assignment",
-                  ]),
-                  contentUrl: faker.internet.url(),
-                  order: index + 1,
-                  hoursAllotted: faker.number.float({
-                    min: 1,
-                    max: 5,
-                    multipleOf: 0.5,
-                  }),
-                }),
-              ),
+              create: CLASS_CURRICULUM.map((item, index) => ({
+                ...item,
+                order: index + 1,
+                hoursAllotted: 1.5,
+              })),
             },
           },
         }),

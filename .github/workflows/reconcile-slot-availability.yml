@@ -3,8 +3,16 @@ name: Reconcile Slot Availability
 on:
   schedule:
     # Run hourly
-    - cron: "15 * * * *"
+    - cron: "32 * * * *"
+    # Heaviest sweep in the fleet: full availability reconciliation plus
+    # double-booking detection. The tsx step is the DB-active window read by
+    # check-workflow-hygiene's pool budget.
+    # cron-runtime-minutes: 8
   workflow_dispatch: # Allow manual triggering
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   reconcile-slot-availability:
@@ -12,8 +20,16 @@ jobs:
     timeout-minutes: 10
 
     env:
+      # #1066 — jobs run as bare Node processes, so Sentry.init only sees
+      # what the step env carries. Without the DSN the runner initialises
+      # a disabled client and every captureException is a no-op again.
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
       # Database connection (required for Prisma)
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # #476 cron locks load lib/redis at import — every job entry needs these
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
       DIRECT_URL: ${{ secrets.DIRECT_URL }}
 
     steps:
@@ -33,10 +49,13 @@ jobs:
         run: npx prisma generate
 
       - name: Reconcile slot availability
-        run: npx tsx jobs/appointments/reconcile-slot-availability.ts
+        run: npx --yes tsx@4.23.1 jobs/appointments/reconcile-slot-availability.ts
 
       - name: Notify on double bookings
         if: failure()
-        run: |
-          echo "CRITICAL: Double bookings detected or slot reconciliation failed!"
-          # Add notification logic here (Slack, email, PagerDuty, etc.)
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          # Fallback sink — Slack has never been provisioned, so this is
+          # what actually pages today. See 07-required-secrets.md.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "reconcile-slot-availability"

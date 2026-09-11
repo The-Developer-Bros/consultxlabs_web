@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { updateSubscriberPreferences } from "@/lib/novu/subscriber";
@@ -36,6 +37,9 @@ export async function GET() {
         trialNotifications: true,
         subscriptionAlerts: true,
         marketingEmails: false,
+        orgBillingAlerts: true,
+        orgMembershipAlerts: true,
+        orgProgramAlerts: true,
         quietHoursEnabled: false,
         quietHoursStart: null,
         quietHoursEnd: null,
@@ -45,6 +49,7 @@ export async function GET() {
 
     return NextResponse.json(preferences);
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "notifications" } });
     console.error("Failed to fetch notification preferences:", error);
     return NextResponse.json(
       { error: "Failed to fetch preferences" },
@@ -99,10 +104,15 @@ export async function PUT(req: NextRequest) {
       trialNotifications: updated.trialNotifications,
       subscriptionAlerts: updated.subscriptionAlerts,
       marketingEmails: updated.marketingEmails,
+      // ADR 23 — org categories
+      orgBillingAlerts: updated.orgBillingAlerts,
+      orgMembershipAlerts: updated.orgMembershipAlerts,
+      orgProgramAlerts: updated.orgProgramAlerts,
     });
 
     return NextResponse.json(updated);
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "notifications" } });
     console.error("Failed to update notification preferences:", error);
     return NextResponse.json(
       { error: "Failed to update preferences" },

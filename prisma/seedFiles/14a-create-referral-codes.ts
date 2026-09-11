@@ -100,14 +100,30 @@ export async function createReferralCodes() {
     include: { referralCode: true },
   });
 
+  // `remainingAmount` is a stored derived column: it must always equal
+  // `amount - usedAmount`. The seed used to pick a random remainingAmount and
+  // leave usedAmount at its 0 default, which produced rows the runtime treats
+  // as impossible — a credit showing less balance than it has consumed. Three
+  // such rows were live on the shared database and blocked the
+  // referral_credit_balance_consistent CHECK from applying.
+  //
+  // Derive usedAmount from the chosen remaining instead, and stamp usedAt when
+  // the credit is fully consumed, matching what reverseCreditsForPayment and
+  // the checkout consumption path maintain.
+  const seedCredit = (amount: number, remaining: number) => ({
+    amount,
+    usedAmount: amount - remaining,
+    remainingAmount: remaining,
+    ...(remaining === 0 ? { usedAt: faker.date.recent({ days: 30 }) } : {}),
+  });
+
   for (const referral of rewardedReferrals) {
     try {
       // Credit for referrer
       await prisma.referralCredit.create({
         data: {
           userId: referral.referralCode.userId,
-          amount: 50000,
-          remainingAmount: faker.helpers.arrayElement([50000, 30000, 0]),
+          ...seedCredit(50000, faker.helpers.arrayElement([50000, 30000, 0])),
           currency: "INR",
           source: "REFERRAL_BONUS",
           expiresAt: faker.date.future({ years: 0.5 }),
@@ -119,8 +135,7 @@ export async function createReferralCodes() {
       await prisma.referralCredit.create({
         data: {
           userId: referral.referredUserId,
-          amount: 20000,
-          remainingAmount: faker.helpers.arrayElement([20000, 10000, 0]),
+          ...seedCredit(20000, faker.helpers.arrayElement([20000, 10000, 0])),
           currency: "INR",
           source: "REFEREE_BONUS",
           expiresAt: faker.date.future({ years: 0.5 }),

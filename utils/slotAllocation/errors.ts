@@ -17,10 +17,33 @@ abstract class AllocationError extends Error {
   }
 }
 
-/** 400 — validation failures, bad input, business rule violations */
+/** 400 — validation failures, bad input, business rule violations.
+ * The optional code override lets callers distinguish cause-specific
+ * sub-types (NO_AVAILABILITY, PERIOD_ENDED, SLOT_SHORTAGE) while keeping
+ * the same HTTP status. */
 export class AllocationValidationError extends AllocationError {
   readonly httpStatus = 400 as const;
-  readonly errorCode = "VALIDATION_ERROR" as const;
+  readonly errorCode: AllocationErrorCode;
+  constructor(message: string, code: AllocationErrorCode = "VALIDATION_ERROR") {
+    super(message);
+    this.errorCode = code;
+  }
+}
+
+/**
+ * 400 — SLOT_SHORTAGE, carrying how many WHOLE sessions the search COULD place
+ * (#1206). Without that number the client can only say "not enough free
+ * slots"; with it, it can offer the consultant the choice between waiting and
+ * placing what fits now.
+ */
+export class SlotShortageError extends AllocationValidationError {
+  constructor(
+    message: string,
+    readonly placeableSessions: number,
+    readonly requiredSessions: number,
+  ) {
+    super(message, "SLOT_SHORTAGE");
+  }
 }
 
 /** 400 — event or consultant not found */

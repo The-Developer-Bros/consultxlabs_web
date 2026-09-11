@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/nextjs";
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { syncSubscriber } from "@/lib/novu/subscriber";
@@ -24,6 +25,8 @@ export async function POST() {
         phone: true,
         image: true,
         timezone: true,
+        // ADR 23 — routing preference for operators who own a workspace.
+        orgWorkspaceProfile: { select: { notificationRoutingMode: true } },
       },
     });
 
@@ -40,10 +43,13 @@ export async function POST() {
       phone: user.phone || undefined,
       avatar: user.image || undefined,
       locale: "en",
+      routingMode:
+        user.orgWorkspaceProfile?.notificationRoutingMode ?? undefined,
     });
 
     return NextResponse.json({ success: true });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "notifications" } });
     console.error("Failed to sync Novu subscriber:", error);
     return NextResponse.json({ error: "Sync failed" }, { status: 500 });
   }

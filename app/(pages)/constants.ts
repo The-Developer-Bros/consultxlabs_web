@@ -1,8 +1,9 @@
 // Company Information - Update these values with your actual business details
 export const COMPANY_INFO = {
-  name: "[COMPANY NAME]",
-  address: "[ADDRESS]",
+  name: "Practitionist",
+  // TODO: real contact email before launch
   email: "[EMAIL]",
+  // TODO: real contact email before launch
   supportEmail: "[SUPPORT_EMAIL]",
   phone: "[PHONE]",
   jurisdiction: "[JURISDICTION]",
@@ -30,6 +31,10 @@ export const INQUIRY_CATEGORIES = [
   { value: "billing", label: "Billing & Payments" },
   { value: "booking", label: "Booking Issues" },
   { value: "consultant", label: "Consultant Support" },
+  // #1230 wave-4b — the enterprise funnel (#1132): these two route into the
+  // Lead pipeline instead of the support queue.
+  { value: "enterprise", label: "Enterprise / Platform demo" },
+  { value: "team-training", label: "Team training program" },
   { value: "feedback", label: "Feedback" },
   { value: "other", label: "Other" },
 ] as const;

@@ -95,14 +95,19 @@ All checkout data is stored in payment intent metadata:
   appointmentType: "CONSULTATION",
   planId: "plan_abc123",
   eventId: "event_xyz789",
-  slotStartTimeInUTC: "2025-01-15T10:00:00.000Z",
-  slotEndTimeInUTC: "2025-01-15T11:00:00.000Z",
+  startsAt: "2025-01-15T10:00:00.000Z",    // renamed from `slotStartTimeInUTC`
+  endsAt: "2025-01-15T11:00:00.000Z",      // renamed from `slotEndTimeInUTC`
   slotOfAvailabilityWeeklyId: "slot_weekly_123",
   notes: "User notes...",
   userId: "user_abc",
   consulteeProfileId: "profile_xyz"
 }
 ```
+
+> **Webhook backward-compat note:** Razorpay order `notes` objects embedded with the old keys (`startsAt` / `endsAt`) are still accepted by the webhook handler for in-flight orders created before the rename. `normalizeLegacySlotKeys()` in `schemas/webhooks/metadata.ts` maps old → new on ingest; new orders always use `startsAt` / `endsAt`.
+```
+
+> **Empty optional fields are omitted, never sent as `""` (#1462).** `buildPaymentMetadata()` in `lib/payments/operations/checkout.ts` includes an optional key only when it has a value, because the webhook schemas type those fields with `.optional()`, which accepts an absent key and rejects an empty string. A subscription bought for a scheduling period carries no direct slot times, so it used to reach the gateway with `startsAt: ""` and `endsAt: ""`, and every capture webhook for such a sale then failed validation and stamped the payment `REQUIRES_MANUAL_RECOVERY` with the buyer already charged. Because a Razorpay order never expires, orders minted before the fix keep replaying with those empty strings, so `validateWebhookMetadata()` also strips empty-string entries before it normalizes legacy keys and parses. Omitting empty keys has the useful side effect of giving the fifteen-key gateway ceiling more headroom.
 
 **Benefits:**
 
@@ -130,26 +135,37 @@ await prisma.$transaction(async (tx) => {
 // - Webhook will be retried by gateway
 ```
 
-### 5. Three-Layer Race Condition Protection
+### 5. Slot Occupancy Checks and the Buyer's Own Hold
 
-For consultation and subscription slot bookings:
+For consultation and subscription slot bookings, `validateSlotAvailability()` runs two blocking checks. The first rejects the request when any live appointment overlaps the requested window for this consultant, which includes another buyer's tentative hold. The second rejects it when the requesting buyer already holds an overlapping window with a live pending payment.
 
 ```typescript
-// Layer 1: Check confirmed bookings
-if (overlappingConfirmedBooking exists) {
+// Check 1: any live overlapping appointment for this consultant
+if (overlappingLiveAppointment exists) {
   throw Error("Time slot is already booked");
 }
 
-// Layer 2: Check same user duplicates
-if (userHasPendingBookingForThisSlot) {
-  throw Error("You already have a pending booking");
-}
-
-// Layer 3: Rate limiting
-if (pendingAttempts >= 3) {
-  throw Error("Time slot temporarily unavailable due to high demand");
+// Check 2: this buyer's own overlapping live hold
+if (buyerHasOverlappingPendingHold) {
+  throw Error("You already have a pending booking for this time slot...");
 }
 ```
+
+Both checks subtract the buyer's **self-hold** (#1463). A self-hold is an appointment that belongs to the requesting buyer, is for the same plan, has a payment that is still `PENDING` and still inside its expiry window, and covers exactly the window being requested. Such an appointment is not an occupant of the slot; it is the buyer's own open gateway order, and the open-order resume described below is the path that finishes or replaces it. Anything else keeps blocking, including a different buyer's hold on the same slot, a hold on a different plan, and this buyer's own hold on a window that merely overlaps the requested one. When the plan identity cannot be resolved at all, as with webinars and classes whose slot rows are shared between attendees, nothing is excluded.
+
+Exact coverage is compared against the appointment's whole slot run rather than a single row, because a booked window is stored as a series of contiguous thirty-minute atoms: the run's first start and last end are what must equal the request.
+
+The consultee-side conflict check inside the checkout lock applies the same exclusion, so the buyer's own hold does not resurface there as "You already have a session booked during this time."
+
+There is deliberately no per-slot attempt cap. Since check 1 blocks on any live hold, a count of pending attempts for one slot can never exceed one, so the hold itself is the cap.
+
+### 6. Open-Order Reuse
+
+A checkout that is remounted, reopened in a new tab, or retried after the buyer dismissed the gateway modal mints a fresh client idempotency key, so the same-key replay cannot recognise it. Before any gateway call, `findReusablePendingOrderPayment()` therefore looks for an open order the buyer can simply finish paying: a payment of theirs that is still `PENDING`, still inside its minted expiry window, on the same gateway, under the same organization, and joined to an appointment for the same plan.
+
+A candidate is adopted only when it is for the same booking as the current request. A consultation candidate must cover exactly the requested slot window, a subscription candidate must carry exactly the requested scheduling period, and every candidate's frozen amount must equal the total this request computed, so a changed coupon or credit balance can never be charged at a stale price. When a candidate is adopted, checkout returns the existing order id, amount and currency with `reused: true` and creates no second appointment and no second payment.
+
+Candidates that fail those gates are **superseded** rather than left open. Superseding runs in one transaction: the payment moves `PENDING` → `EXPIRED` through a compare-and-set that carries the old status in its `WHERE` clause, the appointment's tentative slots are cancelled through `transitionSlotCompletion()`, and the parent consultation or subscription is cancelled through its own guarded transition. Releasing the hold is not optional bookkeeping. If the payment were expired while its appointment kept occupying the calendar, the buyer's very next attempt would be rejected by the occupancy check above, which is the wall #1463 describes. Group events are excluded from the release because their slot rows are shared between attendees, so giving back a seat is a disconnect rather than a status move and belongs to the cancel-pending front door.
 
 ---
 
@@ -181,8 +197,8 @@ Consultations are **one-on-one sessions** between a consultee (user) and a consu
 
 ```typescript
 {
-  slotStartTimeInUTC: string,     // ISO 8601 datetime
-  slotEndTimeInUTC: string,       // ISO 8601 datetime
+  startsAt: string,     // ISO 8601 datetime (URL query-param name; maps to startsAt internally)
+  endsAt: string,       // ISO 8601 datetime (URL query-param name; maps to endsAt internally)
   slotOfAvailabilityWeeklyId: string (OR slotOfAvailabilityCustomId),
   slotOfAvailabilityCustomId: string (OR slotOfAvailabilityWeeklyId),
   discountCode?: string,           // Optional promo code
@@ -190,13 +206,15 @@ Consultations are **one-on-one sessions** between a consultee (user) and a consu
 }
 ```
 
-**Validation Schema:** `/schemas/checkout.ts` - `consultationSearchParamsSchema` (Lines 32-54)
+> **Field naming:** The public-facing query params keep the `startsAt`/`endsAt` names. Internally the checkout logic and Razorpay order notes use `startsAt`/`endsAt` (post-rename). Webhook handlers accept both via `normalizeLegacySlotKeys()` for in-flight orders.
+
+**Validation Schema:** `/schemas/checkout.ts`
 
 ```typescript
 export const consultationSearchParamsSchema = z
   .object({
-    slotStartTimeInUTC: z.string().datetime(),
-    slotEndTimeInUTC: z.string().datetime(),
+    startsAt: z.string().datetime(),
+    endsAt: z.string().datetime(),
     slotOfAvailabilityWeeklyId: z.string().optional(),
     slotOfAvailabilityCustomId: z.string().optional(),
     discountCode: z.string().optional(),
@@ -209,8 +227,8 @@ export const consultationSearchParamsSchema = z
   )
   .refine(
     (data) => {
-      const start = new Date(data.slotStartTimeInUTC);
-      const end = new Date(data.slotEndTimeInUTC);
+      const start = new Date(data.startsAt);
+      const end = new Date(data.endsAt);
       return start < end;
     },
     { message: "Start time must be before end time" },
@@ -227,8 +245,8 @@ export const consultationSearchParamsSchema = z
 {
   appointmentType: "CONSULTATION",
   planId: "consultation_plan_id",
-  slotStartTimeInUTC: "2025-01-15T10:00:00.000Z",
-  slotEndTimeInUTC: "2025-01-15T11:00:00.000Z",
+  startsAt: "2025-01-15T10:00:00.000Z",       // renamed from `slotStartTimeInUTC`
+  endsAt: "2025-01-15T11:00:00.000Z",         // renamed from `slotEndTimeInUTC`
   slotOfAvailabilityWeeklyId: "slot_id",
   notes: "User notes",
   discountCode: "PROMO20",
@@ -300,12 +318,12 @@ const overlappingConfirmed = await tx.slotOfAppointment.findFirst({
       { isTentative: false }, // Only confirmed bookings
       {
         startsAt: {
-          lt: new Date(data.slotEndTimeInUTC!),
+          lt: new Date(data.endsAt!),
         },
       },
       {
         endsAt: {
-          gt: new Date(data.slotStartTimeInUTC!),
+          gt: new Date(data.startsAt!),
         },
       },
     ],
@@ -357,12 +375,12 @@ const userTentativeBookings = await tx.slotOfAppointment.findMany({
     AND: [
       {
         startsAt: {
-          lt: new Date(data.slotEndTimeInUTC!),
+          lt: new Date(data.endsAt!),
         },
       },
       {
         endsAt: {
-          gt: new Date(data.slotStartTimeInUTC!),
+          gt: new Date(data.startsAt!),
         },
       },
     ],
@@ -424,12 +442,12 @@ const pendingAttempts = await tx.slotOfAppointment.count({
     AND: [
       {
         startsAt: {
-          lt: new Date(data.slotEndTimeInUTC!),
+          lt: new Date(data.endsAt!),
         },
       },
       {
         endsAt: {
-          gt: new Date(data.slotStartTimeInUTC!),
+          gt: new Date(data.startsAt!),
         },
       },
     ],
@@ -475,20 +493,20 @@ if (pendingAttempts >= 3) {
 ```typescript
 const consultation = await tx.consultation.create({
   data: {
-    requestStatus: RequestStatus.PENDING,
+    status: AppointmentStatus.PENDING,   // field renamed from `requestStatus`
     requestNotes: data.notes,
     requestedById: consulteeProfileId,
     consultationPlanId: plan.id,
     bookingSource: "DIRECT_CHECKOUT",
-    schedulingPeriodStartsAt: new Date(data.slotStartTimeInUTC!),
-    schedulingPeriodEndsAt: new Date(data.slotEndTimeInUTC!),
+    schedulingPeriodStartsAt: new Date(data.startsAt!),
+    schedulingPeriodEndsAt: new Date(data.endsAt!),
   },
 });
 ```
 
 **Key Fields:**
 
-- `requestStatus: PENDING` → Will become `APPROVED` after payment
+- `status: PENDING` (enum `AppointmentStatus`) → Will become `APPROVED` after payment
 - `requestedById` → Consultee profile ID
 - `bookingSource: "DIRECT_CHECKOUT"` → Distinguish from admin-created bookings
 - Scheduling period tracks the selected time slot
@@ -502,8 +520,8 @@ const appointment = await tx.appointment.create({
     consultationId: consultation.id,
     slotsOfAppointment: {
       create: {
-        startsAt: new Date(data.slotStartTimeInUTC!),
-        endsAt: new Date(data.slotEndTimeInUTC!),
+        startsAt: new Date(data.startsAt!),
+        endsAt: new Date(data.endsAt!),
         isTentative: !skipPayment, // true for real payments, false for mock
         user: {
           connect: { id: userId },
@@ -592,7 +610,7 @@ sequenceDiagram
         Note over WH: Appointment already exists<br/>(created during checkout)
         WH->>DB: Link Payment.appointmentId = appointment.id
         WH->>DB: UPDATE SlotOfAppointment<br/>SET isTentative = false
-        WH->>DB: UPDATE Consultation<br/>SET requestStatus = APPROVED
+        WH->>DB: UPDATE Consultation<br/>SET status = APPROVED
         WH-->>PG: 200 OK
         PG->>U: Redirect to success page
     else Payment Failed
@@ -661,8 +679,8 @@ Subscriptions are **recurring one-on-one sessions** between a consultee and cons
 
 ```typescript
 {
-  slotStartTimeInUTC: string,     // First session start time
-  slotEndTimeInUTC: string,       // First session end time
+  startsAt: string,     // First session start time (URL param; maps to startsAt internally)
+  endsAt: string,       // First session end time (URL param; maps to endsAt internally)
   slotOfAvailabilityWeeklyId: string (OR slotOfAvailabilityCustomId),
   schedulingPeriodStartsAt?: string,  // Optional subscription start date
   schedulingPeriodEndsAt?: string,    // Optional subscription end date
@@ -700,7 +718,7 @@ if (!plan) {
 **Plan Contains:**
 
 - `durationInMonths`: How many months the subscription lasts (e.g., 3)
-- `callsPerWeek`: Number of sessions per week (e.g., 2)
+- `sessionsPerWeek`: Number of sessions per week (e.g., 2)
 - `sessionDurationInHours`: Duration of each session (e.g., 1.0)
 - `price`: Total price for entire subscription
 
@@ -725,11 +743,11 @@ const endDate = calculateSubscriptionEndDate(startDate, plan.durationInMonths);
 
 // Calculate total sessions for the subscription
 const totalWeeks = Math.ceil(plan.durationInMonths * 4.33);
-const totalSessions = totalWeeks * plan.callsPerWeek;
+const totalSessions = totalWeeks * plan.sessionsPerWeek;
 
 // Get first session timing
-const firstSessionStart = new Date(data.slotStartTimeInUTC!);
-const firstSessionEnd = new Date(data.slotEndTimeInUTC!);
+const firstSessionStart = new Date(data.startsAt!);
+const firstSessionEnd = new Date(data.endsAt!);
 const sessionDurationMs =
   firstSessionEnd.getTime() - firstSessionStart.getTime();
 ```
@@ -739,7 +757,7 @@ const sessionDurationMs =
 ```javascript
 // Plan: 3 months, 2 calls/week
 durationInMonths = 3
-callsPerWeek = 2
+sessionsPerWeek = 2
 
 // Calculate weeks
 totalWeeks = Math.ceil(3 * 4.33) = Math.ceil(12.99) = 13 weeks
@@ -760,7 +778,7 @@ totalSessions = 13 * 2 = 26 sessions
 const subscription = await tx.subscription.create({
   data: {
     subscriptionPlanId: plan.id,
-    requestStatus: skipPayment ? RequestStatus.APPROVED : RequestStatus.PENDING,
+    status: skipPayment ? AppointmentStatus.APPROVED : AppointmentStatus.PENDING,  // field renamed from `requestStatus`
     requestedById: consulteeProfileId,
     requestNotes: data.notes,
     bookingSource: "DIRECT_CHECKOUT",
@@ -781,7 +799,7 @@ const appointments = [];
 for (let i = 0; i < totalSessions; i++) {
   // Calculate session date based on frequency
   const sessionStart = new Date(firstSessionStart);
-  const weekOffset = Math.floor(i / plan.callsPerWeek);
+  const weekOffset = Math.floor(i / plan.sessionsPerWeek);
   sessionStart.setDate(sessionStart.getDate() + weekOffset * 7);
 
   const sessionEnd = new Date(sessionStart.getTime() + sessionDurationMs);
@@ -847,7 +865,7 @@ return {
 ```
 Subscription
 ├─ id: "sub_123"
-├─ requestStatus: PENDING
+├─ status: PENDING           (field renamed from `requestStatus`; enum AppointmentStatus)
 ├─ schedulingPeriodStartsAt: 2025-01-15
 ├─ schedulingPeriodEndsAt: 2025-04-15
 │
@@ -885,14 +903,14 @@ WHERE appointmentId IN (
 )
 
 UPDATE Subscription
-SET requestStatus = 'APPROVED'
+SET status = 'APPROVED'   -- field renamed from `requestStatus`; enum AppointmentStatus
 WHERE id = 'sub_123'
 ```
 
 **Result:**
 
 - 26 SlotOfAppointment records: isTentative `true` → `false`
-- Subscription: requestStatus `PENDING` → `APPROVED`
+- Subscription: `status` `PENDING` → `APPROVED` (enum `AppointmentStatus`)
 - User immediately sees all 26 sessions in their dashboard
 
 ### Complete Flow Diagram
@@ -912,14 +930,14 @@ sequenceDiagram
 
     API->>CO: handleSubscriptionCheckout()
     CO->>DB: Get SubscriptionPlan
-    DB-->>CO: plan {<br/>  durationInMonths: 3,<br/>  callsPerWeek: 2<br/>}
+    DB-->>CO: plan {<br/>  durationInMonths: 3,<br/>  sessionsPerWeek: 2<br/>}
 
     CO->>CO: Calculate total sessions
     Note over CO: totalWeeks = ceil(3 * 4.33) = 13<br/>totalSessions = 13 * 2 = 26
 
     CO->>CO: validateSlotAvailability()<br/>(first session only)
 
-    CO->>DB: Create Subscription record<br/>(requestStatus: PENDING)
+    CO->>DB: Create Subscription record<br/>(status: PENDING)
 
     rect rgb(200, 220, 250)
         Note over CO,DB: Loop 26 times (once per session)
@@ -949,7 +967,7 @@ sequenceDiagram
         WH->>DB: UPDATE SlotOfAppointment<br/>SET isTentative = false<br/>WHERE appointmentId IN<br/>  (SELECT id FROM Appointment<br/>   WHERE subscriptionId = 'sub_123')
     end
 
-    WH->>DB: UPDATE Subscription<br/>SET requestStatus = APPROVED
+    WH->>DB: UPDATE Subscription<br/>SET status = APPROVED
 
     WH-->>PG: 200 OK
     PG->>U: Redirect to success

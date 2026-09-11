@@ -92,6 +92,16 @@ The `.env.sample` file is the canonical reference for what vars are needed.
 | `BETTER_AUTH_TRUSTED_ORIGINS` | `https://familiarisenow.com` | `http://localhost:3000` | Comma-separated additional allowed CORS origins                        |
 | `NEXT_PUBLIC_APP_URL`         | `https://familiarisenow.com` | `http://localhost:3000` | Used by auth client + for building absolute URLs (e.g. referral links) |
 
+### Optional performance variables
+
+These variables are not required for the app to boot, but they tune runtime behaviour. Leave them unset to accept the defaults.
+
+| Variable               | Production value | Local dev value | Notes                                                                                                                  |
+| ---------------------- | ---------------- | --------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `PRISMA_SLOW_QUERY_MS` | unset (uses 500) | unset (uses 500) | Threshold in milliseconds above which Prisma logs a slow-query warning. Optional; defaults to `500`. Must be a positive number, otherwise the default is used. |
+
+When a query runs longer than `PRISMA_SLOW_QUERY_MS`, `lib/prisma.ts` emits a `[Prisma:SLOW_QUERY]` `console.warn` so that missing indexes and N+1 patterns surface in any environment without enabling full query logging. The rationale is documented in [Navigation Performance](../performance/01-navigation-performance.md).
+
 ### Why `BETTER_AUTH_URL` is the most important variable
 
 BetterAuth uses `BETTER_AUTH_URL` as the canonical base URL for:
@@ -513,6 +523,17 @@ the dashboard env vars (dashboard wins on conflict):
 
 > **Warning:** Do NOT put secrets in `netlify.toml` — it's committed to the repo.
 > Only put non-sensitive values like `NEXT_PUBLIC_APP_URL` here.
+
+### Build configuration in `next.config.mjs`
+
+A few build-time settings that affect the deployed bundle now live in `next.config.mjs` rather than in any Netlify configuration. The navigation-performance work (PR #887) added or broadened the following, and the reasoning for each is recorded in [Navigation Performance](../performance/01-navigation-performance.md):
+
+- `experimental.optimizePackageImports` tree-shakes large barrel imports (such as the icon, charting, and Stream React packages) so only the symbols actually used ship to the client.
+- `experimental.staleTimes` lets the client router cache hold RSC payloads between navigations instead of refetching on every move, which is the single biggest contributor to instant in-app navigation.
+- `serverExternalPackages` was broadened to keep server-only dependencies out of client bundles — this now covers `razorpay`, `stripe`, `resend`, `bcrypt`, `@stream-io/node-sdk`, and `libsodium-wrappers` alongside the existing Postgres adapter packages.
+- `images.formats` requests AVIF and then WebP so Netlify's image pipeline serves the smaller modern format when the browser supports it.
+
+These are application-level concerns rather than deployment concerns, so they are not duplicated in `netlify.toml`; they take effect automatically on every Netlify build because the build command runs `next build`.
 
 ---
 

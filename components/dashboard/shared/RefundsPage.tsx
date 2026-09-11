@@ -2,7 +2,11 @@
 
 import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { formatCurrencyFromMajorUnit } from "@/utils/formatting";
+// `formatCurrencyAmount`, not the old major-unit formatter (deleted in #1396):
+// refunds carry paise. The old call had both halves wrong — a field the payload
+// has never contained, passed to the rupees formatter — so it rendered ₹NaN
+// rather than a number that was merely 100× too large.
+import { formatCurrencyAmount } from "@/utils/formatting";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -15,13 +19,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  ResponsiveTable,
+  type ResponsiveColumn,
+} from "@/components/ui/responsive-table";
+import { DashboardHeader } from "@/components/dashboard/PageScaffold";
 import {
   Search,
   RotateCcw,
@@ -154,46 +155,116 @@ export function RefundsPage({
   const totalPages = refundsData?.totalPages ?? 1;
   const total = refundsData?.total ?? 0;
 
-  // Calculate stats
+  // #997 secondary findings — server-computed, dashboard-wide (previously
+  // `.filter()` over the current page's ≤20 rows, which undercounted).
   const stats = {
-    total: total,
-    pending: refunds.filter((r) => r.status === "PENDING").length,
-    succeeded: refunds.filter((r) => r.status === "SUCCEEDED").length,
-    failed: refunds.filter((r) => r.status === "FAILED").length,
+    total,
+    pending: refundsData?.stats?.pendingCount ?? 0,
+    succeeded: refundsData?.stats?.succeededCount ?? 0,
+    failed: refundsData?.stats?.failedCount ?? 0,
   };
+
+  const renderRowActions = (refund: Refund) =>
+    refund.payment ? (
+      <Button variant="ghost" size="icon" className="h-8 w-8" asChild>
+        <a
+          href={`${basePath}/payments/${refund.payment.id}`}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <ExternalLink className="h-4 w-4" />
+        </a>
+      </Button>
+    ) : null;
+
+  const columns: ResponsiveColumn<Refund>[] = [
+    {
+      key: "refundId",
+      header: "Refund ID",
+      primary: true,
+      cell: (refund) => (
+        <div>
+          <p className="font-mono text-sm">
+            {refund.refundId?.slice(-12) || refund.id.slice(-8).toUpperCase()}
+          </p>
+          {refund.payment && (
+            <p className="text-xs text-muted-foreground/70">
+              Payment: {refund.payment.paymentIntent.slice(-12)}
+            </p>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: "amount",
+      header: "Amount",
+      className: "font-medium",
+      cell: (refund) =>
+        formatCurrencyAmount(refund.amountPaise, refund.currency),
+    },
+    {
+      key: "gateway",
+      header: "Gateway",
+      className: "text-sm text-muted-foreground",
+      cell: (refund) => refund.paymentGateway,
+    },
+    {
+      key: "status",
+      header: "Status",
+      cell: (refund) => (
+        <Badge
+          className={`${getStatusColor(refund.status)} gap-1`}
+          variant="secondary"
+        >
+          {getStatusIcon(refund.status)}
+          {refund.status.toLowerCase()}
+        </Badge>
+      ),
+    },
+    {
+      key: "reason",
+      header: "Reason",
+      className: "text-sm text-muted-foreground max-w-[200px] truncate",
+      cell: (refund) => refund.reason || "-",
+    },
+    {
+      key: "date",
+      header: "Date",
+      className: "text-sm text-muted-foreground",
+      cell: (refund) => formatDate(refund.createdAt),
+    },
+  ];
 
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-zinc-900 dark:text-zinc-100">
-            {title}
-          </h1>
-          <p className="text-zinc-500 dark:text-zinc-400">{description}</p>
-        </div>
-        <Button
-          variant="outline"
-          onClick={() => refetchRefunds()}
-          disabled={loading}
-        >
-          <RefreshCw
-            className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`}
-          />
-          Refresh
-        </Button>
-      </div>
+      <DashboardHeader
+        title={title}
+        subtitle={description}
+        actions={
+          <Button
+            variant="outline"
+            onClick={() => refetchRefunds()}
+            disabled={loading}
+          >
+            <RefreshCw
+              className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`}
+            />
+            Refresh
+          </Button>
+        }
+      />
 
       {/* Stats */}
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardContent className="p-4 flex items-center gap-4">
-            <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950">
-              <RotateCcw className="h-5 w-5 text-blue-600" />
+            <div className="p-2 rounded-lg bg-muted">
+              <RotateCcw className="h-5 w-5 text-foreground" />
             </div>
             <div>
               <p className="text-2xl font-bold">{stats.total}</p>
-              <p className="text-sm text-zinc-500">Total Refunds</p>
+              <p className="text-sm text-muted-foreground">Total Refunds</p>
             </div>
           </CardContent>
         </Card>
@@ -204,7 +275,7 @@ export function RefundsPage({
             </div>
             <div>
               <p className="text-2xl font-bold">{stats.pending}</p>
-              <p className="text-sm text-zinc-500">Pending</p>
+              <p className="text-sm text-muted-foreground">Pending</p>
             </div>
           </CardContent>
         </Card>
@@ -215,7 +286,7 @@ export function RefundsPage({
             </div>
             <div>
               <p className="text-2xl font-bold">{stats.succeeded}</p>
-              <p className="text-sm text-zinc-500">Succeeded</p>
+              <p className="text-sm text-muted-foreground">Succeeded</p>
             </div>
           </CardContent>
         </Card>
@@ -226,7 +297,7 @@ export function RefundsPage({
             </div>
             <div>
               <p className="text-2xl font-bold">{stats.failed}</p>
-              <p className="text-sm text-zinc-500">Failed</p>
+              <p className="text-sm text-muted-foreground">Failed</p>
             </div>
           </CardContent>
         </Card>
@@ -236,8 +307,8 @@ export function RefundsPage({
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-col sm:flex-row gap-4">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
+            <div className="relative min-w-0 flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground/70" />
               <Input
                 placeholder="Search by refund ID..."
                 className="pl-9"
@@ -277,8 +348,6 @@ export function RefundsPage({
                 <SelectItem value="all">All Gateways</SelectItem>
                 <SelectItem value="STRIPE">Stripe</SelectItem>
                 <SelectItem value="RAZORPAY">Razorpay</SelectItem>
-                <SelectItem value="LEMON_SQUEEZY">Lemon Squeezy</SelectItem>
-                <SelectItem value="XFLOW">xFlow</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -289,95 +358,28 @@ export function RefundsPage({
       <Card>
         <CardHeader>
           <CardTitle className="text-lg flex items-center gap-2">
-            <RotateCcw className="h-5 w-5 text-blue-600" />
+            <RotateCcw className="h-5 w-5 text-foreground" />
             Refunds ({total})
           </CardTitle>
         </CardHeader>
-        <CardContent className="p-0">
+        <CardContent className="p-0 sm:p-6 sm:pt-0">
           {loading ? (
             <div className="flex items-center justify-center h-64">
-              <Loader2 className="h-8 w-8 animate-spin text-zinc-400" />
-            </div>
-          ) : refunds.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-64 text-zinc-500">
-              <RotateCcw className="h-12 w-12 mb-4 text-zinc-300" />
-              <p>No refunds found</p>
+              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground/70" />
             </div>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Refund ID</TableHead>
-                  <TableHead>Amount</TableHead>
-                  <TableHead>Gateway</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Reason</TableHead>
-                  <TableHead>Date</TableHead>
-                  <TableHead className="w-12"></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {refunds.map((refund) => (
-                  <TableRow key={refund.id}>
-                    <TableCell>
-                      <div>
-                        <p className="font-mono text-sm">
-                          {refund.refundId?.slice(-12) ||
-                            refund.id.slice(-8).toUpperCase()}
-                        </p>
-                        {refund.payment && (
-                          <p className="text-xs text-zinc-400">
-                            Payment: {refund.payment.paymentIntent.slice(-12)}
-                          </p>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell className="font-medium">
-                      {formatCurrencyFromMajorUnit(
-                        refund.amount,
-                        refund.currency,
-                      )}
-                    </TableCell>
-                    <TableCell className="text-sm text-zinc-600 dark:text-zinc-400">
-                      {refund.paymentGateway}
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        className={`${getStatusColor(refund.status)} gap-1`}
-                        variant="secondary"
-                      >
-                        {getStatusIcon(refund.status)}
-                        {refund.status.toLowerCase()}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-sm text-zinc-500 max-w-[200px] truncate">
-                      {refund.reason || "-"}
-                    </TableCell>
-                    <TableCell className="text-sm text-zinc-500">
-                      {formatDate(refund.createdAt)}
-                    </TableCell>
-                    <TableCell>
-                      {refund.payment && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8"
-                          asChild
-                        >
-                          <a
-                            href={`${basePath}/payments/${refund.payment.id}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                          >
-                            <ExternalLink className="h-4 w-4" />
-                          </a>
-                        </Button>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+            <ResponsiveTable<Refund>
+              columns={columns}
+              rows={refunds}
+              getRowId={(r) => r.id}
+              rowActions={renderRowActions}
+              empty={
+                <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
+                  <RotateCcw className="h-12 w-12 mb-4 text-muted-foreground/40" />
+                  <p>No refunds found</p>
+                </div>
+              }
+            />
           )}
         </CardContent>
       </Card>
@@ -392,7 +394,7 @@ export function RefundsPage({
           >
             Previous
           </Button>
-          <span className="flex items-center px-4 text-sm text-zinc-500">
+          <span className="flex items-center px-4 text-sm text-muted-foreground">
             Page {page} of {totalPages}
           </span>
           <Button

@@ -27,7 +27,7 @@ function FeaturedExpertsImpl({ experts, isLoading }: FeaturedExpertsProps) {
         {hasHalfStar && (
           <StarHalf className="w-4 h-4 fill-amber-400 text-amber-400" />
         )}
-        <span className="text-sm font-medium text-zinc-700 ml-1">
+        <span className="text-sm font-medium text-muted-foreground ml-1">
           {rating.toFixed(1)}
         </span>
       </div>
@@ -48,16 +48,16 @@ function FeaturedExpertsImpl({ experts, isLoading }: FeaturedExpertsProps) {
           viewport={{ once: true }}
           transition={{ duration: 0.5 }}
         >
-          <div className="inline-flex items-center gap-2 px-4 py-2 bg-zinc-900 rounded-full mb-6">
-            <Award className="w-4 h-4 text-white" />
-            <span className="text-sm font-medium text-white">
+          <div className="inline-flex items-center gap-2 px-4 py-2 bg-primary rounded-full mb-6">
+            <Award className="w-4 h-4 text-primary-foreground" />
+            <span className="text-sm font-medium text-primary-foreground">
               Familiarise Pick
             </span>
           </div>
-          <h2 className="text-3xl md:text-4xl lg:text-5xl font-bold text-zinc-900 mb-4">
+          <h2 className="text-fluid-3xl md:text-fluid-4xl font-bold tracking-tight text-foreground mb-4">
             Top Familiarise <span className="silver-text">Experts</span>
           </h2>
-          <p className="text-lg text-zinc-600 max-w-2xl mx-auto">
+          <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
             Discover the best of the best. Our top consultants are ready to help
             you achieve your goals.
           </p>
@@ -71,14 +71,14 @@ function FeaturedExpertsImpl({ experts, isLoading }: FeaturedExpertsProps) {
                 .map((_, index) => (
                   <div
                     key={index}
-                    className="bg-white rounded-2xl p-6 shadow-sm border border-zinc-200 animate-pulse"
+                    className="bg-card rounded-2xl p-6 shadow-sm border border-border animate-pulse"
                   >
-                    <div className="w-20 h-20 rounded-full bg-zinc-200 mx-auto mb-4" />
-                    <div className="h-5 bg-zinc-200 rounded w-3/4 mx-auto mb-3" />
-                    <div className="h-4 bg-zinc-200 rounded w-1/2 mx-auto mb-4" />
+                    <div className="w-20 h-20 rounded-full bg-muted mx-auto mb-4" />
+                    <div className="h-5 bg-muted rounded w-3/4 mx-auto mb-3" />
+                    <div className="h-4 bg-muted rounded w-1/2 mx-auto mb-4" />
                     <div className="flex gap-2 justify-center">
-                      <div className="h-6 bg-zinc-200 rounded-full w-16" />
-                      <div className="h-6 bg-zinc-200 rounded-full w-16" />
+                      <div className="h-6 bg-muted rounded-full w-16" />
+                      <div className="h-6 bg-muted rounded-full w-16" />
                     </div>
                   </div>
                 ))
@@ -98,16 +98,16 @@ function FeaturedExpertsImpl({ experts, isLoading }: FeaturedExpertsProps) {
                     href={`/explore/experts/${expert.id}`}
                     className="group block h-full"
                   >
-                    <div className="bg-white rounded-2xl p-6 shadow-sm border border-zinc-200 hover:border-zinc-300 hover:shadow-lg transition-all duration-300 h-full flex flex-col">
+                    <div className="bg-card rounded-2xl p-6 shadow-sm border border-border hover:border-border hover:shadow-lg transition-all duration-300 h-full flex flex-col">
                       {/* Avatar */}
                       <div className="relative mb-4">
-                        <Avatar className="mx-auto h-20 w-20 ring-4 ring-zinc-100 group-hover:ring-zinc-200 transition-all">
+                        <Avatar className="mx-auto h-20 w-20 ring-4 ring-muted group-hover:ring-border transition-all">
                           <AvatarImage
                             src={expert.user.image || "/placeholder-user.jpg"}
                             alt={expert.user.name || "Expert"}
                             className="object-cover"
                           />
-                          <AvatarFallback className="bg-zinc-900 text-white">
+                          <AvatarFallback className="bg-primary text-primary-foreground">
                             <User className="h-10 w-10" />
                           </AvatarFallback>
                         </Avatar>
@@ -121,27 +121,27 @@ function FeaturedExpertsImpl({ experts, isLoading }: FeaturedExpertsProps) {
 
                       {/* Name */}
                       <div className="flex items-center justify-center gap-1 mb-2">
-                        <h3 className="text-lg font-semibold text-zinc-900 text-center line-clamp-1 group-hover:text-zinc-700 transition-colors">
+                        <h3 className="text-lg font-semibold text-foreground text-center line-clamp-1 group-hover:text-muted-foreground transition-colors">
                           {expert.user.name}
                         </h3>
                         {expert.isVerified && (
                           <span title="Verified by Familiarise">
-                            <BadgeCheck className="w-4 h-4 text-blue-500 flex-shrink-0" />
+                            <BadgeCheck className="w-4 h-4 text-foreground flex-shrink-0" />
                           </span>
                         )}
                       </div>
 
                       {/* Rating */}
                       <div className="flex justify-center mb-3">
-                        {renderRating(expert.rating)}
+                        {expert.rating !== null && renderRating(expert.rating)}
                       </div>
 
                       {/* Headline */}
                       <div className="text-center">
-                        <p className="text-sm text-zinc-600 font-medium line-clamp-1 mb-1">
+                        <p className="text-sm text-muted-foreground font-medium line-clamp-1 mb-1">
                           {expert.headline || expert.domain?.name}
                         </p>
-                        <p className="text-xs text-zinc-500">
+                        <p className="text-xs text-muted-foreground">
                           {expert.experience} experience
                         </p>
                       </div>
@@ -160,7 +160,7 @@ function FeaturedExpertsImpl({ experts, isLoading }: FeaturedExpertsProps) {
                                     companyName={exp.company}
                                     companyDomain={exp.companyDomain ?? undefined}
                                     size={22}
-                                    className="border-zinc-200"
+                                    className="border-border"
                                   />
                                 ))}
                             </div>
@@ -169,8 +169,8 @@ function FeaturedExpertsImpl({ experts, isLoading }: FeaturedExpertsProps) {
                         {/* Languages */}
                         {expert.languages && expert.languages.length > 0 && (
                           <div className="flex items-center justify-center gap-1 mb-3">
-                            <Globe className="w-3 h-3 text-zinc-400 flex-shrink-0" />
-                            <p className="text-xs text-zinc-500 line-clamp-1">
+                            <Globe className="w-3 h-3 text-muted-foreground/70 flex-shrink-0" />
+                            <p className="text-xs text-muted-foreground line-clamp-1">
                               {expert.languages.slice(0, 3).join(", ")}
                             </p>
                           </div>
@@ -182,7 +182,7 @@ function FeaturedExpertsImpl({ experts, isLoading }: FeaturedExpertsProps) {
                             {expert.tags.slice(0, 2).map((tag) => (
                               <Badge
                                 key={tag.id}
-                                className="text-xs px-2 py-0.5 bg-zinc-100 text-zinc-700 hover:bg-zinc-200 border-0"
+                                className="text-xs px-2 py-0.5 bg-muted text-muted-foreground hover:bg-muted/80 border-0"
                               >
                                 {tag.name}
                               </Badge>
@@ -191,7 +191,7 @@ function FeaturedExpertsImpl({ experts, isLoading }: FeaturedExpertsProps) {
                         )}
 
                         {/* View Profile */}
-                        <div className="flex items-center justify-center gap-1 text-sm font-medium text-zinc-500 group-hover:text-zinc-900 transition-colors">
+                        <div className="flex items-center justify-center gap-1 text-sm font-medium text-muted-foreground group-hover:text-foreground transition-colors">
                           <span>View Profile</span>
                           <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
                         </div>

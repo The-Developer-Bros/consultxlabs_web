@@ -1,5 +1,6 @@
 "use client";
 
+import * as Sentry from "@sentry/nextjs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -8,7 +9,7 @@ import { authClient, useSession } from "@/lib/auth-client";
 import { GlobeIcon } from "@/components/auth/auth-icons";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 export default function ForgotPassword() {
   const { toast } = useToast();
@@ -18,10 +19,15 @@ export default function ForgotPassword() {
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState("");
 
-  // Redirect authenticated users away from forgot-password
+  // Redirect authenticated users away from forgot-password. `replace` (not
+  // push) so /auth/* never lands in history — Back from the dashboard used to
+  // remount this page and bounce forward again. Idempotency ref keeps
+  // duplicate session-store emissions from queueing repeat navigations.
+  const navigatedRef = useRef(false);
   useEffect(() => {
-    if (!isPending && session?.user?.id) {
-      router.push("/dashboard");
+    if (!isPending && session?.user?.id && !navigatedRef.current) {
+      navigatedRef.current = true;
+      router.replace("/dashboard");
     }
   }, [isPending, session, router]);
 
@@ -50,6 +56,10 @@ export default function ForgotPassword() {
         toast({ title: "Request Sent", description: successMessage });
       }
     } catch (error: unknown) {
+      Sentry.captureException(
+        error instanceof Error ? error : new Error(String(error)),
+        { tags: { subsystem: "auth" } },
+      );
       console.error("Forgot password error:", error);
       const errorMessage =
         error instanceof Error
@@ -67,19 +77,19 @@ export default function ForgotPassword() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-100 dark:bg-gray-950">
-      <div className="w-full max-w-md p-8 space-y-6 bg-white rounded-lg shadow-md dark:bg-gray-900">
+    <div className="flex min-h-screen items-center justify-center bg-neutral-950 p-6 text-white">
+      <div className="mx-auto flex w-full max-w-md flex-col">
         <div className="text-center">
-          <GlobeIcon className="mx-auto h-12 w-auto text-gray-900 dark:text-gray-100" />
-          <h2 className="mt-6 text-3xl font-extrabold text-gray-900 dark:text-white">
-            Forgot Your Password?
+          <GlobeIcon className="mx-auto h-10 w-auto text-white" />
+          <h2 className="mt-6 text-fluid-3xl font-semibold tracking-tight">
+            Forgot your password?
           </h2>
-          <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
-            Enter your email address and we'll send you a link to reset it.
+          <p className="mt-2 text-sm text-zinc-400 md:text-base">
+            Enter your email address and we&apos;ll send you a link to reset it.
           </p>
         </div>
-        <form className="space-y-6" onSubmit={handleRequestReset}>
-          <div>
+        <form className="mt-8 space-y-6" onSubmit={handleRequestReset}>
+          <div className="grid gap-2">
             <Label htmlFor="email" className="sr-only">
               Email address
             </Label>
@@ -89,7 +99,6 @@ export default function ForgotPassword() {
               type="email"
               autoComplete="email"
               required
-              className="appearance-none rounded-md relative block w-full px-3 py-2 border border-gray-300 dark:border-gray-700 placeholder-gray-500 dark:placeholder-gray-400 text-gray-900 dark:text-white focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 focus:z-10 sm:text-sm"
               placeholder="Email address"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -99,26 +108,24 @@ export default function ForgotPassword() {
 
           {message && (
             <p
-              className={`text-sm ${message.includes("Error") ? "text-red-600" : "text-green-600"} dark:text-gray-300`}
+              className={`text-sm ${message.includes("Error") ? "text-red-400" : "text-green-400"}`}
             >
               {message}
             </p>
           )}
 
-          <div>
-            <Button
-              type="submit"
-              className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-600"
-              disabled={isLoading}
-            >
-              {isLoading ? "Sending..." : "Send Reset Link"}
-            </Button>
-          </div>
+          <Button
+            type="submit"
+            className="w-full bg-white text-black hover:bg-white/90"
+            disabled={isLoading}
+          >
+            {isLoading ? "Sending..." : "Send Reset Link"}
+          </Button>
         </form>
-        <div className="text-sm text-center">
+        <div className="mt-6 text-center text-sm">
           <Link
             href="/auth/signin"
-            className="font-medium text-indigo-600 hover:text-indigo-500 dark:text-indigo-400 dark:hover:text-indigo-300"
+            className="font-medium text-zinc-300 underline-offset-4 hover:text-white hover:underline"
           >
             Remembered your password? Sign in
           </Link>

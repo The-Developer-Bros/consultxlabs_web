@@ -9,6 +9,7 @@
  * - Sends "we're back" broadcast notification
  */
 
+import * as Sentry from "@sentry/nextjs";
 import { notifyMaintenanceEnded } from "@/lib/novu/service";
 import prisma from "@/lib/prisma";
 import { checkRedisHealth } from "@/lib/redis";
@@ -41,6 +42,7 @@ export async function runPostRecovery(): Promise<RecoveryResult> {
     await prisma.$queryRaw`SELECT 1`;
     result.database = true;
   } catch (error) {
+    Sentry.logger.warn("Post-recovery DB health check failed", { tags: { subsystem: "maintenance" } });
     result.errors.push(
       `Database: ${error instanceof Error ? error.message : String(error)}`,
     );
@@ -54,6 +56,7 @@ export async function runPostRecovery(): Promise<RecoveryResult> {
         result.errors.push("Redis: PING failed");
       }
     } catch (error) {
+      Sentry.logger.warn("Post-recovery Redis health check failed", { tags: { subsystem: "maintenance" } });
       result.errors.push(
         `Redis: ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -72,6 +75,7 @@ export async function runPostRecovery(): Promise<RecoveryResult> {
         }),
       );
     } catch (error) {
+      Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "maintenance" } });
       result.errors.push(
         `Discount restore: ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -104,6 +108,7 @@ export async function runPostRecovery(): Promise<RecoveryResult> {
     }));
     reconciliationRuns.forEach((r, i) => {
       if (r.status === "rejected") {
+        Sentry.captureException(r.reason instanceof Error ? r.reason : new Error(String(r.reason)), { tags: { subsystem: "maintenance" }, extra: { job: JOB_NAMES[i] } });
         result.errors.push(`${JOB_NAMES[i]}: ${String(r.reason)}`);
       }
     });
@@ -120,6 +125,7 @@ export async function runPostRecovery(): Promise<RecoveryResult> {
     });
     result.notification = notifResult.success;
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "maintenance" }, level: "warning" });
     result.errors.push(
       `Notification: ${error instanceof Error ? error.message : String(error)}`,
     );

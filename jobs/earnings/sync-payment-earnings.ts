@@ -15,6 +15,8 @@ import {
 } from "../../scripts/earnings/sync-payment-earnings";
 import fs from "fs";
 import { abortIfMaintenance } from "../../lib/maintenance-cron";
+import * as Sentry from "@sentry/nextjs";
+import { runJob } from "../../lib/observability/job-sentry";
 
 /**
  * Output results to GitHub Actions
@@ -47,6 +49,7 @@ function outputToGitHubActions(result: PaymentEarningSyncResult): void {
  */
 async function main(): Promise<void> {
   await abortIfMaintenance("sync-payment-earnings");
+  Sentry.logger.info("job:sync-payment-earnings started");
   console.log("🔄 Starting payment-earning sync job...");
   console.log(`Timestamp: ${new Date().toISOString()}`);
 
@@ -67,15 +70,19 @@ async function main(): Promise<void> {
 
     outputToGitHubActions(result);
 
+    Sentry.logger.info("job:sync-payment-earnings finished", {
+      totalProcessed: result.totalProcessed,
+      createdCount: result.createdCount,
+      skippedCount: result.skippedCount,
+      errorCount: result.errorCount,
+    });
+
     if (!result.success) {
-      process.exit(1);
+      process.exitCode = 1;
     }
-  } catch (error) {
-    console.error("❌ Fatal error in payment-earning sync:", error);
-    process.exit(1);
   } finally {
     await disconnectDatabase();
   }
 }
 
-main();
+runJob("sync-payment-earnings", main);

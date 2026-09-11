@@ -1,3 +1,22 @@
+# Bot review rounds: two, then stop.
+#
+# CodeRabbit runs on the ASSERTIVE profile and re-reviews on every push, so each
+# round of fixes produces a fresh round of comments on the diff those fixes
+# created. Round 1 clears the substantive findings; round 2 clears whatever
+# round 1 provoked. After that, answer remaining comments in the thread and
+# merge — do not push again just to silence the bot.
+#
+# The drawback, stated so nobody has to rediscover it: stopping at two means a
+# genuine finding raised in round 3 gets a reply rather than a fix in this PR.
+# That is the accepted cost. The alternative — looping until the bot is silent —
+# does not converge on an ASSERTIVE profile: it reliably finds something on any
+# new diff, and past round 2 that something is overwhelmingly refactor-for-its-
+# own-sake (cognitive-complexity thresholds, helper extraction). Each extra push
+# also resets approvals and burns a full CI cycle, so the churn is not free.
+#
+# Anything real that surfaces late belongs in a follow-up issue, where it keeps
+# its own context, instead of growing this PR's diff past what a human will read.
+
 name: CI
 
 on:
@@ -103,8 +122,49 @@ jobs:
       - name: Generate Prisma Client
         run: npx prisma generate
 
+      - name: Verify SSO invariants
+        # Cheap static guard against regressions in the SSO audit fixes
+        # (PR #655 / issue #672). See scripts/verify-sso-invariants.sh
+        # for per-check rationale.
+        run: bash scripts/verify-sso-invariants.sh
+
+      - name: Money-column guard
+        # #780 — no money column may be declared Int (int4 overflows at
+        # ₹2.14cr). BigInt columns must also be in the lib/prisma.ts
+        # boundary map; that half is enforced by the extension drift test.
+        run: npx --yes tsx@4.23.1 scripts/ci/check-money-columns.ts
+
+      - name: Workflow hygiene guard
+        # A `${{ secrets.X }}` that doesn't exist interpolates an empty string
+        # and the job still reports success — that is how #677 PM-1 came back
+        # after being fixed in code. Also catches recurring cron start
+        # collisions. Static only: no network, no database.
+        #
+        # tsx is pinned at the call site (`tsx@4.23.1`). It used to be a bare
+        # `npx tsx`, which resolves whatever the registry currently serves —
+        # an unversioned package on the execution path of every money cron.
+        # Adding it as a devDependency would be better still, but it pulls in
+        # esbuild and that broke the Netlify build; see the PR discussion.
+        run: npx --yes tsx@4.23.1 scripts/ci/check-workflow-hygiene.ts
+
+      - name: Database sidecar + drift guard
+        # `prisma db push` does not manage the ledger CONSTRAINT TRIGGER or any
+        # CHECK constraint, so a bare push silently drops every money invariant.
+        # These also diff live enums against the schema — the drift class that
+        # left reconcile-disputes red for a month. Both skip cleanly when
+        # DATABASE_URL is absent (forks, PRs without secrets).
+        run: |
+          npx --yes tsx@4.23.1 scripts/ci/check-db-sidecars.ts
+          npx --yes tsx@4.23.1 scripts/ci/check-db-drift.ts
+
       - name: Unit Tests
         run: npm run test
 
       - name: Build
+        # Raise the V8 heap so `next build` (+ Sentry source-map generation) does
+        # not flaky-OOM on the runner — mirrors netlify.toml's NODE_OPTIONS. The
+        # default heap sits right at the build's peak, so it intermittently exits
+        # 134 (heap out of memory) on otherwise-identical builds.
         run: npm run build
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144

@@ -1,5 +1,5 @@
 import { faker } from "@faker-js/faker";
-import { PaymentGateway, PayoutMethod } from "@prisma/client";
+import { Currency, PaymentGateway, PayoutMethod } from "@prisma/client";
 import prisma from "../../lib/prisma";
 import {
   generateBatchId,
@@ -11,6 +11,7 @@ import {
   PAYOUT_STATUS_WEIGHTS,
   PAYOUT_PROVIDER_WEIGHTS,
 } from "./utils";
+import { sumPaise } from "../../lib/payments/utils/money";
 
 /**
  * Determine payout method based on provider
@@ -38,8 +39,12 @@ function generateProviderPayoutId(provider: PaymentGateway): string {
 /**
  * Get currency based on provider
  */
-function getCurrency(provider: PaymentGateway): string {
-  return provider === PaymentGateway.STRIPE ? "USD" : "INR";
+function getCurrency(_provider: PaymentGateway): Currency {
+  // Always INR. Payouts settle in INR whichever provider carries them —
+  // processRazorpayPayout throws on anything else — so seeding USD payouts
+  // for Stripe produced rows the real pipeline would reject, and inflated the
+  // dashboards that sum payout amounts without grouping by currency.
+  return Currency.INR;
 }
 
 /**
@@ -49,7 +54,7 @@ function groupEarningsByConsultant(
   earnings: Array<{
     id: string;
     consultantProfileId: string;
-    consultantShare: number;
+    consultantSharePaise: number;
   }>,
 ): Map<string, typeof earnings> {
   const grouped = new Map<string, typeof earnings>();
@@ -75,7 +80,7 @@ export async function createPayouts(): Promise<void> {
     select: {
       id: true,
       consultantProfileId: true,
-      consultantShare: true,
+      consultantSharePaise: true,
     },
   });
 
@@ -110,7 +115,7 @@ export async function createPayouts(): Promise<void> {
     try {
       // Calculate total amount for this payout
       const totalAmount = earnings.reduce(
-        (sum, e) => sum + e.consultantShare,
+        (sum, e) => sum + e.consultantSharePaise,
         0,
       );
 
@@ -166,7 +171,7 @@ export async function createPayouts(): Promise<void> {
       }
 
       // Create the payout
-      const payout = await prisma.payout.create({
+      const payout = await prisma.consultantPayout.create({
         data: {
           consultantProfileId,
           provider,
@@ -224,7 +229,7 @@ export async function createPayouts(): Promise<void> {
   console.log(`  Total payouts created: ${payoutsCreated}`);
   console.log(`  Total earnings linked: ${earningsLinked}`);
 
-  const statusSummary = await prisma.payout.groupBy({
+  const statusSummary = await prisma.consultantPayout.groupBy({
     by: ["status"],
     _count: true,
     _sum: {
@@ -234,13 +239,13 @@ export async function createPayouts(): Promise<void> {
 
   console.log("\nPayouts by Status:");
   for (const item of statusSummary) {
-    const totalAmount = item._sum.amount || 0;
+    const totalAmount = sumPaise(item._sum.amount);
     console.log(
       `  ${item.status}: ${item._count} payouts (Total: ${(totalAmount / 100).toFixed(2)} INR)`,
     );
   }
 
-  const providerSummary = await prisma.payout.groupBy({
+  const providerSummary = await prisma.consultantPayout.groupBy({
     by: ["provider"],
     _count: true,
   });

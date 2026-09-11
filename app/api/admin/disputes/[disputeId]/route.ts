@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 
@@ -14,7 +15,6 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
     // Check authentication (admin or staff)
     const auth = await requirePrivilegedAuth();
     if (auth.error) return auth.error;
-    const session = auth.session;
 
     const resolvedParams = await params;
 
@@ -42,6 +42,7 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
 
     return NextResponse.json(dispute);
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "admin" } });
     console.error("Admin dispute details error:", error);
     return NextResponse.json(
       { error: "Failed to fetch dispute details" },

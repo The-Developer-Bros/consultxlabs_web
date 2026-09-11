@@ -30,21 +30,21 @@
 | **Health** (`/api/health`)                               | Exempt -- always responds               | Exempt -- always responds  | None       |
 | **Auth** (`/api/auth/*`)                                 | Exempt -- always works                  | Exempt -- always works     | None       |
 | **Maintenance API** (`/api/admin/maintenance`)           | Exempt                                  | Exempt                     | None       |
-| **Checkout** (`/api/checkout`, `/api/checkout/verify`)   | Allowed (gap)                           | Blocked (503)              | HIGH       |
+| **Checkout** (`/api/checkout`, `/api/checkout/verify`, `DELETE /api/checkout/pending/[paymentId]`) | Allowed (gap) | Blocked (503) | HIGH |
 | **Cancel appointment** (`/api/appointments/[id]/cancel`) | Allowed (gap)                           | Blocked                    | MEDIUM     |
 | **Reschedule** (`/api/appointments/[id]/reschedule`)     | Allowed (gap)                           | Blocked                    | MEDIUM     |
 | **Documents** (`/api/appointments/[id]/documents`)       | Allowed                                 | Blocked                    | LOW        |
-| **Consultations** (`/api/events/consultations`)          | GET: Allowed, POST/PATCH: Allowed (gap) | Blocked                    | HIGH       |
-| **Subscriptions** (`/api/events/subscriptions`)          | GET: Allowed, POST: Allowed (gap)       | Blocked                    | HIGH       |
-| **Webinars** (`/api/events/webinars`)                    | GET: Allowed, POST: Allowed (gap)       | Blocked                    | MEDIUM     |
-| **Classes** (`/api/events/classes`)                      | GET: Allowed, POST: Allowed (gap)       | Blocked                    | MEDIUM     |
-| **Allocate slots** (`/api/events/*/allocate`)            | Allowed (gap)                           | Blocked                    | HIGH       |
-| **Validate** (`/api/events/*/validate`)                  | Allowed (read-only)                     | Blocked                    | LOW        |
+| **Consultations** (`/api/bookings/consultations`)          | GET: Allowed, POST/PATCH: Allowed (gap) | Blocked                    | HIGH       |
+| **Subscriptions** (`/api/bookings/subscriptions`)          | GET: Allowed, POST: Allowed (gap)       | Blocked                    | HIGH       |
+| **Webinars** (`/api/bookings/webinars`)                    | GET: Allowed, POST: Allowed (gap)       | Blocked                    | MEDIUM     |
+| **Classes** (`/api/bookings/classes`)                      | GET: Allowed, POST: Allowed (gap)       | Blocked                    | MEDIUM     |
+| **Allocate slots** (`/api/bookings/*/allocate`)            | Allowed (gap)                           | Blocked                    | HIGH       |
+| **Validate** (`/api/bookings/*/validate`)                  | Allowed (read-only)                     | Blocked                    | LOW        |
 | **Participants** (`/api/participants/*`)                 | Allowed                                 | Blocked                    | LOW        |
 | **Trials** (`/api/trials`, `/api/trials/[id]`)           | Allowed (gap)                           | Blocked                    | MEDIUM     |
 | **Plans** (`/api/plans/*`)                               | GET: Allowed, POST/PATCH: Allowed (gap) | Blocked                    | MEDIUM     |
 | **Slot appointments** (`/api/slots/appointments`)        | **Writes blocked (503)** (Mar 2026)     | Blocked                    | HIGH       |
-| **Waitlist** (`/api/waitlist`)                           | **Writes blocked (503)** (Mar 2026)     | Blocked                    | MEDIUM     |
+| **Waitlist / newsletter** (`/api/waitlist`)              | **Writes blocked (503)** (Mar 2026)     | Blocked                    | LOW        |
 | **Referrals** (`/api/referrals`)                         | **Writes blocked (503)** (Mar 2026)     | Blocked                    | MEDIUM     |
 | **Collaborators** (`/api/collaborators`)                 | **Writes blocked (503)** (Mar 2026)     | Blocked                    | MEDIUM     |
 | **Refunds** (`/api/payments/refunds`)                    | **Writes blocked (503)** (Mar 2026)     | Blocked                    | HIGH       |
@@ -77,7 +77,7 @@
 | Route | Reason |
 | --- | --- |
 | `/api/slots/appointments` | Prevent slot modifications during maintenance |
-| `/api/waitlist` | Prevent waitlist mutations |
+| `/api/waitlist` | Prevent newsletter signups |
 | `/api/referrals` | Prevent referral creation |
 | `/api/collaborators` | Prevent collaborator changes |
 | `/api/payments/refunds` | Prevent refund processing |
@@ -86,18 +86,13 @@
 
 **Remaining gap**: Checkout (`/api/checkout`), appointment cancel/reschedule, event CRUD, and trial routes are still **not** write-blocked in DEGRADED mode. These may be addressed in a future update.
 
-### Gap 2: Cron Jobs Bypass Middleware Entirely
+### Gap 2: Cron Jobs Bypass Middleware — Resolved via `abortIfMaintenance()`
 
-**Problem**: All 27 cron jobs run as standalone Node.js scripts via GitHub Actions. They connect directly to PostgreSQL via Prisma, completely bypassing the Next.js middleware.
+**Resolved**: All 27 cron jobs now call `abortIfMaintenance()` (`lib/maintenance-cron.ts`) at startup. On OFFLINE mode the job exits 0 cleanly; on DEGRADED mode it logs a warning and continues. The jobs cannot intercept maintenance state through the Next.js middleware (they run directly as `npx tsx` processes in GitHub Actions), but they check the same Redis key directly, achieving the same effect.
 
-**Impact**: During OFFLINE mode (especially DB migrations), cron jobs may:
+**Residual concern**: A job that is already mid-run when OFFLINE mode is activated will finish its current work. The guard is entry-time only — there is no checkpoint inside long jobs. For short jobs (typical <5s) this is harmless; for longer jobs (`sync-payment-earnings`, `reconcile-ledgers`) keep the 2-minute settling window in the pre-maintenance checklist.
 
-- Read/write to tables being migrated
-- Corrupt data if schema is changing
-- Create race conditions with migration scripts
-- Cancel valid payment intents (cleanup jobs)
-
-**Affected jobs**: All 27 -- see [Cron Jobs Reference](./04-cron-jobs-reference.md)
+**Affected jobs**: 49 of the 61 scheduled jobs. The other 12 never call the guard and run straight through OFFLINE -- see [Cron Jobs Reference](./04-cron-jobs-reference.md)
 
 ### Gap 3: Active Video Calls Not Terminated
 
@@ -126,6 +121,7 @@
 
 - `POST /api/checkout` -- Create payment intent + initiate booking
 - `GET /api/checkout/verify` -- Verify payment completion
+- `DELETE /api/checkout/pending/[paymentId]` -- Cancel a PENDING payment and release its tentative slots (#849 cancel-vs-capture guard)
 
 ### Appointment Management Routes
 
@@ -140,43 +136,43 @@
 
 ### Event Routes (Consultations)
 
-- `GET /api/events/consultations` -- List consultations
-- `PATCH /api/events/consultations` -- Update consultation status
-- `GET /api/events/consultations/[id]` -- Get consultation
-- `POST /api/events/consultations/[id]/allocate` -- Allocate slots
-- `GET /api/events/consultations/[id]/validate` -- Validate consultation
-- `GET /api/events/consultations/check-duplicate-title` -- Check duplicates
+- `GET /api/bookings/consultations` -- List consultations
+- `PATCH /api/bookings/consultations` -- Update consultation status
+- `GET /api/bookings/consultations/[id]` -- Get consultation
+- `POST /api/bookings/consultations/[id]/allocate` -- Allocate slots
+- `GET /api/bookings/consultations/[id]/validate` -- Validate consultation
+- `GET /api/bookings/consultations/check-duplicate-title` -- Check duplicates
 
 ### Event Routes (Subscriptions)
 
-- `GET /api/events/subscriptions` -- List subscriptions
-- `POST /api/events/subscriptions` -- Create subscription
-- `GET /api/events/subscriptions/[id]` -- Get subscription
-- `POST /api/events/subscriptions/[id]/allocate` -- Allocate slots
-- `GET /api/events/subscriptions/[id]/validate` -- Validate subscription
-- `GET /api/events/subscriptions/check-duplicate-title` -- Check duplicates
+- `GET /api/bookings/subscriptions` -- List subscriptions
+- `POST /api/bookings/subscriptions` -- Create subscription
+- `GET /api/bookings/subscriptions/[id]` -- Get subscription
+- `POST /api/bookings/subscriptions/[id]/allocate` -- Allocate slots
+- `GET /api/bookings/subscriptions/[id]/validate` -- Validate subscription
+- `GET /api/bookings/subscriptions/check-duplicate-title` -- Check duplicates
 
 ### Event Routes (Webinars)
 
-- `GET /api/events/webinars` -- List webinars
-- `POST /api/events/webinars` -- Create webinar
-- `GET /api/events/webinars/[id]` -- Get webinar
-- `POST /api/events/webinars/[id]/allocate` -- Allocate slots
-- `GET /api/events/webinars/[id]/validate` -- Validate webinar
-- `GET /api/events/webinars/check-duplicate-title` -- Check duplicates
-- `POST /api/events/webinars/crud-with-plan` -- Create webinar with plan
-- `PATCH /api/events/webinars/crud-with-plan/[id]` -- Update webinar with plan
+- `GET /api/bookings/webinars` -- List webinars
+- `POST /api/bookings/webinars` -- Create webinar
+- `GET /api/bookings/webinars/[id]` -- Get webinar
+- `POST /api/bookings/webinars/[id]/allocate` -- Allocate slots
+- `GET /api/bookings/webinars/[id]/validate` -- Validate webinar
+- `GET /api/bookings/webinars/check-duplicate-title` -- Check duplicates
+- `POST /api/bookings/webinars/crud-with-plan` -- Create webinar with plan
+- `PATCH /api/bookings/webinars/crud-with-plan/[id]` -- Update webinar with plan
 
 ### Event Routes (Classes)
 
-- `GET /api/events/classes` -- List classes
-- `POST /api/events/classes` -- Create class
-- `GET /api/events/classes/[id]` -- Get class
-- `POST /api/events/classes/[id]/allocate` -- Allocate slots
-- `GET /api/events/classes/[id]/validate` -- Validate class
-- `GET /api/events/classes/check-duplicate-title` -- Check duplicates
-- `POST /api/events/classes/crud-with-plan` -- Create class with plan
-- `PATCH /api/events/classes/crud-with-plan/[id]` -- Update class with plan
+- `GET /api/bookings/classes` -- List classes
+- `POST /api/bookings/classes` -- Create class
+- `GET /api/bookings/classes/[id]` -- Get class
+- `POST /api/bookings/classes/[id]/allocate` -- Allocate slots
+- `GET /api/bookings/classes/[id]/validate` -- Validate class
+- `GET /api/bookings/classes/check-duplicate-title` -- Check duplicates
+- `POST /api/bookings/classes/crud-with-plan` -- Create class with plan
+- `PATCH /api/bookings/classes/crud-with-plan/[id]` -- Update class with plan
 
 ### Trial Routes
 
@@ -194,3 +190,10 @@
 - `GET /api/participants/subscriptions/[id]` -- Subscription participants
 - `GET /api/participants/webinar/[id]` -- Webinar participants
 - `GET /api/participants/class/[id]` -- Class participants
+
+## The appointment freeze follows the cancellation doctrine (2026-08-14, #1162 / #1169 PR 3)
+
+Entering OFFLINE cancels every appointment overlapping the window through the same machinery as an interactive cancellation, because the old implementation predated that machinery and violated it three ways: it hard-deleted appointments whose only payment was PENDING (cascade-destroying the Payment row the capture webhook then needed), refunded gross amounts through a raw gateway call that could not route org-funded or credit-funded intents, and wrote statuses with no compare-and-swap guard, which could resurrect a COMPLETED booking. The rewrite deletes nothing: event statuses move through the `lib/booking/transitions.ts` CAS helpers (an already-terminal booking is skipped and counted, never resurrected), slots soft-cancel to `completionStatus: CANCELLED` exactly like the cancel route, trials tombstone through `softCancelTrialAppointment`, and open reschedule proposals are closed so `openForAppointmentId` frees. Refunds run after the transactions through `refundBookingPayment`, which clamps to the refundable balance and routes every rail — gateway, org-funded, and referral-credit — and a re-run of the freeze is safe end to end: the CAS guards skip what is already cancelled and the balance clamp turns a second refund attempt into a recorded skip.
+
+Separately, the maintenance-mode Redis keys now carry a 24-hour TTL (#697 INF-1). Every `setMaintenanceState` call refreshes the clock, so a tended window persists, while an OFFLINE flag whose owner disappeared expires back to OFF instead of keeping the platform down indefinitely. Maintenance windows planned to exceed a day must re-assert their phase at least daily; the pre-maintenance checklist carries that rule.
+

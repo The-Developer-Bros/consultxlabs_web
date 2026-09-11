@@ -341,7 +341,7 @@ For detailed pricing analysis, see `docs/competition/04-pricing-strategy.md`.
 
 ### Break-Even Math
 
-**Current monthly costs:** ~₹20K (see `docs/finances/06-saas-expenditures.md`)
+**Current monthly costs:** ~₹20K (see `docs/stream/00-pricing-overview.md` for Stream costs; overall SaaS burn ~₹10-12K pre-GST)
 
 At 10% blended commission rate:
 - Break-even GMV: ₹20K / 0.10 = **₹2L/month**

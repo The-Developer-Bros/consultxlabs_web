@@ -1,5 +1,23 @@
 import { format } from "date-fns";
 import { TAppointment } from "@/types/appointment";
+import { isDeadSlot } from "@/lib/appointments/slots";
+
+/**
+ * The LIVE slot rows of an appointment — dead rows (CANCELLED / RESCHEDULED /
+ * deletedAt tombstone) and tentative holds excluded.
+ *
+ * Booking-journey audit B7: the Today/Upcoming helpers used to iterate every
+ * row, so a reschedule's released slots (still carrying their original
+ * startsAt on an APPROVED parent) rendered as "Today's Appointment", and a
+ * tentative hold could announce itself in "Needs you now". Every consumer of
+ * these helpers — Today/Upcoming lists, HomeTab action items — inherits the
+ * filter.
+ */
+function liveSlotsOf(appointment: TAppointment): TAppointment["slotsOfAppointment"] {
+  return (appointment.slotsOfAppointment ?? []).filter(
+    (slot) => !isDeadSlot(slot) && !slot.isTentative,
+  );
+}
 
 // =============================================================================
 // Collaborator Types
@@ -214,10 +232,17 @@ export const calculateSessionProgress = (
   remainingSessions: number;
   progressPercentage: number;
 } => {
-  const dedupedAppointments = groupAppointments;
+  // Exclude slot-less appointments (e.g. the zero-slot subscription checkout
+  // placeholder that carries the signup Payment — preserved by allocation, never
+  // deleted). A row with no slots is not a session, so counting it inflated
+  // totalSessions/remaining by 1 ("11 remaining" for a 10-session sub). This
+  // mirrors the completedSessions rule below, which already requires slots.
+  const appointmentsWithSlots = groupAppointments.filter(
+    (app) => getSlotTimes(app).length > 0,
+  );
 
-  const totalSessions = dedupedAppointments.length;
-  const completedSessions = dedupedAppointments.filter((app) => {
+  const totalSessions = appointmentsWithSlots.length;
+  const completedSessions = appointmentsWithSlots.filter((app) => {
     const slotTimes = getSlotTimes(app);
     return (
       slotTimes.length > 0 &&
@@ -419,10 +444,8 @@ export const getTodayAppointments = (
 
   // First expand appointments with multiple slots (only for subscriptions and classes)
   const expandedAppointments = appointments.flatMap((appointment) => {
-    if (
-      !appointment.slotsOfAppointment ||
-      appointment.slotsOfAppointment.length === 0
-    ) {
+    const liveSlots = liveSlotsOf(appointment);
+    if (liveSlots.length === 0) {
       return [appointment];
     }
 
@@ -432,15 +455,16 @@ export const getTodayAppointments = (
       appointment.appointmentType === "SUBSCRIPTION" ||
       appointment.appointmentType === "CLASS"
     ) {
-      return appointment.slotsOfAppointment.map((slot) => ({
+      return liveSlots.map((slot) => ({
         ...appointment,
         id: `${appointment.id}-${slot.id}`,
         slotsOfAppointment: [slot],
       }));
     }
 
-    // Keep consultations and webinars as single appointments
-    return [appointment];
+    // Keep consultations and webinars as single appointments — but with only
+    // their live rows, so a released reschedule slot cannot anchor "today".
+    return [{ ...appointment, slotsOfAppointment: liveSlots }];
   });
 
   return expandedAppointments.filter((appointment) => {
@@ -460,8 +484,23 @@ export const getUpcomingAppointments = (
 ): TAppointment[] => {
   const now = new Date();
 
+  // Drop dead/tentative rows up front (B7) so neither the expansion below nor
+  // the per-appointment checks can resurrect a released or unconfirmed slot.
+  // An appointment whose rows ALL died (every session cancelled or
+  // rescheduled away) drops out entirely — with zero live rows it has nothing
+  // to show, and the raw-slot readers below would re-admit it (CodeRabbit
+  // triage). Appointments that arrived with NO rows at all keep legacy
+  // behavior (their liveness is decided by the checks below, not slots).
+  const withLiveSlots = appointments.flatMap((appointment) => {
+    const live = liveSlotsOf(appointment);
+    if (live.length === 0 && (appointment.slotsOfAppointment ?? []).length > 0) {
+      return [];
+    }
+    return [{ ...appointment, slotsOfAppointment: live }];
+  });
+
   // First filter out completed appointments
-  const filteredAppointments = appointments.filter((appointment) => {
+  const filteredAppointments = withLiveSlots.filter((appointment) => {
     // For multi-slotted appointments (subscription and class)
     if (
       (appointment.appointmentType === "SUBSCRIPTION" &&
@@ -530,147 +569,3 @@ export const groupRecurringAppointments = (
   return groups;
 };
 
-/**
- * Groups appointments by their type (CONSULTATION, SUBSCRIPTION, WEBINAR, CLASS)
- * and sorts them chronologically within each group
- * @param appointments - Array of appointments to group
- * @returns Object with appointment types as keys and sorted appointment arrays as values
- */
-export const groupAppointmentsByType = (
-  appointments: TAppointment[],
-): { [key: string]: TAppointment[] } => {
-  const groups: { [key: string]: TAppointment[] } = {
-    CONSULTATION: [],
-    SUBSCRIPTION: [],
-    WEBINAR: [],
-    CLASS: [],
-  };
-
-  // Group appointments by their type
-  appointments.forEach((appointment) => {
-    if (appointment.appointmentType && groups[appointment.appointmentType]) {
-      groups[appointment.appointmentType].push(appointment);
-    }
-  });
-
-  // Sort each group chronologically
-  Object.keys(groups).forEach((type) => {
-    groups[type] = sortAppointmentsByStartTime(groups[type]);
-  });
-
-  // Keep empty groups to show all sections even when no appointments exist
-  return groups;
-};
-
-/**
- * Gets a human-readable display name for an appointment type
- * @param type - The AppointmentsType enum value
- * @returns Formatted display name
- */
-export const getAppointmentTypeDisplayName = (type: string): string => {
-  const typeMap: { [key: string]: string } = {
-    CONSULTATION: "Consultations",
-    SUBSCRIPTION: "Subscriptions",
-    WEBINAR: "Webinars",
-    CLASS: "Classes",
-  };
-  return typeMap[type] || type;
-};
-
-// Get group title
-export const getGroupTitle = (appointments: TAppointment[]): string => {
-  if (!appointments.length) return "";
-
-  const firstAppointment = appointments[0];
-  const type = firstAppointment.appointmentType;
-
-  if (type === "SUBSCRIPTION" && firstAppointment.subscription) {
-    const plan =
-      firstAppointment.subscription.subscriptionPlan?.title || "Unknown Plan";
-
-    // Count total appointments as sessions
-    const totalSessions = appointments.length;
-
-    // Count completed sessions based on slot times
-    const now = new Date();
-    const completedSessions = appointments.filter((app) => {
-      const times = getSlotTimes(app);
-      return times.length > 0 && times.every((time) => new Date(time) < now);
-    }).length;
-
-    return `${plan} (${completedSessions}/${totalSessions} sessions)`;
-  }
-
-  if (type === "CLASS" && firstAppointment.class) {
-    const plan = firstAppointment.class.classPlan?.title || "Unknown Class";
-    const totalSessions = appointments.length;
-
-    // Count completed sessions based on slot times, same as subscription
-    const now = new Date();
-    const completedSessions = appointments.filter((app) => {
-      const times = getSlotTimes(app);
-      return times.length > 0 && times.every((time) => new Date(time) < now);
-    }).length;
-
-    return `${plan} (${completedSessions}/${totalSessions} sessions)`;
-  }
-
-  return getAppointmentTypeAndPlan(firstAppointment);
-};
-
-// Get group status
-export const getGroupStatus = (appointments: TAppointment[]): string => {
-  if (!appointments.length) return "Unknown";
-
-  const firstAppointment = appointments[0];
-  const type = firstAppointment.appointmentType;
-
-  if (type === "SUBSCRIPTION" && firstAppointment.subscription) {
-    if (firstAppointment.subscription.requestStatus === "CANCELLED") {
-      return "Cancelled";
-    }
-
-    const now = new Date();
-    const startDate = new Date(
-      firstAppointment.subscription.schedulingPeriodStartsAt,
-    );
-    const endDate = new Date(
-      firstAppointment.subscription.schedulingPeriodEndsAt,
-    );
-
-    // Check if any sessions are completed
-    const hasCompletedSessions = appointments.some((app) => {
-      const times = getSlotTimes(app);
-      return times.length > 0 && times.every((time) => new Date(time) < now);
-    });
-
-    if (now > endDate) return "Completed";
-    if (now < startDate) return "Not Started";
-    return hasCompletedSessions ? "In Progress" : "Not Started";
-  }
-
-  if (type === "CLASS" && firstAppointment.class) {
-    if (firstAppointment.class.status === "CANCELLED") {
-      return "Cancelled";
-    }
-
-    const now = new Date();
-
-    // Check if any sessions are completed, same as subscription
-    const hasCompletedSessions = appointments.some((app) => {
-      const times = getSlotTimes(app);
-      return times.length > 0 && times.every((time) => new Date(time) < now);
-    });
-
-    // Check if all sessions are completed
-    const allSessionsCompleted = appointments.every((app) => {
-      const times = getSlotTimes(app);
-      return times.length > 0 && times.every((time) => new Date(time) < now);
-    });
-
-    if (allSessionsCompleted) return "Completed";
-    return hasCompletedSessions ? "In Progress" : "Not Started";
-  }
-
-  return getAppointmentStatus(firstAppointment);
-};

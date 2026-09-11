@@ -21,16 +21,27 @@ jest.mock("../../lib/prisma", () => ({
     $transaction: jest.fn(),
     appointment: { findUnique: jest.fn() },
     slotOfAppointment: { findMany: jest.fn(), deleteMany: jest.fn() },
+    // #1008 — reschedule/cancel routes read prisma.dispute.findFirst.
+    dispute: { findFirst: jest.fn().mockResolvedValue(null) },
     $disconnect: jest.fn(),
   },
 }));
 
+jest.mock("../../lib/rate-limit", () => ({
+  __esModule: true,
+  applyRateLimit: jest.fn(async () => null),
+  eventMutationLimiter: {},
+}));
+jest.mock("../../utils/appointmentlock", () => ({
+  __esModule: true,
+  withAppointmentLock: jest.fn(
+    async (_id: string, fn: () => Promise<unknown>) => fn(),
+  ),
+  BookingLockUnavailableError: class extends Error {},
+  AppointmentBusyError: class extends Error {},
+}));
 jest.mock("../../lib/auth-server", () => ({
   getSession: jest.fn(),
-}));
-
-jest.mock("../../lib/waitlist/slot-handler", () => ({
-  handleSlotOpening: jest.fn().mockResolvedValue({ notified: 0 }),
 }));
 
 jest.mock("../../lib/novu", () => ({
@@ -70,13 +81,17 @@ function makeParams(appointmentId: string) {
 const FUTURE_DATE = new Date(Date.now() + 48 * 60 * 60 * 1000);
 const NEAR_DATE = new Date(Date.now() + 12 * 60 * 60 * 1000);
 
-function makeSlot(id: string, startsAt: Date) {
+function makeSlot(id: string, startsAt: Date, appointmentId = "apt-1") {
   return {
     id,
     startsAt,
     endsAt: new Date(startsAt.getTime() + 30 * 60 * 1000),
     isTentative: false,
-    appointmentId: "apt-1",
+    // Whole-series flows filter on SLOT_RESCHEDULABLE_FROM so a delivered
+    // session can no longer brick the aggregate 24h gate. The column is
+    // `@default(SCHEDULED)` and non-nullable, so real rows always carry it.
+    completionStatus: "SCHEDULED",
+    appointmentId,
     createdAt: new Date(),
   };
 }
@@ -146,11 +161,46 @@ function makeMockTx(appointmentData: any) {
       findMany: jest.fn().mockResolvedValue([]),
       delete: jest.fn(),
     },
-    consultation: { update: jest.fn() },
-    subscription: { update: jest.fn() },
-    webinar: { update: jest.fn() },
-    class: { update: jest.fn() },
-    slotOfAppointment: { updateMany: jest.fn(), deleteMany: jest.fn() },
+    consultation: {
+      update: jest.fn(),
+      // Each transition helper reads the from-status before its CAS.
+      findUnique: jest.fn().mockResolvedValue({ status: "APPROVED" }),
+      // B2 — the cancel/reschedule CAS guards use updateMany.
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    subscription: {
+      update: jest.fn(),
+      // Each transition helper reads the from-status before its CAS.
+      findUnique: jest.fn().mockResolvedValue({ status: "APPROVED" }),
+      // B2 — the cancel/reschedule CAS guards use updateMany.
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      // #448 — a PARTIAL (slotIds) subscription reschedule only terminal-guards
+      // via count (no status write); positive count keeps the route on the
+      // happy path without flipping the whole subscription to PENDING.
+      count: jest.fn().mockResolvedValue(1),
+    },
+    webinar: {
+      update: jest.fn(),
+      // Each transition helper reads the from-status before its CAS.
+      findUnique: jest.fn().mockResolvedValue({ status: "SCHEDULED" }),
+      // B2 — the cancel/reschedule CAS guards use updateMany.
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    class: {
+      update: jest.fn(),
+      // Each transition helper reads the from-status before its CAS.
+      findUnique: jest.fn().mockResolvedValue({ status: "SCHEDULED" }),
+      // B2 — the cancel/reschedule CAS guards use updateMany.
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    // transitionSlotCompletion reads the from-status, then moves the cohort
+    // with updateManyAndReturn so each moved id gets its history row.
+    slotOfAppointment: {
+      findMany: jest.fn().mockResolvedValue([]),
+      updateManyAndReturn: jest.fn().mockResolvedValue([{ id: "slot-1" }]),
+      deleteMany: jest.fn(),
+    },
+    bookingStatusHistory: { create: jest.fn().mockResolvedValue({}) },
   };
 }
 
@@ -486,7 +536,9 @@ describe("Reschedule — Response shape", () => {
     expect(body.slotsAffected).toBe(1);
   });
 
-  it("should return multiple_sessions for multiple slotIds in subscription", async () => {
+  // #448 — a one-hour session is 2 × 30-min slots of the SAME appointment, so
+  // rescheduling it is ONE session (individual_session), not multiple_sessions.
+  it("should return individual_session for a one-hour (2-slot) session — #448", async () => {
     const twoSlots = [
       makeSlot("slot-1", FUTURE_DATE),
       makeSlot("slot-2", new Date(FUTURE_DATE.getTime() + 30 * 60 * 1000)),
@@ -506,7 +558,36 @@ describe("Reschedule — Response shape", () => {
     const res = await rescheduleHandler(req, makeParams("apt-1"));
     const body = await res.json();
 
+    expect(body.rescheduleType).toBe("individual_session");
+    expect(body.sessionsAffected).toBe(1);
+    expect(body.slotsAffected).toBe(2);
+  });
+
+  it("should return multiple_sessions when slots span multiple appointments", async () => {
+    const slotA = makeSlot("slot-1", FUTURE_DATE, "apt-1");
+    const slotB = makeSlot(
+      "slot-2",
+      new Date(FUTURE_DATE.getTime() + 24 * 60 * 60 * 1000),
+      "apt-2",
+    );
+    const appointment = makeSubscriptionAppointment([slotA]);
+    const mockTx = makeMockTx(appointment);
+    mockTx.appointment.findMany.mockResolvedValueOnce([
+      { id: "apt-1", slotsOfAppointment: [slotA] },
+      { id: "apt-2", slotsOfAppointment: [slotB] },
+    ]);
+    (prisma.$transaction as jest.Mock).mockImplementation(
+      async (callback: any) => callback(mockTx),
+    );
+
+    const req = makeRequest("apt-1", "SUBSCRIPTION", {
+      slotIds: ["slot-1", "slot-2"],
+    });
+    const res = await rescheduleHandler(req, makeParams("apt-1"));
+    const body = await res.json();
+
     expect(body.rescheduleType).toBe("multiple_sessions");
+    expect(body.sessionsAffected).toBe(2);
     expect(body.slotsAffected).toBe(2);
   });
 

@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "lib/prisma";
 import { FeedbackStatus } from "@prisma/client";
@@ -10,7 +11,6 @@ export async function GET(
   try {
     const auth = await requirePrivilegedAuth();
     if (auth.error) return auth.error;
-    const session = auth.session;
 
     const { feedbackId } = await params;
 
@@ -39,6 +39,7 @@ export async function GET(
 
     return NextResponse.json(feedback);
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "staff" } });
     console.error("Error fetching feedback:", error);
     return NextResponse.json(
       { error: "Failed to fetch feedback" },
@@ -54,7 +55,6 @@ export async function PATCH(
   try {
     const auth = await requirePrivilegedAuth();
     if (auth.error) return auth.error;
-    const session = auth.session;
 
     const { feedbackId } = await params;
     const body = await req.json();
@@ -83,6 +83,7 @@ export async function PATCH(
 
     return NextResponse.json(feedback);
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "staff" } });
     console.error("Error updating feedback:", error);
     return NextResponse.json(
       { error: "Failed to update feedback" },

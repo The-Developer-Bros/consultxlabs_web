@@ -14,6 +14,8 @@ import {
 } from "../../scripts/cleanup/deactivate-expired-discounts";
 import fs from "fs";
 import { abortIfMaintenance } from "../../lib/maintenance-cron";
+import * as Sentry from "@sentry/nextjs";
+import { runJob } from "../../lib/observability/job-sentry";
 
 /**
  * Output results to GitHub Actions
@@ -51,6 +53,7 @@ function outputToGitHubActions(result: ExpiredDiscountsResult): void {
  */
 async function main(): Promise<void> {
   await abortIfMaintenance("deactivate-expired-discounts");
+  Sentry.logger.info("job:deactivate-expired-discounts started");
   console.log("🏷️ Starting expired discount code deactivation job...");
   console.log(`Timestamp: ${new Date().toISOString()}`);
 
@@ -75,15 +78,18 @@ async function main(): Promise<void> {
 
     outputToGitHubActions(result);
 
+    Sentry.logger.info("job:deactivate-expired-discounts finished", {
+      expiredByDateCount: result.expiredByDateCount,
+      maxUsesReachedCount: result.maxUsesReachedCount,
+      totalDeactivated: result.totalDeactivated,
+    });
+
     if (!result.success) {
-      process.exit(1);
+      process.exitCode = 1;
     }
-  } catch (error) {
-    console.error("❌ Fatal error in discount deactivation:", error);
-    process.exit(1);
   } finally {
     await disconnectDatabase();
   }
 }
 
-main();
+runJob("deactivate-expired-discounts", main);

@@ -3,8 +3,12 @@ name: Handle Stuck Payouts
 on:
   schedule:
     # Run every 4 hours
-    - cron: "0 */4 * * *"
+    - cron: "52 */4 * * *"
   workflow_dispatch: # Allow manual triggering
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   handle-stuck-payouts:
@@ -12,14 +16,26 @@ jobs:
     timeout-minutes: 15
 
     env:
+      # #1066 — jobs run as bare Node processes, so Sentry.init only sees
+      # what the step env carries. Without the DSN the runner initialises
+      # a disabled client and every captureException is a no-op again.
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN || secrets.SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
       # Database connection (required for Prisma)
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      # #476 — fail-closed cron lock: without these the job refuses to run.
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
 
       # Payment gateway credentials for querying payout status
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
       RAZORPAY_KEY_ID: ${{ secrets.RAZORPAY_KEY_ID }}
-      RAZORPAY_KEY_SECRET: ${{ secrets.RAZORPAY_KEY_SECRET }}
+      RAZORPAY_KEY_SECRET: ${{ secrets.RAZORPAY_SECRET }}
+      # #850 trap — the Razorpay payouts client reads RAZORPAYX_KEY_SECRET ||
+      # RAZORPAY_SECRET, never RAZORPAY_KEY_SECRET; without this mapping the
+      # job-level credential gate passes while the client gets an empty secret.
+      RAZORPAY_SECRET: ${{ secrets.RAZORPAY_SECRET }}
 
     steps:
       - name: Checkout code
@@ -38,10 +54,13 @@ jobs:
         run: npx prisma generate
 
       - name: Run stuck payouts handler
-        run: npx tsx jobs/payouts/handle-stuck-payouts.ts
+        run: npx --yes tsx@4.23.1 jobs/payouts/handle-stuck-payouts.ts
 
       - name: Notify on failure
         if: failure()
-        run: |
-          echo "Stuck payouts handler failed"
-          # Add notification logic here (Slack, email, etc.)
+        env:
+          SLACK_OPS_WEBHOOK_URL: ${{ secrets.SLACK_OPS_WEBHOOK_URL }}
+          # Fallback sink — Slack has never been provisioned, so this is
+          # what actually pages today. See 07-required-secrets.md.
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: bash scripts/ci/notify-ops-failure.sh "handle-stuck-payouts"

@@ -1,6 +1,6 @@
 export default function Loading() {
   return (
-    <main className="min-h-screen bg-white">
+    <main className="min-h-screen bg-background">
       <section className="relative pt-32 pb-20 bg-zinc-950">
         <div className="max-w-[1600px] mx-auto px-4 md:px-8 lg:px-12">
           <div className="max-w-4xl mx-auto text-center">
@@ -15,7 +15,7 @@ export default function Loading() {
           {[1, 2, 3, 4, 5, 6].map((i) => (
             <div
               key={i}
-              className="h-72 bg-zinc-100 rounded-2xl animate-pulse"
+              className="h-72 bg-muted rounded-2xl animate-pulse"
             />
           ))}
         </div>

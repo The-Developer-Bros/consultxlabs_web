@@ -47,8 +47,6 @@ DATABASE_URL=your_database_url
 STRIPE_SECRET_KEY=sk_test_...        # Optional
 RAZORPAY_KEY_ID=rzp_test_...         # Optional
 RAZORPAY_KEY_SECRET=...              # Optional
-LEMON_SQUEEZY_API_KEY=...            # Optional
-XFLOW_SECRET_KEY=...                 # Optional
 ```
 
 ---
@@ -110,8 +108,6 @@ DATABASE_URL                 # Required - Your production database URL
 STRIPE_SECRET_KEY           # Optional - For Stripe payment cancellation
 RAZORPAY_KEY_ID            # Optional - For Razorpay cancellation
 RAZORPAY_KEY_SECRET        # Optional - For Razorpay cancellation
-LEMON_SQUEEZY_API_KEY      # Optional - For Lemon Squeezy cancellation
-XFLOW_SECRET_KEY           # Optional - For Xflow cancellation
 ```
 
 ### **2. Enable GitHub Actions**
@@ -158,8 +154,6 @@ success=true         # Overall job success status
    // For each payment gateway:
    // - Stripe: stripe.paymentIntents.cancel()
    // - Razorpay: razorpay.payments.cancel()
-   // - Lemon Squeezy: DELETE API call
-   // - Xflow: Custom cancellation logic
    ```
 
 3. **Update Payment Status**:

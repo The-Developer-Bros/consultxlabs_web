@@ -13,14 +13,17 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+  ResponsiveModal,
+  ResponsiveModalContent,
+  ResponsiveModalDescription,
+  ResponsiveModalFooter,
+  ResponsiveModalHeader,
+  ResponsiveModalTitle,
+  ResponsiveModalTrigger,
+} from "@/components/ui/responsive-modal";
+import { ResponsiveTable } from "@/components/ui/responsive-table";
+import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/dashboard/DataCard";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
 import {
@@ -39,9 +42,12 @@ import {
 import { useState } from "react";
 import { Channel } from "stream-chat";
 import { useChatContext } from "stream-chat-react";
-import { getChannelDisplayInfo } from "./utils/channelUtils";
+import { getChannelDisplayInfo, viewerOwnsChannel } from "./utils/channelUtils";
 import { AddMembersDialog } from "./AddMembersDialog";
 import { isEventChannel } from "@/lib/stream-channel-ids";
+import { addMemberToChannel } from "@/actions/stream/chat/member.action";
+import { useSession } from "@/lib/auth-client";
+import { useServerSessionFacts } from "@/components/dashboard/ServerUserId";
 
 interface ChannelMember {
   id: string;
@@ -86,11 +92,32 @@ export const ChannelInfoAndManageDialog = ({
 
   const displayName = displayInfo.displayName;
 
-  // Check if current user is the event owner consultant
-  const isEventOwner =
-    isEvent &&
-    channel.data?.created_by_id === client?.userID &&
-    client?.user?.role === "CONSULTANT";
+  // The APP role, never `client.user.role` — same source and same reason as
+  // ChatSidebar, which carries the warning comment about this trap.
+  const { data: session } = useSession();
+  const serverFacts = useServerSessionFacts();
+  const appRole = session?.user?.role ?? serverFacts.role;
+
+  // Check if current user is the event owner consultant.
+  //
+  // The `client.user.role === "CONSULTANT"` conjunct that used to be here could
+  // never be true: `client.user.role` is the STREAM role, and `mapRoleToStream`
+  // collapses every non-staff account — consultants included — to `"user"`.
+  // So the whole predicate was constantly false and the host's remove-member
+  // control never rendered. ChatSidebar carries a comment warning about exactly
+  // this trap.
+  //
+  // Dropping the conjunct rather than swapping in the app role: for an event
+  // channel, `created_by_id` IS the host consultant (channel.action.ts sets it
+  // from the plan's consultantProfile), so the ownership test already implies
+  // the role. Adding a second source of truth would only create a way for the
+  // two to disagree.
+  // Queried channels expose the creator as `created_by` (object);
+  // `created_by_id` survives only on channels created in THIS session. Read
+  // both, prefer the reliable one.
+  const creatorId = channel.data?.created_by?.id ?? channel.data?.created_by_id;
+
+  const isEventOwner = isEvent && viewerOwnsChannel(creatorId, client?.userID);
 
   // Get the other user's ID for 1-on-1 DMs (for block/report)
   const otherUserId =
@@ -138,11 +165,45 @@ export const ChannelInfoAndManageDialog = ({
     if (!channel.id) return;
 
     try {
-      // Add members to channel
-      await channel.addMembers(userIds);
+      // Through the server action, not `channel.addMembers()` directly.
+      //
+      // `addMemberToChannel` is the only server-side authorization on channel
+      // membership — session required, and only staff, admins, or the channel's
+      // creator may add anyone. It had zero callers: this component called
+      // Stream from the browser and the action sat unused, so the gate existed
+      // in the codebase without ever being in the path. Membership is what
+      // Stream's own permissions key off, which makes an unchecked add the
+      // widest hole in the chat surface.
+      // allSettled, not a sequential loop: one rejection used to abandon every
+      // remaining id AND skip the toast, so adding five people and failing on
+      // the second silently added one. Same reasoning as the block route.
+      const results = await Promise.allSettled(
+        userIds.map((userId) =>
+          addMemberToChannel(
+            channel.id as string,
+            userId,
+            // `Channel["type"]` is a bare `string` in stream-chat; the action
+            // takes the narrowed union. Every channel this dialog can open is
+            // one of the two.
+            channel.type as "messaging" | "team",
+          ),
+        ),
+      );
+
+      const added = results.filter((r) => r.status === "fulfilled").length;
+      const failed = results.length - added;
+
+      if (added === 0) {
+        throw new Error("Could not add anyone to this channel");
+      }
+
       toast({
-        title: "Success",
-        description: `${userIds.length} member${userIds.length !== 1 ? "s" : ""} added successfully`,
+        title: failed > 0 ? "Partially added" : "Success",
+        description:
+          failed > 0
+            ? `Added ${added} of ${results.length}. Please retry the rest.`
+            : `${added} member${added !== 1 ? "s" : ""} added successfully`,
+        variant: failed > 0 ? "destructive" : undefined,
       });
       // Refresh the member list
       loadMembers();
@@ -235,14 +296,31 @@ export const ChannelInfoAndManageDialog = ({
   const canTruncateChannel = (() => {
     // In 1-on-1 DMs, both users can clear their view
     if (isDirectMessage && !displayInfo.isGroupDM) return true;
-    // In group DMs and channels, only creator or privileged roles
-    const isCreator = channel.data?.created_by_id === client?.userID;
-    const userRole = client?.user?.role;
-    const isPrivileged =
-      userRole === "CONSULTANT" ||
-      userRole === "ADMIN" ||
-      userRole === "STAFF";
-    return isCreator || isPrivileged;
+    // In group DMs and channels, only the creator or a platform operator.
+    //
+    // #1280 — the SECOND instance of the dead-role bug in this file, missed
+    // when `isEventOwner` was fixed a few lines above. `client.user.role` is the
+    // STREAM role, and `mapRoleToStream` (lib/user.ts:82) collapses every
+    // non-staff account to `"user"`, so `userRole === "CONSULTANT"` was false by
+    // construction and `isPrivileged` was permanently false. #1144 asked for a
+    // grep of this pattern; this is what it found.
+    //
+    // CONSULTANT is deliberately NOT in the privileged set, and that is the
+    // correction to the first pass at this fix. `handleClearChat` calls
+    // `channel.truncate()` from the CLIENT, so Stream's permission system
+    // decides, not ours:
+    //
+    //   ADMIN / STAFF   → mapRoleToStream gives them Stream `admin`   → allowed
+    //   creator         → channel-scoped `channel_moderator` at create → allowed
+    //   other consultant→ plain Stream `user`, no moderator grant      → REFUSED
+    //
+    // Granting the app role alone would have shown the button to every
+    // consultant and handed the non-owners a Stream authorization failure —
+    // trading a dead button for one that visibly errors, which is worse. A
+    // consultant qualifies here only by owning the channel.
+    const isCreator = viewerOwnsChannel(creatorId, client?.userID);
+    const isOperator = appRole === "ADMIN" || appRole === "STAFF";
+    return isCreator || isOperator;
   })();
 
   // Report the other user in a 1-on-1 DM (flags in Stream + persists to DB)
@@ -261,8 +339,7 @@ export const ChannelInfoAndManageDialog = ({
         body: JSON.stringify({
           type: "PROFILE",
           reason: "User reported via chat",
-          description:
-            "User was reported from a direct message conversation",
+          description: "User was reported from a direct message conversation",
           targetUserId: otherUserId,
         }),
       });
@@ -301,18 +378,23 @@ export const ChannelInfoAndManageDialog = ({
       });
 
       if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || "Block failed");
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.error || "Block failed");
       }
 
       toast({
         title: "User blocked",
         description: "This user can no longer message you",
       });
-    } catch {
+    } catch (error) {
+      // The server's message, not a generic one. A partial block answers 502
+      // with "Blocked in 1 of 2 conversations" — telling someone only that it
+      // "failed" would hide that half of it succeeded, and telling them it
+      // worked would be worse.
       toast({
         title: "Error",
-        description: "Failed to block user",
+        description:
+          error instanceof Error ? error.message : "Failed to block user",
         variant: "destructive",
       });
     } finally {
@@ -351,30 +433,35 @@ export const ChannelInfoAndManageDialog = ({
 
   return (
     <>
-      <Dialog open={open} onOpenChange={handleOpenChange}>
-        <DialogTrigger asChild>
-          <button className="p-2 rounded-full hover:bg-gray-100">
-            <InfoIcon className="h-5 w-5 text-gray-500" />
+      <ResponsiveModal open={open} onOpenChange={handleOpenChange}>
+        <ResponsiveModalTrigger asChild>
+          <button
+            type="button"
+            aria-label="Channel details and settings"
+            title="Channel details and settings"
+            className="p-2 rounded-full hover:bg-muted"
+          >
+            <InfoIcon className="h-5 w-5 text-muted-foreground" />
           </button>
-        </DialogTrigger>
-        <DialogContent className="sm:max-w-[500px]">
-          <DialogHeader>
-            <DialogTitle>
+        </ResponsiveModalTrigger>
+        <ResponsiveModalContent className="sm:max-w-[500px]">
+          <ResponsiveModalHeader>
+            <ResponsiveModalTitle>
               {isTeamChannel ? (
                 <div className="flex items-center">
-                  <span className="text-gray-500 mr-2">#</span>
+                  <span className="text-muted-foreground mr-2">#</span>
                   <span>{displayName}</span>
                 </div>
               ) : displayInfo.isGroupDM ? (
                 <div className="flex items-center">
-                  <UsersIcon className="h-4 w-4 text-gray-500 mr-2" />
+                  <UsersIcon className="h-4 w-4 text-muted-foreground mr-2" />
                   <span className="truncate">{displayName}</span>
                 </div>
               ) : (
                 <span>{displayName}</span>
               )}
-            </DialogTitle>
-          </DialogHeader>
+            </ResponsiveModalTitle>
+          </ResponsiveModalHeader>
 
           <Tabs defaultValue="info" className="w-full">
             <TabsList className="grid w-full grid-cols-2">
@@ -385,7 +472,7 @@ export const ChannelInfoAndManageDialog = ({
             <TabsContent value="info" className="space-y-4 py-4">
               <div className="space-y-2">
                 <h3 className="text-sm font-medium">Channel Type</h3>
-                <p className="text-sm text-gray-500">
+                <p className="text-sm text-muted-foreground">
                   {isTeamChannel
                     ? "Group Chat"
                     : displayInfo.isGroupDM
@@ -396,7 +483,7 @@ export const ChannelInfoAndManageDialog = ({
 
               <div className="space-y-2">
                 <h3 className="text-sm font-medium">Created</h3>
-                <p className="text-sm text-gray-500">
+                <p className="text-sm text-muted-foreground">
                   {channel.data?.created_at &&
                   typeof channel.data.created_at === "string"
                     ? new Date(channel.data.created_at).toLocaleString()
@@ -518,7 +605,7 @@ export const ChannelInfoAndManageDialog = ({
                         <Button
                           variant="outline"
                           size="sm"
-                          className="w-full flex items-center justify-center gap-2 text-red-600 hover:text-red-700"
+                          className="w-full flex items-center justify-center gap-2 text-destructive hover:text-destructive/90"
                           onClick={handleBlockUser}
                           disabled={isLoading || !otherUserId}
                         >
@@ -568,59 +655,88 @@ export const ChannelInfoAndManageDialog = ({
 
             <TabsContent value="members" className="space-y-4 py-4">
               {isLoading ? (
-                <div className="py-4 text-center text-gray-500">
-                  Loading members...
-                </div>
-              ) : (
-                <div className="space-y-2 max-h-[300px] overflow-y-auto">
-                  {members.map((member) => (
-                    <div
-                      key={member.id}
-                      className="flex items-center justify-between p-2 hover:bg-gray-50 rounded"
-                    >
-                      <div className="flex items-center">
-                        <div className="w-8 h-8 rounded-full bg-gray-200 mr-3 flex items-center justify-center">
-                          {member.image ? (
-                            <Image
-                              src={member.image ?? ""}
-                              alt={member.name ?? ""}
-                              width={32}
-                              height={32}
-                              className="w-8 h-8 rounded-full"
-                            />
-                          ) : (
-                            <span>
-                              {member.name?.charAt(0) ||
-                                member.id?.charAt(0) ||
-                                "?"}
-                            </span>
-                          )}
-                        </div>
-                        <div>
-                          <div className="font-medium">
-                            {member.name || member.id}
-                          </div>
-                          <div className="text-xs text-gray-500">
-                            {member.online ? "Online" : "Offline"}
-                          </div>
-                        </div>
+                <div className="space-y-2">
+                  {[1, 2, 3].map((i) => (
+                    <div key={i} className="flex items-center gap-3">
+                      <Skeleton className="h-8 w-8 shrink-0 rounded-full" />
+                      <div className="flex-1 space-y-1">
+                        <Skeleton className="h-4 w-1/2" />
+                        <Skeleton className="h-3 w-1/4" />
                       </div>
-
-                      {/* Show remove button for event owner consultants */}
-                      {isEventOwner && member.id !== client?.userID && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 w-8 p-0"
-                          onClick={() => handleRemoveMember(member.id)}
-                          disabled={isLoading}
-                        >
-                          <XIcon className="h-4 w-4 text-gray-500" />
-                        </Button>
-                      )}
                     </div>
                   ))}
                 </div>
+              ) : (
+                <ResponsiveTable<ChannelMember>
+                  className="max-h-[300px] overflow-y-auto"
+                  rows={members}
+                  getRowId={(member) => member.id}
+                  columns={[
+                    {
+                      key: "member",
+                      header: "Member",
+                      primary: true,
+                      cell: (member) => (
+                        <div className="flex items-center">
+                          <div className="mr-3 flex h-8 w-8 items-center justify-center rounded-full bg-muted">
+                            {member.image ? (
+                              <Image
+                                src={member.image ?? ""}
+                                alt={member.name ?? ""}
+                                width={32}
+                                height={32}
+                                className="h-8 w-8 rounded-full"
+                              />
+                            ) : (
+                              <span>
+                                {member.name?.charAt(0) ||
+                                  member.id?.charAt(0) ||
+                                  "?"}
+                              </span>
+                            )}
+                          </div>
+                          <span className="truncate font-medium">
+                            {member.name || member.id}
+                          </span>
+                        </div>
+                      ),
+                    },
+                    {
+                      key: "presence",
+                      header: "Status",
+                      cell: (member) => (
+                        <span className="text-xs text-muted-foreground">
+                          {member.online ? "Online" : "Offline"}
+                        </span>
+                      ),
+                    },
+                  ]}
+                  /* Show remove button for event owner consultants */
+                  rowActions={(member) =>
+                    isEventOwner && member.id !== client?.userID ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0"
+                        onClick={() => handleRemoveMember(member.id)}
+                        disabled={isLoading}
+                        // Named, because every row otherwise announced the
+                        // same thing and you could not tell who you removed.
+                        aria-label={`Remove ${member.name || member.id} from this channel`}
+                        title={`Remove ${member.name || member.id}`}
+                      >
+                        <XIcon className="h-4 w-4 text-muted-foreground" />
+                      </Button>
+                    ) : null
+                  }
+                  empty={
+                    <EmptyState
+                      icon={UsersIcon}
+                      title="No members"
+                      description="This channel has no members yet."
+                    />
+                  }
+                />
               )}
 
               {isTeamChannel && (
@@ -639,33 +755,38 @@ export const ChannelInfoAndManageDialog = ({
               )}
             </TabsContent>
           </Tabs>
-        </DialogContent>
-      </Dialog>
+        </ResponsiveModalContent>
+      </ResponsiveModal>
 
       {/* Loading dialog for leaving channel */}
-      <Dialog open={isLeavingChannel} onOpenChange={() => {}}>
-        <DialogContent className="sm:max-w-[300px] [&>button]:hidden">
-          <DialogHeader>
-            <DialogTitle className="sr-only">Leaving Channel</DialogTitle>
-          </DialogHeader>
+      <ResponsiveModal open={isLeavingChannel} onOpenChange={() => {}}>
+        <ResponsiveModalContent className="sm:max-w-[300px] [&>button]:hidden">
+          <ResponsiveModalHeader>
+            <ResponsiveModalTitle className="sr-only">
+              Leaving Channel
+            </ResponsiveModalTitle>
+          </ResponsiveModalHeader>
           <div className="flex flex-col items-center justify-center py-6 space-y-4">
-            <Loader2Icon className="h-8 w-8 animate-spin text-blue-500" />
-            <p className="text-sm text-gray-600">Leaving channel...</p>
+            <Loader2Icon className="h-8 w-8 animate-spin text-muted-foreground" />
+            <p className="text-sm text-muted-foreground">Leaving channel...</p>
           </div>
-        </DialogContent>
-      </Dialog>
+        </ResponsiveModalContent>
+      </ResponsiveModal>
 
       {/* Clear Chat Confirmation Dialog */}
-      <Dialog open={showClearConfirm} onOpenChange={setShowClearConfirm}>
-        <DialogContent className="sm:max-w-[400px]">
-          <DialogHeader>
-            <DialogTitle>Clear chat history?</DialogTitle>
-            <DialogDescription>
+      <ResponsiveModal
+        open={showClearConfirm}
+        onOpenChange={setShowClearConfirm}
+      >
+        <ResponsiveModalContent className="sm:max-w-[400px]">
+          <ResponsiveModalHeader>
+            <ResponsiveModalTitle>Clear chat history?</ResponsiveModalTitle>
+            <ResponsiveModalDescription>
               This will remove all messages from this conversation. This action
               cannot be undone.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="gap-2 sm:gap-0">
+            </ResponsiveModalDescription>
+          </ResponsiveModalHeader>
+          <ResponsiveModalFooter className="gap-2 sm:gap-0">
             <Button
               variant="outline"
               onClick={() => setShowClearConfirm(false)}
@@ -683,9 +804,9 @@ export const ChannelInfoAndManageDialog = ({
               ) : null}
               Clear Chat
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </ResponsiveModalFooter>
+        </ResponsiveModalContent>
+      </ResponsiveModal>
 
       {/* Add Members Dialog */}
       <AddMembersDialog
@@ -712,7 +833,7 @@ export const ChannelInfoAndManageDialog = ({
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleLeaveChannel}
-              className="bg-red-600 hover:bg-red-700 text-white"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Yes, Leave
             </AlertDialogAction>

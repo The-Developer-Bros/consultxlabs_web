@@ -1,5 +1,6 @@
 "use client";
 
+import * as Sentry from "@sentry/nextjs";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -15,15 +16,14 @@ import {
   CheckCircle2,
   Gift,
   BookOpen,
-  Clock,
-  ChevronRight,
 } from "lucide-react";
 import { useSession } from "@/lib/auth-client";
+import Link from "next/link";
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { PricingOption } from "../defaults";
 import { useToast } from "@/hooks/use-toast";
 import { addMonths, differenceInDays, format } from "date-fns";
-import { useCurrency } from "@/hooks/useCurrency";
+import { formatCurrencyAmount } from "@/utils/formatting";
 import { TrialBookingModal } from "./TrialBookingModal";
 
 interface SubscriptionContentItem {
@@ -33,15 +33,26 @@ interface SubscriptionContentItem {
   order?: number;
   hoursAllotted?: number | null;
   contentType?: string | null;
+  sectionLabel?: string | null;
+  outcomes?: string[];
 }
 
 interface SubscriptionPlanDetails {
   id: string;
   title: string;
+  subtitle?: string | null;
   durationInMonths: number;
-  freeTrialEnabled?: boolean;
-  freeTrialDurationMinutes?: number | null;
+  trialEnabled?: boolean;
+  trialDurationMinutes?: number | null;
+  // #780 result extension already made this a number in paise by the time it
+  // crosses the RSC boundary; the fetcher `include`s it, it was simply never
+  // declared here and so never rendered (#1167).
+  trialPriceInPaise?: number | null;
+  priceCurrency?: string | null;
   subscriptionContents?: SubscriptionContentItem[] | null;
+  targetAudience?: string[];
+  whatsIncluded?: string[];
+  faqs?: { id?: string; question: string; answer: string }[];
 }
 
 interface ConsultantDetailsForSubscription {
@@ -72,7 +83,6 @@ export default function SubscriptionPricingToggle({
 }: Readonly<SubscriptionPricingToggleProps>) {
   const { data: session } = useSession();
   const { toast } = useToast();
-  const { formatPrice } = useCurrency();
   // Track the active plan by id so plans that share a duration (e.g. two
   // 3-month subscriptions) remain independently selectable and bookable.
   const [activeSubscriptionOption, setActiveSubscriptionOption] =
@@ -83,11 +93,12 @@ export default function SubscriptionPricingToggle({
   );
   const [schedulingEndDate, setSchedulingEndDate] = useState<Date | null>(null);
   const [isTrialModalOpen, setIsTrialModalOpen] = useState(false);
-  const [isRoadmapModalOpen, setIsRoadmapModalOpen] = useState(false);
   const [selectedTrialPlan, setSelectedTrialPlan] = useState<{
     id: string;
     title: string;
-    freeTrialDurationMinutes: number;
+    trialDurationMinutes: number;
+    trialPriceInPaise: number;
+    priceCurrency: string;
   } | null>(null);
   const [trialEligibility, setTrialEligibility] = useState<{
     isEligible: boolean;
@@ -108,13 +119,23 @@ export default function SubscriptionPricingToggle({
     );
   }, [selectedOption, consultantDetails]);
 
+  // #1167 — the CTA names the price. `formatPrice` is not usable here: it takes
+  // INR paise and applies the viewer's FX rate, which would relabel a plan
+  // already denominated in another currency.
+  const trialCtaPrice = useMemo(() => {
+    const paise = selectedPlanDetails?.trialPriceInPaise ?? 0;
+    return paise > 0
+      ? formatCurrencyAmount(paise, selectedPlanDetails?.priceCurrency ?? "INR")
+      : "Free";
+  }, [selectedPlanDetails]);
+
   // Check trial eligibility when plan changes
   useEffect(() => {
     const checkEligibility = async () => {
       if (
         !session?.user?.id ||
         !selectedPlanDetails?.id ||
-        !selectedPlanDetails?.freeTrialEnabled
+        !selectedPlanDetails?.trialEnabled
       ) {
         return;
       }
@@ -157,6 +178,7 @@ export default function SubscriptionPricingToggle({
           setTrialEligibility({ isEligible: true, isLoading: false });
         }
       } catch (error) {
+        Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "client" } });
         console.error("Error checking trial eligibility:", error);
         setTrialEligibility({ isEligible: true, isLoading: false });
       }
@@ -166,7 +188,7 @@ export default function SubscriptionPricingToggle({
   }, [
     session?.user?.id,
     selectedPlanDetails?.id,
-    selectedPlanDetails?.freeTrialEnabled,
+    selectedPlanDetails?.trialEnabled,
     consultantDetails?.id,
   ]);
 
@@ -174,14 +196,16 @@ export default function SubscriptionPricingToggle({
   useEffect(() => {
     if (
       autoOpenTrial &&
-      selectedPlanDetails?.freeTrialEnabled &&
+      selectedPlanDetails?.trialEnabled &&
       trialEligibility.isEligible &&
       !trialEligibility.isLoading
     ) {
       setSelectedTrialPlan({
         id: selectedPlanDetails.id,
         title: selectedPlanDetails.title,
-        freeTrialDurationMinutes: selectedPlanDetails.freeTrialDurationMinutes ?? 0,
+        trialDurationMinutes: selectedPlanDetails.trialDurationMinutes ?? 0,
+        trialPriceInPaise: selectedPlanDetails.trialPriceInPaise ?? 0,
+        priceCurrency: selectedPlanDetails.priceCurrency ?? "INR",
       });
       setIsTrialModalOpen(true);
     }
@@ -339,8 +363,14 @@ export default function SubscriptionPricingToggle({
             </div>
 
             <div className="flex items-end gap-2 my-5">
+              {/* #1396 — this is the headline price of a plan the server will
+                  charge, so it renders in the plan's own currency, exactly as
+                  the trial price above it does for the reason given at #1167.
+                  `formatPrice` took INR paise and applied the viewer's FX rate,
+                  which relabelled the plan and disagreed with the trial line
+                  two elements away. */}
               <span className="text-5xl font-bold tracking-tight text-white">
-                {formatPrice(option.price)}
+                {formatCurrencyAmount(option.price, option.priceCurrency || "INR")}
               </span>
               <span className="text-zinc-500 text-sm mb-1.5">/ month</span>
             </div>
@@ -369,8 +399,8 @@ export default function SubscriptionPricingToggle({
 
             {/* Button stack with proper spacing */}
             <div className="space-y-2.5">
-              {/* Free Trial Button */}
-              {selectedPlanDetails?.freeTrialEnabled && (
+              {/* Trial Button */}
+              {selectedPlanDetails?.trialEnabled && (
                 <Button
                   className={`w-full font-semibold rounded-xl h-12 text-sm transition-all duration-200 ${
                     trialEligibility.isEligible && !trialEligibility.isLoading
@@ -394,8 +424,12 @@ export default function SubscriptionPricingToggle({
                     setSelectedTrialPlan({
                       id: selectedPlanDetails.id,
                       title: selectedPlanDetails.title,
-                      freeTrialDurationMinutes:
-                        selectedPlanDetails.freeTrialDurationMinutes ?? 0,
+                      trialDurationMinutes:
+                        selectedPlanDetails.trialDurationMinutes ?? 0,
+                      trialPriceInPaise:
+                        selectedPlanDetails.trialPriceInPaise ?? 0,
+                      priceCurrency:
+                        selectedPlanDetails.priceCurrency ?? "INR",
                     });
                     setIsTrialModalOpen(true);
                   }}
@@ -404,20 +438,27 @@ export default function SubscriptionPricingToggle({
                   {trialEligibility.isLoading
                     ? "Checking eligibility..."
                     : trialEligibility.isEligible
-                      ? `Book Free Trial (${selectedPlanDetails.freeTrialDurationMinutes ?? 0} min)`
+                      ? `Book Trial (${trialCtaPrice}, ${selectedPlanDetails.trialDurationMinutes ?? 0} min)`
                       : "Trial Already Requested"}
                 </Button>
               )}
 
-              {/* View Roadmap Button */}
-              {(selectedPlanDetails?.subscriptionContents?.length ?? 0) > 0 && (
+              {/* The toggle is a CHOOSER, not a brochure: pick a tier here,
+                  read the roadmap/FAQ on the plan page. It used to try to be
+                  both, which is what forced a 12-week roadmap into a 450px
+                  column and then into a modal. */}
+              {selectedPlanDetails?.id && (
                 <Button
+                  asChild
                   variant="outline"
                   className="w-full bg-white/[0.05] border border-white/[0.12] text-zinc-200 hover:bg-white/[0.10] hover:text-white font-medium rounded-xl h-11 text-sm transition-all duration-200"
-                  onClick={() => setIsRoadmapModalOpen(true)}
                 >
-                  <BookOpen className="w-4 h-4 mr-2" />
-                  View Session Roadmap
+                  <Link
+                    href={`/explore/programs/plans/subscriptions/${selectedPlanDetails.id}`}
+                  >
+                    <BookOpen className="w-4 h-4 mr-2" />
+                    Open details
+                  </Link>
                 </Button>
               )}
 
@@ -426,7 +467,7 @@ export default function SubscriptionPricingToggle({
                 className="w-full bg-white text-zinc-900 hover:bg-zinc-100 font-semibold rounded-xl h-12 text-sm tracking-wide transition-all duration-200 hover:shadow-[0_0_20px_rgba(255,255,255,0.15)]"
                 onClick={handleChoosePlan}
               >
-                Choose Plan
+                Subscribe
               </Button>
             </div>
           </motion.div>
@@ -563,120 +604,12 @@ export default function SubscriptionPricingToggle({
           consultantName={consultantDetails?.user?.name || "Consultant"}
           subscriptionPlanId={selectedTrialPlan.id}
           planTitle={selectedTrialPlan.title}
-          trialDurationMinutes={selectedTrialPlan.freeTrialDurationMinutes}
+          trialDurationMinutes={selectedTrialPlan.trialDurationMinutes}
+          trialPriceInPaise={selectedTrialPlan.trialPriceInPaise}
+          trialCurrency={selectedTrialPlan.priceCurrency}
         />
       )}
 
-      {/* Session Roadmap Modal */}
-      <Dialog open={isRoadmapModalOpen} onOpenChange={setIsRoadmapModalOpen}>
-        <DialogContent className="sm:max-w-[600px] max-h-[80vh] flex flex-col bg-zinc-950 text-white p-0 border border-zinc-800 rounded-2xl shadow-2xl z-[1002]">
-          <DialogHeader className="p-6 pb-4 border-b border-zinc-800/50 flex-shrink-0">
-            <DialogTitle className="text-xl font-semibold flex items-center gap-2">
-              <BookOpen className="w-5 h-5 text-zinc-400" />
-              Session Roadmap
-            </DialogTitle>
-            <DialogDescription className="text-zinc-400">
-              {selectedPlanDetails?.title || selectedOption?.title} - What
-              you&apos;ll learn
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="flex-1 overflow-y-auto p-6 min-h-0 scrollbar-hide">
-            {(selectedPlanDetails?.subscriptionContents?.length ?? 0) > 0 ? (
-              <div className="relative">
-                {/* Timeline line */}
-                <div className="absolute left-[19px] top-8 bottom-8 w-0.5 bg-gradient-to-b from-zinc-700 via-zinc-600 to-zinc-700" />
-
-                <div className="space-y-6">
-                  {selectedPlanDetails?.subscriptionContents?.map(
-                    (content: SubscriptionContentItem, index: number) => (
-                      <motion.div
-                        key={content.id || index}
-                        initial={{ opacity: 0, x: -20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{ delay: index * 0.1, duration: 0.3 }}
-                        className="relative flex items-start gap-4"
-                      >
-                        {/* Week badge */}
-                        <div className="relative z-10 flex-shrink-0 min-w-[52px] h-10 px-2 rounded-full bg-zinc-800 border-2 border-zinc-700 flex items-center justify-center text-xs font-bold text-white shadow-lg whitespace-nowrap">
-                          Week {content.order || index + 1}
-                        </div>
-
-                        {/* Content card */}
-                        <div className="flex-1 bg-zinc-900/50 border border-zinc-800/50 rounded-xl p-4 hover:bg-zinc-800/30 transition-colors">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="flex-1 min-w-0">
-                              <h4 className="font-semibold text-white text-base mb-1 truncate">
-                                {content.title}
-                              </h4>
-                              {content.description && (
-                                <p className="text-sm text-zinc-400 line-clamp-2">
-                                  {content.description}
-                                </p>
-                              )}
-                            </div>
-                            <ChevronRight className="w-4 h-4 text-zinc-600 flex-shrink-0 mt-1" />
-                          </div>
-
-                          {/* Meta info */}
-                          <div className="flex items-center gap-4 mt-3 text-xs text-zinc-500">
-                            {content.hoursAllotted && (
-                              <span className="flex items-center gap-1">
-                                <Clock className="w-3 h-3" />
-                                {content.hoursAllotted}h
-                              </span>
-                            )}
-                            {content.contentType && (
-                              <span className="px-2 py-0.5 bg-zinc-800 rounded-full">
-                                {content.contentType}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </motion.div>
-                    ),
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div className="text-center py-12 text-zinc-500">
-                <BookOpen className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                <p>No detailed roadmap available for this plan.</p>
-              </div>
-            )}
-          </div>
-
-          {/* Summary footer */}
-          {(selectedPlanDetails?.subscriptionContents?.length ?? 0) > 0 && (
-            <div className="p-4 border-t border-zinc-800/50 bg-zinc-900/50 flex-shrink-0">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-zinc-400">
-                  {selectedPlanDetails!.subscriptionContents!.length} week
-                  {selectedPlanDetails!.subscriptionContents!.length > 1
-                    ? "s"
-                    : ""}{" "}
-                  •{" "}
-                  {selectedPlanDetails!.subscriptionContents!.reduce(
-                    (acc: number, c: SubscriptionContentItem) => acc + (c.hoursAllotted || 0),
-                    0,
-                  )}
-                  h total
-                </span>
-                <Button
-                  size="sm"
-                  className="bg-white text-zinc-900 hover:bg-zinc-100"
-                  onClick={() => {
-                    setIsRoadmapModalOpen(false);
-                    handleChoosePlan();
-                  }}
-                >
-                  Choose This Plan
-                </Button>
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
     </Tabs>
   );
 }

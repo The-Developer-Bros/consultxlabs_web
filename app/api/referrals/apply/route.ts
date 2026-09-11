@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-server";
 import { applyReferralCode } from "@/lib/referrals/service";
@@ -43,6 +44,7 @@ export async function POST(req: NextRequest) {
         "Referral code applied successfully! You'll receive your bonus credits after your first booking.",
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "referrals" } });
     console.error("Error applying referral code:", error);
     return NextResponse.json(
       { error: "Failed to apply referral code" },

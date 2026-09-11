@@ -1,5 +1,7 @@
 "use client";
 
+import type { RecordingData } from "@/types/recording";
+
 import { useState } from "react";
 import Image from "next/image";
 import { formatDistanceToNow, format } from "date-fns";
@@ -7,8 +9,6 @@ import {
   Play,
   Clock,
   Calendar,
-  HardDrive,
-  Cloud,
   AlertCircle,
   Loader2,
   Download,
@@ -17,7 +17,8 @@ import {
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/components/dashboard/StatusBadge";
+import { recordingStatusBadge } from "@/lib/labels/session-labels";
 import {
   Tooltip,
   TooltipContent,
@@ -27,27 +28,6 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/utils/tailwind";
 
-export interface RecordingData {
-  id: string;
-  title: string;
-  durationInMinutes: number;
-  recordedAt: string;
-  status: string;
-  storageType: string;
-  playbackUrl: string | null;
-  thumbnailUrl: string | null;
-  resolution: string | null;
-  fileSize: number | null;
-  streamUrlExpiresAt: string | null;
-  transferredAt: string | null;
-  planType: "webinar" | "class" | null;
-  planId: string | null;
-  planTitle: string | null;
-  participantNames: string[];
-  participantCount: number;
-  appointmentDate: string | null;
-  createdAt: string;
-}
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
@@ -72,48 +52,6 @@ export function RecordingCard({ recording, onTransfer }: RecordingCardProps) {
       return `${hrs}h ${mins}m`;
     }
     return `${mins}m`;
-  };
-
-  const getStatusBadge = () => {
-    switch (recording.status) {
-      case "AVAILABLE":
-        return (
-          <Badge className="bg-green-500/10 text-green-600 border-green-500/20">
-            <Cloud className="w-3 h-3 mr-1" />
-            Permanent
-          </Badge>
-        );
-      case "READY":
-        return (
-          <Badge className="bg-blue-500/10 text-blue-600 border-blue-500/20">
-            <HardDrive className="w-3 h-3 mr-1" />
-            Stream Storage
-          </Badge>
-        );
-      case "TRANSFERRING":
-        return (
-          <Badge className="bg-yellow-500/10 text-yellow-600 border-yellow-500/20">
-            <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-            Transferring
-          </Badge>
-        );
-      case "FAILED":
-        return (
-          <Badge variant="destructive">
-            <AlertCircle className="w-3 h-3 mr-1" />
-            Failed
-          </Badge>
-        );
-      case "EXPIRED":
-        return (
-          <Badge variant="secondary">
-            <AlertCircle className="w-3 h-3 mr-1" />
-            Expired
-          </Badge>
-        );
-      default:
-        return <Badge variant="outline">{recording.status}</Badge>;
-    }
   };
 
   const handleTransfer = async () => {
@@ -162,7 +100,7 @@ export function RecordingCard({ recording, onTransfer }: RecordingCardProps) {
               </p>
             )}
           </div>
-          {getStatusBadge()}
+          <StatusBadge {...recordingStatusBadge(recording.status)} />
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -309,5 +247,3 @@ export function RecordingCard({ recording, onTransfer }: RecordingCardProps) {
     </Card>
   );
 }
-
-export default RecordingCard;

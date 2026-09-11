@@ -4,10 +4,10 @@
 
 | Event Type   | Validate (POST)                           | Allocate (PATCH)                          |
 | ------------ | ----------------------------------------- | ----------------------------------------- |
-| Consultation | `/api/events/consultations/{id}/validate` | `/api/events/consultations/{id}/allocate` |
-| Subscription | `/api/events/subscriptions/{id}/validate` | `/api/events/subscriptions/{id}/allocate` |
-| Webinar      | `/api/events/webinars/{id}/validate`      | `/api/events/webinars/{id}/allocate`      |
-| Class        | `/api/events/classes/{id}/validate`       | `/api/events/classes/{id}/allocate`       |
+| Consultation | `/api/bookings/consultations/{id}/validate` | `/api/bookings/consultations/{id}/allocate` |
+| Subscription | `/api/bookings/subscriptions/{id}/validate` | `/api/bookings/subscriptions/{id}/allocate` |
+| Webinar      | `/api/bookings/webinars/{id}/validate`      | `/api/bookings/webinars/{id}/allocate`      |
+| Class        | `/api/bookings/classes/{id}/validate`       | `/api/bookings/classes/{id}/allocate`       |
 
 All endpoints require session-based authentication. The `{id}` parameter accepts UUID or CUID format.
 
@@ -24,9 +24,8 @@ All `/api/slots/` endpoints are covered by `AUTHENTICATED_API_PREFIXES` in middl
 | `/api/slots/appointments` (GET)         | Yes           | Non-privileged users are filtered to their own profile only        |
 | `/api/slots/appointments` (POST)        | Yes           | Admin/staff only                                                   |
 | `/api/slots/appointments/[id]` (GET)    | Yes           | Requires participant check (consultant or consultee on the appointment) |
-| `/api/slots/appointments/[id]` (PATCH)  | Yes           | Consultant-only check (not consultee)                              |
-| `/api/slots/appointments/[id]` (PUT)    | Yes           | Admin/staff only                                                   |
-| `/api/slots/appointments/[id]` (DELETE) | Yes           | Admin/staff only                                                   |
+
+**Removed (booking-journey audit B3 / #1193)**: the `[id]` route's `PATCH` (blind delete-all + slot recreate with no conflict validation and no `consultantProfileId`, so recreated confirmed slots sat OUTSIDE the `slot_no_confirmed_overlap` guard), `PUT`, and `DELETE` (hard-delete bypassing the soft-cancel doctrine) handlers. No in-repo caller used them; slot mutations go through `SlotAllocationService` (allocate/reschedule/manage-timings), which carries locks, revalidation, and the GiST backstop.
 
 ### Status Filters
 
@@ -34,14 +33,14 @@ The `/api/slots/appointments` GET endpoint supports status filtering. The accept
 
 | Event Type                   | Status Enum    | Valid Values                                       |
 | ---------------------------- | -------------- | -------------------------------------------------- |
-| Consultation / Subscription  | `RequestStatus` | PENDING, APPROVED, APPROVED_PENDING_PAYMENT, etc. |
+| Consultation / Subscription  | `AppointmentStatus` | PENDING, APPROVED, APPROVED_PENDING_PAYMENT, etc. |
 | Webinar / Class              | Event status   | SCHEDULED, IN_PROGRESS, COMPLETED, CANCELLED       |
 
 ---
 
 ## Validate Endpoints
 
-**Method**: `POST /api/events/{type}/{id}/validate`
+**Method**: `POST /api/bookings/{type}/{id}/validate`
 
 Pre-flight check before allocation. Returns which slots have conflicts, which are outside availability, and which are valid.
 
@@ -118,7 +117,7 @@ Subscription and class validate endpoints return additional fields:
 
 ## Allocate Endpoints
 
-**Method**: `PATCH /api/events/{type}/{id}/allocate`
+**Method**: `PATCH /api/bookings/{type}/{id}/allocate`
 
 Creates or replaces appointments for an event. Three allocation modes:
 
@@ -257,11 +256,11 @@ Validates URL path parameter `{id}`. Accepts UUID (`xxxxxxxx-xxxx-xxxx-xxxx-xxxx
 | `EventType`                | `"consultation" \| "subscription" \| "webinar" \| "class"`                                         |
 | `AllocationMode`           | `"auto" \| "manual" \| "requested"`                                                                |
 | `AllocationRequest`        | `{eventType, eventId, mode, slots?}`                                                               |
-| `AllocationConstraints`    | `{schedulingPeriod, slotsRequired, sessionDuration, callsPerWeek, ...}`                            |
+| `AllocationConstraints`    | `{schedulingPeriod, slotsRequired, sessionDuration, sessionsPerWeek, ...}`                            |
 | `ValidationResult`         | `{isValid, errors: string[], warnings: string[]}`                                                  |
 | `SlotConflictResult`       | `{conflicts[], outsideAvailability[], validSlots[]}`                                               |
 | `AllocationResult`         | `{success, appointments?, error?, warnings?}`                                                      |
 | `TimeSlot`                 | `{startTime, endTime, isAvailable, isBooked}`                                                      |
 | `ProgressInfo`             | `{scheduled, required, remaining, sessionDuration, displayText}`                                   |
 | `ConsultantAllocationData` | `{userId, scheduleType, slotsOfAvailabilityWeekly[], slotsOfAvailabilityCustom[]}`                 |
-| `EventConfig`              | `{durationInMonths?, durationInHours?, sessionDurationInHours?, callsPerWeek?, schedulingPeriod?}` |
+| `EventConfig`              | `{durationInMonths?, durationInHours?, sessionDurationInHours?, sessionsPerWeek?, schedulingPeriod?}` |

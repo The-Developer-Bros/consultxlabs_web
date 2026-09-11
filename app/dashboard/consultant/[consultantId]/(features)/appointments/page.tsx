@@ -1,103 +1,55 @@
-"use client";
+import {
+  HydrationBoundary,
+  QueryClient,
+  dehydrate,
+} from "@tanstack/react-query";
+import AppointmentsPageClient from "./AppointmentsPageClient";
+import { getConsultantAppointments } from "@/lib/data/consultant-appointments";
+import { requirePersonalProfileAccess } from "@/lib/auth/personal-dashboard-access";
 
-import { use } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { DashboardErrorBoundary } from "@/components/DashboardErrorBoundary";
-import { PageSkeleton } from "@/components/dashboard/DashboardSkeletons";
-import { createConsultantQueries } from "@/lib/dashboard-queries";
-import { BADGE_STYLES } from "../../types";
-import { AppointmentsTab } from "./AppointmentsTab";
-
-export default function AppointmentsPage({
-  params,
-}: {
+type PageProps = {
   params: Promise<{ consultantId: string }>;
-}) {
-  const { consultantId } = use(params);
+};
 
-  // Use the centralized query configuration
-  const appointmentsQuery = createConsultantQueries(consultantId).appointments;
-  const { data: appointments, isLoading, error } = useQuery(appointmentsQuery);
+export default async function AppointmentsPage({
+  params,
+}: Readonly<PageProps>) {
+  const { consultantId } = await params;
+  // Ownership is enforced HERE, not by the layout: the layout is a client
+  // component, so its check runs after this server render has already read
+  // and streamed the data. See lib/auth/personal-dashboard-access.ts.
+  await requirePersonalProfileAccess("consultant", consultantId);
+  const queryClient = new QueryClient();
 
-  // Fetch scheduled trials for this consultant
-  const { data: trialsData, isLoading: trialsLoading } = useQuery({
-    queryKey: ["trials", consultantId, "SCHEDULED"],
-    queryFn: async () => {
-      const res = await fetch(
-        `/api/trials?consultantProfileId=${consultantId}&status=SCHEDULED`,
-      );
-      if (!res.ok) throw new Error("Failed to fetch trials");
-      const { data } = await res.json();
-      return data;
-    },
-  });
-
-  // Fetch class events for this consultant (to show unscheduled classes in appointments page)
-  const { data: classEventsData, isLoading: classesLoading } = useQuery({
-    queryKey: ["consultant-classes", consultantId],
-    queryFn: async () => {
-      const res = await fetch(
-        `/api/events/classes?consultantProfileId=${consultantId}`,
-      );
-      if (!res.ok) throw new Error("Failed to fetch classes");
-      const { data } = await res.json();
-      return (data ?? []).filter(
-        (c: { appointment: unknown }) => !c.appointment,
-      );
-    },
-  });
-
-  // Fetch webinar events for this consultant; filter to those with no appointment yet
-  const { data: webinarEventsData, isLoading: webinarsLoading } = useQuery({
-    queryKey: ["consultant-webinars-unscheduled", consultantId],
-    queryFn: async () => {
-      const res = await fetch(
-        `/api/events/webinars?consultantProfileId=${consultantId}`,
-      );
-      if (!res.ok) throw new Error("Failed to fetch webinars");
-      const { data } = await res.json();
-      return (data ?? []).filter(
-        (w: { appointment: unknown }) => !w.appointment,
-      );
-    },
-  });
-
-  if (isLoading || trialsLoading || classesLoading || webinarsLoading) {
-    return <PageSkeleton />;
-  }
-
-  if (error) {
-    return (
-      <DashboardErrorBoundary>
-        <div className="flex items-center justify-center min-h-[400px]">
-          <div className="p-4 bg-red-50 text-red-600 rounded-lg max-w-md text-center">
-            <h3 className="font-semibold mb-2">Error Loading Appointments</h3>
-            <p className="text-sm">
-              {error.message ||
-                "Failed to load appointments. Please try again."}
-            </p>
-            <button
-              onClick={() => window.location.reload()}
-              className="mt-4 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
-            >
-              Retry
-            </button>
-          </div>
-        </div>
-      </DashboardErrorBoundary>
-    );
-  }
+  // #890 — SSR prefetch the DEFAULT ("personal") appointments view so the
+  // client useQuery hydrates without a fetch waterfall. Key MUST match
+  // createConsultantQueries(id, "personal").appointments:
+  //   ["consultant-appointments", id, "personal"].
+  // The scopeKey is part of the key, and the page's *resolved* default is
+  // role/session-dependent (org members + admins default to "all" via
+  // useOrgScope({ defaultForOrgMember: "all" }), B2C users to "personal").
+  // We prefetch only "personal" — the deterministic, session-independent
+  // default — mirroring the existing client prefetch hook
+  // (useConsultantPrefetchDashboard). Org/all-scope landings correctly fall
+  // back to a client fetch (acceptable per #890). The scope handed down is the
+  // same `Scope` the route's resolveOrgScope produces, so both paths project
+  // it identically (#674 defect 13).
+  // allSettled so a read failure degrades to a client-side fetch rather
+  // than crashing the route.
+  await Promise.allSettled([
+    queryClient.prefetchQuery({
+      queryKey: ["consultant-appointments", consultantId, "personal"],
+      queryFn: () =>
+        getConsultantAppointments({
+          consultantProfileId: consultantId,
+          scope: { kind: "personal" },
+        }),
+    }),
+  ]);
 
   return (
-    <DashboardErrorBoundary>
-      <AppointmentsTab
-        appointments={appointments || []}
-        badgeStyles={BADGE_STYLES}
-        scheduledTrials={trialsData || []}
-        consultantId={consultantId}
-        unscheduledClasses={classEventsData || []}
-        unscheduledWebinars={webinarEventsData || []}
-      />
-    </DashboardErrorBoundary>
+    <HydrationBoundary state={dehydrate(queryClient)}>
+      <AppointmentsPageClient consultantId={consultantId} />
+    </HydrationBoundary>
   );
 }

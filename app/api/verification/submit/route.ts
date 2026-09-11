@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import * as Sentry from "@sentry/nextjs";
 import prisma from "@/lib/prisma";
 import { UserRole } from "@prisma/client";
 import { getSession } from "@/lib/auth-server";
@@ -167,6 +168,7 @@ export async function POST(request: NextRequest) {
       data: verification,
     });
   } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "auth" } });
     console.error("Verification submit error:", error);
     return NextResponse.json(
       {

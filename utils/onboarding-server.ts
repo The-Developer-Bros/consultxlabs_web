@@ -1,18 +1,23 @@
 import "server-only";
+import {
+  mergeAdjacentCustomRows,
+  mergeAdjacentWeeklyRows,
+} from "@/utils/slotAllocation/mergeAdjacentWeeklyRows";
 import { Prisma } from "@prisma/client";
 import { UserRole, ScheduleType } from "@prisma/client";
-import prisma from "@/lib/prisma";
+import prisma, { type Tx } from "@/lib/prisma";
 import { isValidTimeRange } from "@/utils/timeSlotValidation";
 import {
   validateWeeklySlotTimeOrder,
   slotsOverlap,
-  getTimezoneOffsetMinutes,
 } from "@/utils/slotAllocation/slotTimeUtils";
+import {
+  resolveWeeklyTimezone,
+  resolveWeeklyUtcOffsetMinutes,
+  weeklyRowLocalColumns,
+} from "@/lib/scheduling/weeklyUtcOffset";
 import { notifyNewConsultantApplication } from "@/lib/novu";
-import type {
-  OnboardingData,
-  ConsultantProfileCreateData,
-} from "./onboarding";
+import type { OnboardingData, ConsultantProfileCreateData } from "./onboarding";
 import {
   buildUserUpdateData,
   buildConsultantScalarData,
@@ -20,6 +25,8 @@ import {
   buildStaffScalarData,
   buildAdminScalarData,
   validateProfessionalBackground,
+  shouldSubmitVerification,
+  isPersistableVerificationDoc,
 } from "./onboarding-shared";
 
 // ============================================================================
@@ -62,7 +69,7 @@ async function assertUserExists(id: string) {
 async function upsertConsultantProfile(
   userId: string,
   profileData: ConsultantProfileCreateData,
-  tx: Prisma.TransactionClient,
+  tx: Tx,
   timezone?: string,
 ) {
   const scalarData = buildConsultantScalarData(profileData);
@@ -70,14 +77,17 @@ async function upsertConsultantProfile(
 
   // Validate domain/subdomain/tag consistency
   const tagIds = profileData.tags?.connect?.map((t) => t.id) ?? [];
-  const subDomainIds = profileData.subDomains?.connect?.map((sd) => sd.id) ?? [];
+  const subDomainIds =
+    profileData.subDomains?.connect?.map((sd) => sd.id) ?? [];
 
   if (tagIds.length > 0) {
     const validTags = await tx.tag.count({
       where: { id: { in: tagIds }, domainId },
     });
     if (validTags !== tagIds.length) {
-      throw new Error("One or more selected skills do not belong to the chosen domain");
+      throw new Error(
+        "One or more selected skills do not belong to the chosen domain",
+      );
     }
   }
 
@@ -86,7 +96,9 @@ async function upsertConsultantProfile(
       where: { id: { in: subDomainIds }, domainId },
     });
     if (validSubDomains !== subDomainIds.length) {
-      throw new Error("One or more selected sub-domains do not belong to the chosen domain");
+      throw new Error(
+        "One or more selected sub-domains do not belong to the chosen domain",
+      );
     }
   }
 
@@ -131,12 +143,18 @@ async function syncAvailabilitySlots(
   consultantProfileId: string,
   scheduleType: ScheduleType,
   profileData: ConsultantProfileCreateData,
-  tx: Prisma.TransactionClient,
+  tx: Tx,
   timezone?: string,
 ) {
-  const utcOffsetMinutes = timezone
-    ? getTimezoneOffsetMinutes(timezone)
-    : 0;
+  // #1326 — this path stored 0 for a consultant with no onboarding timezone,
+  // so their whole published week projected as if they lived in UTC. One
+  // resolver now answers for every write path, and a conflicting caller value
+  // throws into the failed transaction rather than being written.
+  const utcOffsetMinutes = resolveWeeklyUtcOffsetMinutes({
+    profileTimezone: timezone,
+    consultantProfileId,
+  });
+  const rowTimezone = resolveWeeklyTimezone(timezone);
   if (scheduleType === ScheduleType.WEEKLY) {
     await tx.slotOfAvailabilityCustom.deleteMany({
       where: { consultantProfileId },
@@ -175,9 +193,7 @@ async function syncAvailabilitySlots(
 
       for (let i = 0; i < weeklySlotsToCreate.length; i++) {
         for (let j = i + 1; j < weeklySlotsToCreate.length; j++) {
-          if (
-            slotsOverlap(weeklySlotsToCreate[i], weeklySlotsToCreate[j])
-          ) {
+          if (slotsOverlap(weeklySlotsToCreate[i], weeklySlotsToCreate[j])) {
             throw new Error(
               "Weekly availability slots contain overlapping time ranges",
             );
@@ -185,14 +201,28 @@ async function syncAvailabilitySlots(
         }
       }
 
+      // #1320 — adjacent entries ("3:30–4:30" + "4:30–5:30") become one row so
+      // storage matches the window the customer is shown and can book.
+      //
+      // #1326 — the offset is stamped BEFORE the merge: mergeAdjacentWeeklyRows
+      // refuses to fold rows whose offsets differ, and every row here carried
+      // an absent offset until after the fold, so that guard was comparing
+      // undefined with undefined and could never fire.
+      // #872 — the five DST columns are derived from the MERGED row, which is
+      // the one actually stored. No reader consults them until the reader flip.
+      const rowsWithOffset = weeklySlotsToCreate.map((slot) => ({
+        ...slot,
+        utcOffsetMinutes,
+      }));
       await tx.slotOfAvailabilityWeekly.createMany({
-        data: weeklySlotsToCreate.map((slot) => ({
+        data: mergeAdjacentWeeklyRows(rowsWithOffset).map((slot) => ({
           startDay: slot.startDay,
           startTimeUtc: slot.startTimeUtc,
           endDay: slot.endDay,
           endTimeUtc: slot.endTimeUtc,
           consultantProfileId,
           utcOffsetMinutes,
+          ...weeklyRowLocalColumns(slot, rowTimezone, utcOffsetMinutes),
         })),
       });
     }
@@ -212,11 +242,15 @@ async function syncAvailabilitySlots(
         const startMs = new Date(slot.startsAt).getTime();
         const endMs = new Date(slot.endsAt).getTime();
         if (startMs >= endMs) {
-          throw new Error(`Custom slot ${i + 1}: start time must be before end time`);
+          throw new Error(
+            `Custom slot ${i + 1}: start time must be before end time`,
+          );
         }
         const durationMin = (endMs - startMs) / 60_000;
         if (durationMin < 30 || durationMin > 720) {
-          throw new Error(`Custom slot ${i + 1}: duration must be between 30 minutes and 12 hours`);
+          throw new Error(
+            `Custom slot ${i + 1}: duration must be between 30 minutes and 12 hours`,
+          );
         }
       }
 
@@ -235,12 +269,16 @@ async function syncAvailabilitySlots(
         }
       }
 
+      // #1320 — merge AFTER the per-slot 12-hour cap above, so a chain of
+      // adjacent entries still has each entry checked on its own.
       await tx.slotOfAvailabilityCustom.createMany({
-        data: customSlotsToCreate.map((slot) => ({
-          startsAt: slot.startsAt,
-          endsAt: slot.endsAt,
-          consultantProfileId,
-        })),
+        data: mergeAdjacentCustomRows(
+          customSlotsToCreate.map((slot) => ({
+            startsAt: new Date(slot.startsAt),
+            endsAt: new Date(slot.endsAt),
+            consultantProfileId,
+          })),
+        ),
       });
     }
   }
@@ -249,7 +287,7 @@ async function syncAvailabilitySlots(
 async function upsertConsulteeProfile(
   userId: string,
   profileData: Parameters<typeof buildConsulteeScalarData>[0],
-  tx: Prisma.TransactionClient,
+  tx: Tx,
 ) {
   const scalarData = buildConsulteeScalarData(profileData);
   const profile = await tx.consulteeProfile.upsert({
@@ -263,7 +301,7 @@ async function upsertConsulteeProfile(
 async function upsertStaffProfile(
   userId: string,
   profileData: Parameters<typeof buildStaffScalarData>[0],
-  tx: Prisma.TransactionClient,
+  tx: Tx,
 ) {
   const scalarData = buildStaffScalarData(profileData);
   const profile = await tx.staffProfile.upsert({
@@ -277,7 +315,7 @@ async function upsertStaffProfile(
 async function upsertAdminProfile(
   userId: string,
   profileData: Parameters<typeof buildAdminScalarData>[0],
-  tx: Prisma.TransactionClient,
+  tx: Tx,
 ) {
   const scalarData = buildAdminScalarData(profileData);
   const profile = await tx.adminProfile.upsert({
@@ -291,7 +329,7 @@ async function upsertAdminProfile(
 async function upsertProfileByRole(
   userId: string,
   validatedBody: OnboardingData,
-  tx: Prisma.TransactionClient,
+  tx: Tx,
 ): Promise<{
   consultantProfileId?: string;
   consulteeProfileId?: string;
@@ -313,11 +351,7 @@ async function upsertProfileByRole(
         tx,
       );
     case UserRole.STAFF:
-      return upsertStaffProfile(
-        userId,
-        validatedBody.staffProfile.create,
-        tx,
-      );
+      return upsertStaffProfile(userId, validatedBody.staffProfile.create, tx);
     case UserRole.ADMIN:
       if (validatedBody.adminProfile?.create) {
         return upsertAdminProfile(
@@ -326,6 +360,9 @@ async function upsertProfileByRole(
           tx,
         );
       }
+      return {};
+    case UserRole.ORG_WORKSPACE:
+      // No personal profile — org creation happens post-transaction.
       return {};
     default: {
       const _exhaustiveCheck: never = validatedBody;
@@ -344,7 +381,7 @@ export async function persistProfessionalBackground(
   userId: string,
   consultantProfileId: string | undefined,
   body: Record<string, unknown>,
-  tx: Prisma.TransactionClient,
+  tx: Tx,
 ) {
   const {
     workExperiences,
@@ -477,19 +514,28 @@ async function submitVerificationRequest(
   });
 
   if (verificationDocuments && verificationDocuments.length > 0) {
-    const existingDocuments = verificationDocuments.filter(
+    // Same predicate that gated the deferral decision in
+    // maybeSubmitConsultantVerification — a doc that would not persist here
+    // must never have started a review (review round 1).
+    const persistableDocs = verificationDocuments.filter(
+      isPersistableVerificationDoc,
+    ) as VerificationDocumentInput[];
+
+    const existingDocuments = persistableDocs.filter(
       (doc) => doc.id && !doc.isOnboardingUpload,
     );
     if (existingDocuments.length > 0) {
       await prisma.profileVerificationDocument.updateMany({
         where: {
-          id: { in: existingDocuments.map((d) => d.id).filter(Boolean) as string[] },
+          id: {
+            in: existingDocuments.map((d) => d.id).filter(Boolean) as string[],
+          },
         },
         data: { verificationId: verification.id },
       });
     }
 
-    const onboardingDocuments = verificationDocuments.filter(
+    const onboardingDocuments = persistableDocs.filter(
       (doc) => doc.isOnboardingUpload || (!doc.id && doc.fileUrl),
     );
     if (onboardingDocuments.length > 0) {
@@ -543,14 +589,171 @@ async function submitVerificationRequest(
 // MAIN ENTRY POINT
 // ============================================================================
 
+const onboardingUserInclude = {
+  consultantProfile: {
+    include: {
+      slotsOfAvailabilityWeekly: true,
+      slotsOfAvailabilityCustom: true,
+      domain: true,
+      subDomains: true,
+      tags: true,
+    },
+  },
+  consulteeProfile: true,
+  workExperiences: true,
+  education: true,
+  certifications: true,
+  staffProfile: true,
+  adminProfile: true,
+} satisfies Prisma.UserInclude;
+
+type OnboardingUser = Prisma.UserGetPayload<{
+  include: typeof onboardingUserInclude;
+}>;
+
+type OnboardingResult = {
+  success: boolean;
+  // `user` is a Prisma User with deeply-included relations (consultantProfile,
+  // consulteeProfile, slots, domain, etc.). Typing it precisely would require a
+  // shared Prisma payload type across server/action/client layers — not worth
+  // the coupling. Callers only read a few string IDs from it.
+  user?: Record<string, unknown>;
+  error?: string;
+  verificationWarning?: string;
+  /// True when the consultant finished onboarding without completing the
+  /// verification package (LinkedIn + ≥1 document). The profile exists with
+  /// verificationStatus PENDING_VERIFICATION; the client uses this to show a
+  /// "finish from Settings" message instead of "under review".
+  verificationDeferred?: boolean;
+};
+
+async function runOnboardingTransaction(
+  userId: string,
+  validatedBody: OnboardingData,
+  body: unknown,
+): Promise<OnboardingUser> {
+  return prisma.$transaction(
+    async (tx) => {
+      const baseUserData: Prisma.UserUpdateInput = {
+        ...buildUserUpdateData(validatedBody),
+        // Reset profile IDs (will be set by profileFkData)
+        consultantProfileId: null,
+        consulteeProfileId: null,
+        staffProfileId: null,
+        adminProfileId: null,
+      };
+
+      const profileFkData = await upsertProfileByRole(
+        userId,
+        validatedBody,
+        tx,
+      );
+
+      await persistProfessionalBackground(
+        userId,
+        profileFkData.consultantProfileId,
+        body as Record<string, unknown>,
+        tx,
+      );
+
+      const user = await tx.user.update({
+        // #724, #840: CAS guard — only apply the role/profile transition
+        // while the user is still un-onboarded, so two devices onboarding
+        // the same email can't last-write-wins each other. A no-match
+        // throws P2025 and rolls back the whole tx (incl. profile upserts).
+        where: { id: userId, onboardingCompleted: { not: true } },
+        data: { ...baseUserData, ...profileFkData },
+        include: onboardingUserInclude,
+      });
+
+      return user;
+    },
+    { maxWait: 15000, timeout: 45000 },
+  );
+}
+
+// #724, #840: another device already completed onboarding for this user; treat
+// as idempotent success rather than clobbering their transition. Returns the
+// success result on a P2025-after-completion, or null to signal a rethrow.
+async function recoverIdempotentOnboarding(
+  userId: string,
+  error: unknown,
+): Promise<OnboardingResult | null> {
+  if (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === "P2025"
+  ) {
+    const existing = await prisma.user.findUnique({
+      where: { id: userId },
+      include: onboardingUserInclude,
+    });
+    if (existing?.onboardingCompleted) {
+      return { success: true, user: existing };
+    }
+  }
+  return null;
+}
+
+/**
+ * Post-transaction consultant verification. Returns a warning string when the
+ * profile saved but the verification submission failed; `deferred: true` when
+ * the consultant finished without a complete verification package. The policy
+ * itself lives in `shouldSubmitVerification` (onboarding-shared) so it stays
+ * unit-testable outside this server-only module.
+ */
+async function maybeSubmitConsultantVerification(
+  userId: string,
+  updatedUser: OnboardingUser,
+  body: unknown,
+  role: OnboardingData["role"],
+): Promise<{ warning?: string; deferred?: boolean } | undefined> {
+  if (role !== UserRole.CONSULTANT || !updatedUser.consultantProfileId) {
+    return undefined;
+  }
+
+  const verificationBody = body as VerificationBody;
+  const { hasDocuments, hasLinkedin } =
+    shouldSubmitVerification(verificationBody);
+
+  // Deferred path (#onboarding-ux): the profile is real and saved with the
+  // model default PENDING_VERIFICATION ("onboarding complete, awaiting
+  // review"); marketplace visibility continues to gate on verification, so a
+  // deferred consultant is simply unlisted until they finish from Settings.
+  // Whatever LinkedIn they did enter still lands on the User row.
+  if (!hasDocuments || !hasLinkedin) {
+    if (hasLinkedin) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          linkedinUrl: verificationBody.verificationLinkedinUrl!.trim(),
+        },
+      });
+    }
+    return { deferred: true };
+  }
+
+  try {
+    await submitVerificationRequest(
+      userId,
+      updatedUser.consultantProfileId,
+      verificationBody,
+      updatedUser.name || "",
+      updatedUser.email || "",
+    );
+    return undefined;
+  } catch (verificationError) {
+    console.error("Failed to create verification request:", verificationError);
+    return {
+      warning:
+        "Your profile was saved but verification submission failed. Please contact support.",
+    };
+  }
+}
+
 export async function processOnboardingData(
   userId: string,
   body: unknown,
-  // Return type: `user` is a Prisma User with deeply-included relations
-  // (consultantProfile, consulteeProfile, slots, domain, etc.). Typing it
-  // precisely would require a shared Prisma payload type across server/action/client
-  // layers — not worth the coupling. Callers only read a few string IDs from it.
-): Promise<{ success: boolean; user?: Record<string, unknown>; error?: string; verificationWarning?: string }> {
+): Promise<OnboardingResult> {
   const { validateOnboardingData } = await import("./onboarding");
 
   try {
@@ -576,80 +779,35 @@ export async function processOnboardingData(
 
     await assertUserExists(userId);
 
-    const updatedUser = await prisma.$transaction(
-      async (tx) => {
-        const baseUserData: Prisma.UserUpdateInput = {
-          ...buildUserUpdateData(validatedBody),
-          // Reset profile IDs (will be set by profileFkData)
-          consultantProfileId: null,
-          consulteeProfileId: null,
-          staffProfileId: null,
-          adminProfileId: null,
-        };
+    // ORG_WORKSPACE onboarding no longer flows through this transaction. The
+    // role + personal info are committed by `setOnboardingRoleAction` at
+    // step 0, the org is created via `POST /api/organizations` during the
+    // shared wizard, and `completeOrgWorkspaceOnboardingAction` flips the
+    // onboardingCompleted flag at launch. This path now only handles
+    // CONSULTANT / CONSULTEE / STAFF / ADMIN profiles.
 
-        const profileFkData = await upsertProfileByRole(
-          userId,
-          validatedBody,
-          tx,
-        );
-
-        await persistProfessionalBackground(
-          userId,
-          profileFkData.consultantProfileId,
-          body as Record<string, unknown>,
-          tx,
-        );
-
-        return tx.user.update({
-          where: { id: userId },
-          data: { ...baseUserData, ...profileFkData },
-          include: {
-            consultantProfile: {
-              include: {
-                slotsOfAvailabilityWeekly: true,
-                slotsOfAvailabilityCustom: true,
-                domain: true,
-                subDomains: true,
-                tags: true,
-              },
-            },
-            consulteeProfile: true,
-            workExperiences: true,
-            education: true,
-            certifications: true,
-            staffProfile: true,
-            adminProfile: true,
-          },
-        });
-      },
-      { maxWait: 10000, timeout: 30000 },
-    );
-
-    // Post-transaction: consultant verification
-    let verificationWarning: string | undefined;
-    if (
-      validatedBody.role === UserRole.CONSULTANT &&
-      updatedUser.consultantProfileId
-    ) {
-      try {
-        await submitVerificationRequest(
-          userId,
-          updatedUser.consultantProfileId,
-          body as VerificationBody,
-          updatedUser.name || "",
-          updatedUser.email || "",
-        );
-      } catch (verificationError) {
-        console.error(
-          "Failed to create verification request:",
-          verificationError,
-        );
-        verificationWarning =
-          "Your profile was saved but verification submission failed. Please contact support.";
-      }
+    let updatedUser: OnboardingUser;
+    try {
+      updatedUser = await runOnboardingTransaction(userId, validatedBody, body);
+    } catch (error: unknown) {
+      const recovered = await recoverIdempotentOnboarding(userId, error);
+      if (recovered) return recovered;
+      throw error;
     }
 
-    return { success: true, user: updatedUser, verificationWarning };
+    const verification = await maybeSubmitConsultantVerification(
+      userId,
+      updatedUser,
+      body,
+      validatedBody.role,
+    );
+
+    return {
+      success: true,
+      user: updatedUser,
+      verificationWarning: verification?.warning,
+      verificationDeferred: verification?.deferred,
+    };
   } catch (error: unknown) {
     console.error("Error in processOnboardingData:", error);
     const errorMessage =

@@ -1,133 +1,75 @@
 /**
- * Waitlist API Routes
- * POST: Join a waitlist
- * GET: Get user's waitlist entries
+ * POST /api/waitlist — public newsletter signup.
+ *
+ * Double opt-in: this only creates a PENDING row and sends a confirmation
+ * email. Rate limited to 3/hr per IP in middleware.
  */
 
+import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
-import { joinWaitlist, getUserWaitlistEntries } from "@/lib/waitlist";
-import { sendWaitlistJoinedEmail } from "@/lib/waitlist/notifications";
-import prisma from "@/lib/prisma";
-import { waitlistLimiter, applyRateLimit } from "@/lib/rate-limit";
-
+import { WaitlistSource } from "@prisma/client";
+import { z } from "zod";
 import { getSession } from "@/lib/auth-server";
-/**
- * POST /api/waitlist - Join a waitlist
- */
-export async function POST(request: NextRequest) {
+import { getClientIp } from "@/lib/rate-limit";
+import { subscribe } from "@/lib/waitlist/service";
+
+const subscribeSchema = z.object({
+  email: z.string().trim().email("Enter a valid email address").max(254),
+  name: z.string().trim().max(120).optional(),
+  source: z.nativeEnum(WaitlistSource).optional(),
+  tags: z.array(z.string().trim().max(40)).max(10).optional(),
+});
+
+export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
-    const session = await getSession();
+    const body = await request.json().catch(() => null);
+    const parsed = subscribeSchema.safeParse(body);
 
-    if (!session?.user?.id) {
+    if (!parsed.success) {
       return NextResponse.json(
-        { success: false, error: "Unauthorized" },
-        { status: 401 },
-      );
-    }
-
-    // Rate limit: 5 waitlist joins per hour per user
-    const rl = await applyRateLimit(waitlistLimiter, session.user.id);
-    if (rl) return rl;
-
-    const body = await request.json();
-    const { webinarId, classId, preferences } = body;
-
-    if (!webinarId && !classId) {
-      return NextResponse.json(
-        { success: false, error: "Either webinarId or classId is required" },
+        { error: parsed.error.issues[0]?.message ?? "Invalid email address" },
         { status: 400 },
       );
     }
 
-    // Join the waitlist
-    const result = await joinWaitlist({
-      userId: session.user.id,
-      webinarId,
-      classId,
-      preferences,
+    // Link the row to the account when one is signed in — but never require
+    // a session; the footer form is public.
+    const session = await getSession().catch(() => null);
+
+    const result = await subscribe({
+      ...parsed.data,
+      userId: session?.user?.id ?? null,
+      ip: getClientIp(request),
+      userAgent: request.headers.get("user-agent"),
     });
 
-    if (!result.success) {
+    // A send failure is an infrastructure state, not a per-address one, so
+    // saying so leaks no membership — and silently claiming success would
+    // strand the subscriber at PENDING with no confirmation to click.
+    if (result.outcome === "CONFIRMATION_FAILED") {
       return NextResponse.json(
-        { success: false, error: result.message },
-        { status: 400 },
+        {
+          error:
+            "We could not send your confirmation email. Please try again shortly.",
+        },
+        { status: 502 },
       );
     }
 
-    // Get event details for email
-    let eventTitle = "Event";
-    const eventType: "webinar" | "class" = webinarId ? "webinar" : "class";
-
-    if (webinarId) {
-      const webinar = await prisma.webinar.findUnique({
-        where: { id: webinarId },
-        include: { webinarPlan: true },
-      });
-      if (webinar) {
-        eventTitle = webinar.webinarPlan.title;
-      }
-    } else if (classId) {
-      const classInstance = await prisma.class.findUnique({
-        where: { id: classId },
-        include: { classPlan: true },
-      });
-      if (classInstance) {
-        eventTitle = classInstance.classPlan.title;
-      }
-    }
-
-    // Send confirmation email
-    if (session.user.email) {
-      await sendWaitlistJoinedEmail({
-        email: session.user.email,
-        name: session.user.name || "Valued User",
-        eventTitle,
-        eventType,
-        position: result.position!,
-      });
-    }
-
+    // Otherwise deliberately uniform: telling the caller whether the address
+    // was already subscribed would turn this into a membership oracle.
     return NextResponse.json({
       success: true,
-      data: {
-        id: result.waitlistId,
-        position: result.position,
-        message: result.message,
-      },
+      message: "Check your email to confirm your subscription.",
     });
   } catch (error) {
-    console.error("Error joining waitlist:", error);
-    return NextResponse.json(
-      { success: false, error: "Failed to join waitlist" },
-      { status: 500 },
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "waitlist" } },
     );
-  }
-}
-
-/**
- * GET /api/waitlist - Get user's waitlist entries
- */
-export async function GET() {
-  try {
-    const session = await getSession();
-
-    if (!session?.user?.id) {
-      return NextResponse.json(
-        { success: false, error: "Unauthorized" },
-        { status: 401 },
-      );
-    }
-
-    const entries = await getUserWaitlistEntries(session.user.id);
-
-    return NextResponse.json({
-      success: true,
-      data: entries,
-    });
-  } catch (error) {
-    console.error("Error fetching waitlist entries:", error);
+    console.error("[waitlist/subscribe]", error);
     return NextResponse.json(
-      { success: false, error: "Failed to fetch waitlist entries" },
+      { error: "Could not sign you up right now. Please try again." },
       { status: 500 },
     );
   }

@@ -23,7 +23,7 @@ export type TConsultation = Prisma.ConsultationGetPayload<{
           include: {
             user: true;
             meetingSession: {
-              select: { id: true; endedAt: true };
+              select: { id: true; endedAt: true; endedReason: true };
             };
           };
         };
@@ -56,7 +56,7 @@ export type TSubscription = Prisma.SubscriptionGetPayload<{
           include: {
             user: true;
             meetingSession: {
-              select: { id: true; endedAt: true };
+              select: { id: true; endedAt: true; endedReason: true };
             };
           };
         };
@@ -77,7 +77,6 @@ export type TWebinar = Prisma.WebinarGetPayload<{
           };
         };
         topics: true;
-
       };
     };
     appointment: {
@@ -86,15 +85,13 @@ export type TWebinar = Prisma.WebinarGetPayload<{
           include: {
             user: true;
             meetingSession: {
-              select: { id: true; endedAt: true };
+              select: { id: true; endedAt: true; endedReason: true };
             };
           };
         };
         payment: true;
       };
     };
-    waitlist: true;
-    meetingRoom: true;
   };
 }>;
 
@@ -117,21 +114,19 @@ export type TClass = Prisma.ClassGetPayload<{
         };
       };
     };
-    waitlist: true;
     appointments: {
       include: {
         slotsOfAppointment: {
           include: {
             user: true;
             meetingSession: {
-              select: { id: true; endedAt: true };
+              select: { id: true; endedAt: true; endedReason: true };
             };
           };
         };
         payment: true;
       };
     };
-    meetingRoom: true;
   };
 }>;
 
@@ -172,6 +167,9 @@ export type TAppointment = Prisma.AppointmentGetPayload<{
             user: true;
           };
         };
+        // #997 Phase 3 — weekly-confirmed-call-count aggregate buckets by this
+        // column (ADR B9), read in app/api/slots/appointments/route.ts.
+        schedulingTimezone: true;
       };
     };
     webinar: {
@@ -183,7 +181,7 @@ export type TAppointment = Prisma.AppointmentGetPayload<{
                 user: true;
               };
             };
-    
+
             title: true;
           };
         };
@@ -198,7 +196,6 @@ export type TAppointment = Prisma.AppointmentGetPayload<{
                 user: true;
               };
             };
-    
           };
         };
       };
@@ -208,15 +205,12 @@ export type TAppointment = Prisma.AppointmentGetPayload<{
       include: {
         user: true;
         meetingSession: {
-          select: { id: true; endedAt: true };
+          select: { id: true; endedAt: true; endedReason: true };
         };
       };
     };
   };
 }>;
-
-// Utility type for creating appointments
-export type TAppointmentCreateInput = Prisma.AppointmentCreateInput;
 
 // Extract slot type from TAppointment for reuse
 export type TSlotOfAppointment = TAppointment["slotsOfAppointment"][number];

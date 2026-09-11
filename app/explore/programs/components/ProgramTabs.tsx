@@ -2,7 +2,7 @@
 
 import { memo } from "react";
 import { GraduationCap, Layers, Video } from "lucide-react";
-import { ProgramType } from "../utils";
+import { ProgramType } from "@/lib/explore/programs";
 
 interface ProgramTabsProps {
   activeTab: ProgramType;
@@ -29,7 +29,7 @@ const tabs: { value: ProgramType; label: string; icon: React.ReactNode }[] = [
 
 function ProgramTabsImpl({ activeTab, onTabChange }: ProgramTabsProps) {
   return (
-    <div className="flex items-center gap-2 p-1.5 bg-zinc-100 rounded-xl w-fit">
+    <div className="flex items-center gap-2 p-1.5 bg-muted rounded-xl w-fit">
       {tabs.map((tab) => {
         const isActive = activeTab === tab.value;
         return (
@@ -38,8 +38,8 @@ function ProgramTabsImpl({ activeTab, onTabChange }: ProgramTabsProps) {
             onClick={() => onTabChange(tab.value)}
             className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${
               isActive
-                ? "bg-zinc-900 text-white shadow-sm"
-                : "text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200/60"
+                ? "bg-primary text-primary-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted-foreground/10"
             }`}
           >
             {tab.icon}

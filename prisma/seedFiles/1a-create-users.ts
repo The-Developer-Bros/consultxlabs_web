@@ -621,6 +621,28 @@ export async function createUsers(): Promise<UserWithProfiles[]> {
         },
       });
 
+      // Sync the denormalized User.*ProfileId columns the session layer
+      // reads (BetterAuth additionalFields). Runtime onboarding sets these;
+      // the seed previously left them null — every seeded session then
+      // carried an undefined profile id, which (pre-guard) dropped
+      // ownership filters in routes that fed it straight into a Prisma
+      // where clause.
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          consultantProfileId: user.consultantProfile?.id ?? null,
+          consulteeProfileId: user.consulteeProfile?.id ?? null,
+          staffProfileId: user.staffProfile?.id ?? null,
+          adminProfileId: user.adminProfile?.id ?? null,
+        },
+      });
+      // Keep the in-memory object consistent with the row — downstream seed
+      // files receive this `user` and would otherwise read stale nulls.
+      user.consultantProfileId = user.consultantProfile?.id ?? null;
+      user.consulteeProfileId = user.consulteeProfile?.id ?? null;
+      user.staffProfileId = user.staffProfile?.id ?? null;
+      user.adminProfileId = user.adminProfile?.id ?? null;
+
       await prisma.account.create({
         data: {
           userId: user.id,

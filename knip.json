@@ -1,0 +1,13 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "entry": [
+    "jobs/**/*.ts",
+    "scripts/**/*.ts",
+    "emails/**/*.tsx",
+    "prisma/seed.ts",
+    "prisma/seedFiles/*.ts"
+  ],
+  "ignore": [".claude/**", "docs/**"],
+  "ignoreBinaries": ["tsx", "psql", "supabase"],
+  "ignoreDependencies": []
+}

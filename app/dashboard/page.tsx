@@ -1,187 +1,46 @@
-"use client";
+import { redirect } from "next/navigation";
+import { requireOnboarded } from "@/lib/auth-guard";
+import { resolvePersonalDashboardHref } from "@/lib/labels/personal-dashboard";
 
-import { useState, useEffect } from "react";
-import { useSession } from "@/lib/auth-client";
-import { useRouter } from "next/navigation";
-import { useUserData } from "@/hooks/useUserData";
-import { useToast } from "@/components/ui/use-toast";
+// Server-side dashboard router. requireOnboarded() guarantees an onboarded
+// session carrying role + profile FKs + organizationMemberships (auth.ts
+// customSession), so we resolve the landing here — no client fetch. redirect()
+// throws by design; do not wrap it in a swallowing try/catch.
+//
+// Operator/staff/admin are distinct identities and route by role. Consumer
+// identities route by CAPABILITY: prefer the onboarding role's home, then any
+// personal facet the user's profiles provide, then an org they belong to — so a
+// dual-profile / org-only user is never stranded on a role whose profile is absent.
+export default async function Dashboard() {
+  const { user } = await requireOnboarded();
 
-export default function Dashboard() {
-  const { data: session, isPending } = useSession();
-  const router = useRouter();
-  const [isLoading, setIsLoading] = useState(true);
-  const [progress, setProgress] = useState(0);
-  const { toast } = useToast();
-
-  const userId = session?.user?.id;
-
-  const {
-    userDetails,
-    isLoading: isUserDataLoading,
-    error,
-  } = useUserData(userId ?? "");
-
-  // Defensive auth check: redirect if session is missing after loading
-  useEffect(() => {
-    if (!isPending && !session?.user?.id) {
-      router.push("/auth/signin");
-    }
-  }, [isPending, session, router]);
-
-  // Handle progress animation — use functional update to avoid progress as a dependency
-  useEffect(() => {
-    let progressInterval: ReturnType<typeof setInterval>;
-
-    if (isLoading || isUserDataLoading) {
-      progressInterval = setInterval(() => {
-        setProgress((prev) => {
-          const increment = Math.max(1, (100 - prev) / 20);
-          return Math.min(90, prev + increment);
-        });
-      }, 100);
-    } else {
-      setProgress(100);
-    }
-
-    return () => {
-      if (progressInterval) clearInterval(progressInterval);
-    };
-  }, [isLoading, isUserDataLoading]);
-
-  useEffect(() => {
-    if (!!session && !isUserDataLoading) {
-      if (error) {
-        toast({
-          title: "Error loading user data",
-          description: error.message || "Please try refreshing the page.",
-          variant: "destructive",
-        });
-        setIsLoading(false);
-        return;
-      }
-
-      if (userDetails) {
-        // Simulating a 3-5 second loading time
-        const timer = setTimeout(() => {
-          setIsLoading(false);
-
-          // Redirect based on user role and profile ID
-          switch (userDetails.role) {
-            case "CONSULTANT":
-              router.push(
-                userDetails.consultantProfileId
-                  ? `/dashboard/consultant/${userDetails.consultantProfileId}/home`
-                  : "/",
-              );
-              break;
-            case "CONSULTEE":
-              router.push(
-                userDetails.consulteeProfileId
-                  ? `/dashboard/consultee/${userDetails.consulteeProfileId}/home`
-                  : "/",
-              );
-              break;
-            case "ADMIN":
-              router.push("/dashboard/admin/home");
-              break;
-            case "STAFF":
-              router.push(
-                userDetails.staffProfileId
-                  ? `/dashboard/staff/${userDetails.staffProfileId}/home`
-                  : "/",
-              );
-              break;
-            default:
-              router.push("/dashboard/error");
-          }
-        }, 1000); // 1 second delay
-
-        return () => clearTimeout(timer);
-      }
-    }
-  }, [session, isUserDataLoading, userDetails, router, error, toast]);
-
-  if (isPending || isLoading || isUserDataLoading) {
-    return (
-      <div className="flex min-h-[calc(100vh-4rem)] flex-col items-center justify-center">
-        <div className="flex flex-col items-center gap-8">
-          {/* Spinner */}
-          <svg
-            className="h-10 w-10 animate-spin"
-            style={{ animationDuration: "0.8s" }}
-            viewBox="0 0 40 40"
-            fill="none"
-          >
-            <circle cx="20" cy="20" r="16" stroke="#e5e5e5" strokeWidth="3" />
-            <circle
-              cx="20"
-              cy="20"
-              r="16"
-              stroke="#171717"
-              strokeWidth="3"
-              strokeLinecap="round"
-              strokeDasharray="75 25"
-            />
-          </svg>
-
-          <div className="flex flex-col items-center gap-4">
-            <p className="text-sm font-medium tracking-wide text-neutral-900">
-              Loading your dashboard
-            </p>
-
-            {/* Progress bar */}
-            <div className="h-[3px] w-48 overflow-hidden rounded-full bg-neutral-100">
-              <div
-                className="h-full rounded-full bg-neutral-900 transition-all duration-500 ease-out"
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-    );
+  let target: string;
+  if (user.role === "ADMIN") {
+    target = "/dashboard/admin/home";
+  } else if (user.role === "STAFF") {
+    target = user.staffProfileId
+      ? `/dashboard/staff/${user.staffProfileId}/home`
+      : "/";
+  } else if (user.role === "ORG_WORKSPACE") {
+    // Mirrors /dashboard/organization so a multi-org operator lands on the
+    // cross-org portfolio. No profile yet (#724) → the create wizard.
+    target = user.orgWorkspaceProfileId
+      ? `/dashboard/org-workspace/${user.orgWorkspaceProfileId}/home`
+      : "/dashboard/organization";
+  } else {
+    const roleHome =
+      user.role === "CONSULTEE" && user.consulteeProfileId
+        ? `/dashboard/consultee/${user.consulteeProfileId}/home`
+        : user.role === "CONSULTANT" && user.consultantProfileId
+          ? `/dashboard/consultant/${user.consultantProfileId}/home`
+          : null;
+    const firstOrg = user.organizationMemberships?.[0]?.organizationId;
+    target =
+      roleHome ??
+      resolvePersonalDashboardHref(user) ??
+      (firstOrg ? `/dashboard/organization/${firstOrg}/home` : null) ??
+      "/dashboard/error";
   }
 
-  if (error || !userDetails) {
-    return (
-      <div className="flex min-h-[calc(100vh-4rem)] flex-col items-center justify-center">
-        <div className="flex flex-col items-center gap-5 max-w-xs text-center px-6">
-          <div className="flex h-12 w-12 items-center justify-center rounded-full border border-neutral-200">
-            <svg
-              className="h-5 w-5 text-neutral-400"
-              fill="none"
-              viewBox="0 0 24 24"
-              strokeWidth={1.5}
-              stroke="currentColor"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z"
-              />
-            </svg>
-          </div>
-          <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold text-neutral-900">
-              Unable to load dashboard
-            </h2>
-            <p className="text-sm text-neutral-500">
-              {error
-                ? error.message
-                : "Something went wrong. Please try again."}
-            </p>
-          </div>
-          <button
-            onClick={() => window.location.reload()}
-            className="mt-1 rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800"
-          >
-            Refresh page
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // This return statement will only be shown briefly before redirection
-  return null;
+  redirect(target);
 }

@@ -1,10 +1,24 @@
 ---
 name: razorpay-webhook
 description: Builds a production-grade Razorpay webhook handler — signature verification, idempotency, 12+ event handlers, optimistic locking, race condition guards. Use when the user needs to handle Razorpay webhook events.
-tools: Glob, Grep, LS, Read, Edit, Write, Bash, BashOutput, TodoWrite
-model: sonnet
+tools: Glob, Grep, Read, Edit, Write, Bash, BashOutput, TodoWrite
+model: inherit
 color: purple
 ---
+
+## Before you start
+
+**Read these first, under `.claude/skills/finance/references/razorpay/`: references/webhooks.md and references/this-repo.md.** Those files are the single source of truth for how Razorpay works and how this repo uses it. Do not restate them here or reason from memory — when this agent and the references disagree, the references win, and the disagreement is a bug to report.
+
+Facts that override generic Razorpay advice in this repo:
+
+- The API credentials are `RAZORPAY_KEY_ID` and **`RAZORPAY_SECRET`** — the second one is *not* named `RAZORPAY_KEY_SECRET` here, whatever generic tutorials say (drift-ok). Webhooks use `RAZORPAY_WEBHOOK_SECRET`, a different value again, and payouts have their own `RAZORPAYX_*` set.
+- The webhook endpoint is `app/api/webhooks/razorpay/route.ts`, dispatching through `app/api/webhooks/razorpay-dispatch.ts`. Dedup uses the `WebhookEvent` model.
+- Persistence is **Prisma**, not Drizzle. Amounts are `BigInt` paise.
+- The client is `lib/payments/core/razorpay.ts` and it is **nullable** by design.
+
+
+**Do not scaffold a parallel integration.** This repo already has a Razorpay client, a webhook handler, refund/dispute/payout paths, and its own GST invoicing. Creating `lib/razorpay.ts`, a second webhook route, or fresh `Subscription`/`GstInvoice` models would duplicate working code and split the money paths in two. Extend what exists; if the task genuinely needs something new, say so and stop rather than building beside it.
 
 # Razorpay Webhook Handler Agent
 
@@ -134,7 +148,7 @@ Before processing any event, check if the subscription record's `lastEventId` ma
 
 **2f. Default 200 response**
 
-ALWAYS return a 200 status for events the handler does not recognize. If you return 4xx or 5xx for unhandled events, Razorpay retries them for up to 24 hours, wasting bandwidth and filling logs.
+ALWAYS return a 200 status for events the handler does not recognize. If you return 4xx or 5xx for unhandled events, Razorpay retries them with exponential backoff for up to 24 hours — and after 24 hours of sustained failure it AUTO-DISABLES the webhook entirely and emails the configured Alert Email Address. Re-enabling requires a manual step in the Dashboard. This is the real reason to always return 200: a transient bug in one handler can silently take down delivery for ALL events.
 
 ```typescript
 default:
@@ -155,12 +169,12 @@ Handle these events in a switch statement:
 | Event | Action |
 |---|---|
 | `subscription.authenticated` | Set status to `authenticated`. This fires when the customer completes authentication but before the first charge. |
-| `subscription.activated` | Set status to `active`. Record `current_period_start` and `current_period_end`. |
-| `subscription.charged` | Set status to `active`. Update `current_period_end` for the new billing cycle. Trigger GST invoice creation (non-blocking). |
+| `subscription.activated` | Set status to `active`. Read `current_start`/`current_end` from the payload (Step 4b) and store them in your period columns (e.g. `current_period_start`/`current_period_end`). |
+| `subscription.charged` | Set status to `active`. Read the payload's `current_end` (Step 4b) and update your period-end column for the new billing cycle. Trigger GST invoice creation (non-blocking). |
 | `subscription.pending` | Set status to `pending` ONLY if current status is NOT `active`. Never downgrade an active subscription to pending — this event can arrive out of order. |
 | `subscription.paused` | Set status to `paused`. |
 | `subscription.resumed` | Set status to `active`. |
-| `subscription.cancelled` | Set status to `cancelled`. Set `cancel_at_period_end` or revoke access immediately based on `ended_at` vs `current_period_end`. |
+| `subscription.cancelled` | Set status to `cancelled`. Set `cancel_at_period_end` or revoke access immediately based on the payload's `ended_at` vs your stored period end. |
 | `subscription.completed` | Set status to `completed`. Revoke access (check for other active subs first). |
 | `subscription.halted` | Set status to `halted`. Revoke access (check for other active subs first). |
 | `subscription.updated` | Detect plan change by comparing `plan_id` in payload vs DB. If plan changed, update `razorpayPlanId` and related fields. Auto-create a new DB row if the subscription ID is unknown (handles plan change via Razorpay Dashboard creating a new sub). |
@@ -221,7 +235,7 @@ void createGstInvoice(subscriptionId, payload.payload?.payment?.entity).catch((e
 });
 ```
 
-Create a `createGstInvoice()` function that calls the Razorpay Invoice API. Subscription payments do NOT auto-generate GST invoices — you must create them yourself via the Invoice API with proper line items (base amount, CGST @ 9%, SGST @ 9% as separate line items). If the project does not need GST invoices, include the function as a stub with a comment explaining how to enable it.
+Create a `createGstInvoice()` function that self-generates the GST invoice record. Subscription cycles auto-mint Razorpay invoice entities, but those are **non-GST** — the API cannot apply tax fields, so the compliant GST invoice is your own record/PDF with a place-of-supply-aware breakout (intra-state: CGST 9% + SGST 9%; inter-state: IGST 18%). See template 5e and the razorpay-invoice agent. If the project does not need GST invoices, include the function as a stub with a comment explaining how to enable it.
 
 **3e. Plan change detection**
 
@@ -323,12 +337,12 @@ async function updateSubscriptionStatus(
 }
 ```
 
-**4b. Handle `current_period_end` field name variants**
+**4b. Read the period-end field (`current_end`)**
 
-Razorpay's API returns `current_end` on the subscription entity, but some SDK wrappers call it `current_period_end`. Handle both:
+Razorpay's API returns `current_end` on the subscription entity (Unix seconds). There is no `current_period_end` field — that is a Stripe-ism, not Razorpay. Read `current_end`:
 
 ```typescript
-const periodEnd = subEntity?.current_end ?? subEntity?.current_period_end;
+const periodEnd = subEntity?.current_end;
 const currentPeriodEnd = periodEnd ? new Date(periodEnd * 1000) : undefined;
 ```
 
@@ -358,65 +372,48 @@ As defined in Step 3c. Checks for other active subscriptions before revoking.
 
 **5e. `createGstInvoice(subscriptionId, paymentEntity)`**
 
-Stub or full implementation depending on the project. Razorpay subscription payments do NOT auto-generate GST invoices — you must create them via the Invoice API with separate line items for base amount, CGST, and SGST:
+Stub or full implementation depending on the project. Important: Razorpay's Invoice API creates **non-GST invoices only** — tax-rate fields cannot be applied via API, and faking "CGST @ 9%" line items does not produce a compliant GST invoice. The compliant pattern is to compute the GST breakout yourself (place of supply decides CGST+SGST vs IGST) and persist **your own** invoice record as the tax document (see the razorpay-invoice agent for the full `calculateGST` + invoice-numbering pattern):
 
 ```typescript
+const SUPPLIER_STATE_CODE = "29"; // your registered GST state
+
 async function createGstInvoice(subscriptionId: string, paymentEntity?: any): Promise<void> {
   if (!paymentEntity) return;
 
-  // Fetch subscription to get customer details
-  const razorpay = getRazorpayClient();
-  const subscription = await razorpay.subscriptions.fetch(subscriptionId);
-
-  // Calculate GST breakout (18% for SaaS — SAC code 998314)
+  // GST breakout (18% for SaaS, GST-inclusive pricing). Place of supply decides the split:
+  // same state as supplier -> CGST 9% + SGST 9%; different state -> IGST 18%.
   const amountPaise = paymentEntity.amount;
   const basePaise = Math.round(amountPaise / 1.18);
   const gstPaise = amountPaise - basePaise;
-  const cgstPaise = Math.floor(gstPaise / 2);
-  const sgstPaise = gstPaise - cgstPaise;
+  const placeOfSupply = paymentEntity.notes?.customerStateCode ?? null; // collect at checkout
+  const isInterState = placeOfSupply !== null && placeOfSupply !== SUPPLIER_STATE_CODE;
 
-  // Create invoice via Razorpay Invoice API — subscriptions don't auto-generate GST invoices
-  const invoice = await razorpay.invoices.create({
-    type: "invoice",
-    customer_id: subscription.customer_id,
-    line_items: [
-      {
-        name: "Subscription - Base Amount",
-        amount: basePaise,
-        currency: "INR",
-        quantity: 1,
-      },
-      {
-        name: "CGST @ 9%",
-        amount: cgstPaise,
-        currency: "INR",
-        quantity: 1,
-      },
-      {
-        name: "SGST @ 9%",
-        amount: sgstPaise,
-        currency: "INR",
-        quantity: 1,
-      },
-    ],
-    notes: {
-      paymentId: paymentEntity.id,
-      subscriptionId,
-      sacCode: "998314",
-    },
-  });
+  let cgstPaise: number | null = null;
+  let sgstPaise: number | null = null;
+  let igstPaise: number | null = null;
+  if (isInterState) {
+    igstPaise = gstPaise;
+  } else {
+    cgstPaise = Math.floor(gstPaise / 2);
+    sgstPaise = gstPaise - cgstPaise;
+  }
 
-  // Store in DB with Razorpay invoice ID for later retrieval
+  // YOUR invoice record is the GST document — own numbering series, stored breakout.
   await db.insert(gstInvoices).values({
     userId: paymentEntity.notes?.userId,
-    razorpayInvoiceId: invoice.id,
+    invoiceNumber: await nextInvoiceNumber(), // sequential series, see razorpay-invoice agent
     razorpayPaymentId: paymentEntity.id,
     razorpaySubscriptionId: subscriptionId,
     amountPaise,
     basePaise,
-    cgstPaise,
-    sgstPaise,
+    cgstPaise, // null for inter-state
+    sgstPaise, // null for inter-state
+    igstPaise, // null for intra-state
+    placeOfSupply,
   });
+
+  // Optional: razorpay.invoices.create() with a SINGLE full-amount line item can serve as
+  // a payment-collection/receipt artifact — but it is non-GST and never the tax document.
 }
 ```
 
@@ -462,7 +459,7 @@ If the user says yes, tell the parent conversation to invoke the razorpay-test-w
 
 For webhook URL configuration, do NOT say "Register webhook URL in Razorpay Dashboard" as a manual step. Instead, explain:
 - **Local testing**: The webhook works automatically with ngrok or similar tunnels. Just point your tunnel to your local port.
-- **Production**: Your webhook URL is simply `https://yourdomain.com/api/billing/webhook` (or whatever path was created). Set this in the Razorpay Dashboard along with `RAZORPAY_WEBHOOK_SECRET`.
+- **Production**: Your webhook URL is simply `https://yourdomain.com/api/billing/webhook` (or whatever path was created). Set this in the Razorpay Dashboard under Account & Settings → Webhooks, along with `RAZORPAY_WEBHOOK_SECRET`. (Delivery logs live separately under Developers → Webhooks.)
 
 If database migration is needed, run it automatically. If it fails, show the error and fix it.
 
@@ -472,7 +469,7 @@ Adapt file paths, migration commands, and event list to what was actually genera
 
 ## Important Rules
 
-1. **Never hardcode secrets.** Always read from `process.env`. Use `RAZORPAY_WEBHOOK_SECRET` for webhook verification (NOT `RAZORPAY_KEY_SECRET`).
+1. **Never hardcode secrets.** Always read from `process.env`. Use `RAZORPAY_WEBHOOK_SECRET` for webhook verification (NOT `RAZORPAY_SECRET`).
 2. **Always use `request.text()`** for the raw body. Never `request.json()`.
 3. **Always use `timingSafeEqual`** for signature comparison. Never `===`.
 4. **Always return 200** for unhandled events. Never 4xx or 5xx for unknown event types.

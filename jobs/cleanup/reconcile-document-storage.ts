@@ -14,6 +14,8 @@ import {
 } from "../../scripts/cleanup/reconcile-document-storage";
 import fs from "fs";
 import { abortIfMaintenance } from "../../lib/maintenance-cron";
+import * as Sentry from "@sentry/nextjs";
+import { runJob } from "../../lib/observability/job-sentry";
 
 /**
  * Output results to GitHub Actions
@@ -57,6 +59,7 @@ function outputToGitHubActions(result: DocumentReconciliationResult): void {
  */
 async function main(): Promise<void> {
   await abortIfMaintenance("reconcile-document-storage");
+  Sentry.logger.info("job:reconcile-document-storage started");
   console.log("📂 Starting document storage reconciliation job...");
   console.log(`Timestamp: ${new Date().toISOString()}`);
 
@@ -77,14 +80,18 @@ async function main(): Promise<void> {
     outputToGitHubActions(result);
 
     if (!result.success) {
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
-  } catch (error) {
-    console.error("❌ Fatal error in document storage reconciliation:", error);
-    process.exit(1);
+
+    Sentry.logger.info("job:reconcile-document-storage finished", {
+      orphanedFilesFound: result.orphanedFilesFound,
+      orphanedFilesDeleted: result.orphanedFilesDeleted,
+      missingFilesFound: result.missingFilesFound,
+    });
   } finally {
     await disconnectDatabase();
   }
 }
 
-main();
+runJob("reconcile-document-storage", main);
