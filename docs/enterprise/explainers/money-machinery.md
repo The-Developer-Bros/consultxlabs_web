@@ -31,7 +31,7 @@ flowchart TB
     S1["STEP 1  price derivation, no lock<br/>list → discount → +18% GST → −referral credits<br/>derive-checkout-amount.ts"]
     S2["STEP 2  Redis locks<br/>consultee lock → slot 30-min atoms / event lock"]
     S3["STEP 3  revalidateInsideLock<br/>plan, slot, double-book, allowlist, exclusivity"]
-    S5["STEP 5  ONE Serializable transaction (withSerializableRetry)<br/>Appointment + SlotOfAppointment (isTentative = hold)<br/>Payment + PaymentLeg[]  —  Σ legs == amount checked at COMMIT"]
+    S5["STEP 5  ONE Serializable transaction (withSerializableRetry)<br/>Appointment + SlotOfAppointment (isTentative = hold)<br/>Payment + PaymentLeg[]  —  Σ funding legs == amount checked at COMMIT<br/>(non-reversal, non-REFERRAL_CREDIT legs; LICENSE-only exempt — §1.2)"]
     S1 --> S2 --> S3 --> S5
   end
 
@@ -222,7 +222,7 @@ Zero-amount (credit-funded) and org-funded checkouts take the `skipPayment` bran
 
 ### 2.2 Confirmation — four doors, one writer
 
-[ADR 21](../70-design-decisions/21-single-writer-for-payment-confirmation.md): `Payment.paymentStatus` is written by `handlePaymentSuccess` and by nothing else. Every door funnels through `routeCapturedPayment`, which repeats the parity check every time.
+[ADR 21](../70-design-decisions/21-single-writer-for-payment-confirmation.md): the capture transition `PENDING → SUCCEEDED` is written by `handlePaymentSuccess` and by nothing else. Every door funnels through `routeCapturedPayment`, which repeats the parity check every time. The other writers of `Payment.paymentStatus` are narrow and never confirm a gateway payment: the `skipPayment` branch creates the row already `SUCCEEDED` (no transition), the `payment.failed` webhook handler writes `PENDING → FAILED`, and `PENDING → EXPIRED` is written by `cleanup-abandoned-payments`, by `cancelPendingCheckout`, and by the superseded-hold release inside checkout.
 
 ```mermaid
 sequenceDiagram
@@ -496,7 +496,9 @@ sequenceDiagram
   W->>L: TOPUP topup:orderId — Dr CASH / Cr WALLET(org)
 
   CK->>W: walletDebit — CAS updateMany WHERE walletBalance ≥ amount (refused if isWalletFrozen)
-  CK->>L: BOOKING booking:paymentId — Dr WALLET(org) / Cr FEE + PAYABLE + GST
+  Note over CK,W: checkout transaction COMMITs here — Payment SUCCEEDED, wallet cache debited
+  CK->>L: createEarningsFromPayment (post-commit, separate tx) — BOOKING booking:paymentId — Dr WALLET(org) / Cr FEE + PAYABLE + GST
+  Note over CK,L: a gap between the two is paged and healed by sync-payment-earnings
 
   RC->>RC: nightly WALLET_BALANCE_DRIFT (cache vs journal)
   RC-->>W: freezeWalletSpend (SystemEvent) until admin unfreeze
@@ -612,7 +614,7 @@ flowchart TB
   end
 
   subgraph OUT["Outbound — state as outbox (ADR 27)"]
-    O1["no outbox table: a nullable stamp on the row that owns the obligation"]
+    O1["no generic outbox table: a nullable stamp on the row that owns the obligation<br/>(OutboundWebhookDelivery and FailedEmail are dedicated delivery queues with retry state)"]
     O2["Refund.cascadedAt · Appointment.chatChannelEnsuredAt · Payment.billableToOrgInvoiceId<br/>WalletTopUp.capturedAt · OutboundWebhookDelivery · FailedEmail"]
     O3["each walked by an idempotent sweeper with an HTTP twin under app/api/cleanup/*"]
   end
