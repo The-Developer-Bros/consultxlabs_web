@@ -34,7 +34,7 @@ Staff can read a rating and must not be able to author one. Read access is never
 
 `scope=booking` widens the answer to the booking and its sibling appointments in one request (#1540). The timeline renders every session of a booking, and a subscription's sessions each carry their own child appointment id, up to twenty-five of them. The hook used to fan out one request per id, each re-authorizing and re-reading the appointment graph, which was roughly a hundred Prisma operations to render one page, and under `PG_POOL_MAX=1` on Netlify every one of those serialises. `authorizeAppointment` had already loaded the siblings to decide the answer, so widening the scope costs the server no extra query. The invalidation moved with it: `SessionRatingRow` posts against the child appointment and now invalidates the booking's key, exported as `bookingFeedbackKey` from `hooks/useSessionFeedback.ts` so the writer and the reader cannot drift.
 
-`POST` upserts one row for `(anchor slot, caller)`. The body carries `slotId`, `rating` (1 to 5) and an optional `comment`; the role, the organisation and the run anchor are derived server-side.
+`POST` upserts one row for `(anchor slot, caller)`. The body carries `slotId`, `rating` (1 to 5) and an optional `comment`; the role, the organisation and the run anchor are derived server-side. When the existing row for that slot and user is soft-deleted, `POST` now answers 409 CONFLICT ("This rating was removed by our moderation team") rather than updating the hidden row and returning 200, because a `GET` already hides a moderated-away row and a 200 here would report a save that nothing shows. No staff surface sets `deletedAt` on this model yet, so the branch currently only guards against a manual write; it is the same shape as the review's `ModeratedReviewError`, ready for the day a removal path exists.
 
 ## Edit semantics: `updatedAt` is stamped by the route, not by Prisma
 
@@ -48,9 +48,9 @@ The column is deliberately **not** `@updatedAt`. Prisma stamps that attribute on
 
 Two things are honest to state about the current tree. Nothing writes `deletedAt` yet: no staff route soft-deletes a private rating, so the column is the prerequisite for that control rather than the control itself. And `ModerationReport` still cannot point at an `AppointmentFeedback` row, so a private comment remains unreportable through the report pipe; that is one of the surfaces gathered under #1547.
 
-## Ratings protection on the private rail
+## Reserved: rating cause and aggregate exclusion on the private rail
 
-`ratingCause` and `excludedFromAggregateAt` carry the same taxonomy and the same claim-versus-adjudication split as the public review, so that one Stream outage does not read to an organisation as a bad consultant either. The rater **claims** a cause; only staff may set the exclusion, because a self-served exclusion is a coaching vector. The organisation aggregate already filters excluded rows out. The reasoning for the taxonomy lives once, in [rating cause and aggregate exclusion](../reviews/04-rating-cause-and-aggregate-exclusion.md); no route writes either column yet.
+`ratingCause` and `excludedFromAggregateAt` are data-model support for the same claim-versus-adjudication split the public review has, so that one Stream outage need not read to an organisation as a bad consultant either — but that is a description of what the columns are for, not a shipped control. No route writes either column yet: nothing asks a rater for a cause, and no staff surface sets the exclusion. What is real today is that the organisation aggregate's `WHERE` already carries the `excludedFromAggregateAt IS NULL` predicate, so the day a staff surface starts writing it, existing rows fall under the filter with no further code change. The reasoning for the taxonomy lives once, in [rating cause and aggregate exclusion](../reviews/04-rating-cause-and-aggregate-exclusion.md).
 
 ## Related
 

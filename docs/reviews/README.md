@@ -18,29 +18,30 @@ This folder is the reference: how the subsystem works, what every column means, 
 
 The table below lists the files the reviews subsystem is built from.
 
-| File                                                   | Purpose                                                                                                                     |
-| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| `lib/reviews.ts`                                       | The scoring constants, `heldSlot`, `trackForAppointment`, `recomputeConsultantRating`, `computePlatformPriors`, eligibility |
-| `lib/reviews-display.ts`                               | `displayedScore` and `displayedScoreCount`, safe to import from a client component                                          |
-| `lib/data/review-public.ts`                            | `publicReviewSelect`, the one projection every public read uses, and `sanitisePublicReview`                                 |
-| `lib/data/review-privacy.ts`                           | `stripAnonymousReviewer`                                                                                                    |
-| `lib/data/public-cache.ts`                             | `purgeReviewSurfaces`, the cache purge every review mutation ends with                                                      |
-| `lib/moderation/side-effects.ts`                       | `softDeleteReview`, the `CONTENT_REMOVED` path                                                                              |
-| `app/api/user/reviews/route.ts`                        | `GET` the public list, `POST` create-or-edit                                                                                |
-| `app/api/user/reviews/[id]/route.ts`                   | `GET` one review (public), `PUT` edit, `DELETE` soft-remove                                                                 |
-| `app/api/user/reviews/[id]/reply/route.ts`             | `PUT` and `DELETE` the consultant's reply                                                                                   |
-| `app/api/staff/moderation/reviews/route.ts`            | The staff queue                                                                                                             |
-| `app/api/staff/moderation/reviews/[reviewId]/route.ts` | The ADMIN-only soft delete                                                                                                  |
-| `app/api/report/route.ts`                              | `POST` a moderation report, including the `REVIEW` type                                                                     |
-| `lib/reviews-recompute.ts`                             | `recomputeAllConsultantRatings`, the full recompute that mints a `ScoringSnapshot`; shared by the script and the seed       |
-| `scripts/db/recompute-consultant-ratings.ts`           | `npm run db:recompute-ratings`, the command over it                                                                         |
-| `prisma/seedFiles/7b-create-consultant-reviews.ts`     | Seeds reviews per track and per-call feedback, then runs the recompute                                                      |
-| `scripts/db/preflight-push.ts`                         | `npm run db:preflight`, the destructive-push guard                                                                          |
-| `components/reviews/ProfileReviewComposer.tsx`         | The composer, a client island on the expert's profile                                                                       |
-| `__tests__/reviews/rating-aggregation.test.ts`         | The two-track scoring pins                                                                                                  |
-| `__tests__/reviews/public-review-allowlist.test.ts`    | Pins the public projection against leakage                                                                                  |
-| `__tests__/reviews/review-privacy.test.ts`             | Pins the anonymity strip                                                                                                    |
-| `__tests__/db/preflight-push.test.ts`                  | Feeds the guard the real reverting plan                                                                                     |
+| File                                                   | Purpose                                                                                                                                      |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lib/reviews.ts`                                       | The scoring constants, `heldSlot`, `trackForAppointment`, `recomputeConsultantRating`, `computePlatformPriors`, eligibility                  |
+| `lib/reviews-display.ts`                               | `displayedScore` and `displayedScoreCount`, safe to import from a client component                                                           |
+| `lib/data/review-public.ts`                            | `publicReviewSelect`, the one projection every public read uses, and `sanitisePublicReview`                                                  |
+| `lib/data/review-privacy.ts`                           | `stripAnonymousReviewer`                                                                                                                     |
+| `lib/data/public-cache.ts`                             | `purgeReviewSurfaces`, the cache purge every review mutation ends with                                                                       |
+| `lib/moderation/side-effects.ts`                       | `softDeleteReview`, the `CONTENT_REMOVED` path                                                                                               |
+| `app/api/user/reviews/route.ts`                        | `GET` the public list, `POST` create-or-edit                                                                                                 |
+| `app/api/user/reviews/[id]/route.ts`                   | `GET` one review (public), `PUT` edit, `DELETE` soft-remove; `PUT`/`DELETE` are OWNER-ONLY, staff act only through `/api/staff/moderation/*` |
+| `app/api/user/reviews/[id]/reply/route.ts`             | `PUT` and `DELETE` the consultant's reply                                                                                                    |
+| `app/api/staff/moderation/reviews/route.ts`            | The staff queue                                                                                                                              |
+| `app/api/staff/moderation/reviews/[reviewId]/route.ts` | The ADMIN-only soft delete                                                                                                                   |
+| `app/api/report/route.ts`                              | `POST` a moderation report, including the `REVIEW` type                                                                                      |
+| `lib/reviews-recompute.ts`                             | `recomputeAllConsultantRatings`, the full recompute that mints a `ScoringSnapshot`; shared by the script and the seed                        |
+| `scripts/db/recompute-consultant-ratings.ts`           | `npm run db:recompute-ratings`, the command over it                                                                                          |
+| `prisma/seedFiles/7b-create-consultant-reviews.ts`     | Seeds reviews per track and per-call feedback, then runs the recompute                                                                       |
+| `scripts/db/preflight-push.ts`                         | `npm run db:preflight`, the destructive-push guard                                                                                           |
+| `components/reviews/ProfileReviewComposer.tsx`         | The composer, a client island on the expert's profile                                                                                        |
+| `components/reviews/ReviewComposer.tsx`                | The form the island wraps; always `POST`s, edit or not                                                                                       |
+| `__tests__/reviews/rating-aggregation.test.ts`         | The two-track scoring pins                                                                                                                   |
+| `__tests__/reviews/public-review-allowlist.test.ts`    | Pins the public projection against leakage                                                                                                   |
+| `__tests__/reviews/review-privacy.test.ts`             | Pins the anonymity strip                                                                                                                     |
+| `__tests__/db/preflight-push.test.ts`                  | Feeds the guard the real reverting plan                                                                                                      |
 
 ## Related decisions
 

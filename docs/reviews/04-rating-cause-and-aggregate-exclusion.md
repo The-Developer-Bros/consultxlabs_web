@@ -33,7 +33,7 @@ Only rows with a `NULL` `excludedFromAggregateAt` enter either published score, 
 
 ## What exists today
 
-The columns, the predicates in every aggregate, and the enum all exist. No route yet writes `ratingCause` on either model, and no staff surface yet sets the exclusion; the columns ship ahead of the surfaces that use them so that the push, which is the coordinated step, is done once. The consultant- and staff-facing review surfaces are gathered under #1547, and nothing asks for a rating at all yet, which is #1548.
+This page describes reserved data-model support, not a shipped feature. The columns, the predicates in every aggregate, and the enum all exist and every aggregate already carries the filter, but no route yet writes `ratingCause` on either model, and no staff surface yet sets the exclusion, so nothing is actually excluded on this branch — the columns ship ahead of the surfaces that use them so that the push, which is the coordinated step, is done once. The consultant- and staff-facing review surfaces are gathered under #1547, and nothing asks for a rating at all yet, which is #1548.
 
 ## Related
 

@@ -3,7 +3,7 @@ title: A review belongs to a relationship and a product, a group event votes onc
 band: 70-design-decisions
 audience: sde2
 status: live
-last-reviewed: 2026-09-10
+last-reviewed: 2026-09-11
 ---
 
 # ADR 29 — Two-track reputation, shrunk scores, and the right of reply
@@ -26,11 +26,11 @@ The argument for the relationship is that our unit of reputation is a person, an
 
 ## Decision
 
-### One review per (consultant, consultee, track)
+### One review per (consultant, consultee, track, group event)
 
-`@@unique([consultantProfileId, consulteeProfileId, track])`, editable, with `appointmentId` as provenance rather than subject.
+`(consultantProfileId, consulteeProfileId, track, ratingUnitId)`, editable, with `appointmentId` as provenance rather than subject. For `ONE_TO_ONE`, where `ratingUnitId` is always `NULL`, this degenerates to one review per relationship; for `GROUP` it is one review per attendee per event, because the group score counts events and a per-relationship key could only ever hold one event's response.
 
-> **Shipping state:** the key is **two columns today**, and widening it is tracked at **#1549**. The reason is sequencing, not doubt. `next build` prerenders `/explore/experts` and friends against the live database, so the columns this decision adds have to be pushed _before_ the code deploys — which leaves a window where the new schema is live and the old code is still serving. Every DDL therefore has to be backward compatible with what is deployed, and replacing a unique is the one statement that is not: Prisma derives its compound-key name from the columns, so `a_b` becomes `a_b_c` and the deployed review write, which looks up `consultantProfileId_consulteeProfileId`, breaks. Keeping two columns makes the rest of the change purely additive and its push safe to run ahead of its own deploy. Nothing in the code references the compound key, so #1549 is a schema change with no code change. Until it lands, a mixed-mode client holds one review rather than two, filed under whichever product they reviewed first — which is the pre-existing behaviour, not a regression.
+> **Shipping state:** the key is **two columns today**, `(consultantProfileId, consulteeProfileId)`, and widening it is tracked at **#1549**. The reason is sequencing, not doubt. `next build` prerenders `/explore/experts` and friends against the live database, so the columns this decision adds have to be pushed _before_ the code deploys — which leaves a window where the new schema is live and the old code is still serving. Every DDL therefore has to be backward compatible with what is deployed, and replacing a unique is the one statement that is not: Prisma derives its compound-key name from the columns, so `a_b` becomes something else entirely and the deployed review write, which looks up `consultantProfileId_consulteeProfileId`, breaks. Keeping two columns makes the rest of the change purely additive and its push safe to run ahead of its own deploy. Nothing in the code references the compound key, so the DDL for #1549 is deployable on its own; the widened key's spec changed after this decision shipped, though, and that widening does need one accompanying code change, described in full in [07-deployment-and-deferred-work.md](../../reviews/07-deployment-and-deferred-work.md#1549-why-the-review-unique-is-still-two-columns). Because a 1:1 row's `ratingUnitId` is `NULL`, the wider key needs `NULLS NOT DISTINCT` semantics that `@@unique` cannot express in `schema.prisma`, so it ships as a sidecar index rather than a schema-declared unique, the same pattern #1554 prescribes for `AppointmentFeedback`. Until it lands, a mixed-mode client holds one review rather than two, filed under whichever product they reviewed first, and a repeat webinar attendee holds one review rather than one per event, filed under whichever event they last reviewed — both of which are the pre-existing behaviour, not a regression.
 
 `track` is in the key because without it a consultee who attends a webinar and later books the same consultant one-to-one holds exactly **one** row for two products. The P2002 is mapped to a 409 the client renders as "update your review", so their attempt to review the 1:1 engagement would overwrite the webinar review — and `track` is pinned at first write, so a year of 1:1 work would be filed under group reputation. In a product that sells both, that is the upsell path, not an edge case.
 
@@ -38,7 +38,7 @@ The argument for the relationship is that our unit of reputation is a person, an
 
 `track` is **never moved** once set — moving it would refile a year of work under the other product's reputation, and once #1549 lands it would also collide with the same reviewer's other review of the same person. A row with a NULL track is _adopted_ by the next write for that pair and stamped with the track it belongs to; 59 rows predate the column.
 
-The write path looks the pair's review up by `(consultant, consultee)` and **not** by track, deliberately. Under the two-column key, filtering by track would miss a group review while writing a one-to-one one, fall through to an insert, and hand the author a uniqueness error rendered as "you already have a review" for a row the form never showed them. It also means nothing references Prisma's compound key, which is what makes #1549 a schema change with no code change.
+The write path looks the pair's review up by `(consultant, consultee)` and **not** by track, deliberately. Under the two-column key, filtering by track would miss a group review while writing a one-to-one one, fall through to an insert, and hand the author a uniqueness error rendered as "you already have a review" for a row the form never showed them. It also means nothing references Prisma's compound key, so the DDL for the wider key is deployable on its own even though the widening itself needs an accompanying lookup change once its spec lands.
 
 ### Two published scores, side by side
 
@@ -107,6 +107,18 @@ The recompute is now a recurring job as well as a mutation hook, because the sco
 What we pay is that a mixed-mode client writes two reviews of one person. That is the correct number — they bought two things — but it does mean a profile can show the same name twice, and the cards need to say which product each review is about.
 
 Revisit if group volume grows enough that the group track needs its own weighting by audience size, which is the question nobody in the market has answered yet.
+
+## Amendment, 2026-09-11
+
+Three points settled since this decision went live, on #1542.
+
+**GROUP anchors to the event, not the relationship, at #1549.** The unique widens to `(consultantProfileId, consulteeProfileId, track, ratingUnitId)` rather than merely adding `track`, because the group score counts events and a per-relationship key could only ever hold one event's response — see the shipping-state note above.
+
+**Staff never rewrite or un-anonymise a review.** `PUT` and `DELETE /api/user/reviews/[id]` are now OWNER-ONLY; the `isPrivileged` admission into the review `PUT` described in the edit-trail documentation is retired. Staff act on a review only through `/api/staff/moderation/*`, which removes or excludes it rather than rewriting its words or its author's identity.
+
+**Moderation wins over an author's withdrawal.** Both `softDeleteReview` and the ADMIN moderation route now stamp themselves over a row the author had already withdrawn, and are a no-op on a row moderation had already removed, so an author cannot revive content staff took down by withdrawing and re-posting it.
+
+**Considered and rejected: splitting `AppointmentFeedback` into immutable `RatingObservation` rows that feed the public score.** The proposal was to record each participant's private rating as an append-only observation and let the public score read from that stream instead of from `ConsultantReview`. It is, structurally, the private per-call rating promoted to a public input, and every one of this ADR's locked decisions argued against exactly that: decision 1 anchors a review to the relationship, not the call, because a reader wants one considered opinion of a person, not a stream of per-session ones; decision 2 keeps the two-track separation between what a session felt like and what a relationship is worth; and the rating-cause section (decision 7, cross-referenced from [04-rating-cause-and-aggregate-exclusion.md](../../reviews/04-rating-cause-and-aggregate-exclusion.md)) depends on staff being able to adjudicate and exclude a claim before it ever reaches the public arithmetic, which an immutable observation feeding the score directly would foreclose. Rejected as reopening settled ground rather than as unworkable.
 
 ## Related
 
