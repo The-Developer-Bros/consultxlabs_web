@@ -25,7 +25,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { throwSupportError } from "@/lib/support/error-copy";
+import {
+  SupportRequestError,
+  throwSupportError,
+} from "@/lib/support/error-copy";
 
 type Sender = "USER" | "BOT" | "AGENT" | "SYSTEM";
 
@@ -336,8 +339,20 @@ export function SupportThreadSheet({
       // the convention every messaging app uses. Rolling it back and toasting
       // left them unable to tell whether it had sent at all, which is exactly
       // what a connection timeout on a cold instance looked like.
+      //
+      // A DEFINITE refusal (403/404/400) is different: a retry returns the same
+      // answer, so the bubble goes and the reason is shown instead.
       const id = context?.optimisticId;
       const said = vars.userMessage ?? vars.chosenLabel;
+      if (e instanceof SupportRequestError && e.isDefinite) {
+        rollbackOptimistic(context?.previous, id);
+        toast({
+          title: "Support",
+          description: e.message,
+          variant: "destructive",
+        });
+        return;
+      }
       if (id && said) {
         // Roll the cache back to the server's truth and keep the failed message
         // beside it in component state, so a refetch cannot erase it.
