@@ -297,7 +297,7 @@ export function SupportThreadSheet({
         toast({
           title: "Support",
           description:
-            "This conversation has been closed, so your message wasn't sent.",
+            "Support has closed this conversation, so your message wasn't sent. Start a new request from the help options.",
           variant: "destructive",
         });
         return;

@@ -30,6 +30,7 @@ function ctx(overrides: Partial<SupportContext> = {}): SupportContext {
     paymentId: "pay1",
     paymentAmountPaise: 1000_00,
     hasRecording: false,
+    planTitle: null,
     ...overrides,
   };
 }
@@ -50,22 +51,30 @@ describe("FlowchartResolver (SELF_SERVE)", () => {
 
   it("advances to a terminal that requests the cancel-refund action", async () => {
     const r = new FlowchartResolver(cancelFlow);
-    const turn = await r.resolveTurn(ctx(), "start", { chosenOptionId: "cancel" });
+    const turn = await r.resolveTurn(ctx(), "start", {
+      chosenOptionId: "cancel",
+    });
     expect(turn.nextNodeId).toBeNull();
     // refundPct is injected from ctx.refundPctIfCancelledNow, not the placeholder.
-    expect(turn.actions).toEqual([{ kind: "OFFER_CANCEL_REFUND", refundPct: 100 }]);
+    expect(turn.actions).toEqual([
+      { kind: "OFFER_CANCEL_REFUND", refundPct: 100 },
+    ]);
   });
 
   it("resolves cleanly when the user keeps the session", async () => {
     const r = new FlowchartResolver(cancelFlow);
-    const turn = await r.resolveTurn(ctx(), "start", { chosenOptionId: "keep" });
+    const turn = await r.resolveTurn(ctx(), "start", {
+      chosenOptionId: "keep",
+    });
     expect(turn.resolved).toBe(true);
     expect(turn.escalate).toBe(false);
   });
 
   it("re-presents (no crash) on an unrecognized choice", async () => {
     const r = new FlowchartResolver(cancelFlow);
-    const turn = await r.resolveTurn(ctx(), "start", { chosenOptionId: "bogus" });
+    const turn = await r.resolveTurn(ctx(), "start", {
+      chosenOptionId: "bogus",
+    });
     expect(turn.nextNodeId).toBe("start");
   });
 
@@ -113,8 +122,12 @@ describe("flow availability by context", () => {
   });
 
   it("picks the provider no-show variant for the delivering side", () => {
-    const attendee = flowsForContext(ctx({ stage: "COMPLETED", isProvider: false }));
-    const provider = flowsForContext(ctx({ stage: "COMPLETED", isProvider: true }));
+    const attendee = flowsForContext(
+      ctx({ stage: "COMPLETED", isProvider: false }),
+    );
+    const provider = flowsForContext(
+      ctx({ stage: "COMPLETED", isProvider: true }),
+    );
     expect(attendee.find((f) => f.category === "NO_SHOW")?.title).toContain(
       "expert",
     );
@@ -155,7 +168,9 @@ describe("flow availability by context", () => {
       "NO_SHOW",
     )!;
     const expert = flow.nodes["expert"];
-    expect(expert.kind === "TERMINAL" && expert.reason).toBe("provider_no_show");
+    expect(expert.kind === "TERMINAL" && expert.reason).toBe(
+      "provider_no_show",
+    );
   });
 });
 
@@ -169,7 +184,11 @@ describe("escalation policy", () => {
   };
 
   it("escalates on a human keyword regardless of the flow", () => {
-    const d = decideEscalation(ctx(), { ...base, escalate: false }, "I want to talk to a human");
+    const d = decideEscalation(
+      ctx(),
+      { ...base, escalate: false },
+      "I want to talk to a human",
+    );
     expect(d.escalate).toBe(true);
     expect(d.reason).toBe("keyword");
   });
@@ -181,7 +200,11 @@ describe("escalation policy", () => {
   });
 
   it("does not escalate an ordinary resolved turn", () => {
-    const d = decideEscalation(ctx(), { ...base, escalate: false, resolved: true }, "ok thanks");
+    const d = decideEscalation(
+      ctx(),
+      { ...base, escalate: false, resolved: true },
+      "ok thanks",
+    );
     expect(d.escalate).toBe(false);
   });
 

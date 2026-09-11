@@ -83,6 +83,7 @@ function ctx(overrides: Partial<SupportContext> = {}): SupportContext {
     paymentId: "pay1",
     paymentAmountPaise: 200_00,
     hasRecording: false,
+    planTitle: null,
     ...overrides,
   };
 }
