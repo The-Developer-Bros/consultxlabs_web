@@ -12,6 +12,7 @@ import {
 } from "@/lib/api/plans/archive";
 
 import { getSession } from "@/lib/auth-server";
+import { planConsultantSelect } from "@/lib/api/plans/consultant-projection";
 import * as Sentry from "@sentry/nextjs";
 export async function GET(
   request: NextRequest,
@@ -22,26 +23,7 @@ export async function GET(
     const consultationPlan = await prisma.consultationPlan.findUniqueOrThrow({
       where: { id: consultationPlanId },
       include: {
-        consultantProfile: {
-          include: {
-            user: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                image: true,
-                workExperiences: {
-                  select: { company: true, companyDomain: true, isCurrent: true },
-                  orderBy: [{ isCurrent: "desc" as const }, { startDate: "desc" as const }],
-                  take: 3,
-                },
-              },
-            },
-            domain: true,
-            subDomains: true,
-            tags: true,
-          },
-        },
+        consultantProfile: { select: planConsultantSelect },
         consultations: true,
         topics: true,
         faqs: { orderBy: { order: "asc" } },
@@ -62,7 +44,10 @@ export async function GET(
         { status: 404 },
       );
     }
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "bookings" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "bookings" } },
+    );
     console.error("Error fetching consultation plan:", error);
     return NextResponse.json(
       { error: "An error occurred while fetching the consultation plan" },
@@ -191,7 +176,10 @@ export async function PUT(
         { status: 404 },
       );
     }
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "bookings" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "bookings" } },
+    );
     console.error("Error updating consultation plan:", error);
     return NextResponse.json(
       { error: "An error occurred while updating the consultation plan" },
@@ -265,7 +253,10 @@ export async function PATCH(
 
     return NextResponse.json(
       {
-        data: { id: consultationPlan.id, archivedAt: consultationPlan.archivedAt },
+        data: {
+          id: consultationPlan.id,
+          archivedAt: consultationPlan.archivedAt,
+        },
         message: PLAN_ARCHIVE_RESPONSE_NOTE,
       },
       { status: 200 },
@@ -280,7 +271,10 @@ export async function PATCH(
         { status: 404 },
       );
     }
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "bookings" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "bookings" } },
+    );
     console.error("Error archiving consultation plan:", error);
     return NextResponse.json(
       { error: "An error occurred while updating the consultation plan" },
@@ -378,7 +372,10 @@ export async function DELETE(
         { status: 404 },
       );
     }
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "bookings" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "bookings" } },
+    );
     console.error("Error deleting consultation plan:", error);
     return NextResponse.json(
       { error: "An error occurred while deleting the consultation plan" },

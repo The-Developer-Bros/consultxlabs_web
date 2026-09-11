@@ -3,6 +3,10 @@ import { groupSlotsIntoRuns } from "@/lib/appointments/slots";
 import { NextRequest, NextResponse } from "next/server";
 import { CollaboratorStatus, PlanEmailSupport, Prisma } from "@prisma/client";
 import {
+  planCollaboratorConsultantSelect,
+  planConsultantSelect,
+} from "@/lib/api/plans/consultant-projection";
+import {
   parsePlanFilters,
   buildPlanWhereClause,
   buildPlanOrderBy,
@@ -48,55 +52,13 @@ export async function GET(request: NextRequest) {
     }
 
     const includeOptions = {
-      consultantProfile: {
-        include: {
-          user: {
-            select: {
-              name: true,
-              image: true,
-              workExperiences: {
-                select: {
-                  company: true,
-                  companyDomain: true,
-                  isCurrent: true,
-                },
-                orderBy: [
-                  { isCurrent: "desc" as const },
-                  { startDate: "desc" as const },
-                ],
-                take: 3,
-              },
-            },
-          },
-        },
-      },
+      consultantProfile: { select: planConsultantSelect },
       topics: true,
       classContents: true,
       collaborators: {
         where: { status: CollaboratorStatus.ACCEPTED },
         include: {
-          consultantProfile: {
-            include: {
-              user: {
-                select: {
-                  name: true,
-                  image: true,
-                  workExperiences: {
-                    select: {
-                      company: true,
-                      companyDomain: true,
-                      isCurrent: true,
-                    },
-                    orderBy: [
-                      { isCurrent: "desc" as const },
-                      { startDate: "desc" as const },
-                    ],
-                    take: 3,
-                  },
-                },
-              },
-            },
-          },
+          consultantProfile: { select: planCollaboratorConsultantSelect },
         },
       },
       ...((includeClasses || includeRegistration) && {
