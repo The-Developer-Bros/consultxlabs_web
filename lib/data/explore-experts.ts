@@ -128,13 +128,11 @@ type ConsultantCardRow = Prisma.Result<
 export function toConsultantCard(row: ConsultantCardRow): IConsultantCardData {
   const { memberships, ...c } = row;
   const firstOrg = memberships[0]?.organization ?? null;
-  // #1300 — a person card shows the 1:1 score and falls back, labelled, to the
-  // group one. Null renders as "not enough reviews yet", never 0.0.
-  const shown = displayedScore(c);
+  // #1300 — a person card shows the 1:1 score, no fallback (#1566). Null renders
+  // as "not enough reviews yet", never 0.0.
   return {
     id: c.id,
-    rating: shown.score,
-    ratingTrack: shown.fellBack ? shown.track : null,
+    rating: displayedScore(c).score,
     reviewCount: c.reviewCount,
     headline: c.headline,
     experience: c.experience,

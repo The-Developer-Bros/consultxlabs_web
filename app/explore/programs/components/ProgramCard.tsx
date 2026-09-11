@@ -9,7 +9,7 @@ import { useRouter } from "next/navigation";
 import { useCurrency } from "@/hooks/useCurrency";
 import { CompanyLogo } from "@/components/ui/company-logo";
 import { isClassProgram, Program } from "@/lib/explore/programs";
-import { displayedScore, trackLabel } from "@/lib/reviews-display";
+import { displayedScore } from "@/lib/reviews-display";
 
 type ProgramCardVariant = "grid" | "list" | "carousel";
 export type ProgramBadge = "featured" | "trending" | "new";
@@ -73,27 +73,19 @@ function ExtraBadge({ badge }: { badge: ProgramBadge }) {
 }
 
 /**
- * The star on a program card: the GROUP score, or the 1:1 one LABELLED as such —
- * a group product must never wear a 1:1 reputation unmarked. NULL means
- * suppressed and the card renders no star at all.
+ * The star on a program card: the GROUP score or nothing (#1566) — a group
+ * product never wears a 1:1 reputation. NULL means suppressed, no star.
  */
-function getProgramRating(
-  program: Program,
-): { score: number; label: string | null } | null {
+function getProgramRating(program: Program): number | null {
   const profile = program.consultantProfile;
   if (!profile) return null;
-  const shown = displayedScore(
+  return displayedScore(
     {
       publishedRatingOneToOne: profile.publishedRatingOneToOne ?? null,
       publishedRatingGroup: profile.publishedRatingGroup ?? null,
     },
     "GROUP",
-  );
-  if (shown.score === null) return null;
-  return {
-    score: shown.score,
-    label: shown.fellBack ? trackLabel(shown.track) : null,
-  };
+  ).score;
 }
 
 /** Extract consultant headline from plan data if available. */
@@ -225,8 +217,7 @@ function GridCard({
               <div className="flex items-center gap-0.5 ml-1">
                 <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
                 <span className="text-xs font-medium text-muted-foreground">
-                  {rating.score.toFixed(1)}
-                  {rating.label && ` · ${rating.label}`}
+                  {rating.toFixed(1)}
                 </span>
               </div>
             )}
@@ -349,8 +340,7 @@ function ListCard({
                 <div className="flex items-center gap-0.5 ml-1">
                   <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
                   <span className="text-xs font-medium text-muted-foreground">
-                    {rating.score.toFixed(1)}
-                    {rating.label && ` · ${rating.label}`}
+                    {rating.toFixed(1)}
                   </span>
                 </div>
               )}

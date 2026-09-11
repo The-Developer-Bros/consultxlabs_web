@@ -1,6 +1,5 @@
 "use client";
 
-import { trackLabel } from "@/lib/reviews-display";
 import { motion } from "framer-motion";
 import { ChevronRight, Star } from "lucide-react";
 import Link from "next/link";
@@ -47,11 +46,6 @@ function ExpertCard({ expert }: { expert: IConsultantCardData }) {
                   <span className="font-medium text-foreground">
                     {expert.rating.toFixed(1)}
                   </span>
-                  {expert.ratingTrack && (
-                    <span className="text-xs text-muted-foreground">
-                      {trackLabel(expert.ratingTrack)}
-                    </span>
-                  )}
                 </div>
                 <span className="text-muted-foreground/70">•</span>
               </>

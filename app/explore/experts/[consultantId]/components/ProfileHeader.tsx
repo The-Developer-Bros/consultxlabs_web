@@ -16,7 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { User } from "@prisma/client";
 import type { ConsultantDetailData } from "../types";
-import { displayedScore, trackLabel } from "@/lib/reviews-display";
+import { displayedScore } from "@/lib/reviews-display";
 
 interface ProfileHeaderProps {
   userDetails: User;
@@ -85,9 +85,9 @@ export function ProfileHeader({
             )}
           </div>
 
-          {/* Rating. #1300 — the same two-track score the reviews section
-              publishes (1:1, else group, labelled), null until enough distinct
-              clients or events have been rated. */}
+          {/* Rating. #1300 — the published 1:1 score, no fallback (#1566); the
+              reviews section below lists both tracks. Null until five distinct
+              clients have rated. */}
           <div className="flex items-center gap-3 mb-4">
             {headlineScore.score !== null && (
               <>
@@ -106,11 +106,6 @@ export function ProfileHeader({
                 <span className="font-semibold text-foreground">
                   {headlineScore.score.toFixed(1)}
                 </span>
-                {headlineScore.fellBack && (
-                  <span className="text-sm text-muted-foreground">
-                    {trackLabel(headlineScore.track)}
-                  </span>
-                )}
                 <span className="text-muted-foreground/70">•</span>
               </>
             )}

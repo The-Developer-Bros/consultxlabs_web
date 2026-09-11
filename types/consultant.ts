@@ -48,9 +48,6 @@ export interface IConsultantCardData {
    * cannot define a new consultant.
    */
   rating: number | null;
-  /** Set only when `rating` came from the OTHER track than a person card
-   *  prefers (a webinar-only consultant), so the card labels it. */
-  ratingTrack?: "ONE_TO_ONE" | "GROUP" | null;
   /** How many reviews the score is based on. Always shown, even when the score
    *  is suppressed — "3 reviews" is honest, an average of three is not. */
   reviewCount?: number;

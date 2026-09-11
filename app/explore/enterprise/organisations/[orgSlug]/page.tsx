@@ -14,7 +14,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import prisma from "@/lib/prisma";
-import { displayedScore, trackLabel } from "@/lib/reviews-display";
+import { displayedScore } from "@/lib/reviews-display";
 import { eventPlanDiscoverableWhere } from "@/lib/api/plans/visibility";
 
 import {
@@ -225,9 +225,7 @@ function ExpertMiniCard({
 }: {
   expert: NonNullable<OrgData["memberships"][number]["consultantProfile"]>;
 }) {
-  // A person card, so it prefers their 1:1 reputation and falls back to the group
-  // one — a consultant who only ever runs this org's webinars still shows what
-  // they earned.
+  // A person card: the 1:1 score or nothing (#1566).
   const expertScore = displayedScore(expert);
   return (
     <Link
@@ -268,7 +266,6 @@ function ExpertMiniCard({
               <Star className="w-3 h-3 text-amber-400 fill-amber-400" />
               <span className="text-xs font-medium text-muted-foreground">
                 {expertScore.score.toFixed(1)}
-                {expertScore.fellBack && ` · ${trackLabel(expertScore.track)}`}
               </span>
             </div>
           )}

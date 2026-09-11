@@ -1,6 +1,6 @@
 "use client";
 
-import { displayedScore, trackLabel } from "@/lib/reviews-display";
+import { displayedScore } from "@/lib/reviews-display";
 import { useQuery } from "@tanstack/react-query";
 
 import { PanelHeader } from "@/components/dashboard/PageScaffold";
@@ -99,10 +99,7 @@ export function ExpertsPanel({ orgId }: { orgId: string }) {
       cell: (row) => {
         if (!row.consultantProfile) return "—";
         const shown = displayedScore(row.consultantProfile);
-        if (shown.score === null) return "—";
-        return shown.fellBack
-          ? `${shown.score.toFixed(1)} · ${trackLabel(shown.track)}`
-          : shown.score.toFixed(1);
+        return shown.score === null ? "—" : shown.score.toFixed(1);
       },
     },
     {

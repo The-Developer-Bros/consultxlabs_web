@@ -81,17 +81,14 @@ export const getHomeExperts = unstable_cache(
     // toPlain strips the extension's inspect symbol so the rows can cross
     // the RSC boundary.
     //
-    // #1300 — `rating` on a card means THE PUBLISHED SCORE, and there are now two
-    // of them. A person card prefers the 1:1 track; `displayedScore` falls back to
-    // the group one so a consultant who only runs webinars still shows what they
-    // earned. NULL stays NULL: the card renders "not enough yet", never 0.0.
+    // #1300 — `rating` on a card means THE PUBLISHED 1:1 SCORE, no fallback
+    // (#1566). NULL stays NULL: the card renders "not enough yet", never 0.0.
     return toPlain(
       consultants.map((c) => {
-        const { score, track, fellBack } = displayedScore(c);
+        const { score, track } = displayedScore(c);
         return {
           ...c,
           rating: score,
-          ratingTrack: fellBack ? track : null,
           reviewCount: displayedScoreCount(c, track),
         };
       }),

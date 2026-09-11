@@ -1,6 +1,5 @@
 "use client";
 
-import { trackLabel } from "@/lib/reviews-display";
 import { memo } from "react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -266,8 +265,7 @@ export const ConsultantCard = memo(function ConsultantCard({
                 )}
               </div>
               {/* #705 — a null score means too few rated sessions to publish
-                  one. Say that rather than printing 0.0. A score from the other
-                  track (webinars only) is labelled, never passed off as 1:1. */}
+                  one. Say that rather than printing 0.0. */}
               <div className="flex items-center gap-2 mt-2">
                 {consultant.rating !== null ? (
                   <>
@@ -276,11 +274,6 @@ export const ConsultantCard = memo(function ConsultantCard({
                       <span className="font-semibold text-foreground">
                         {consultant.rating.toFixed(1)}
                       </span>
-                      {consultant.ratingTrack && (
-                        <span className="text-xs text-muted-foreground">
-                          {trackLabel(consultant.ratingTrack)}
-                        </span>
-                      )}
                     </div>
                     <span className="text-muted-foreground/70">•</span>
                   </>
