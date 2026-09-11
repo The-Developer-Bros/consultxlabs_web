@@ -1,4 +1,5 @@
 import prisma from "@/lib/prisma";
+import { planConsultantSelect } from "@/lib/api/plans/consultant-projection";
 import { NextRequest, NextResponse } from "next/server";
 import { ConsultationPlanSchema } from "@/schemas/plans";
 import { findOrCreateTopics, transformTopicsToStrings } from "@/lib/topics";
@@ -24,7 +25,7 @@ export async function GET(request: NextRequest) {
       prisma.consultationPlan.findMany({
         where,
         include: {
-          consultantProfile: true,
+          consultantProfile: { select: planConsultantSelect },
           topics: true,
           // The offering editor hydrates from this list and PUTs the whole FAQ
           // array back, so a list that omits them saves an empty set over them.
@@ -52,7 +53,10 @@ export async function GET(request: NextRequest) {
       { status: 200 },
     );
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "bookings" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "bookings" } },
+    );
     console.error("Error fetching consultation plans:", error);
     return NextResponse.json(
       { error: "An error occurred while fetching consultation plans" },
@@ -151,7 +155,10 @@ export async function POST(request: NextRequest) {
       { status: 201 },
     );
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "bookings" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "bookings" } },
+    );
     console.error("Error creating consultation plan:", error);
     return NextResponse.json(
       { error: "An error occurred while creating the consultation plan" },

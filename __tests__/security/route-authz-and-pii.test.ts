@@ -98,6 +98,39 @@ describe("consultant statutory PII is never returned by a bare include", () => {
     );
   });
 
+  // The plan reads. Two of these are PUBLIC (middleware.ts lists
+  // /api/plans/classes and /api/plans/webinars), the rest answer any signed-in
+  // user; all six served the whole ConsultantProfile row until 2026-09-11. The
+  // write handlers in the same files still include the caller's OWN profile, so
+  // only the GET slice is asserted.
+  const PLAN_READS = [
+    "app/api/plans/classes/route.ts",
+    "app/api/plans/webinars/route.ts",
+    "app/api/plans/consultations/route.ts",
+    "app/api/plans/subscriptions/route.ts",
+    "app/api/plans/consultations/[consultationPlanId]/route.ts",
+    "app/api/plans/subscriptions/[subscriptionPlanId]/route.ts",
+  ];
+
+  it.each(PLAN_READS)("%s GET projects the consultant", (rel) => {
+    const src = read(rel)
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    const start = src.indexOf("export async function GET");
+    expect(start).toBeGreaterThan(-1);
+    const next = src.indexOf("export async function", start + 1);
+    const get = src.slice(start, next === -1 ? undefined : next);
+    expect(get).toContain("planConsultantSelect");
+    expect(get).not.toMatch(/consultantProfile: true/);
+    expect(get).not.toMatch(/consultantProfile: \{\s*\n\s*include:/);
+  });
+
+  it("the plan projection is built on the public allowlist", () => {
+    const src = read("lib/api/plans/consultant-projection.ts");
+    expect(src).toContain("...consultantPublicScalars");
+    expect(src).not.toMatch(/panNumber|ibanOrAccount|swiftBic|email: true/);
+  });
+
   it("the public reviews list is not serving PII to anonymous callers", () => {
     // Comments stripped: the route's own comments name the anti-pattern.
     const src = read("app/api/user/reviews/route.ts")
