@@ -10,7 +10,7 @@ last-reviewed: 2026-06-12
 
 The **enterprise layer** is a capability-driven B2B surface on top of the marketplace: organizations sponsor and/or host, fund sessions through wallets, invoices, or licenses, run programs with seat or credit caps, and settle money through a double-entry ledger. This folder is the engineer's map of that layer. The **banded folders** are written to be read **in order, as one continuous story**, with each band building on the last: `00-foundations/` → `10-money-and-ledger/` → `20-iam-and-security/` → `30-programs-and-lifecycle/` → `40-compliance-and-data/` → `50-operations/` → `60-scenarios-and-verdicts/`. Two bands sit outside the story line: `70-design-decisions/` collects the architecture decision records that explain *why* the system is shaped the way it is, and `90-audits/` is the annex of audit artifacts. [`explainers/complete-guide`](explainers/complete-guide.md) is the parallel connective narrative that walks every concept end to end.
 
-> **New here?** Read the [overview](00-foundations/01-overview.md) for the system shape, then the [complete guide](explainers/complete-guide.md) for the end-to-end narrative. For money specifically, start at [money-model-overview](10-money-and-ledger/01-money-model-overview.md) and walk the `10-money-and-ledger/` band in order. If you want a curated path matched to your experience level, use the [reading paths](#reading-paths-by-level) below.
+> **New here?** Read the [overview](00-foundations/01-overview.md) for the system shape, then the [complete guide](explainers/complete-guide.md) for the end-to-end narrative. For money specifically, read [money-machinery](explainers/money-machinery.md) first — the cross-rail map of B2C and B2B on one spine, with the data model, sequence, state and posting diagrams — then start at [money-model-overview](10-money-and-ledger/01-money-model-overview.md) and walk the `10-money-and-ledger/` band in order. If you want a curated path matched to your experience level, use the [reading paths](#reading-paths-by-level) below.
 
 ---
 
@@ -223,6 +223,7 @@ One document sits outside the bands and walks the whole system as a single story
 | File | Purpose |
 |---|---|
 | [explainers/complete-guide](explainers/complete-guide.md) | the single end-to-end narrative walkthrough across every enterprise concept — read it alongside the banded folders above |
+| [explainers/money-machinery](explainers/money-machinery.md) | how money moves on both rails — one checkout, one writer, one ledger; B2C confirmation and refunds, B2B funding seam, overage, invoicing and org payouts; the concurrency posture and the architecture verdict, with the divergences tracked in #1564 |
 
 ---
 
