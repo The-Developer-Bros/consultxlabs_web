@@ -98,6 +98,7 @@ export async function GET(req: NextRequest) {
     // Format response
     const formattedTickets = tickets.map((ticket) => ({
       id: ticket.id,
+      referenceNumber: ticket.referenceNumber,
       title: ticket.title,
       description: ticket.description,
       priority: ticket.priority,
