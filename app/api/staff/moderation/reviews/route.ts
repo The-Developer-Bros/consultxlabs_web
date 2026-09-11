@@ -87,7 +87,13 @@ export async function GET(req: NextRequest) {
       // them apart. `editedAt` is here for the same reason: a review that has
       // been rewritten since it was reported is a different review.
       deletedAt: review.deletedAt,
+      deletedByUserId: review.deletedByUserId,
       isAnonymous: review.isAnonymous,
+      // The reply and its state: live, withdrawn by the consultant, or taken down.
+      replyBody: review.replyBody,
+      repliedAt: review.repliedAt,
+      replyDeletedAt: review.replyDeletedAt,
+      replyDeletedByUserId: review.replyDeletedByUserId,
       editedAt: review.editedAt,
     }));
 

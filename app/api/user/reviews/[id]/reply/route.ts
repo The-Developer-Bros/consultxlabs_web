@@ -22,7 +22,7 @@ import { z } from "zod";
 import prisma from "@/lib/prisma";
 import { requireApiAuth, isPrivileged } from "@/lib/auth-helpers";
 import { purgeReviewSurfaces } from "@/lib/data/public-cache";
-import { applyRateLimit, spamLimiter } from "@/lib/rate-limit";
+import { applyRateLimit, reviewWriteLimiter } from "@/lib/rate-limit";
 import { MAX_TEXT_LENGTH, assertBodySize } from "@/lib/validation/limits";
 
 const ReplySchema = z.object({
@@ -70,8 +70,9 @@ export async function PUT(
     if (authResult.error) return authResult.error;
     const { session } = authResult;
 
+    // 20 an hour, like review writes: every attempt counts, including a 409.
     const rl = await applyRateLimit(
-      spamLimiter,
+      reviewWriteLimiter,
       `review-reply:${session.user.id}`,
     );
     if (rl) return rl;
@@ -82,7 +83,12 @@ export async function PUT(
     const auth = await authorizeReply(id, session.user.id, session.user.role);
     if (!auth.ok) {
       return NextResponse.json(
-        { error: auth.status === 404 ? "Review not found" : "Forbidden" },
+        {
+          error:
+            auth.status === 404
+              ? "Review not found"
+              : "Only the reviewed expert can write a reply",
+        },
         { status: auth.status },
       );
     }
@@ -93,17 +99,6 @@ export async function PUT(
       return NextResponse.json(
         { error: "Only the reviewed expert can write a reply" },
         { status: 403 },
-      );
-    }
-
-    const parsed = ReplySchema.safeParse(await req.json().catch(() => null));
-    if (!parsed.success) {
-      return NextResponse.json(
-        {
-          error: "Invalid reply",
-          details: parsed.error.flatten().fieldErrors,
-        },
-        { status: 400 },
       );
     }
 
@@ -120,6 +115,17 @@ export async function PUT(
             "Your previous reply was removed by our moderation team. Contact support to reply again.",
         },
         { status: 409 },
+      );
+    }
+
+    const parsed = ReplySchema.safeParse(await req.json().catch(() => null));
+    if (!parsed.success) {
+      return NextResponse.json(
+        {
+          error: "Invalid reply",
+          details: parsed.error.flatten().fieldErrors,
+        },
+        { status: 400 },
       );
     }
 
