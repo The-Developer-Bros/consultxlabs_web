@@ -11,24 +11,24 @@
 import { Prisma } from "@prisma/client";
 import { consultantPublicScalars } from "@/lib/data/consultant-public";
 
-/** The plan owner: public scalars plus the card's user fields. */
-export const planConsultantSelect = {
-  ...consultantPublicScalars,
-  user: {
-    select: {
-      id: true,
-      name: true,
-      image: true,
-      workExperiences: {
-        select: { company: true, companyDomain: true, isCurrent: true },
-        orderBy: [
-          { isCurrent: "desc" as const },
-          { startDate: "desc" as const },
-        ],
-        take: 3,
-      },
+/** The card's user fields: a name, a face, and up to three employers. No email. */
+const planConsultantUserSelect = {
+  select: {
+    id: true,
+    name: true,
+    image: true,
+    workExperiences: {
+      select: { company: true, companyDomain: true, isCurrent: true },
+      orderBy: [{ isCurrent: "desc" as const }, { startDate: "desc" as const }],
+      take: 3,
     },
   },
+} satisfies Prisma.ConsultantProfileSelect["user"];
+
+/** The plan owner: public scalars, the user fields, and the taxonomy as names. */
+export const planConsultantSelect = {
+  ...consultantPublicScalars,
+  user: planConsultantUserSelect,
   domain: { select: { id: true, name: true } },
   subDomains: { select: { id: true, name: true } },
   tags: { select: { id: true, name: true } },
@@ -37,19 +37,5 @@ export const planConsultantSelect = {
 /** An accepted collaborator: the same, without the taxonomy relations. */
 export const planCollaboratorConsultantSelect = {
   ...consultantPublicScalars,
-  user: {
-    select: {
-      id: true,
-      name: true,
-      image: true,
-      workExperiences: {
-        select: { company: true, companyDomain: true, isCurrent: true },
-        orderBy: [
-          { isCurrent: "desc" as const },
-          { startDate: "desc" as const },
-        ],
-        take: 3,
-      },
-    },
-  },
+  user: planConsultantUserSelect,
 } satisfies Prisma.ConsultantProfileSelect;
