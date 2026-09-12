@@ -19,12 +19,12 @@ canSeeAttendees     Boolean @default(false)
 
 The intent of each flag and its current enforcement status are as follows.
 
-| Flag | Intended capability | Enforced today? |
-| --- | --- | --- |
-| `canSeeAttendees` | View the participant roster of the plan's events | **Yes** — the participant-roster GETs |
-| `canApprovePayment` | Approve payment-gated requests on the plan | No — stored only, pending #768 |
-| `canViewAnalytics` | View the plan's analytics and stats | No — stored only, pending #768 |
-| `canEditEvent` | Edit event details | No — stored only, pending #768 |
+| Flag                | Intended capability                              | Enforced today?                       |
+| ------------------- | ------------------------------------------------ | ------------------------------------- |
+| `canSeeAttendees`   | View the participant roster of the plan's events | **Yes** — the participant-roster GETs |
+| `canApprovePayment` | Approve payment-gated requests on the plan       | No — stored only, pending #768        |
+| `canViewAnalytics`  | View the plan's analytics and stats              | No — stored only, pending #768        |
+| `canEditEvent`      | Edit event details                               | No — stored only, pending #768        |
 
 The three unenforced flags are **write-only**: the invite and update APIs persist them, and the UI can display them, but no endpoint reads them yet because the collaborator-facing payment-approval, analytics, and event-edit surfaces do not exist. The gate lands together with each surface under #768. Treat any claim that they restrict anything today as false — and conversely, do not build a new collaborator-facing surface for one of these areas without wiring its boolean.
 
@@ -75,7 +75,7 @@ Some capabilities attach to the `ACCEPTED` status itself rather than to any perm
 - View the plan's revenue-split preview (`GET .../revenue-split`).
 - Receive their earnings share at settlement.
 
-Scheduling is deliberately **not** a permission: no flag grants it, and only the plan owner can create events and set times. When the owner schedules a webinar, that scheduling is itself constrained by the co-host availability guard; class scheduling is not, because no class route calls it (#784 AE-2 — see [01-architecture.md §5](./01-architecture.md#5-scheduling-with-enforced-co-host-availability)).
+Scheduling is deliberately **not** a permission: no flag grants it, and only the plan owner can create events and set times. When the owner schedules a webinar or a class, that scheduling is itself constrained by the co-host availability guard (#784 AE-2 — see [01-architecture.md §5](./01-architecture.md#5-scheduling-with-enforced-co-host-availability)).
 
 ---
 
@@ -83,15 +83,15 @@ Scheduling is deliberately **not** a permission: no flag grants it, and only the
 
 The full capability matrix, with the enforcement source for each row, is:
 
-| Capability | Host | Collaborator | Where enforced |
-| --- | --- | --- | --- |
-| Create the plan | Yes | No | Plan CRUD ownership checks |
-| Invite / update / remove collaborators | Yes | No | Collaboration routes (owner check) |
-| Create events, set times | Yes | No — never | Event CRUD ownership; no flag exists |
-| View participant roster | Yes | Only with `canSeeAttendees` | Participant GETs (#768) |
-| View revenue-split preview | Yes | Yes (accepted) | Revenue-split route scoping |
-| View co-host availability | Yes | Yes (shared accepted collaboration) | Availability route scoping |
-| Chat in the collaborator channel | Yes | Yes (accepted) | Stream channel membership |
-| Accept/decline own invitation | — | Yes | Respond route identity check |
-| Receive earnings | Yes | Yes (accepted) | Settlement split |
-| Approve payments / view analytics / edit events | Yes (as owner) | Not yet — flags stored, unenforced | Pending #768 |
+| Capability                                      | Host           | Collaborator                        | Where enforced                       |
+| ----------------------------------------------- | -------------- | ----------------------------------- | ------------------------------------ |
+| Create the plan                                 | Yes            | No                                  | Plan CRUD ownership checks           |
+| Invite / update / remove collaborators          | Yes            | No                                  | Collaboration routes (owner check)   |
+| Create events, set times                        | Yes            | No — never                          | Event CRUD ownership; no flag exists |
+| View participant roster                         | Yes            | Only with `canSeeAttendees`         | Participant GETs (#768)              |
+| View revenue-split preview                      | Yes            | Yes (accepted)                      | Revenue-split route scoping          |
+| View co-host availability                       | Yes            | Yes (shared accepted collaboration) | Availability route scoping           |
+| Chat in the collaborator channel                | Yes            | Yes (accepted)                      | Stream channel membership            |
+| Accept/decline own invitation                   | —              | Yes                                 | Respond route identity check         |
+| Receive earnings                                | Yes            | Yes (accepted)                      | Settlement split                     |
+| Approve payments / view analytics / edit events | Yes (as owner) | Not yet — flags stored, unenforced  | Pending #768                         |
