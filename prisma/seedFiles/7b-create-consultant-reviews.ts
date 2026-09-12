@@ -220,7 +220,6 @@ async function createReviews(held: HeldSlot[]): Promise<number> {
           reviewDescription: faker.lorem.paragraph(),
           supersededAt: review.editedAt,
           afterPublicReply: repliedAt !== null && review.editedAt > repliedAt,
-          editorUserId: h.userId,
         },
       });
     }
@@ -283,7 +282,7 @@ export async function createConsultantReviews(consultants: UserWithProfiles[]) {
     },
   });
   console.log(
-    `Recomputed ${result.recomputed}/${result.profiles} profiles under snapshot ${result.snapshotId}; ${published} now publish a score` +
+    `Recomputed ${result.recomputed}/${result.profiles} profiles; ${published} now publish a score` +
       (result.failed.length ? `; ${result.failed.length} FAILED` : ""),
   );
   if (result.failed.length) console.error(result.failed);

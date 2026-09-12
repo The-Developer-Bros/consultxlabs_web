@@ -13,7 +13,7 @@
  *
  * The failure mode this pins is not that leak, which is fixed, but the NEXT one:
  * with a bare include, every column added to `ConsultantReview` becomes public by
- * default. A staff-only `excludedReason` was added in the same change that added
+ * default. A staff-only exclusion column was added in the same change that added
  * this test. So the assertion is a DENYLIST — a named column may not appear in
  * the public projection — because an allowlist test that merely lists what is
  * there passes the day someone adds a field to both.
@@ -34,10 +34,12 @@ import {
  * useful only for correlating a person across rows.
  */
 const MUST_NOT_BE_PUBLIC = [
-  // Staff's written justification for excluding a rating from the aggregate.
-  "excludedReason",
-  "excludedByUserId",
+  // The staff adjudication that removes a rating from the aggregate (#1300).
   "excludedFromAggregateAt",
+  // #1562 — who removed the review or its reply. A public reader sees neither a
+  // removed review nor a removed reply, so it has no use for the actor.
+  "removedBy",
+  "replyRemovedBy",
   // The reviewer's own cause claim: an input to moderation, not a public label.
   "ratingCause",
   // Edit-trail bookkeeping. `editedAt` IS public — the fact of an edit — but the

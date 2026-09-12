@@ -78,28 +78,22 @@ model User {
   waitlistSubscriptions Waitlist[]
 
   // Feedback and Support
-  feedbacks                    Feedback[]
-  supportTickets               SupportTicket[]
+  feedbacks                 Feedback[]
+  supportTickets            SupportTicket[]
   // #appt-support — per-appointment support conversations + private CSAT.
-  appointmentSupportThreads    AppointmentSupportThread[]
-  appointmentFeedback          AppointmentFeedback[]
-  supportResponses             SupportResponse[]
-  supportTicketsAssigned       SupportTicket[]            @relation("SupportTicketAssignee")
-  supportMessagesAuthored      SupportMessage[]           @relation("SupportMessageAuthor")
-  supportFlowOutcomes          SupportFlowOutcome[]
-  // #1300 — review moderation and the edit trail.
-  reviewsExcludedFromAggregate ConsultantReview[]         @relation("ReviewAggregateExcluder")
-  reviewsRemoved               ConsultantReview[]         @relation("ReviewRemover")
-  reviewRepliesRemoved         ConsultantReview[]         @relation("ReplyRemover")
-  reviewRevisionsEdited        ConsultantReviewRevision[] @relation("ReviewRevisionEditor")
-
-  accounts         Account[] // BetterAuth Accounts
-  sessions         Session[] // BetterAuth Sessions
-  members          Member[] // BetterAuth membership rows
-  memberships      Membership[] // Typed enterprise memberships (Arch 4-Modified)
-  invitationsSent  Invitation[]      @relation("InvitationsSent")
-  consentArtifacts ConsentArtifact[]
-  dpdpGrievances   DpdpGrievance[]
+  appointmentSupportThreads AppointmentSupportThread[]
+  appointmentFeedback       AppointmentFeedback[]
+  supportResponses          SupportResponse[]
+  supportTicketsAssigned    SupportTicket[]            @relation("SupportTicketAssignee")
+  supportMessagesAuthored   SupportMessage[]           @relation("SupportMessageAuthor")
+  supportFlowOutcomes       SupportFlowOutcome[]
+  accounts                  Account[] // BetterAuth Accounts
+  sessions                  Session[] // BetterAuth Sessions
+  members                   Member[] // BetterAuth membership rows
+  memberships               Membership[] // Typed enterprise memberships (Arch 4-Modified)
+  invitationsSent           Invitation[]               @relation("InvitationsSent")
+  consentArtifacts          ConsentArtifact[]
+  dpdpGrievances            DpdpGrievance[]
 
   // Staff Dashboard Relations
   reportsSubmitted  ModerationReport[] @relation("ReportsSubmitted")
@@ -550,8 +544,7 @@ model SupportFlowOutcome {
   // #1300 — "did the self-serve tree help?" Bound to the flow terminal because a
   // RESOLVED outcome writes no ticket. NULL = not asked or not answered, never a 1.
   // See docs/support/04-deflection-and-support-csat.md.
-  helpfulRating  Int?      @db.SmallInt
-  helpfulRatedAt DateTime? @db.Timestamptz
+  helpfulRating Int? @db.SmallInt
 
   createdAt DateTime @default(now()) @db.Timestamptz
 
@@ -609,14 +602,11 @@ model AppointmentFeedback {
   // that on create too; the feedback route sets this only when rating or comment change.
   updatedAt DateTime? @db.Timestamptz
 
-  // NULL = live. Moderation soft-delete: the org aggregate and the author's own read
-  // filter on it, staff surfaces do not. See docs/feedback/01-architecture.md.
-  deletedAt DateTime? @db.Timestamptz
-
   // #1300 — the rater's CLAIM of cause, and the staff-only adjudication that removes
-  // the row from every aggregate. Same taxonomy as ConsultantReview.
+  // the row from every aggregate. Same taxonomy as ConsultantReview; the actor is on ModerationAction.
   ratingCause             RatingCause?
-  excludedFromAggregateAt DateTime?    @db.Timestamptz
+  excludedFromAggregateAt DateTime?          @db.Timestamptz
+  moderationActions       ModerationAction[]
 
   // One rating per person per CALL. Rows predating the column carry a NULL slot
   // and Postgres treats a NULL key as distinct, so they coexist rather than
@@ -2982,8 +2972,7 @@ model ConsultantProfile {
   // `{ reviews: { _count: "desc" } }`, which counts soft-deleted rows because
   // Prisma cannot filter a relation _count inside orderBy.
   reviewCount        Int       @default(0)
-  // #1300 — stamped by every recompute. With recency decay a score drifts without new
-  // reviews, so this is the selector for a scheduled recompute, not a drift audit.
+  // #1300 — stamped by every recompute; a drift audit, since a score only moves on a review mutation (#1566).
   ratingAggregatedAt DateTime? @db.Timestamptz
 
   // #1300 — TWO published scores, never blended. NULL = suppressed, exactly as
@@ -2995,19 +2984,6 @@ model ConsultantProfile {
   // 1:1, EVENTS with >= MIN_GROUP_RESPONSES_PER_EVENT responses for group.
   ratedClientsOneToOne Int @default(0)
   ratedEventsGroup     Int @default(0)
-
-  // Undecayed, unshrunk means. Staff-facing diagnostic for "why is my score 4.1".
-  rawRatingOneToOne Float?
-  rawRatingGroup    Float?
-
-  // Sum of the per-review decay weights; stale in lockstep with the score it explains.
-  effectiveSampleOneToOne Float?
-  effectiveSampleGroup    Float?
-
-  // Which priors and parameters produced the scores above, so a score stays
-  // reproducible after the platform mean moves. SetNull, like Appointment.cancellationPolicyId.
-  scoringSnapshot   ScoringSnapshot? @relation(fields: [scoringSnapshotId], references: [id], onDelete: SetNull)
-  scoringSnapshotId String?
 
   // New fields for enhanced consultant profile
   headline                    String?                      @db.VarChar(120) // Professional headline, max 120 chars
@@ -3121,8 +3097,6 @@ model ConsultantProfile {
   // its trailing column, so two single-column indexes.
   @@index([publishedRatingOneToOne])
   @@index([publishedRatingGroup])
-  // Postgres does not index an FK; the SetNull scans by this.
-  @@index([scoringSnapshotId])
 }
 
 model Domain {
@@ -3203,12 +3177,9 @@ model ConsultantReview {
   editedAt DateTime? @db.Timestamptz
 
   // #1300 — the reviewer's CLAIM of cause, and the staff ADJUDICATION that removes the
-  // row from both scores. Distinct from deletedAt: an excluded review still renders.
+  // row from both scores. Who and why live on ModerationAction (#1562).
   ratingCause             RatingCause?
   excludedFromAggregateAt DateTime?    @db.Timestamptz
-  excludedReason          String?      @db.VarChar(200)
-  excludedBy              User?        @relation("ReviewAggregateExcluder", fields: [excludedByUserId], references: [id], onDelete: SetNull)
-  excludedByUserId        String?
 
   // #1300 — the SESSION's clock for recency decay, stamped from the run anchor's endsAt;
   // an edit must not refresh it. NULL = legacy or unbounded offline; falls back to createdAt.
@@ -3224,12 +3195,12 @@ model ConsultantReview {
   // rather than a table: every read of a review already loads this row.
   // replyDeletedAt is separate from the review's own deletedAt so staff can
   // remove an abusive reply without erasing the consumer review beneath it.
-  replyBody            String?   @db.Text
-  repliedAt            DateTime? @db.Timestamptz
-  replyDeletedAt       DateTime? @db.Timestamptz
-  // WHO removed the reply: the consultant may write again after their own withdrawal, not after a takedown.
-  replyDeletedBy       User?     @relation("ReplyRemover", fields: [replyDeletedByUserId], references: [id], onDelete: SetNull)
-  replyDeletedByUserId String?
+  replyBody      String?      @db.Text
+  repliedAt      DateTime?    @db.Timestamptz
+  replyDeletedAt DateTime?    @db.Timestamptz
+  // #1562 — set with replyDeletedAt (sidecar CHECK): the consultant may write again after
+  // their own withdrawal, never after a takedown. The staff actor is the ModerationAction row.
+  replyRemovedBy ReviewActor?
 
   // Display choice only. Authenticity never depends on it: the review is welded
   // to a paid, attended session either way, which is what separates this from
@@ -3242,11 +3213,10 @@ model ConsultantReview {
   // null, staff moderation surfaces keep seeing the row.
   deletedAt DateTime? @db.Timestamptz
 
-  // #1300 — WHO removed it: the author may revive their own withdrawal, nobody revives
-  // a moderation removal. NULL on a removed row = legacy, reads as moderation (fails closed).
-  // SetNull: a departed staff member must not delete the record of what they removed.
-  deletedBy       User?   @relation("ReviewRemover", fields: [deletedByUserId], references: [id], onDelete: SetNull)
-  deletedByUserId String?
+  // #1562 — set with deletedAt (sidecar CHECK): the author may revive their own withdrawal,
+  // nobody revives a moderation removal. The staff actor is the ModerationAction row.
+  removedBy         ReviewActor?
+  moderationActions ModerationAction[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -3256,13 +3226,9 @@ model ConsultantReview {
   // the same client; the reviewer edits theirs as the relationship develops, and
   // `appointmentId` above records which session last prompted that.
   //
-  // #1549 widens this to (…, track, ratingUnitId): 1:1 stays one per pair, GROUP becomes one per
-  // attendee per event. Deferred because replacing a unique renames Prisma's compound key under deployed code.
-  //
-  // This is NOT partial on deletedAt: a moderation-removed review must not free
-  // the slot for the same person to re-post it. POST maps P2002 here to 409,
-  // which the client turns into "update your review" rather than an error.
-  @@unique([consultantProfileId, consulteeProfileId])
+  // #1549 — the unique is the sidecar `consultant_review_pair_track_event_key` on
+  // (…, track, ratingUnitId) NULLS NOT DISTINCT; never declare that tuple here (Prisma would clobber it).
+  @@index([consultantProfileId, consulteeProfileId])
   // Serves the score recompute's per-consultant scan. No longer a groupBy: per-row
   // decay weights cannot be expressed as a Prisma aggregate.
   @@index([consultantProfileId, deletedAt, ratingUnitId])
@@ -3273,9 +3239,6 @@ model ConsultantReview {
   // (The @@unique above already prefixes consultantProfileId, so no separate
   // single-column index is needed for it.)
   @@index([consulteeProfileId])
-  // #1300 — Postgres does not index an FK; both are SetNull and a user delete scans by them.
-  @@index([excludedByUserId])
-  @@index([deletedByUserId])
 }
 
 /// #1300 — which reputation a review contributes to. No MIXED value: a review lands
@@ -3283,6 +3246,13 @@ model ConsultantReview {
 enum ReviewTrack {
   ONE_TO_ONE
   GROUP
+}
+
+/// #1562 — who performed a removal on a review or a reply. The author may revive their
+/// own withdrawal; nobody revives a moderation removal.
+enum ReviewActor {
+  AUTHOR
+  MODERATION
 }
 
 /// #1300 — one append-only row per SUPERSEDED version of a review's text. The live
@@ -3309,48 +3279,11 @@ model ConsultantReviewRevision {
   /// is marked regardless, or a reply would become the consultant's switch.
   afterPublicReply Boolean @default(false)
 
-  /// Normally the author, occasionally a staff redaction. SetNull: a departed staff
-  /// member must not delete a consumer's edit history.
-  editor       User?   @relation("ReviewRevisionEditor", fields: [editorUserId], references: [id], onDelete: SetNull)
-  editorUserId String?
-
-  /// No `updatedAt`: a row that is only ever inserted has nothing to update.
-  createdAt DateTime @default(now()) @db.Timestamptz
-
+  /// No editor column: only the author edits (#1562), and no `createdAt`: `supersededAt` is the insert time.
   /// The guard behind the allocator: two concurrent edits cannot both claim revision 3.
   @@unique([reviewId, revisionNo])
-  /// "This review's history, newest first"; its prefix also serves the Restrict check.
+  /// "This review's history, newest first".
   @@index([reviewId, supersededAt])
-  /// SetNull FK; a user delete scans this table without it.
-  @@index([editorUserId])
-}
-
-/// #1300 — one immutable row per scoring run: the priors it shrank toward and the
-/// parameters in force, copied from lib/reviews.ts so a published score stays
-/// explainable after the constants move. See docs/reviews/02-two-track-scoring.md.
-model ScoringSnapshot {
-  id String @id @default(uuid())
-
-  /// Track priors: the mean each track is shrunk toward, and the corpus behind it.
-  platformMeanOneToOne Float
-  platformMeanGroup    Float
-  sampleCountOneToOne  Int
-  sampleCountGroup     Int
-
-  /// The parameters this run applied, copied from lib/reviews.ts.
-  priorWeight               Float
-  halfLifeDays              Int
-  minRatedClientsOneToOne   Int
-  minRatedEventsGroup       Int
-  minGroupResponsesPerEvent Int
-
-  profiles ConsultantProfile[]
-
-  /// No `updatedAt`: a snapshot is inserted once and never edited.
-  computedAt DateTime @default(now()) @db.Timestamptz
-
-  /// Serves both "the current snapshot" and "the snapshot in force on date X".
-  @@index([computedAt])
 }
 
 model ConsulteeProfile {
@@ -6556,6 +6489,11 @@ enum ModerationActionType {
   // that could sign in but never chat again. Recording the reversal here keeps
   // the whole enforcement history on one report.
   USER_REINSTATED
+  // #1562 — direct staff acts on reviews and feedback that have no report behind them.
+  REVIEW_REMOVED
+  REVIEW_REPLY_REMOVED
+  REVIEW_EXCLUDED_FROM_AGGREGATE
+  FEEDBACK_EXCLUDED_FROM_AGGREGATE
 }
 
 enum ProfileVerificationStatus {
@@ -6638,12 +6576,19 @@ model ModerationAction {
   actionType ModerationActionType
   notes      String?              @db.Text
 
-  report   ModerationReport @relation(fields: [reportId], references: [id], onUpdate: Cascade, onDelete: Cascade)
-  reportId String
+  // #1562 — nullable: a direct takedown, a reply removal or an exclusion has no report.
+  report   ModerationReport? @relation(fields: [reportId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  reportId String?
 
-  // Staff who took the action
-  takenById String
-  takenBy   User   @relation(fields: [takenById], references: [id], onUpdate: Cascade, onDelete: Cascade)
+  // #1562 — the content the act was about; a sidecar CHECK requires one of report/review/feedback.
+  review     ConsultantReview?    @relation(fields: [reviewId], references: [id], onDelete: SetNull)
+  reviewId   String?
+  feedback   AppointmentFeedback? @relation(fields: [feedbackId], references: [id], onDelete: SetNull)
+  feedbackId String?
+
+  // Staff who took the action. SetNull: a departed staff member must not delete the record of what they did.
+  takenById String?
+  takenBy   User?   @relation(fields: [takenById], references: [id], onUpdate: Cascade, onDelete: SetNull)
 
   // Post-hoc record of which side-effects actually executed (sessions
   // revoked, appointments cancelled, refund totals, per-step failures) —
@@ -6653,6 +6598,8 @@ model ModerationAction {
   createdAt DateTime @default(now())
 
   @@index([reportId])
+  @@index([reviewId])
+  @@index([feedbackId])
   @@index([takenById])
   @@index([actionType])
 }

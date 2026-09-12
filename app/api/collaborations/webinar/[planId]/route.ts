@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-server";
 import prisma from "@/lib/prisma";
 import {
+  CollaboratorCapError,
   getCollaboratorsForUser,
   inviteCollaborator,
 } from "@/lib/collaborators/service";
@@ -32,7 +33,10 @@ export async function GET(
 
     return NextResponse.json({ data: result.data });
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "collaborations" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "collaborations" } },
+    );
     console.error("Error fetching webinar collaborators:", error);
     return NextResponse.json(
       { error: "Failed to fetch collaborators" },
@@ -140,7 +144,13 @@ export async function POST(
 
     return NextResponse.json({ data: collab });
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "collaborations" } });
+    if (error instanceof CollaboratorCapError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "collaborations" } },
+    );
     console.error("Error inviting webinar collaborator:", error);
     return NextResponse.json(
       { error: "Failed to invite collaborator" },

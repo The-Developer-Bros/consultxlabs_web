@@ -23,13 +23,13 @@ Uber publishes this as "ratings protection": it drops ratings attributed to traf
 
 ## A claim is not an adjudication
 
-`ratingCause` records what the rater **says** drove a low score. `excludedFromAggregateAt` records the **adjudication**, and on the review it carries `excludedReason` and `excludedByUserId` beside it. The two are deliberately separate: if a self-reported cause removed a rating by itself, every consultant would coach clients to tick "platform issue". Only staff set the exclusion, because a self-served exclusion is a coaching vector.
+`ratingCause` records what the rater **says** drove a low score. `excludedFromAggregateAt` records the **adjudication**; who made it and why is the `ModerationAction` row (`REVIEW_EXCLUDED_FROM_AGGREGATE` or `FEEDBACK_EXCLUDED_FROM_AGGREGATE`) that names the content, not a column on it (#1562). The two are deliberately separate: if a self-reported cause removed a rating by itself, every consultant would coach clients to tick "platform issue". Only staff set the exclusion, because a self-served exclusion is a coaching vector.
 
-Only rows with a `NULL` `excludedFromAggregateAt` enter either published score, the organisation's quality aggregate, or the platform priors. `recomputeConsultantRating`, `computePlatformPriors` and the organisation's `feedback-summary` all carry the predicate.
+Only rows with a `NULL` `excludedFromAggregateAt` enter either published score or the organisation's quality aggregate. `recomputeConsultantRating` and the organisation's `feedback-summary` both carry the predicate.
 
 ## Excluded is not deleted
 
-`excludedFromAggregateAt` is distinct from `deletedAt`. A rating excluded because our video stack failed is still a true statement about that session and still renders on the profile with its text; it simply stops arithmetically punishing the person who did not cause it. A deleted row disappears from every public read. The public projection never exposes the exclusion columns, so a reader cannot tell an excluded review from a counted one, and `excludedReason` is staff-internal material that the allowlist keeps off the wire.
+`excludedFromAggregateAt` is distinct from `deletedAt`. A rating excluded because our video stack failed is still a true statement about that session and still renders on the profile with its text; it simply stops arithmetically punishing the person who did not cause it. A deleted row disappears from every public read. The public projection never exposes the exclusion column, so a reader cannot tell an excluded review from a counted one, and the reason on the audit row is staff-internal material that never reaches the wire.
 
 ## What exists today
 
