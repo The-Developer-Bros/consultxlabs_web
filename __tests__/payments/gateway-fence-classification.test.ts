@@ -47,6 +47,17 @@ describe("gateway fence classification", () => {
   // codes checkout.ts already throws (lib/payments/operations/checkout.ts:881,
   // :1556, :2538) but BUSINESS_ERROR_CODES only carried GATEWAY_DISABLED and
   // UNSUPPORTED_GATEWAY, so these three fell through to the 500 UNKNOWN path.
+  it("classifies SELF_BOOKING as its own 409 business error (#1593)", () => {
+    const classified = classifyError(
+      Object.assign(new Error("You cannot book your own plan."), {
+        code: "SELF_BOOKING",
+      }),
+    );
+    expect(classified.errorType).toBe(ErrorTypes.SELF_BOOKING);
+    expect(classified.httpStatus).toBe(409);
+    expect(classified.isBusinessError).toBe(true);
+  });
+
   // SELF_BOOKING joined them in #1593: the owner/collaborator refusal was a 500.
   it.each([
     "WALLET_FROZEN",
