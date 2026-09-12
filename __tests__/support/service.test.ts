@@ -31,6 +31,7 @@ jest.mock("../../lib/prisma", () => ({
       create: jest.fn(),
       findUnique: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
     supportTicketCounter: { upsert: jest.fn() },
     user: { findMany: jest.fn() },
@@ -59,6 +60,7 @@ const mockPrisma = prisma as unknown as {
     create: jest.Mock;
     findUnique: jest.Mock;
     update: jest.Mock;
+    updateMany: jest.Mock;
   };
   supportTicketCounter: { upsert: jest.Mock };
   user: { findMany: jest.Mock };
@@ -130,6 +132,7 @@ beforeEach(() => {
   mockPrisma.supportTicketCounter.upsert.mockResolvedValue({ nextSeq: 2 });
   mockPrisma.supportTicket.findUnique.mockResolvedValue(null);
   mockPrisma.supportTicket.update.mockResolvedValue({});
+  mockPrisma.supportTicket.updateMany.mockResolvedValue({ count: 1 });
   mockPrisma.user.findMany.mockResolvedValue([]);
 });
 
@@ -416,6 +419,75 @@ describe("runSupportTurn", () => {
         where: expect.objectContaining({ status: { not: "CLOSED" } }),
       }),
     );
+  });
+
+  it("reopens the reused ticket when a RESOLVED human thread re-escalates on a new intent", async () => {
+    // Staff RESOLVE mirrors onto the ticket and keeps the link. A new intent
+    // with no self-serve flow escalates straight back onto that ticket, which
+    // must return to the queue rather than stay RESOLVED with its clock stopped.
+    mockPrisma.appointmentSupportThread.upsert.mockResolvedValue(
+      threadRow({
+        activeChannel: "HUMAN",
+        status: "RESOLVED",
+        supportTicketId: "ticket-existing",
+      }),
+    );
+    mockPrisma.supportTicket.findUnique.mockResolvedValue({
+      awaitingUserSince: null,
+      pausedSeconds: 0,
+    });
+
+    const r = await runSupportTurn("appt1", "user1", { category: "OTHER" });
+
+    expect(r?.escalated).toBe(true);
+    expect(r?.supportTicketId).toBe("ticket-existing");
+    expect(mockPrisma.supportTicket.create).not.toHaveBeenCalled();
+    expect(mockPrisma.supportTicket.updateMany).toHaveBeenCalledWith({
+      where: { id: "ticket-existing", status: "RESOLVED" },
+      data: { status: "OPEN", resolvedAt: null },
+    });
+  });
+
+  it("reopens from the row, not the pre-transaction read, on a human reply", async () => {
+    // The thread was read as ESCALATED; if staff resolve it before the
+    // transaction runs, the reply must still reopen it and its ticket. The
+    // reopen is therefore unconditional and the ticket's status is the CAS.
+    mockPrisma.appointmentSupportThread.upsert.mockResolvedValue(
+      threadRow({
+        activeChannel: "HUMAN",
+        status: "ESCALATED",
+        supportTicketId: "ticket-existing",
+      }),
+    );
+    mockPrisma.appointmentSupportThread.findUniqueOrThrow.mockResolvedValue({
+      status: "ESCALATED",
+      messageSeq: 4,
+    });
+    mockPrisma.supportMessage.create.mockResolvedValue({ id: "m1" });
+    mockPrisma.supportTicket.findUnique.mockResolvedValue({
+      awaitingUserSince: null,
+      pausedSeconds: 0,
+    });
+
+    const r = await runSupportTurn("appt1", "user1", {
+      userMessage: "still broken",
+    });
+
+    expect(r?.accepted).toBe(true);
+    expect(r?.status).toBe("ESCALATED");
+    expect(mockPrisma.appointmentSupportThread.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "thread1", status: { not: "CLOSED" } },
+        data: expect.objectContaining({
+          status: "ESCALATED",
+          resolvedAt: null,
+        }),
+      }),
+    );
+    expect(mockPrisma.supportTicket.updateMany).toHaveBeenCalledWith({
+      where: { id: "ticket-existing", status: "RESOLVED" },
+      data: { status: "OPEN", resolvedAt: null },
+    });
   });
 
   it("refuses an ESCALATING turn on a CLOSED thread, and mints no second ticket", async () => {

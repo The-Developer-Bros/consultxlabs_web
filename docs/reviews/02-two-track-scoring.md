@@ -102,6 +102,10 @@ It measures the priors once, mints one snapshot, walks every profile ordered by 
 
 With a recency term in the weighting, recompute-on-mutation is no longer sufficient on its own: a consultant who receives no new reviews still drifts. `ratingAggregatedAt` therefore stops being a drift audit and becomes the selector a scheduled recompute would use to pick stale profiles. As of this branch there is **no scheduled twin** under `app/api/cleanup/` and the script walks every profile unconditionally; with the half-life at ten years the drift is immaterial, and scheduling the job (#1551) is what makes lowering the half-life a constant change rather than a migration.
 
+## The pending amendment (#1566)
+
+Everything above this heading is the shipped arithmetic. ADR 29's amendment of 2026-09-11 (#1566) replaces the measured prior with a constant, `C = 4.3` at `m = 5`, and retires `ScoringSnapshot`, the recency-decay term and the `rawRating*` / `effectiveSample*` diagnostics; the publication gates and the revision trail stay. It lands with the schema consolidation on #1562, and this page is rewritten then.
+
 ## What the seed produces
 
 The review seed writes one review per held (consultant, consultee) pair on the track the session was, with `ratedSessionAt`, `ratingUnitId` for group events, a spread of anonymous reviews, replies, low-score causes and a few revisions, plus one private `AppointmentFeedback` row for about half the held calls. In `small` mode the appointment seed holds at most five past one-to-one clients and two past group events per consultant, so three consultants publish a one-to-one score and none publishes a group score; the group threshold of five events with five responses each needs the appointment volumes raised, not the constants lowered.

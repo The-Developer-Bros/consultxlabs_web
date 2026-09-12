@@ -4,10 +4,21 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import prisma from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 
 import { requirePrivilegedAuth } from "@/lib/auth-helpers";
+
+// `parseInt("abc")` is NaN, which Prisma rejects as `skip` — a 500 for a typo.
+const querySchema = z.object({
+  consultantProfileId: z.string().min(1).optional(),
+  minRating: z.coerce.number().int().min(1).max(5).optional(),
+  maxRating: z.coerce.number().int().min(1).max(5).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
 /**
  * GET /api/staff/moderation/reviews
  * List reviews (optionally filtered)
@@ -17,12 +28,17 @@ export async function GET(req: NextRequest) {
     const auth = await requirePrivilegedAuth();
     if (auth.error) return auth.error;
 
-    const { searchParams } = new URL(req.url);
-    const consultantProfileId = searchParams.get("consultantProfileId");
-    const minRating = searchParams.get("minRating");
-    const maxRating = searchParams.get("maxRating");
-    const page = parseInt(searchParams.get("page") || "1");
-    const limit = parseInt(searchParams.get("limit") || "20");
+    const parsed = querySchema.safeParse(
+      Object.fromEntries(new URL(req.url).searchParams),
+    );
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: "Invalid query", details: parsed.error.flatten() },
+        { status: 400 },
+      );
+    }
+    const { consultantProfileId, minRating, maxRating, page, limit } =
+      parsed.data;
     const offset = (page - 1) * limit;
 
     const where: Prisma.ConsultantReviewWhereInput = {};
@@ -30,10 +46,10 @@ export async function GET(req: NextRequest) {
     if (consultantProfileId) {
       where.consultantProfileId = consultantProfileId;
     }
-    if (minRating || maxRating) {
+    if (minRating !== undefined || maxRating !== undefined) {
       where.rating = {
-        ...(minRating && { gte: parseInt(minRating) }),
-        ...(maxRating && { lte: parseInt(maxRating) }),
+        ...(minRating !== undefined && { gte: minRating }),
+        ...(maxRating !== undefined && { lte: maxRating }),
       };
     }
 

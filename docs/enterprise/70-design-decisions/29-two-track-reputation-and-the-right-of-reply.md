@@ -70,7 +70,7 @@ A reply cannot change the rating, cannot hide the review, and cannot stop the au
 
 ### Every edit is recorded, and every edit is marked
 
-`ConsultantReviewRevision` stores what a review **used** to say, never what it says now, so a review that has never been edited has zero rows and the "Edited" disclosure is an existence check rather than a join. Append-only is enforced by a trigger, because a trail an application bug can rewrite indicates nothing. Only a changed opinion counts: re-submitting identical stars and words is idempotent, and toggling anonymity is a display choice rather than a change to what was said.
+`ConsultantReviewRevision` stores what a review **used** to say, never what it says now, so a review that has never been edited has zero rows and the "Edited" disclosure is an existence check rather than a join. Append-only is held by convention on this branch, since no code path updates or deletes a revision; the enforcing trigger is #1551, because a trail an application bug can rewrite indicates nothing. Only a changed opinion counts: re-submitting identical stars and words is idempotent, and toggling anonymity is a display choice rather than a change to what was said.
 
 Etsy and Practo both converged independently on "editable until the provider replies, then marked". We take the marking and reject the trigger. Making the mark conditional on a reply hands the consultant a switch — reply to everything and every subsequent revision carries a badge — and BIS asks for edits to be indicated, full stop. `afterPublicReply` is still recorded, for moderation context.
 
@@ -100,7 +100,7 @@ Uber publishes this rule, excluding ratings attributed to traffic, navigation an
 
 A consultant's profile can now say two different things about them, and the copy has to carry that. `MIN_RATED_CLIENTS_ONE_TO_ONE` and `MIN_RATED_EVENTS_GROUP` are separate gates, so a consultant can be published on one track and suppressed on the other, and every surface must render a suppressed track as "not enough rated sessions yet" rather than as zero.
 
-The recompute is now a recurring job as well as a mutation hook, because the scores are a function of the clock.
+The recompute is a mutation hook plus the `db:recompute-ratings` script. A scheduled twin was planned because the scores were a function of the clock; it was never built (#1551), and the amendment below withdraws the need for it.
 
 `ratingUnitId` is load-bearing for exactly one track. Anyone tempted to delete it should read the schema comment first.
 
@@ -122,7 +122,7 @@ Three points settled since this decision went live, on #1542.
 
 ## Amendment, 2026-09-11 (evening)
 
-**No cross-track fallback on any surface, and the scoring machinery is right-sized (#1566).** The labelled fallback adopted earlier the same day — a person card showing the group score marked "group sessions", a program card showing the 1:1 score marked "1:1 sessions" — is withdrawn. A person surface shows the 1:1 score or nothing; a webinar or class card shows the group score or nothing; the profile's reviews section lists both tracks, which is where a group-only consultant's score is visible. The sort and the filter on person lists use the same 1:1 score the card shows, so the order and the star can no longer disagree. Separately, and to land with the schema consolidation on #1562, decision 4 is amended: a published score shrinks toward a constant prior rather than a measured platform mean, and `ScoringSnapshot`, the recency-decay term and the `effectiveSample*` / `rawRating*` diagnostics are dropped; the publication gates are unchanged and the revision trail is kept. The reasoning is on #1566.
+**No cross-track fallback on any surface, and the scoring machinery is right-sized (#1566).** The labelled fallback adopted earlier the same day — a person card showing the group score marked "group sessions", a program card showing the 1:1 score marked "1:1 sessions" — is withdrawn. A person surface shows the 1:1 score or nothing; a webinar or class card shows the group score or nothing; the profile's reviews section lists both tracks, which is where a group-only consultant's score is visible. The sort and the filter on person lists use the same 1:1 score the card shows, so the order and the star can no longer disagree. Separately, and to land with the schema consolidation on #1562, decision 4 is amended: a published score shrinks toward a constant prior rather than a measured platform mean, and `ScoringSnapshot`, the recency-decay term and the `effectiveSample*` / `rawRating*` diagnostics are dropped; the publication gates are unchanged and the revision trail is kept. The reasoning is on #1566. This part of the amendment is decided and not yet implemented: it lands with #1562, and until then the shipped arithmetic is the one [the scoring reference](../../reviews/02-two-track-scoring.md) describes, a measured track prior pinned by `ScoringSnapshot` with the decay term inert at a ten-year half-life.
 
 ## Related
 

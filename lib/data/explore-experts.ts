@@ -7,7 +7,11 @@ import {
   sanitisePublicReviews,
 } from "@/lib/data/review-public";
 import { deriveDirectoryRating } from "@/lib/data/public-stats";
-import { displayedScore, PERSON_SCORE_ORDER } from "@/lib/reviews-display";
+import {
+  displayedScore,
+  displayedScoreCount,
+  PERSON_SCORE_ORDER,
+} from "@/lib/reviews-display";
 
 /**
  * Server-side data access for the explore experts page.
@@ -128,12 +132,13 @@ type ConsultantCardRow = Prisma.Result<
 export function toConsultantCard(row: ConsultantCardRow): IConsultantCardData {
   const { memberships, ...c } = row;
   const firstOrg = memberships[0]?.organization ?? null;
-  // #1300 — a person card shows the 1:1 score, no fallback (#1566). Null renders
-  // as "not enough reviews yet", never 0.0.
+  // #1300 — a person card shows the 1:1 score, no fallback (#1566), and the
+  // count beside it is the same track's denominator. Null renders as "not
+  // enough reviews yet", never 0.0.
   return {
     id: c.id,
     rating: displayedScore(c).score,
-    reviewCount: c.reviewCount,
+    reviewCount: displayedScoreCount(c, "ONE_TO_ONE"),
     headline: c.headline,
     experience: c.experience,
     description: c.description,
@@ -180,6 +185,9 @@ export function orderByForSort(
     case "nameDesc":
       return { user: { name: "desc" } };
     case "reviewCount":
+      // The number the card prints is the 1:1 client count, so "Most Reviews"
+      // orders on it — the order and the number shown agree.
+      return { ratedClientsOneToOne: "desc" };
     case "trending":
       // #705 — the denormalized count, which excludes soft-deleted reviews.
       // `{ reviews: { _count: "desc" } }` counted them: Prisma cannot filter a

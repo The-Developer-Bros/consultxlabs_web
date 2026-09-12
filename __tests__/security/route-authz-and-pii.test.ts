@@ -122,7 +122,7 @@ describe("consultant statutory PII is never returned by a bare include", () => {
     const get = src.slice(start, next === -1 ? undefined : next);
     expect(get).toContain("planConsultantSelect");
     expect(get).not.toMatch(/consultantProfile: true/);
-    expect(get).not.toMatch(/consultantProfile: \{\s*\n\s*include:/);
+    expect(get).not.toMatch(/consultantProfile\s*:\s*\{\s*include\s*:/);
   });
 
   it("the plan projection is built on the public allowlist", () => {
