@@ -19,6 +19,13 @@ import { getAppUrl } from "@/lib/url";
 import { scopeToWhereOrgId, type Scope } from "@/lib/api/scope/parse";
 import { reportSentryError } from "@/lib/observability/report";
 
+// The flip a ban and an erasure share lives in its own module so the
+// moderation transaction does not load this module's Stream and Novu graph.
+export {
+  removeCollaboratorStanding,
+  type CollaborationRef,
+} from "@/lib/collaborators/standing";
+
 type PlanType = "webinar" | "class";
 
 const MIN_HOST_SHARE = 10; // Host must keep at least 10%
