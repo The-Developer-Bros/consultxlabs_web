@@ -45,7 +45,7 @@ graph TD
 | ------------------------ | --------------------------------------------------------------------------------------------------------- |
 | `lib/novu/client.ts`     | Singleton Novu client, `isNovuConfigured()` guard                                                         |
 | `lib/novu/service.ts`    | 20+ trigger functions: `notifyAppointmentBooked`, `notifyPaymentSuccess`, etc.                            |
-| `lib/novu/workflows.ts`  | 67 event id constants and their typed payloads; `lib/novu/templates/` maps them onto 16 workflow families |
+| `lib/novu/workflows.ts`  | 69 event id constants and their typed payloads; `lib/novu/templates/` maps them onto 16 workflow families |
 | `lib/novu/subscriber.ts` | `syncSubscriber`, `updateSubscriberPreferences`, `deleteSubscriber`                                       |
 | `lib/email.ts`           | 6 Resend email functions (welcome, password reset, account linked, payment link/success/failed)           |
 
@@ -92,6 +92,6 @@ graph TD
 | I want to...                                         | Go to                                                      |
 | ---------------------------------------------------- | ---------------------------------------------------------- |
 | Understand the dual-layer architecture               | [01-architecture.md](./01-architecture.md)                 |
-| See all 67 events, the 16 families and API endpoints | [02-workflows-and-api.md](./02-workflows-and-api.md)       |
+| See all 69 events, the 16 families and API endpoints | [02-workflows-and-api.md](./02-workflows-and-api.md)       |
 | Understand the payment system                        | [../payments/architecture.md](../payments/architecture.md) |
 | Check the database schema                            | [../../prisma/schema.prisma](../../prisma/schema.prisma)   |

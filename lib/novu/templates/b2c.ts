@@ -553,4 +553,27 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
       redirect: "dashboardUrl",
     },
   },
+  {
+    workflowId: W.COLLABORATOR_DECLINED,
+    name: "Collaborator declined",
+    description: "The plan's owner, when an invitee declines (#1580 C-P1-5).",
+    category: "appointments",
+    inApp: {
+      subject: "Invite declined",
+      body: '{{payload.collaboratorName}} declined your invitation to {{payload.planTitle}} as {{payload.role | downcase | replace: "_", " "}}.',
+      redirect: "dashboardUrl",
+    },
+  },
+  {
+    workflowId: W.COLLABORATOR_WITHDRAWN,
+    name: "Collaborator withdrew",
+    description:
+      "The plan's owner, when a collaborator withdraws (#1580 C-P1-7).",
+    category: "appointments",
+    inApp: {
+      subject: "Collaborator withdrew",
+      body: "{{payload.collaboratorName}} withdrew from {{payload.planTitle}} ({{payload.planType | downcase}}).",
+      redirect: "dashboardUrl",
+    },
+  },
 ];

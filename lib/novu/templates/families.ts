@@ -1,5 +1,5 @@
 /**
- * The Novu plan caps an environment at 20 workflows and the app has 67 events,
+ * The Novu plan caps an environment at 20 workflows and the app has 69 events,
  * so each Novu workflow is a FAMILY — one per audience-and-opt-out — and the
  * event travels as `payload.event`. The app still triggers by event id; the
  * wire layer (`toWire`) maps it to the family. One id with a discriminator
@@ -193,6 +193,8 @@ export const EVENT_FAMILY: Record<Ids[keyof Ids], FamilyId> = {
   "collaborator-invited": "collaborator",
   "collaborator-accepted": "collaborator",
   "collaborator-removed": "collaborator",
+  "collaborator-declined": "collaborator",
+  "collaborator-withdrawn": "collaborator",
 
   "general-announcement": "platform",
   "maintenance-scheduled": "platform",
