@@ -461,19 +461,28 @@ const MeetingRoom = () => {
     }
   }, [call]);
 
-  // Show loading while joining
-  if (callingState !== CallingState.JOINED && !callEndedAt) {
-    return <Loader />;
-  }
-
-  // Show ended screen if call ended and user is not owner
-  if (callEndedAt && !isCallOwner) {
+  // An ended call is over for everyone still on this screen, host or not.
+  // The only client not shown this is the one already on its way out
+  // (`exit` is set before the end or leave request goes out). On
+  // `call.ended` the SDK leaves and empties the participant list, so a host
+  // exempted here would be left on a live-looking room with an empty stage.
+  if (callEndedAt && !exit) {
     return (
       <CallEnded
-        message="The call has been ended by the host"
+        message={
+          isHost ? "The call has ended" : "The call has been ended by the host"
+        }
         onRejoin={handleRejoinCall}
       />
     );
+  }
+
+  // Every non-JOINED state gets its own screen; see describeCallingState.
+  const advice = exit
+    ? { tone: "loading", title: "Leaving…", canRejoin: false }
+    : describeCallingState(callingState);
+  if (advice) {
+    return <ConnectionStateScreen advice={advice} />;
   }
 
   return (
@@ -847,8 +856,16 @@ useEffect(() => {
 if (isCallLoading) return <Loader />;
 if (error) return <Error message={error.message} />;
 if (!call) return <NotFound />;
-if (callEndedAt && !isCallOwner) return <CallEnded />;
+if (callEndedAt && !exit) return <CallEnded />;
 ```
+
+The ended screen is not gated on who the viewer is. A webinar has more than one
+host, the owner can hold a second tab, and the SFU ends the call itself at
+`max_duration_seconds`; in every one of those cases the SDK has already left the
+call and emptied the participant list, so a host exempted from this screen sees
+an empty stage under a live-looking control bar. The one client that is exempt
+is the one that pressed End or Leave, and it says so by setting `exit` before
+the request goes out.
 
 ### 3. Graceful Error Handling
 
