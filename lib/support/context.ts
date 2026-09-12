@@ -104,14 +104,42 @@ export async function buildSupportContext(
           },
         },
       },
+      // #1580 C-P1-3 — an ACCEPTED collaborator is on the provider side too,
+      // so they are never offered the attendee no-show flow.
       webinar: {
         select: {
-          webinarPlan: { select: { consultantProfileId: true, title: true } },
+          webinarPlan: {
+            select: {
+              consultantProfileId: true,
+              title: true,
+              collaborators: {
+                // A soft-deleted profile keeps its ACCEPTED row (#1593).
+                where: {
+                  status: "ACCEPTED",
+                  consultantProfile: { deletedAt: null },
+                },
+                select: { consultantProfileId: true },
+              },
+            },
+          },
         },
       },
       class: {
         select: {
-          classPlan: { select: { consultantProfileId: true, title: true } },
+          classPlan: {
+            select: {
+              consultantProfileId: true,
+              title: true,
+              collaborators: {
+                // A soft-deleted profile keeps its ACCEPTED row (#1593).
+                where: {
+                  status: "ACCEPTED",
+                  consultantProfile: { deletedAt: null },
+                },
+                select: { consultantProfileId: true },
+              },
+            },
+          },
         },
       },
     },
@@ -129,8 +157,18 @@ export async function buildSupportContext(
     appt.webinar?.webinarPlan?.consultantProfileId ??
     appt.class?.classPlan?.consultantProfileId ??
     null;
+  const providerProfileIds = [
+    planConsultantId,
+    ...(appt.webinar?.webinarPlan?.collaborators ?? []).map(
+      (c) => c.consultantProfileId,
+    ),
+    ...(appt.class?.classPlan?.collaborators ?? []).map(
+      (c) => c.consultantProfileId,
+    ),
+  ];
   const isProvider =
-    !!me?.consultantProfileId && me.consultantProfileId === planConsultantId;
+    !!me?.consultantProfileId &&
+    providerProfileIds.includes(me.consultantProfileId);
 
   const nowMs = Date.now();
   const runs = groupSlotsIntoRuns(

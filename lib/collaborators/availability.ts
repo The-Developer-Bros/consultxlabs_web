@@ -25,8 +25,7 @@ export class CollaboratorUnavailableError extends Error {
 
 /**
  * A co-host's existing commitments: appointments they own, or have ACCEPTED a
- * collaboration on. Mirrors the booked-slots query behind
- * /api/collaborators/[consultantProfileId]/availability.
+ * collaboration on.
  */
 function commitmentClauses(
   consultantProfileId: string,

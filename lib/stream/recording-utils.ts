@@ -4,6 +4,8 @@
  */
 
 import prisma from "@/lib/prisma";
+import { isPresenterRole } from "@/lib/collaborators/roles";
+import type { CollaboratorRole } from "@prisma/client";
 
 /**
  * Type for appointment with ownership relations
@@ -12,6 +14,8 @@ import prisma from "@/lib/prisma";
 export interface OwnedPlan {
   consultantProfileId: string | null;
   recordingEnabled?: boolean;
+  /** ACCEPTED rows only, when the caller selected them (#1580 C-P1-4). */
+  collaborators?: { consultantProfileId: string; role: CollaboratorRole }[];
 }
 
 export interface AppointmentWithOwnership {
@@ -45,11 +49,13 @@ export function resolveAppointmentPlan(
 }
 
 /**
- * Check if a consultant owns an appointment (webinar or class)
+ * Check if a consultant may act as the appointment's host: the plan owner,
+ * or an ACCEPTED co-presenter on a webinar/class plan (#1580 C-P1-4). Crew
+ * roles are members of the call but never hold the recording controls.
  *
  * @param appointment - The appointment with webinar/class plan relations
  * @param consultantProfileId - The consultant's profile ID to check against
- * @returns true if the consultant owns the appointment
+ * @returns true if the consultant owns or co-presents the appointment
  */
 export function isAppointmentOwner(
   appointment: AppointmentWithOwnership | null | undefined,
@@ -57,7 +63,12 @@ export function isAppointmentOwner(
 ): boolean {
   if (!consultantProfileId) return false;
   const plan = resolveAppointmentPlan(appointment);
-  return !!plan && plan.consultantProfileId === consultantProfileId;
+  if (!plan) return false;
+  if (plan.consultantProfileId === consultantProfileId) return true;
+  return (plan.collaborators ?? []).some(
+    (c) =>
+      c.consultantProfileId === consultantProfileId && isPresenterRole(c.role),
+  );
 }
 
 /**

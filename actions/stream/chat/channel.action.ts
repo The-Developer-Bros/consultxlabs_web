@@ -462,9 +462,12 @@ export async function createConsultationChannel(
   // on a self-pair, so skip rather than take the whole approval path down.
   // Same guard the search routes apply per row.
   if (consultantId === consulteeId) {
-    streamLogger.warn("Skipping consultation channel — consultant and consultee are the same user", {
-      consultationId,
-    });
+    streamLogger.warn(
+      "Skipping consultation channel — consultant and consultee are the same user",
+      {
+        consultationId,
+      },
+    );
     return null;
   }
 
@@ -559,9 +562,12 @@ export async function createSubscriptionChannel(
 
   // Same self-pair guard as the consultation path above.
   if (consultantId === consulteeId) {
-    streamLogger.warn("Skipping subscription channel — consultant and consultee are the same user", {
-      subscriptionId,
-    });
+    streamLogger.warn(
+      "Skipping subscription channel — consultant and consultee are the same user",
+      {
+        subscriptionId,
+      },
+    );
     return null;
   }
 
@@ -684,10 +690,25 @@ export async function createCollaboratorChannel(
   const channelId = `collab-${planType}-${planId}`;
   const client = getStreamChatClient();
 
+  // Stream refuses a channel whose members it has never seen; every other
+  // creator here upserts first, and this one did not (FAMILIARISE_WEB-37, #1580).
+  // The roster is whoever the upsert could sync: a member without
+  // STREAM_DATA_PROCESSING consent is left out of create, add and remove alike.
+  const { droppedIds } = await upsertUsersToStream(expectedMemberIds);
+  const roster = expectedMemberIds.filter((id) => !droppedIds.includes(id));
+  if (roster.length < 2 || !roster.includes(hostUserId)) {
+    streamLogger.warn("Skipping collaborator channel - roster not syncable", {
+      planType,
+      planId,
+      droppedIds,
+    });
+    return null;
+  }
+
   const channel = client.channel("messaging", channelId, {
     name: `${title} - Collaborators`,
     created_by_id: hostUserId,
-    members: expectedMemberIds,
+    members: roster,
     [`${planType}_plan_id`]: planId,
     is_collaborator_channel: true,
   } as Record<string, unknown>);
@@ -707,9 +728,7 @@ export async function createCollaboratorChannel(
     .filter((id): id is string => !!id);
 
   // Add members present in DB but missing from channel
-  const toAdd = expectedMemberIds.filter(
-    (id) => !currentMemberIds.includes(id),
-  );
+  const toAdd = roster.filter((id) => !currentMemberIds.includes(id));
   if (toAdd.length > 0) {
     await channel.addMembers(toAdd);
     streamLogger.debug("Collaborator channel: added missing members", {
@@ -719,9 +738,7 @@ export async function createCollaboratorChannel(
   }
 
   // Remove channel members no longer in the DB set
-  const toRemove = currentMemberIds.filter(
-    (id) => !expectedMemberIds.includes(id),
-  );
+  const toRemove = currentMemberIds.filter((id) => !roster.includes(id));
   if (toRemove.length > 0) {
     await channel.removeMembers(toRemove);
     streamLogger.debug("Collaborator channel: removed departed members", {
@@ -734,14 +751,14 @@ export async function createCollaboratorChannel(
     channelId,
     planType,
     planId,
-    memberCount: expectedMemberIds.length,
+    memberCount: roster.length,
     added: toAdd.length,
     removed: toRemove.length,
   });
 
   return {
     channelId,
-    members: expectedMemberIds,
+    members: roster,
     channelData,
   };
 }

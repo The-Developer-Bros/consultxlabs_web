@@ -81,6 +81,11 @@ const ERROR_TOAST_MAP: Record<ErrorType, ToastMessage> = {
   // #1426 — the buyer's card was never charged in any of these three
   // rejections, so each toast says so and points at the one action that
   // actually unblocks the buyer, instead of the generic gateway copy above.
+  [ErrorTypes.SELF_BOOKING]: {
+    title: "This Is Your Own Event",
+    description:
+      "You host or co-host this event, so you cannot book a seat on it.",
+  },
   [ErrorTypes.WALLET_FROZEN]: {
     title: "Wallet On Hold",
     description:
