@@ -87,6 +87,22 @@ describe("recording capability covers every appointment kind", () => {
     expect(isAppointmentOwner(appointment, undefined)).toBe(false);
   });
 
+  it("admits an accepted co-presenter and refuses crew (#1580 C-P1-4)", () => {
+    // recording-info, start and stop all read this one predicate, so the room
+    // shows the button to exactly the people the mutations admit.
+    const appointment = withPlan("webinar", {
+      consultantProfileId: "owner",
+      recordingEnabled: true,
+      collaborators: [
+        { consultantProfileId: "cohost", role: "CO_HOST" },
+        { consultantProfileId: "crew", role: "MODERATOR" },
+      ],
+    });
+    expect(isAppointmentOwner(appointment, "cohost")).toBe(true);
+    expect(isAppointmentOwner(appointment, "crew")).toBe(false);
+    expect(isAppointmentOwner(appointment, "stranger")).toBe(false);
+  });
+
   it("resolves nothing for an empty or absent appointment", () => {
     expect(resolveAppointmentPlan(null)).toBeNull();
     expect(resolveAppointmentPlan(undefined)).toBeNull();

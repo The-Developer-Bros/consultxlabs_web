@@ -58,6 +58,31 @@ const planConsultantInclude = {
   },
 };
 
+// #1580 C-P2-2 — the ACCEPTED co-hosts a program card already knows how to
+// render (their company logos beside the host's); an erased profile stays off.
+const planCollaboratorsInclude = {
+  where: {
+    status: "ACCEPTED" as const,
+    consultantProfile: { deletedAt: null },
+  },
+  select: {
+    consultantProfile: {
+      select: {
+        user: {
+          select: {
+            name: true,
+            image: true,
+            workExperiences: {
+              select: { company: true, companyDomain: true, isCurrent: true },
+              take: 3,
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
 // #781 §B — soft-deleted profiles leave public surfaces. The owner relation is
 // nullable on Webinar/ClassPlan, so keep ownerless plans and drop only plans
 // whose owner is soft-deleted.
@@ -206,6 +231,7 @@ export const getCuratedPrograms = unstable_cache(
             }, // #726
             include: {
               consultantProfile: planConsultantInclude,
+              collaborators: planCollaboratorsInclude,
               topics: true,
               classContents: true,
               classes: true,
@@ -223,6 +249,7 @@ export const getCuratedPrograms = unstable_cache(
           where: { ...eventPlanDiscoverableWhere(), ...liveConsultantWhere }, // #726
           include: {
             consultantProfile: planConsultantInclude,
+            collaborators: planCollaboratorsInclude,
             topics: true,
             classContents: true,
             classes: true,
@@ -263,6 +290,7 @@ export const getCuratedPrograms = unstable_cache(
             }, // #726
             include: {
               consultantProfile: planConsultantInclude,
+              collaborators: planCollaboratorsInclude,
               topics: true,
             },
           }),
@@ -277,6 +305,7 @@ export const getCuratedPrograms = unstable_cache(
           where: { ...eventPlanDiscoverableWhere(), ...liveConsultantWhere }, // #726
           include: {
             consultantProfile: planConsultantInclude,
+            collaborators: planCollaboratorsInclude,
             topics: true,
           },
           ...(orderBy && { orderBy }),

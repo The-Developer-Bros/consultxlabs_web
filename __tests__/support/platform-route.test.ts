@@ -69,7 +69,7 @@ jest.mock("../../lib/prisma", () => {
 jest.mock("../../lib/novu", () => ({
   __esModule: true,
   notifySupportTicketCreated: jest.fn(async () => ({ success: true })),
-  notifySupportTicketUpdateForStaff: jest.fn(async () => []),
+  notifySupportTicketActivity: jest.fn(async () => []),
 }));
 
 import { NextRequest } from "next/server";

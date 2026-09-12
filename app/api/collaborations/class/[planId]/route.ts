@@ -4,6 +4,7 @@ import { getSession } from "@/lib/auth-server";
 import prisma from "@/lib/prisma";
 import {
   CollaboratorCapError,
+  CollaboratorIneligibleError,
   getCollaboratorsForUser,
   inviteCollaborator,
 } from "@/lib/collaborators/service";
@@ -145,6 +146,12 @@ export async function POST(
   } catch (error) {
     if (error instanceof CollaboratorCapError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    if (error instanceof CollaboratorIneligibleError) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.httpStatus },
+      );
     }
     Sentry.captureException(
       error instanceof Error ? error : new Error(String(error)),

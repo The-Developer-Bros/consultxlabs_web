@@ -30,8 +30,11 @@ export const NOVU_WORKFLOWS = {
   // know the money isn't coming back via this attempt + can chase support.
   REFUND_FAILED: "refund-failed",
 
-  // Support
+  // Support. CREATED and ACTIVITY page ops; UPDATE and RESPONSE reach the
+  // ticket's owner. Ops used to be paged through UPDATE — "Your ticket … has
+  // been updated to:" with no status, in the staff inbox.
   SUPPORT_TICKET_CREATED: "support-ticket-created",
+  SUPPORT_TICKET_ACTIVITY: "support-ticket-activity",
   SUPPORT_TICKET_UPDATE: "support-ticket-update",
   SUPPORT_TICKET_RESPONSE: "support-ticket-response",
 
@@ -90,6 +93,10 @@ export const NOVU_WORKFLOWS = {
   COLLABORATOR_INVITED: "collaborator-invited",
   COLLABORATOR_ACCEPTED: "collaborator-accepted",
   COLLABORATOR_REMOVED: "collaborator-removed",
+  // #1580 C-P1-7 — to the host when a collaborator withdraws their own row.
+  COLLABORATOR_WITHDRAWN: "collaborator-withdrawn",
+  // #1580 C-P1-5 — to the host when an invitee declines.
+  COLLABORATOR_DECLINED: "collaborator-declined",
 
   // Maintenance
   MAINTENANCE_SCHEDULED: "maintenance-scheduled",
@@ -412,10 +419,18 @@ export type RefundInput = Omit<
 
 export type SupportTicketPayload = NotificationScope & {
   ticketId: string;
+  /** `FAM-2026-000007` — what the customer quotes back. */
+  reference?: string;
   ticketTitle: string;
+  /** Sentence-ready, e.g. "in progress"; `statusCode` keeps the enum. */
   status?: string;
+  statusCode?: string;
   message?: string;
   respondedBy?: string;
+  /** The customer, on the ops-facing workflows. */
+  userName?: string;
+  /** "replied" | "reopened" — the verb on SUPPORT_TICKET_ACTIVITY. */
+  activity?: "replied" | "reopened";
   dashboardUrl: string;
 };
 
@@ -699,10 +714,18 @@ export type CollaboratorAcceptedPayload = {
   dashboardUrl: string;
 };
 
+/** The host's copy of a decline; the same shape as the accept. */
+export type CollaboratorDeclinedPayload = CollaboratorAcceptedPayload;
+
 export type CollaboratorRemovedPayload = {
   planTitle: string;
   planType: string;
   dashboardUrl: string;
+};
+
+/** The host's copy of a withdrawal; the removed shape plus who withdrew. */
+export type CollaboratorWithdrawnPayload = CollaboratorRemovedPayload & {
+  collaboratorName: string;
 };
 
 export type MaintenancePayload = {

@@ -9,6 +9,7 @@ import { consultantPublicScalars } from "@/lib/data/consultant-public";
 import { Prisma, UserRole } from "@prisma/client";
 import { notifySupportTicketUpdate } from "@/lib/novu";
 import { notificationScope } from "@/lib/novu/workflows";
+import { supportTicketStatusLabel } from "@/lib/novu/humanize";
 import { UpdateSupportTicketSchema } from "@/schemas/support";
 
 import { requirePrivilegedAuth } from "@/lib/auth-helpers";
@@ -340,8 +341,10 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
     // Notify the ticket owner about the update
     void notifySupportTicketUpdate(updatedTicket.user.id, {
       ticketId: updatedTicket.id,
+      reference: updatedTicket.referenceNumber ?? undefined,
       ticketTitle: updatedTicket.title || "Support Ticket",
-      status: updatedTicket.status,
+      status: supportTicketStatusLabel(updatedTicket.status),
+      statusCode: updatedTicket.status,
       dashboardUrl: "/dashboard",
       // ADR 23 — inherit the ticket's org-ness (attribution only).
       ...notificationScope(updatedTicket.organizationId),

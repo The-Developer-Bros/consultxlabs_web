@@ -54,6 +54,11 @@ export async function POST(req: NextRequest) {
                     webinarPlan: {
                       select: {
                         consultantProfileId: true,
+                        // #1580 C-P1-4 — the accepted co-presenter may stop too.
+                        collaborators: {
+                          where: { status: "ACCEPTED" as const },
+                          select: { consultantProfileId: true, role: true },
+                        },
                       },
                     },
                   },
@@ -63,6 +68,11 @@ export async function POST(req: NextRequest) {
                     classPlan: {
                       select: {
                         consultantProfileId: true,
+                        // #1580 C-P1-4 — the accepted co-presenter may stop too.
+                        collaborators: {
+                          where: { status: "ACCEPTED" as const },
+                          select: { consultantProfileId: true, role: true },
+                        },
                       },
                     },
                   },
@@ -143,7 +153,9 @@ export async function POST(req: NextRequest) {
     }
 
     // Stop recording via Stream API (use DB-stored call ID, never trust client)
-    const result = await RecordingService.stopRecording(meetingSession.streamCallId);
+    const result = await RecordingService.stopRecording(
+      meetingSession.streamCallId,
+    );
 
     if (!result.success) {
       // Rollback: restore isRecording=true since Stream stop failed
@@ -175,7 +187,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "stream" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "stream" } },
+    );
     return NextResponse.json(
       { error: "Failed to stop recording" },
       { status: 500 },

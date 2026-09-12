@@ -7,6 +7,7 @@ import {
 } from "@/utils/appointmentlock";
 import { setParticipantStatus } from "@/lib/booking/participants";
 import prisma, { type Tx } from "@/lib/prisma";
+import { collaboratorUserIds } from "@/lib/collaborators/recipients";
 import { NextRequest, NextResponse } from "next/server";
 import { CancellationReason } from "@prisma/client";
 import { notifyAppointmentCancelled } from "@/lib/novu";
@@ -723,6 +724,20 @@ export async function POST(
       );
     }
 
+    // #1580 C-P1-5 — the event's accepted collaborators hear about it too.
+    let collaboratorIds: string[] = [];
+    if (appointment.webinar?.webinarPlan) {
+      collaboratorIds = await collaboratorUserIds(
+        "webinar",
+        appointment.webinar.webinarPlan.id,
+      );
+    } else if (appointment.class?.classPlan) {
+      collaboratorIds = await collaboratorUserIds(
+        "class",
+        appointment.class.classPlan.id,
+      );
+    }
+
     // Fire-and-forget: notify both parties about cancellation
     const userIds = Array.from(
       new Set(
@@ -730,6 +745,7 @@ export async function POST(
           notificationMeta.consultantUserId,
           notificationMeta.consulteeUserId,
           ...attendeeUserIds,
+          ...collaboratorIds,
         ].filter((id): id is string => !!id),
       ),
     );
