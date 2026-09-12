@@ -104,7 +104,7 @@ With a recency term in the weighting, recompute-on-mutation is no longer suffici
 
 ## The pending amendment (#1566)
 
-Everything above this heading is the shipped arithmetic. ADR 29's amendment of 2026-09-11 (#1566) replaces the measured prior with a constant, `C = 4.3` at `m = 5`, and retires `ScoringSnapshot`, the recency-decay term and the `rawRating*` / `effectiveSample*` diagnostics; the publication gates and the revision trail stay. It lands with the schema consolidation on #1562, and this page is rewritten then.
+Everything above this heading is the shipped arithmetic. It is being replaced, and the replacement is simpler than what is shipped. ADR 29's amendments of 2026-09-11 and 2026-09-12 (#1566) retire the shrinkage machinery altogether: a published score becomes the **plain arithmetic mean** of its track's data points once the gate clears, always shown with its count, and `ScoringSnapshot`, `scoringSnapshotId`, the recency-decay term, the `rawRating*` / `effectiveSample*` diagnostics and the measured priors go. The gates and the revision trail stay. In plain terms: add up the stars a track has earned and divide by the number of data points, but say nothing until there are at least five of them, and print "based on N" beside the number. A weighted or Bayesian average, which pretends every consultant starts with a few imaginary reviews at a typical score so that thin evidence cannot outrank thick evidence, is deliberately not shipped at this scale; the ADR names the trigger for revisiting it and requires that any such prior be disclosed on the profile. It lands with the schema consolidation on #1562, and this page is rewritten then.
 
 ## What the seed produces
 

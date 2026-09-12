@@ -12,6 +12,14 @@ import { apiError } from "@/lib/errors";
 import { isTransientDbError, reportTransient } from "@/lib/data/fail-open";
 import { personScoreAtLeast } from "@/lib/reviews-display";
 
+// #1560 — Netlify's durable cache keys on the query string only for the
+// parameters `Netlify-Vary` names; without it every filter served page 1.
+const LIST_CACHE_HEADERS = {
+  "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300",
+  "Netlify-Vary":
+    "query=page|limit|sort|domain|subdomain|tags|experience|minPrice|maxPrice|minRating|companies|language|affiliationType|includeUnverified|search",
+};
+
 export async function GET(request: NextRequest) {
   // Hoisted out of the try so the fail-open branch can echo them back in `meta`.
   const searchParams = request.nextUrl.searchParams;
@@ -68,9 +76,7 @@ export async function GET(request: NextRequest) {
     if (isDefaultView) {
       const result = await getDefaultConsultantsPage(sort, limit);
       return NextResponse.json(result, {
-        headers: {
-          "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300",
-        },
+        headers: LIST_CACHE_HEADERS,
       });
     }
 
@@ -193,9 +199,7 @@ export async function GET(request: NextRequest) {
         },
       },
       {
-        headers: {
-          "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300",
-        },
+        headers: LIST_CACHE_HEADERS,
       },
     );
   } catch (error) {
