@@ -3,10 +3,9 @@
 import { AppointmentDetailClient } from "@/components/appointments/detail/AppointmentDetailClient";
 import { CONSULTEE_JOIN_WINDOW_MS } from "@/lib/appointments/slots";
 import { isConfirmedStatus } from "@/lib/appointments/status";
+import { supportsDocuments } from "@/lib/appointments/kind-capabilities";
 import { useConsulteeAppointmentsAdapter } from "@/components/appointments/consultee/ConsulteeAppointmentsAdapter";
 import { DocumentUpload } from "@/components/appointments/DocumentUpload";
-
-const DOCUMENT_KINDS = new Set(["CONSULTATION", "TRIAL", "SUBSCRIPTION"]);
 
 export default function DetailPageClient({
   consulteeId,
@@ -22,7 +21,7 @@ export default function DetailPageClient({
       backHref={`/dashboard/consultee/${consulteeId}/appointments`}
       joinWindowMs={CONSULTEE_JOIN_WINDOW_MS}
       renderDocuments={(vm) =>
-        DOCUMENT_KINDS.has(vm.kind) && isConfirmedStatus(vm.status) ? (
+        supportsDocuments(vm.kind) && isConfirmedStatus(vm.status) ? (
           <DocumentUpload
             appointmentId={appointmentId}
             appointmentTitle={vm.title}

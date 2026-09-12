@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import prisma from "@/lib/prisma";
+import { seatPaymentsByUser } from "@/lib/appointments/seat-payments";
 import { withSerializableRetry } from "@/lib/db/serializable-retry";
 import {
   requireApiAuth,
@@ -27,6 +28,34 @@ const PARTICIPANT_USER_SELECT = {
   email: true,
   image: true,
 } as const;
+
+/**
+ * The best Payment per seat, serialised for the roster. `amount` is a BigInt
+ * on the row and must cross the wire as a string.
+ */
+async function readSeatPayments(appointmentIds: string[], userIds: string[]) {
+  if (appointmentIds.length === 0 || userIds.length === 0) return [];
+  const rows = await prisma.payment.findMany({
+    where: {
+      appointmentId: { in: appointmentIds },
+      userId: { in: userIds },
+      deletedAt: null,
+    },
+    select: {
+      userId: true,
+      paymentStatus: true,
+      amount: true,
+      currency: true,
+      createdAt: true,
+    },
+  });
+  return Array.from(seatPaymentsByUser(rows).values()).map((p) => ({
+    userId: p.userId,
+    paymentStatus: p.paymentStatus,
+    amount: p.amount.toString(),
+    currency: p.currency,
+  }));
+}
 
 export async function GET(
   request: Request,
@@ -98,9 +127,15 @@ export async function GET(
       ).values(),
     );
 
+    const seatPayments = await readSeatPayments(
+      webinarEvent.appointment ? [webinarEvent.appointment.id] : [],
+      participants.map((u) => u.id),
+    );
+
     return NextResponse.json({
       webinarEvent,
       participants,
+      seatPayments,
     });
   } catch (error) {
     Sentry.captureException(

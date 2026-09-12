@@ -7,9 +7,9 @@ import { DocumentUpload } from "@/components/appointments/DocumentUpload";
 import { useConsulteeAppointmentsAdapter } from "@/components/appointments/consultee/ConsulteeAppointmentsAdapter";
 import { CONSULTEE_JOIN_WINDOW_MS } from "@/lib/appointments/slots";
 import { isConfirmedStatus } from "@/lib/appointments/status";
+import { supportsDocuments } from "@/lib/appointments/kind-capabilities";
 
 /** Only these kinds carry documents; a webinar or class has no per-attendee file. */
-const DOCUMENT_KINDS = new Set(["CONSULTATION", "TRIAL", "SUBSCRIPTION"]);
 
 /**
  * Detail view for one of the member's own org-funded sessions.
@@ -70,7 +70,7 @@ export default function DetailPageClient({
       backHref={`/dashboard/organization/${orgId}/appointments`}
       joinWindowMs={CONSULTEE_JOIN_WINDOW_MS}
       renderDocuments={(vm) =>
-        DOCUMENT_KINDS.has(vm.kind) && isConfirmedStatus(vm.status) ? (
+        supportsDocuments(vm.kind) && isConfirmedStatus(vm.status) ? (
           <DocumentUpload
             appointmentId={appointmentId}
             appointmentTitle={vm.title}

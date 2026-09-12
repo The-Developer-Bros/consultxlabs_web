@@ -47,6 +47,9 @@ jest.mock("../../lib/data/appointment-detail", () => ({
   __esModule: true,
   readAppointmentDetail: jest.fn(),
   canAccessAppointment: jest.fn(),
+  // The participant branch scopes the payment rows; identity here, since
+  // this suite is about who gets in, not what they see of the money.
+  scopeAppointmentDetail: jest.fn((detail: unknown) => detail),
 }));
 
 import { getSession } from "../../lib/auth-server";
@@ -116,7 +119,9 @@ describe("authorizeAppointment — legitimate access", () => {
   });
 
   it("platform staff passes without consulting memberships", async () => {
-    mockedGetSession.mockResolvedValue({ user: { id: "staff1", role: "ADMIN" } });
+    mockedGetSession.mockResolvedValue({
+      user: { id: "staff1", role: "ADMIN" },
+    });
     mockedIsPrivileged.mockReturnValue(true);
     const auth = await authorizeAppointment("a1");
     expect(auth).toMatchObject({ userId: "staff1", isOrgParty: false });
@@ -150,7 +155,7 @@ describe("authorizeAppointment — the org-party grant is opt-in", () => {
     });
     // ADR 20 hardening: the org operator's grant must not carry the session
     // content graph (recordings, payment, participants).
-    expect((auth as { detail?: unknown })).not.toHaveProperty("detail");
+    expect(auth as { detail?: unknown }).not.toHaveProperty("detail");
     expect(mockedMembershipFind).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({

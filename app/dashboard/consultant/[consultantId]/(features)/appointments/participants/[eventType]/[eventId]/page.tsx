@@ -51,6 +51,8 @@ import { useToast } from "@/hooks/use-toast";
 import { DashboardHeader } from "@/components/dashboard/PageScaffold";
 import { effectiveMaxParticipants } from "@/lib/events/capacity";
 import { formatCurrencyAmount } from "@/utils/formatting";
+import { StatusBadge } from "@/components/dashboard/StatusBadge";
+import { paymentStatusBadge } from "@/lib/labels/session-labels";
 
 import type { ClassEvent, WebinarEvent } from "@/types/planner-events";
 
@@ -67,9 +69,18 @@ type EventKind = keyof typeof EVENT_KINDS;
  * `appointments: Appointment[]`, a webinar a single `appointment | null`.
  * Narrowing on the key rather than casting keeps that difference honest.
  */
-type ParticipantsResponse =
+/** One row per seat that has a Payment; a seat with none is unpaid. */
+type SeatPayment = {
+  userId: string;
+  paymentStatus: string;
+  amount: string;
+  currency: string;
+};
+
+type ParticipantsResponse = (
   | { webinarEvent: WebinarEvent; classEvent?: never }
-  | { classEvent: ClassEvent; webinarEvent?: never };
+  | { classEvent: ClassEvent; webinarEvent?: never }
+) & { seatPayments?: SeatPayment[] };
 
 // Registered-participant rows are flattened from the event's slot users.
 type RegisteredParticipant = { id: string; name?: string; email?: string };
@@ -276,17 +287,39 @@ export default function EventParticipantsPage() {
   // The instance may override the plan's capacity.
   const effectiveCapacity = effectiveMaxParticipants(event, plan);
 
+  const seatPayments = new Map(
+    (data?.seatPayments ?? []).map((p) => [p.userId, p] as const),
+  );
+
   const registeredColumns: ResponsiveColumn<RegisteredParticipant>[] = [
     { key: "name", header: "Name", primary: true, cell: (p) => p.name },
     { key: "email", header: "Email", cell: (p) => p.email },
     {
-      key: "status",
-      header: "Status",
-      cell: () => (
-        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300">
-          Registered
-        </span>
-      ),
+      key: "payment",
+      header: "Payment",
+      // The seat's payment, not a hard-coded "Registered": the host's
+      // question here is "did this person pay", and a seat with no Payment
+      // row (a free event, an org-sponsored seat) says so rather than
+      // pretending.
+      cell: (p) => {
+        const seat = seatPayments.get(p.id);
+        if (!seat) {
+          return (
+            <span className="text-xs text-muted-foreground">No payment</span>
+          );
+        }
+        return (
+          <span className="inline-flex items-center gap-2">
+            <StatusBadge
+              {...paymentStatusBadge(seat.paymentStatus)}
+              size="sm"
+            />
+            <span className="text-xs tabular-nums text-muted-foreground">
+              {formatCurrencyAmount(Number(seat.amount), seat.currency)}
+            </span>
+          </span>
+        );
+      },
     },
   ];
 

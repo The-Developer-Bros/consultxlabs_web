@@ -7,6 +7,7 @@ import { AppointmentDetailClient } from "@/components/appointments/detail/Appoin
 import { AppointmentDocumentsList } from "@/components/appointments/detail/AppointmentDocumentsList";
 import { Button } from "@/components/ui/button";
 import { isConfirmedStatus } from "@/lib/appointments/status";
+import { supportsDocuments } from "@/lib/appointments/kind-capabilities";
 import { CONSULTANT_JOIN_WINDOW_MS } from "@/lib/appointments/slots";
 import type { TAppointment } from "@/types/appointment";
 import { ConsultantResponseUpload } from "../../documents/ConsultantResponseUpload";
@@ -15,8 +16,6 @@ import {
   getParticipantManagementUrl,
   supportsParticipantManagement,
 } from "../utils/participantHelpers";
-
-const DOCUMENT_KINDS = new Set(["CONSULTATION", "SUBSCRIPTION", "TRIAL"]);
 
 export default function DetailPageClient({
   consultantId,
@@ -36,7 +35,7 @@ export default function DetailPageClient({
         joinWindowMs={CONSULTANT_JOIN_WINDOW_MS}
         renderDocuments={(vm) => {
           const canUpload =
-            DOCUMENT_KINDS.has(vm.kind) && isConfirmedStatus(vm.status);
+            supportsDocuments(vm.kind) && isConfirmedStatus(vm.status);
 
           return (
             <div className="space-y-3">

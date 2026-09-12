@@ -387,6 +387,21 @@ export const paymentStatusBadge = (
   status: PaymentDisplayStatus | string | null | undefined,
 ): StatusBadgeStyle => resolve(PAYMENT_STATUS_BADGE, status);
 
+/** A solid dot for a seat chip — the badge's pastel fill vanishes at 6px. */
+const PAYMENT_STATUS_DOT: Record<PaymentDisplayStatus, string> = {
+  PENDING: "bg-amber-500",
+  SUCCEEDED: "bg-green-500",
+  FAILED: "bg-red-500",
+  EXPIRED: "bg-zinc-400",
+  REFUNDED: "bg-purple-500",
+  PARTIALLY_REFUNDED: "bg-purple-500",
+};
+
+export const paymentStatusDot = (
+  status: PaymentDisplayStatus | string | null | undefined,
+): string =>
+  PAYMENT_STATUS_DOT[status as PaymentDisplayStatus] ?? "bg-zinc-400";
+
 // ───────────────────────────── RefundStatus ─────────────────────────────
 
 export const REFUND_STATUS_BADGE: Record<RefundStatus, StatusBadgeStyle> = {

@@ -123,6 +123,10 @@ export async function readAppointmentDetail(appointmentId: string) {
           // #1428 — the tentative-hold deadline shown on the detail page;
           // without it a held slot has no way to say when it releases.
           expiresAt: true,
+          // One Payment per attendee per appointment: the host needs the
+          // payer to put a status on each seat. Attendees only ever receive
+          // their own rows (scopeAppointmentDetail).
+          userId: true,
         },
       },
       organization: { select: { id: true, name: true } },
@@ -201,6 +205,31 @@ export function canAccessAppointment(
 ): boolean {
   const { consulteeUserIds, consultantUserIds } = participantUserIds(detail);
   return [...consulteeUserIds, ...consultantUserIds].includes(userId);
+}
+
+/**
+ * What a given viewer may see of the money. A webinar's ten attendees each
+ * have a Payment on the same appointment, and the read above returns all of
+ * them; an attendee must get only their own. The host (plan consultant or
+ * accepted collaborator) and platform staff see every seat.
+ */
+export function scopeAppointmentDetail<T extends TAppointmentDetail>(
+  detail: T,
+  viewerUserId: string,
+  privileged = false,
+): T {
+  if (privileged || appointmentRaterRole(viewerUserId, detail) === "PROVIDER") {
+    return detail;
+  }
+  return {
+    ...detail,
+    appointment: {
+      ...detail.appointment,
+      payment: detail.appointment.payment.filter(
+        (p) => p.userId === viewerUserId,
+      ),
+    },
+  };
 }
 
 function participantUserIds(detail: TAppointmentDetail) {

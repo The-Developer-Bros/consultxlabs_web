@@ -19,6 +19,7 @@ import prisma from "@/lib/prisma";
 import {
   readAppointmentDetail,
   canAccessAppointment,
+  scopeAppointmentDetail,
   type TAppointmentDetail,
 } from "@/lib/data/appointment-detail";
 import { supportError } from "@/lib/api/support-http";
@@ -68,10 +69,20 @@ export async function authorizeAppointment(
   if (!detail) return { code: "NOT_FOUND", status: 404 };
   const organizationId = detail.appointment.organizationId ?? null;
   if (canAccessAppointment(session.user.id, detail)) {
-    return { userId: session.user.id, isOrgParty: false, organizationId, detail };
+    return {
+      userId: session.user.id,
+      isOrgParty: false,
+      organizationId,
+      detail: scopeAppointmentDetail(detail, session.user.id),
+    };
   }
   if (isPrivileged(session.user.role)) {
-    return { userId: session.user.id, isOrgParty: false, organizationId, detail };
+    return {
+      userId: session.user.id,
+      isOrgParty: false,
+      organizationId,
+      detail,
+    };
   }
   // #support-hub — org-party branch. Grants the operator their OWN thread on
   // this appointment (org-party intents only); never widens read access to

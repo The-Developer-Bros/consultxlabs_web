@@ -5,7 +5,10 @@ import {
   dehydrate,
 } from "@tanstack/react-query";
 import prisma from "@/lib/prisma";
-import { readAppointmentDetail } from "@/lib/data/appointment-detail";
+import {
+  readAppointmentDetail,
+  scopeAppointmentDetail,
+} from "@/lib/data/appointment-detail";
 import DetailPageClient from "./DetailPageClient";
 import { requirePersonalProfileAccess } from "@/lib/auth/personal-dashboard-access";
 
@@ -47,7 +50,13 @@ export default async function AppointmentDetailPage({
   if (!owns) notFound();
 
   const queryClient = new QueryClient();
-  queryClient.setQueryData(["appointment-detail", appointmentId], detail);
+  // The attending side: hydrate only this attendee's own payment rows, the
+  // same shape the API route answers, or the first paint would show every
+  // other attendee's money before the refetch replaced it.
+  queryClient.setQueryData(
+    ["appointment-detail", appointmentId],
+    scopeAppointmentDetail(detail, profile.userId),
+  );
 
   return (
     <HydrationBoundary state={dehydrate(queryClient)}>
