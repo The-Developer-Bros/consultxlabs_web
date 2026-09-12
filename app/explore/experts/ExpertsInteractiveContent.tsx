@@ -115,6 +115,7 @@ export default function ExpertsInteractiveContent({
         >
           <SectionHeader
             title="Browse Familiarise Experts"
+            subtitle="Vetted mentors for every ambition — book your first session in minutes."
             icon={<Search className="w-5 h-5 text-white" />}
           />
 

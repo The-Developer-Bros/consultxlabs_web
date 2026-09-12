@@ -269,7 +269,10 @@ export default function ProgramsInteractiveContent({
 
           {/* All Programs Section */}
           <div id="all-programs">
-            <SectionHeader title="All Programs" />
+            <SectionHeader
+              title="All Programs"
+              subtitle="Every class and webinar in one scroll — your next skill is here."
+            />
 
             {/* Advanced Filters */}
             <motion.div
