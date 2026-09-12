@@ -195,7 +195,7 @@ A request-time retry looks like the obvious second lever and was written, then *
 
 The function runs with `AWS_LAMBDA_FUNCTION_MEMORY_SIZE=1024`, a V8 heap limit of 1,018 MB and 675–795 MB RSS at rest, and Lambda scales CPU with memory. That the stall is cold-instance JS/GC work at that CPU share is the obvious reading but is **inferred**, not measured. `NODE_OPTIONS=--max-old-space-size=6144` from `netlify.toml` was suspected and ruled out: `process.env.NODE_OPTIONS` is `null` inside the function, so `[build.environment]` does not reach the runtime.
 
-Do not treat the platform ceiling as a backstop either. Netlify documents 10 s by default and 26 s maximum on paid plans, yet invocations of 26.4 s to 31.9 s were logged on this Pro account. The stall itself is tracked as issue #1124; #1120 is closed by #1123, which established that it is not a database problem.
+Do not treat the platform ceiling as a backstop either. Netlify documented 10 s by default and 26 s maximum on paid plans until the 2026-06-25 functions redesign, which lists 60 s; invocations of 26.4 s to 31.9 s were logged on this Pro account before that change and 28–32 s cold boots still complete after it. The ~26 s cut users see is the edge abandoning a silent response, not the function limit (`deployment/netlify/platform-limits.md`). The stall itself is tracked as issue #1124; #1120 is closed by #1123, which established that it is not a database problem.
 
 ### The 2026-08-22 memory A/B: assessed and reverted — and what it disproves
 

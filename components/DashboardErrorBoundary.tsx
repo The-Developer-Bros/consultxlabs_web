@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import * as Sentry from "@sentry/nextjs";
 import ErrorBoundary from "./ErrorBoundary";
 import { Button } from "@/components/ui/button";
 
@@ -107,9 +108,13 @@ export function DashboardErrorBoundary({
     <ErrorBoundary
       fallback={DashboardErrorFallback}
       onError={(error, errorInfo) => {
-        // Log to monitoring service (e.g., Sentry, LogRocket, etc.)
+        // #1580: a dashboard crash reached here with no Sentry issue.
+        // Capture it so a repeat is visible instead of console-only.
         console.error("Dashboard error:", error, errorInfo);
-        // You could also send to an error reporting service here
+        Sentry.captureException(error, {
+          tags: { subsystem: "dashboard", boundary: "DashboardErrorBoundary" },
+          extra: { componentStack: errorInfo.componentStack },
+        });
       }}
     >
       {children}
