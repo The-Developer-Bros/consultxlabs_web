@@ -123,8 +123,8 @@ export function planEntries(plan: string): PlanEntry[] {
   return plan
     .split(";")
     .map((chunk) => ({
-      marker: /^[ \t]*--[ \t]*(.+)$/m.exec(chunk)?.[1]?.trim() ?? null,
-      statement: chunk.replace(/^\s*(--[^\n]*\n)+/gm, "").trim(),
+      marker: /^[ \t]*--[ \t]*(\S.*)$/m.exec(chunk)?.[1]?.trim() ?? null,
+      statement: chunk.replace(/^[ \t]*(--[^\n]*\n)+/gm, "").trim(),
     }))
     .filter((e) => e.statement.length > 0 && !e.statement.startsWith("--"));
 }

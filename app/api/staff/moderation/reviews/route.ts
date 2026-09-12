@@ -56,19 +56,31 @@ export async function GET(req: NextRequest) {
     const [reviews, total] = await Promise.all([
       prisma.consultantReview.findMany({
         where,
-        include: {
+        // An allowlist, not a bare include: the profiles carry statutory PII
+        // this queue never renders, so it is not fetched either (#946, #1561).
+        select: {
+          id: true,
+          rating: true,
+          reviewDescription: true,
+          createdAt: true,
+          deletedAt: true,
+          deletedByUserId: true,
+          isAnonymous: true,
+          replyBody: true,
+          repliedAt: true,
+          replyDeletedAt: true,
+          replyDeletedByUserId: true,
+          editedAt: true,
           consultantProfile: {
-            include: {
-              user: {
-                select: { id: true, name: true, email: true, image: true },
-              },
+            select: {
+              id: true,
+              user: { select: { name: true, email: true, image: true } },
             },
           },
           consulteeProfile: {
-            include: {
-              user: {
-                select: { id: true, name: true, email: true, image: true },
-              },
+            select: {
+              id: true,
+              user: { select: { name: true, email: true, image: true } },
             },
           },
         },
