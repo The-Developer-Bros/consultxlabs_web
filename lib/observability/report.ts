@@ -38,12 +38,45 @@ function buildSentryCaptureContext(opts: ReportOpts) {
   };
 }
 
+// FAMILIARISE_WEB-36: a thrown plain object (Razorpay's `{ statusCode, error }`)
+// stringified to "[object Object]"; prefer its own description/message/code.
+function normaliseError(error: unknown): Error {
+  if (error instanceof Error) return error;
+  if (typeof error === "string") return new Error(error);
+  if (error && typeof error === "object") {
+    const obj = error as Record<string, unknown>;
+    const nested = obj.error as Record<string, unknown> | undefined;
+    const statusCode = obj.statusCode;
+    const detail =
+      nested?.description ??
+      obj.description ??
+      nested?.message ??
+      obj.message ??
+      nested?.code ??
+      obj.code;
+    if (typeof detail === "string" || typeof detail === "number") {
+      const withStatus =
+        statusCode !== undefined
+          ? `${detail} (statusCode: ${statusCode})`
+          : String(detail);
+      return new Error(withStatus);
+    }
+    try {
+      return new Error(JSON.stringify(obj).slice(0, 500));
+    } catch {
+      return new Error(Object.prototype.toString.call(obj));
+    }
+  }
+  return new Error(String(error));
+}
+
 /** Report a caught fault or modelled outcome. Normalises non-Error throws. */
 export function reportSentryError(error: unknown, opts: ReportOpts): void {
-  Sentry.captureException(
-    error instanceof Error ? error : new Error(String(error)),
-    buildSentryCaptureContext(opts),
-  );
+  const normalised = normaliseError(error);
+  Sentry.captureException(normalised, {
+    ...buildSentryCaptureContext(opts),
+    extra: { ...(opts.extra ?? {}), thrown: error },
+  });
 }
 
 /** Sibling of `reportSentryError` for sites with no exception object to attach — idempotency short-circuits, race-losses, malformed-input rejections. */

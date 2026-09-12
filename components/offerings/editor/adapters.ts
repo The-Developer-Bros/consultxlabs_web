@@ -75,14 +75,34 @@ export interface OfferingAdapter {
 }
 
 /**
+ * The GET returns `topics` as the `Topic` relation (`{ id, name, ... }`), but
+ * the form's `stringList` field and the save schema both hold names.
+ */
+const topicNames = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) =>
+      typeof item === "string"
+        ? item
+        : typeof (item as { name?: unknown })?.name === "string"
+          ? (item as { name: string }).name
+          : "",
+    )
+    .filter((name) => name !== "");
+};
+
+/**
  * The API returns `price` in paise (#780 money model) while the form edits
  * rupees — same convention as every other price field in the product. Each
  * adapter's `planOf` divides on the way IN; the services multiply on the way
  * OUT. Everything else passes through untouched.
  */
-const toFormValues = (plan: Record<string, unknown>): Record<string, unknown> => ({
+const toFormValues = (
+  plan: Record<string, unknown>,
+): Record<string, unknown> => ({
   ...plan,
   price: typeof plan.price === "number" ? plan.price / 100 : plan.price,
+  topics: topicNames(plan.topics),
 });
 
 export const OFFERING_ADAPTERS: Record<OfferingType, OfferingAdapter> = {
