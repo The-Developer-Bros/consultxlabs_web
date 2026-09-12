@@ -20,6 +20,10 @@ import { ProfileHeader } from "./components/ProfileHeader";
 import { ReviewsSection } from "./components/ReviewsSection";
 import { useTimezone } from "./hooks/useTimezone";
 import { formatInTimeZone } from "date-fns-tz";
+import {
+  readSlotGridEnvelope,
+  toFriendlySlotError,
+} from "@/lib/scheduling/safeJson";
 
 interface ExpertProfileClientProps {
   consultantDetails: ConsultantDetailData;
@@ -79,14 +83,13 @@ export function ExpertProfileClient({
           }?startDateInUtc=${startDateInUtc.toISOString()}&endDateInUtc=${endDateInUtc.toISOString()}&timezone=${encodeURIComponent(timezone)}`,
         );
 
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(
-            errorData.error || "Failed to fetch availability slots",
-          );
-        }
-
-        const { data } = await response.json();
+        // Hotfix: platform timeouts return text/plain ("the edge function
+        // timed out"), so blind response.json() threw
+        // "Unexpected token 'h'...". readSlotGridEnvelope maps that to a
+        // retryable message instead.
+        const data = await readSlotGridEnvelope<Record<string, TSlotTiming[]>>(
+          response,
+        );
         const selectedDateKey = formatInTimeZone(
           selectedDate,
           timezone,
@@ -98,8 +101,7 @@ export function ExpertProfileClient({
         console.error("Error fetching slots:", error);
         toast({
           title: "Error fetching slots",
-          description:
-            error instanceof Error ? error.message : "Please try again",
+          description: toFriendlySlotError(error, "Please try again"),
           variant: "destructive",
         });
       }

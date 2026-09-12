@@ -12,6 +12,10 @@ import { format as formatTz } from "date-fns-tz";
 import { Calendar, Clock, Loader2, Check } from "lucide-react";
 import { cn } from "@/utils/tailwind";
 import { Badge } from "@/components/ui/badge";
+import {
+  readSlotGridEnvelope,
+  toFriendlySlotError,
+} from "@/lib/scheduling/safeJson";
 
 export interface SelectedSlot {
   startsAt: Date;
@@ -90,17 +94,14 @@ export function TrialScheduleCalendar({
           `/api/slots/availability-with-allocation/${consultantId}?` +
             `startDateInUtc=${startDateInUtc.toISOString()}&` +
             `endDateInUtc=${endDateInUtc.toISOString()}&` +
-            `timezone=${timezone}`,
+            `timezone=${encodeURIComponent(timezone)}`,
         );
 
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(
-            errorData.error || "Failed to fetch availability slots",
-          );
-        }
-
-        const { data } = await response.json();
+        // Hotfix: map text/plain platform timeouts to a retryable message
+        // instead of "Unexpected token 'h'...".
+        const data = await readSlotGridEnvelope<Record<string, TSlotTiming[]>>(
+          response,
+        );
         const selectedDateKey = formatTz(selectedDate, "yyyy-MM-dd", {
           timeZone: timezone,
         });
@@ -110,8 +111,7 @@ export function TrialScheduleCalendar({
         console.error("Error fetching slots:", error);
         toast({
           title: "Error fetching availability",
-          description:
-            error instanceof Error ? error.message : "Please try again",
+          description: toFriendlySlotError(error, "Please try again"),
           variant: "destructive",
         });
         setSlotTimings([]);

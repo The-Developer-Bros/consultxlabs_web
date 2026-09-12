@@ -321,7 +321,13 @@ const RATE_LIMIT_RULES: RateRule[] = [
   },
   {
     label: "public: booking-page availability",
-    match: (p) => p.startsWith("/api/slots/availability/"),
+    // Hotfix: the old prefix "/api/slots/availability/" never matched
+    // "/api/slots/availability-with-allocation/..." ("-" vs "/" after
+    // "availability"), so the wide grid ran with no edge limit while the
+    // sibling route was capped at 30/min/IP. Match both.
+    match: (p) =>
+      p.startsWith("/api/slots/availability/") ||
+      p.startsWith("/api/slots/availability-with-allocation/"),
     limiter: availabilityLimiter,
     skipLocalhost: false,
   },

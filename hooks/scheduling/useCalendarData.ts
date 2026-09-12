@@ -10,6 +10,7 @@ import {
 } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import { AllocationService } from "@/lib/scheduling/allocationService";
+import { toFriendlySlotError } from "@/lib/scheduling/safeJson";
 import { createAvailabilityPoller } from "@/lib/scheduling/availabilityPolling";
 import { INTERVALS } from "@/utils/timeSlotsMeta";
 
@@ -425,8 +426,9 @@ export function useCalendarData(
       console.error("Error fetching availability slots:", error);
       // Not captured here — AllocationService.fetchAvailabilitySlots already
       // reports this exact error (see fetchConsultantDetails above).
-      const errorMessage =
-        error instanceof Error ? error.message : "Failed to fetch availability";
+      // Hotfix: never surface "Unexpected token 'h'..." — map platform
+      // timeouts to the retryable message.
+      const errorMessage = toFriendlySlotError(error, "Failed to fetch availability");
       // #1164 — a background poll failed: the grid still shows the last good
       // answer and the next tick retries, so neither the banner nor a toast is
       // the user's problem. A flaky minute would otherwise toast every 60s.

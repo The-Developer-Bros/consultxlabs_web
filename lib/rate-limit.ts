@@ -151,7 +151,7 @@ export const searchLimiter = makeLimiter(60, "1 m", "rl:search");
 /** 20 per minute — GET /api/trials/check-eligibility */
 export const eligibilityLimiter = makeLimiter(20, "1 m", "rl:eligibility");
 
-/** 30 per minute — GET /api/slots/availability/[consultantId] (IP-based, public booking flow) */
+/** 30 per minute — GET /api/slots/availability/[consultantId] + availability-with-allocation/[consultantId] (IP-based, public booking flow) */
 export const availabilityLimiter = makeLimiter(30, "1 m", "rl:availability");
 
 /**
