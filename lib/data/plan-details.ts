@@ -70,7 +70,12 @@ export async function fetchWebinarPlanDetail(webinarPlanId: string) {
       topics: true,
       faqs: { orderBy: { order: "asc" } },
       collaborators: {
-        where: { status: "ACCEPTED" as const },
+        // A soft-deleted (erased) profile leaves the public co-host list even
+        // if its row somehow stayed ACCEPTED (#1580).
+        where: {
+          status: "ACCEPTED" as const,
+          consultantProfile: { deletedAt: null },
+        },
         include: {
           consultantProfile: {
             select: {
@@ -151,7 +156,12 @@ export async function fetchClassPlanDetail(classPlanId: string) {
       faqs: { orderBy: { order: "asc" } },
       classContents: { orderBy: { order: "asc" } },
       collaborators: {
-        where: { status: "ACCEPTED" as const },
+        // A soft-deleted (erased) profile leaves the public co-host list even
+        // if its row somehow stayed ACCEPTED (#1580).
+        where: {
+          status: "ACCEPTED" as const,
+          consultantProfile: { deletedAt: null },
+        },
         include: {
           consultantProfile: {
             select: {

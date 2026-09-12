@@ -10,6 +10,7 @@
  *   User.pseudonymousId → sha256(userId + ERASURE_SALT)
  *
  *   Membership[].status   → ERASED (every active row across every org)
+ *   Collaborator.status   → REMOVED (every PENDING/ACCEPTED row, #1580)
  *   ConsultantProfile / ConsulteeProfile free-text PII (when present) → NULL
  *   Appointment.notes (when authored by this user) → NULL
  *
@@ -48,6 +49,11 @@ import type { Db } from "@/lib/prisma";
 import { AUDIT_ACTIONS } from "@/lib/enterprise/audit-actions";
 import { dispatchWebhookEvent } from "@/lib/enterprise/outbound-webhooks/dispatch";
 import { releaseSeatsForTerminatedAssignments } from "@/lib/api/organizations/seat-count";
+import {
+  removeCollaboratorStanding,
+  type CollaborationRef,
+} from "@/lib/collaborators/standing";
+import { reportSentryError } from "@/lib/observability/report";
 
 export interface ScrubResult {
   /// True iff this call performed the scrub. False means the user was
@@ -115,6 +121,7 @@ export async function scrubUser(
     new Set(memberships.map((m) => m.organizationId)),
   );
 
+  let collaborationsRemoved: CollaborationRef[] = [];
   await prisma.$transaction(async (tx) => {
     await tx.user.update({
       where: { id: userId },
@@ -179,6 +186,10 @@ export async function scrubUser(
     // free-text PII columns. If new PII fields are added, mirror the
     // ConsultantProfile scrub above.
 
+    // #1580 — an erased consultant otherwise stays an ACCEPTED collaborator in
+    // every split and roster; the same flip the moderation ban runs.
+    collaborationsRemoved = await removeCollaboratorStanding(tx, userId);
+
     // Hard-delete sessions + accounts so SSO and password-based logins
     // both break immediately. BetterAuth caches sessions in Redis;
     // those entries expire on TTL and are non-load-bearing.
@@ -217,6 +228,39 @@ export async function scrubUser(
       });
     }
   });
+
+  // Stream revocation is best-effort after commit, as in the moderation
+  // side-effects; the rows are REMOVED either way and a miss is reported.
+  for (const { planType, planId } of collaborationsRemoved) {
+    try {
+      // Lazy: the service pulls Stream and Novu, which the scrub does not need
+      // unless a collaboration was actually flipped.
+      const { revokeCollaboratorAccess } =
+        await import("@/lib/collaborators/service");
+      const { success } = await revokeCollaboratorAccess(
+        planType,
+        planId,
+        userId,
+        { notify: false },
+      );
+      if (!success) {
+        reportSentryError(
+          new Error("Collaborator Stream access not fully revoked on erasure"),
+          {
+            subsystem: "compliance",
+            op: "scrubUser.revokeCollaboratorAccess",
+            extra: { planType, planId },
+          },
+        );
+      }
+    } catch (error) {
+      reportSentryError(error, {
+        subsystem: "compliance",
+        op: "scrubUser.revokeCollaboratorAccess",
+        extra: { planType, planId },
+      });
+    }
+  }
 
   return { scrubbed: true, pseudonymousId, affectedOrganizationIds };
 }

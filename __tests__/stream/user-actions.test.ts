@@ -218,7 +218,7 @@ describe("User Actions", () => {
 
       const result = await upsertUsersToStream(["user-1", "user-2"]);
 
-      expect(result).toEqual({ users: {} });
+      expect(result).toEqual({ users: {}, droppedIds: [] });
       expect(mockStreamClient.upsertUsers).not.toHaveBeenCalled();
     });
 
@@ -243,7 +243,11 @@ describe("User Actions", () => {
         "nonexistent-2",
       ]);
 
-      expect(result).toEqual({ users: {} });
+      // The unknown ids are reported back so a roster builder can leave them out (#1580).
+      expect(result).toEqual({
+        users: {},
+        droppedIds: ["nonexistent-1", "nonexistent-2"],
+      });
       expect(mockStreamClient.upsertUsers).not.toHaveBeenCalled();
       expect(mockLogger.warn).toHaveBeenCalledWith(
         "No users found for batch upsert",
@@ -399,9 +403,9 @@ describe("User Actions", () => {
       const { searchUsersWithRelationships } =
         await import("../../actions/stream/chat/user.action");
 
-      await expect(
-        searchUsersWithRelationships("test"),
-      ).rejects.toThrow("DB failure");
+      await expect(searchUsersWithRelationships("test")).rejects.toThrow(
+        "DB failure",
+      );
 
       expect(mockLogger.error).toHaveBeenCalledWith(
         "User search failed",

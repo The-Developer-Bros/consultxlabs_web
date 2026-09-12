@@ -455,15 +455,34 @@ describe("resolveMeetingAccess still admits a live session", () => {
     );
   });
 
-  it("admits an accepted collaborator as a host", async () => {
+  // #1580 C-P1-4 — host controls reach the co-presenter only; crew joins as
+  // a participant and cannot end the call for everyone.
+  it("admits an accepted co-presenter as a host", async () => {
     seedAccess(webinar("SCHEDULED"), { joinerIsParticipant: false });
     db.user.findUnique.mockResolvedValue({ consultantProfileId: "cp-collab" });
-    db.collaborator.findFirst.mockResolvedValue({ id: "collab-1" });
+    db.collaborator.findFirst.mockResolvedValue({
+      id: "collab-1",
+      role: "CO_HOST",
+    });
 
     const access = await resolveMeetingAccess("slot-abc", "user_1");
 
     expect(access.hasAccess).toBe(true);
     expect(access.role).toBe("host");
+  });
+
+  it("admits an accepted crew collaborator as a participant, not a host", async () => {
+    seedAccess(webinar("SCHEDULED"), { joinerIsParticipant: false });
+    db.user.findUnique.mockResolvedValue({ consultantProfileId: "cp-collab" });
+    db.collaborator.findFirst.mockResolvedValue({
+      id: "collab-1",
+      role: "MODERATOR",
+    });
+
+    const access = await resolveMeetingAccess("slot-abc", "user_1");
+
+    expect(access.hasAccess).toBe(true);
+    expect(access.role).toBe("participant");
   });
 
   it("lets a disconnected participant back into a session that just completed", async () => {

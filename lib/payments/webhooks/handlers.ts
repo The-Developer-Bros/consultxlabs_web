@@ -13,6 +13,7 @@ import {
   setParticipantStatus,
 } from "@/lib/booking/participants";
 import prisma, { type Tx } from "@/lib/prisma";
+import { collaboratorUserIds } from "@/lib/collaborators/recipients";
 import {
   AppointmentsType,
   PaymentStatus,
@@ -942,6 +943,7 @@ ACTION REQUIRED: Customer was charged but appointment was NOT created!
     // has to name what they bought.
     const planNotifSelect = {
       select: {
+        id: true,
         title: true,
         consultantProfile: {
           select: { user: { select: { id: true, name: true } } },
@@ -1032,6 +1034,18 @@ ACTION REQUIRED: Customer was charged but appointment was NOT created!
     const notifUserIds = [userId];
     if (consultantUserId && consultantUserId !== userId) {
       notifUserIds.push(consultantUserId);
+    }
+    // #1580 C-P1-5 — a group event's accepted collaborators hear about the
+    // booking too; a 1:1 plan has none.
+    const webinarPlanId = appointmentForNotif?.webinar?.webinarPlan?.id;
+    const classPlanId = appointmentForNotif?.class?.classPlan?.id;
+    if (webinarPlanId || classPlanId) {
+      const collaboratorIds = webinarPlanId
+        ? await collaboratorUserIds("webinar", webinarPlanId)
+        : await collaboratorUserIds("class", classPlanId as string);
+      for (const id of collaboratorIds) {
+        if (!notifUserIds.includes(id)) notifUserIds.push(id);
+      }
     }
 
     // #1085 — the template renders a session time; omitting it left an empty
