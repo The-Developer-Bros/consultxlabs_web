@@ -481,3 +481,9 @@ The stack will scale to tens of thousands of daily active users with standard op
 Every major tech company started as a monolith. They adopted microservices when they had thousands of engineers, billions of users, and services with fundamentally different scaling needs. When we have those problems, we'll have the revenue and team size to solve them. Until then, the architecture should match the team and stage, not the aspiration.
 
 **The highest-ROI work right now is not re-architecting. It's shipping the product, getting users, and fixing the performance issues in the monolith we already have.** That's what will make users stay. And staying users are what create the need for scale — which is the best problem a startup can have.
+
+---
+
+## Addendum, 2026-09-12: the host is Netlify, and the question was re-examined
+
+This document names Vercel as the host; the site has run on Netlify Pro since launch preparation, and the portability claim above is what makes that difference survivable. On 2026-09-12 the "Spring Boot, Vercel, or a broker" question was re-examined against measured production behaviour and current vendor numbers. The evidence supports the monolith, Next.js, and the no-broker posture, and narrows the live question to where the Node process runs — a serverless platform whose instances share a process and offer Mumbai, or one always-on process on a container host. The fact sheet, with sources and a dated reading, is `.claude/skills/deployment/netlify/hosting-alternatives.md`; the per-issue ledger it draws on is `.claude/skills/deployment/netlify/issue-ledger.md`.
