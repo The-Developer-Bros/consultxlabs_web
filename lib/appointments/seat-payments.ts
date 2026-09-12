@@ -64,8 +64,14 @@ export function summarizeSeatPayments(
     collectedPaise: 0,
     currency: fallbackCurrency,
   };
+  // Every seat on an appointment settles in one currency; the first row
+  // names it rather than the last one overwriting it.
+  let currencySeen = false;
   for (const row of byUser.values()) {
-    summary.currency = String(row.currency ?? fallbackCurrency);
+    if (!currencySeen && row.currency) {
+      summary.currency = String(row.currency);
+      currencySeen = true;
+    }
     if (row.paymentStatus === "SUCCEEDED") {
       summary.paid += 1;
       summary.collectedPaise += Number(row.amount);

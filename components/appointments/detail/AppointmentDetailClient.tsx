@@ -223,9 +223,13 @@ export function AppointmentDetailClient({
   const action = adapter.primaryAction(vm);
   // #1163 — the proposal card below IS the answer surface; the adapter's
   // "Review reschedule request" list affordance would only link back here.
+  // "Report issue" opens the same per-appointment support thread as the
+  // "Get help" button beside it — one entry point on this page.
   const overflow = adapter
     .overflowItems(vm)
-    .filter((item) => item.key !== "reschedule-proposal");
+    .filter(
+      (item) => item.key !== "reschedule-proposal" && item.key !== "report",
+    );
   const badge = eventUnionStatusBadge(vm.status);
   const orgName =
     detail.appointment.organization?.name ??
@@ -682,10 +686,13 @@ export function AppointmentDetailClient({
                           </Avatar>
                           {u.name}
                           {seat && seatBadge && (
-                            <span
-                              aria-label={seatBadge.label}
-                              className={`ml-0.5 inline-block h-1.5 w-1.5 rounded-full ${paymentStatusDot(seat.paymentStatus)}`}
-                            />
+                            <>
+                              <span
+                                aria-hidden
+                                className={`ml-0.5 inline-block h-1.5 w-1.5 rounded-full ${paymentStatusDot(seat.paymentStatus)}`}
+                              />
+                              <span className="sr-only">{seatBadge.label}</span>
+                            </>
                           )}
                         </span>
                       );

@@ -23,6 +23,8 @@ const detail = {
   appointment: {
     id: "appt",
     organizationId: null,
+    webinarId: "web-1",
+    classId: null,
     webinar: { webinarPlan: { consultantProfile: { userId: HOST } } },
     slotsOfAppointment: [
       {
@@ -60,6 +62,39 @@ describe("scopeAppointmentDetail", () => {
   it("gives an attendee only their own payment rows", () => {
     const scoped = scopeAppointmentDetail(detail, A);
     expect(scoped.appointment.payment.map((p) => p.id)).toEqual(["p-a"]);
+  });
+
+  it("leaves a 1:1 booking whole for its attendee, whoever paid", () => {
+    // A sponsored consultation: the Payment's userId is the org admin's, and
+    // the attending consultee must still see the booking's payment.
+    const consultation = {
+      appointment: {
+        id: "appt-1to1",
+        organizationId: "org-1",
+        webinarId: null,
+        classId: null,
+        consultation: {
+          consultationPlan: { consultantProfile: { userId: HOST } },
+          requestedBy: { userId: A },
+        },
+        slotsOfAppointment: [],
+        payment: [
+          {
+            id: "p-sponsor",
+            userId: "u-org-admin",
+            paymentStatus: "SUCCEEDED",
+            amount: "840865",
+            currency: "INR",
+            createdAt: "2026-09-12T00:00:00Z",
+            expiresAt: null,
+          },
+        ],
+      },
+      siblings: [],
+    } as unknown as TAppointmentDetail;
+    expect(
+      scopeAppointmentDetail(consultation, A).appointment.payment,
+    ).toHaveLength(1);
   });
 
   it("leaves the host's and staff's view whole", () => {
@@ -111,6 +146,32 @@ describe("seat payments", () => {
       pending: 1,
       lapsed: 0,
       collectedPaise: 2,
+      currency: "INR",
+    });
+  });
+
+  it("names the currency from the first seat and counts a zero-amount seat as paid", () => {
+    const byUser = seatPaymentsByUser([
+      {
+        userId: A,
+        paymentStatus: "SUCCEEDED",
+        amount: 0,
+        currency: "INR",
+        createdAt: "2026-09-01T00:00:00Z",
+      },
+      {
+        userId: B,
+        paymentStatus: "SUCCEEDED",
+        amount: 500,
+        currency: "USD",
+        createdAt: "2026-09-01T00:00:00Z",
+      },
+    ]);
+    expect(summarizeSeatPayments(byUser)).toEqual({
+      paid: 2,
+      pending: 0,
+      lapsed: 0,
+      collectedPaise: 500,
       currency: "INR",
     });
   });

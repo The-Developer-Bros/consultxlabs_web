@@ -212,12 +212,21 @@ export function canAccessAppointment(
  * have a Payment on the same appointment, and the read above returns all of
  * them; an attendee must get only their own. The host (plan consultant or
  * accepted collaborator) and platform staff see every seat.
+ *
+ * Only group kinds are scoped. A 1:1 booking has one payment that belongs to
+ * the booking whoever made it — a sponsoring organisation's admin, say — and
+ * the attending consultee must still see it (the 2026-09-12 QA pass found a
+ * sponsored consultation rendering no payment at all). An org-paid seat on a
+ * group event stays attributed to its payer until the AppointmentParticipant
+ * reader flip (#1319 A9), which carries the seat→payment edge.
  */
 export function scopeAppointmentDetail<T extends TAppointmentDetail>(
   detail: T,
   viewerUserId: string,
   privileged = false,
 ): T {
+  const { webinarId, classId } = detail.appointment;
+  if (!webinarId && !classId) return detail;
   if (privileged || appointmentRaterRole(viewerUserId, detail) === "PROVIDER") {
     return detail;
   }

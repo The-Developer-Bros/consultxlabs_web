@@ -52,6 +52,9 @@ jest.mock("../../lib/data/appointment-detail", () => ({
   scopeAppointmentDetail: jest.fn((detail: unknown) => detail),
 }));
 
+import { scopeAppointmentDetail as mockedScopeFn } from "../../lib/data/appointment-detail";
+const mockedScope = mockedScopeFn as jest.Mock;
+
 import { getSession } from "../../lib/auth-server";
 import { isPrivileged } from "../../lib/auth-helpers";
 import { hasOrgPermission } from "../../lib/auth/org-permissions";
@@ -116,6 +119,20 @@ describe("authorizeAppointment — legitimate access", () => {
     const auth = await authorizeAppointment("a1");
     expect(auth).toMatchObject({ userId: "u1", isOrgParty: false });
     expect(mockedMembershipFind).not.toHaveBeenCalled();
+  });
+
+  it("staff who are also on the roster keep the unscoped detail", async () => {
+    mockedGetSession.mockResolvedValue({
+      user: { id: "staff-attendee", role: "STAFF" },
+    });
+    mockedCanAccess.mockReturnValue(true);
+    mockedIsPrivileged.mockReturnValue(true);
+    await authorizeAppointment("a1");
+    expect(mockedScope).toHaveBeenCalledWith(
+      expect.anything(),
+      "staff-attendee",
+      true,
+    );
   });
 
   it("platform staff passes without consulting memberships", async () => {
