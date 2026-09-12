@@ -31,6 +31,7 @@ jest.mock("../../lib/stream-client", () => ({
   // directly so existing assertions on the Stream calls still hold.
   withStreamCircuitBreaker: jest.fn((op: () => unknown) => op()),
   StreamUnavailableError: class StreamUnavailableError extends Error {},
+  isExpectedStreamError: jest.fn(() => false),
 }));
 
 jest.mock("../../lib/stream-logger", () => ({

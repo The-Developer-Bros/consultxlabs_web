@@ -4,6 +4,9 @@ import { getSession } from "@/lib/auth-server";
 import { isPrivileged } from "@/lib/auth-helpers";
 import { calculateRevenueSplit } from "@/lib/collaborators/service";
 import prisma from "@/lib/prisma";
+import { z } from "zod";
+
+const amountSchema = z.coerce.number().int().min(0).max(1_000_000_000);
 
 export async function GET(
   req: NextRequest,
@@ -42,12 +45,26 @@ export async function GET(
       }
     }
 
-    const amount = Number(req.nextUrl.searchParams.get("amount") || "10000");
+    // #1580 C-P2-7 — bounded: `Number()` accepted NaN, negatives and 1e308,
+    // and the split math ran on whatever arrived.
+    const amountParsed = amountSchema.safeParse(
+      req.nextUrl.searchParams.get("amount") ?? "10000",
+    );
+    if (!amountParsed.success) {
+      return NextResponse.json(
+        { error: "amount must be an integer between 0 and 1,000,000,000" },
+        { status: 400 },
+      );
+    }
+    const amount = amountParsed.data;
 
     const splits = await calculateRevenueSplit("webinar", planId, amount);
     return NextResponse.json({ data: splits });
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "collaborations" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "collaborations" } },
+    );
     console.error("Error calculating revenue split:", error);
     return NextResponse.json(
       { error: "Failed to calculate revenue split" },

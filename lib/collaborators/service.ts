@@ -1,7 +1,11 @@
 import * as Sentry from "@sentry/nextjs";
 import { withSerializableRetry } from "@/lib/db/serializable-retry";
 import prisma, { type PrismaLike, type Tx } from "@/lib/prisma";
-import { Prisma, type CollaboratorRole } from "@prisma/client";
+import {
+  Prisma,
+  type AppointmentStatus,
+  type CollaboratorRole,
+} from "@prisma/client";
 import type { Collaborator, CollaboratorStatus } from "@prisma/client";
 import { removeUserFromEventChannel } from "@/actions/stream/chat/event-channel.action";
 import { getStreamChatClient } from "@/lib/stream-client";
@@ -21,6 +25,10 @@ import { getAppUrl } from "@/lib/url";
 import { scopeToWhereOrgId, type Scope } from "@/lib/api/scope/parse";
 import { reportSentryError } from "@/lib/observability/report";
 import { PRESENTER_ROLES } from "@/lib/collaborators/roles";
+import {
+  recordParticipants,
+  setParticipantStatus,
+} from "@/lib/booking/participants";
 
 // The flip a ban and an erasure share lives in its own module so the
 // moderation transaction does not load this module's Stream and Novu graph.
@@ -426,12 +434,67 @@ export async function respondToInvitation(
       );
       console.error("Failed to create collaborator channel:", err);
     }
+
+    // #1580 — the shadow participant edge on every live appointment of the
+    // plan, so the roster reader flip (#1319 A9) finds the collaborator too.
+    await syncCollaboratorParticipants(planType, planId, consultantProfileId);
   }
 
   // The host hears either answer (#1580 C-P1-5 added the decline).
   await notifyHostOfResponse(planType, planId, consultantProfileId, updated);
 
   return updated;
+}
+
+/** The plan's appointments a collaborator is party to: live, not called off. */
+function livePlanAppointmentsWhere(planType: PlanType, planId: string) {
+  return {
+    deletedAt: null,
+    status: {
+      notIn: ["CANCELLED", "REJECTED", "EXPIRED"] as AppointmentStatus[],
+    },
+    ...(planType === "webinar"
+      ? { webinar: { webinarPlanId: planId } }
+      : { class: { classPlanId: planId } }),
+  };
+}
+
+/**
+ * Write `AppointmentParticipant(role: COLLABORATOR)` for the accepted
+ * collaborator on each live appointment of the plan. Idempotent (createMany
+ * skipDuplicates) and money-free: no Payment is ever linked. Best-effort —
+ * the row is ACCEPTED either way and a miss is reported, not thrown.
+ */
+async function syncCollaboratorParticipants(
+  planType: PlanType,
+  planId: string,
+  consultantProfileId: string,
+): Promise<void> {
+  try {
+    const profile = await prisma.consultantProfile.findUnique({
+      where: { id: consultantProfileId },
+      select: { userId: true },
+    });
+    if (!profile) return;
+    const appointments = await prisma.appointment.findMany({
+      where: livePlanAppointmentsWhere(planType, planId),
+      select: { id: true, organizationId: true },
+    });
+    for (const appointment of appointments) {
+      await recordParticipants(
+        prisma,
+        appointment.id,
+        [{ userId: profile.userId, role: "COLLABORATOR", status: "CONFIRMED" }],
+        { organizationId: appointment.organizationId },
+      );
+    }
+  } catch (error) {
+    reportSentryError(error, {
+      subsystem: "collaborators",
+      op: "respondToInvitation.syncParticipants",
+      extra: { planId, planType },
+    });
+  }
 }
 
 async function notifyHostOfResponse(
@@ -649,6 +712,28 @@ export async function revokeCollaboratorAccess(
         error,
       );
     }
+  }
+
+  // #1580 — the shadow participant rows leave with the standing. Idempotent
+  // updateMany, so the ban, the erasure and the retry sweep can all run it.
+  try {
+    await setParticipantStatus(
+      prisma,
+      {
+        userId,
+        role: "COLLABORATOR",
+        status: { not: "CANCELLED" },
+        appointment: livePlanAppointmentsWhere(planType, planId),
+      },
+      "CANCELLED",
+    );
+  } catch (error) {
+    success = false;
+    reportSentryError(error, {
+      subsystem: "collaborators",
+      op: "revokeCollaboratorAccess.participants",
+      extra: { planId, planType },
+    });
   }
 
   // Stream channel revocation — independent failure
@@ -924,6 +1009,8 @@ export async function getMyCollaborations(consultantProfileId: string) {
         consultantProfileId,
         collaboratorType: "WEBINAR",
         status: { in: ["PENDING", "ACCEPTED"] },
+        // #1580 C-P2-4 — an archived plan leaves the collaboration lists.
+        webinarPlan: { archivedAt: null },
       },
       include: {
         webinarPlan: {
@@ -989,6 +1076,7 @@ export async function getMyCollaborations(consultantProfileId: string) {
         consultantProfileId,
         collaboratorType: "CLASS",
         status: { in: ["PENDING", "ACCEPTED"] },
+        classPlan: { archivedAt: null },
       },
       include: {
         classPlan: {
@@ -1079,6 +1167,7 @@ export async function getHostedCollaborations(
       where: {
         consultantProfileId,
         ...orgFilter,
+        archivedAt: null,
         collaborators: {
           some: { status: { in: ["PENDING", "ACCEPTED"] } },
         },
@@ -1126,6 +1215,7 @@ export async function getHostedCollaborations(
       where: {
         consultantProfileId,
         ...orgFilter,
+        archivedAt: null,
         collaborators: {
           some: { status: { in: ["PENDING", "ACCEPTED"] } },
         },

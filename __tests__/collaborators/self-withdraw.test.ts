@@ -60,6 +60,8 @@ jest.mock("../../lib/prisma", () => ({
       })),
     },
     webinar: { findMany: jest.fn(async () => []) },
+    // #1580 — the shadow participant rows are cancelled with the standing.
+    appointmentParticipant: { updateMany: jest.fn(async () => ({ count: 1 })) },
   },
 }));
 
@@ -86,6 +88,15 @@ describe("collaborator self-withdraw", () => {
       }),
     );
     expect(notifyCollaboratorRemoved).not.toHaveBeenCalled();
+    expect(prisma.appointmentParticipant.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          userId: "u-collab",
+          role: "COLLABORATOR",
+        }),
+        data: { status: "CANCELLED" },
+      }),
+    );
   });
 
   it("matches no row for a third party", async () => {

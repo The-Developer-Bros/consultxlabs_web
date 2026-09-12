@@ -6,6 +6,7 @@ import { z } from "zod";
 import prisma from "@/lib/prisma";
 import {
   getStreamChatClient,
+  isExpectedStreamError,
   withStreamCircuitBreaker,
   StreamUnavailableError,
 } from "@/lib/stream-client";
@@ -386,7 +387,17 @@ export async function removeUserFromEventChannel(
     // Clear membership cache regardless — if removal failed, we don't want
     // stale "is member" cache entries preventing future add/remove operations.
     markMembership(channelId, userId, false);
-    // Channel may not exist — that's fine, user has no access anyway
+    // #1580 C-P2-5 — event channels are minted lazily on first join, so a
+    // plan's events routinely have none yet. Nothing to revoke is not a
+    // failed revocation; reporting it as one paged Sentry on every removal.
+    if (isExpectedStreamError(error)) {
+      streamLogger.debug("No event channel to remove the user from", {
+        eventType,
+        eventId,
+        userId,
+      });
+      return { success: true };
+    }
     streamLogger.warn("Failed to remove user from event channel", {
       eventType,
       eventId,
@@ -411,6 +422,12 @@ async function getEventData(eventType: EventType, eventId: string) {
               consultantProfile: {
                 include: { user: { select: { id: true } } },
               },
+              // #1580 C-P2-5 — accepted collaborators are members from the
+              // channel's first mint, not only once they happen to join.
+              collaborators: {
+                where: { status: "ACCEPTED" as const },
+                select: { consultantProfile: { select: { userId: true } } },
+              },
             },
           },
           appointment: {
@@ -427,10 +444,14 @@ async function getEventData(eventType: EventType, eventId: string) {
       const consultantId = webinar.webinarPlan.consultantProfile?.user?.id;
       if (!consultantId) return null;
 
-      const members =
-        webinar.appointment?.slotsOfAppointment?.flatMap((s) =>
+      const members = [
+        ...(webinar.webinarPlan.collaborators ?? []).map(
+          (c) => c.consultantProfile.userId,
+        ),
+        ...(webinar.appointment?.slotsOfAppointment?.flatMap((s) =>
           s.user.map((u) => u.id),
-        ) || [];
+        ) || []),
+      ];
 
       // #1280 PR 7 — the funding org, resolved by the SAME `bookingOrgId`
       // precedence the DM path and the eligibility gate use: plan first, then
@@ -457,6 +478,10 @@ async function getEventData(eventType: EventType, eventId: string) {
               consultantProfile: {
                 include: { user: { select: { id: true } } },
               },
+              collaborators: {
+                where: { status: "ACCEPTED" as const },
+                select: { consultantProfile: { select: { userId: true } } },
+              },
             },
           },
           appointments: {
@@ -473,11 +498,15 @@ async function getEventData(eventType: EventType, eventId: string) {
       const consultantId = classData.classPlan.consultantProfile?.user?.id;
       if (!consultantId) return null;
 
-      const members =
-        classData.appointments?.flatMap(
+      const members = [
+        ...(classData.classPlan.collaborators ?? []).map(
+          (c) => c.consultantProfile.userId,
+        ),
+        ...(classData.appointments?.flatMap(
           (a) =>
             a.slotsOfAppointment?.flatMap((s) => s.user.map((u) => u.id)) || [],
-        ) || [];
+        ) || []),
+      ];
 
       const organizationId = bookingOrgId({
         // A class is funded once but holds many appointments, so `bookingOrgId`
