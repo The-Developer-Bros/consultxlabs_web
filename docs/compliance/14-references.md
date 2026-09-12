@@ -2,7 +2,7 @@
 
 > **Status:** authoritative source URL list. Update when sources move or new authoritative material is published.
 > **Audience:** anyone fact-checking a claim in this doc series.
-> **Last reviewed:** 2026-06-05 (all links + regulatory facts web-verified as of 2026-06-05)
+> **Last reviewed:** 2026-08-27 (added the DPDP Rules 2025 Gazette PDF source; other links + regulatory facts web-verified as of 2026-06-05)
 
 Ordered by topic to mirror the doc series. Hyperlinks should outlive their citing doc — when a URL moves, fix it here and the citing doc inherits.
 
@@ -60,6 +60,7 @@ Ordered by topic to mirror the doc series. Hyperlinks should outlive their citin
 | MeitY DPDP Rules 2025 | https://www.meity.gov.in/documents/act-and-policies/digital-personal-data-protection-rules-2025-gDOxUjMtQWa |
 | DPDP Act 2023 — Chapter III data-principal rights (§11 access, §12 correction+erasure, §13 grievance, §14 nomination) | https://www.dpdpa.com/dpdpa2023/chapter-3 |
 | DPDP Rules 2025 — Rule 7 breach notification ("without delay" + 72h detailed report) | https://www.dpdpa.com/dpdparules/rule7.html |
+| DPDP Rules 2025, G.S.R. 846(E), Gazette No. 760 dated 13 November 2025 — official Gazette PDF (Rule 8(2) 48-hour pre-erasure notice, Rule 8(3) one-year retention floor and its two illustrations) | https://www.meity.gov.in/static/uploads/2025/11/53450e6e5dc0bfa85ebd78686cadad39.pdf |
 | DPDP Rules 2025 implementation guide (Deloitte) | https://www.deloitte.com/in/en/services/consulting/about/indias-dpdp-rules-2025-leading-digital-privacy-compliance.html |
 | DPDP Act 2023 (MeitY PDF) | https://www.meity.gov.in/static/uploads/2024/06/2bf1f0e9f04e6fb4f8fef35e82c42aa5.pdf |
 

@@ -3,7 +3,7 @@ title: Deletion policy
 band: 40-compliance-and-data
 audience: sde3
 status: live
-last-reviewed: 2026-06-05
+last-reviewed: 2026-08-27
 ---
 
 # Deletion policy
@@ -70,6 +70,8 @@ await tx.contract.delete({ where: { id: contractId } });
 ### Case 3 — DPDP erasure scrub (§8(7) duty, §12 right)
 
 When a data subject exercises their right to erasure under the DPDP Act 2023, the platform erases their personal data through a **tombstone scrub** rather than a row deletion. The legal basis is twofold. The Data Fiduciary's erasure duty is Act §8(7), read with Rule 8 of the DPDP Rules 2025: personal data must be erased once the specified purpose is no longer served, **"unless its retention is necessary for compliance with any law for the time being in force."** The data principal's corresponding right to request erasure is Act §12. Our scrub leans squarely on that statutory retention exception — Indian tax and accounting law (a 5–7 year keep on financial records) overrides the erasure right for money rows, so we pseudonymise the actor and retain the books. This is the exact carve-out the Rules contemplate, not a workaround.
+
+> **Caveat — Rule 8(3) is a separate retention floor this scrub does not yet enforce.** The statutory-retention exception above is Act §8(7)'s carve-out, scoped to what "compliance with any law" actually requires (Rule 8(1) carries identical wording but binds only a Data Fiduciary "who is of such class … as are specified in Third Schedule," which we are not) — for us, the 5–7 year keep on money rows. Rule 8(3) opens "Without prejudice to sub-rules (1) and (2)," so it binds independently of Third Schedule class membership and is broader than that money-row exception: it requires retaining personal data, associated traffic data, and other logs — our own and any Data Processor's — for at least one year from the date of processing, before causing erasure. That retention is *for the Seventh Schedule purposes* — State access to personal data for sovereignty/security reasons, for a State function or a law-mandated disclosure, or for MeitY's SDF-designation assessment (`[See rule 23(1) and 8(3)]`) — it is not a general business-records floor. In practice this still means an erasure request filed within a year of processing can't fully purge non-financial rows either, since `scrub-user.ts` doesn't compute or check a one-year-from-processing date. And it extends to Data Processors acting on our behalf (video/recording, chat, hosting vendors): discharging Rule 8(3) means being able to show the vendor also retained for a year, and being able to cause that vendor to erase on our instruction under Act §8(7)(b) once the floor and any longer statutory retention have cleared. Neither is implemented today. See [docs/compliance/08-dpdp-and-privacy.md](../../compliance/08-dpdp-and-privacy.md) for the full Rule 8(2)/(3) text and the Seventh Schedule.
 
 The implementation is a tombstone scrub:
 
