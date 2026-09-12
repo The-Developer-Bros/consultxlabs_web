@@ -31,7 +31,7 @@ jobs:
       DIRECT_URL: ${{ secrets.DIRECT_URL }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 

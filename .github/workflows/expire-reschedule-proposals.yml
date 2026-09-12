@@ -44,7 +44,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           # Otherwise the token is left in .git/config for every later step and
           # every dependency they run. Nothing here needs to talk back to git.

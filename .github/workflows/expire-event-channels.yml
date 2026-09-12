@@ -39,7 +39,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           # The job only reads the repo to run a script; it never pushes. Leaving
           # the token in .git/config lets any later step — or a compromised

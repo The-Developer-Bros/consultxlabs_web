@@ -113,7 +113,7 @@ jobs:
       WINDOW_START: ${{ vars.LOAD_GATE_WINDOW_START }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Validate the dispatch inputs
         # Two inputs are typed by hand at dispatch time and both are dangerous
