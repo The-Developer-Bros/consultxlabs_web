@@ -30,8 +30,11 @@ export const NOVU_WORKFLOWS = {
   // know the money isn't coming back via this attempt + can chase support.
   REFUND_FAILED: "refund-failed",
 
-  // Support
+  // Support. CREATED and ACTIVITY page ops; UPDATE and RESPONSE reach the
+  // ticket's owner. Ops used to be paged through UPDATE — "Your ticket … has
+  // been updated to:" with no status, in the staff inbox.
   SUPPORT_TICKET_CREATED: "support-ticket-created",
+  SUPPORT_TICKET_ACTIVITY: "support-ticket-activity",
   SUPPORT_TICKET_UPDATE: "support-ticket-update",
   SUPPORT_TICKET_RESPONSE: "support-ticket-response",
 
@@ -416,10 +419,18 @@ export type RefundInput = Omit<
 
 export type SupportTicketPayload = NotificationScope & {
   ticketId: string;
+  /** `FAM-2026-000007` — what the customer quotes back. */
+  reference?: string;
   ticketTitle: string;
+  /** Sentence-ready, e.g. "in progress"; `statusCode` keeps the enum. */
   status?: string;
+  statusCode?: string;
   message?: string;
   respondedBy?: string;
+  /** The customer, on the ops-facing workflows. */
+  userName?: string;
+  /** "replied" | "reopened" — the verb on SUPPORT_TICKET_ACTIVITY. */
+  activity?: "replied" | "reopened";
   dashboardUrl: string;
 };
 

@@ -52,6 +52,8 @@ import {
   type OrgWalletTopupConfirmedPayload,
 } from "./workflows";
 import { getNovuClient, isNovuConfigured } from "./client";
+import { toWire } from "./templates";
+import type { NovuWorkflowId } from "./templates/types";
 import {
   DEFAULT_NOTIFICATION_TIMEZONE,
   formatNotificationDateTime,
@@ -67,14 +69,19 @@ import {
 type NovuRecord = Record<string, string | number | boolean | null | undefined>;
 
 async function triggerOne<T extends NovuRecord>(
-  workflowId: string,
+  workflowId: NovuWorkflowId,
   subscriberId: string,
   payload: T,
 ): Promise<void> {
   if (!isNovuConfigured()) return;
   try {
     const novu = getNovuClient();
-    await novu.trigger({ workflowId, to: subscriberId, payload });
+    const wire = toWire(workflowId, payload);
+    await novu.trigger({
+      workflowId: wire.workflowId,
+      to: subscriberId,
+      payload: wire.payload,
+    });
   } catch (err) {
     Sentry.captureException(
       err instanceof Error ? err : new Error(String(err)),
@@ -85,7 +92,7 @@ async function triggerOne<T extends NovuRecord>(
 }
 
 async function triggerMany<T extends NovuRecord>(
-  workflowId: string,
+  workflowId: NovuWorkflowId,
   subscriberIds: string[],
   payload: T,
 ): Promise<void> {
@@ -93,7 +100,12 @@ async function triggerMany<T extends NovuRecord>(
   if (!isNovuConfigured()) return;
   try {
     const novu = getNovuClient();
-    await novu.trigger({ workflowId, to: subscriberIds, payload });
+    const wire = toWire(workflowId, payload);
+    await novu.trigger({
+      workflowId: wire.workflowId,
+      to: subscriberIds,
+      payload: wire.payload,
+    });
   } catch (err) {
     Sentry.captureException(
       err instanceof Error ? err : new Error(String(err)),
@@ -110,7 +122,7 @@ async function triggerMany<T extends NovuRecord>(
  * `lib/novu/service.ts` for the reasoning in full.
  */
 async function triggerManyZoned<T extends NovuRecord>(
-  workflowId: string,
+  workflowId: NovuWorkflowId,
   subscriberIds: string[],
   build: (timezone: string) => T,
 ): Promise<void> {

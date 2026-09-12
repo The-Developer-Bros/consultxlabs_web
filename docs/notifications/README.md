@@ -33,7 +33,7 @@ graph TD
 - **Graceful degradation** -- if `NOVU_SECRET_KEY` or `RESEND_API_KEY` is missing, functions return `{success: false}` instead of throwing
 - **Singleton clients** -- both Resend and Novu use lazy-initialized singleton instances
 - **Subscriber = User** -- Novu `subscriberId` is the Prisma `User.id`
-- **27 Novu workflows** -- each maps to a specific business event with typed payloads
+- **67 notification events in 16 Novu workflow families** -- each event has a typed payload; the family is the Novu workflow and carries the event as `payload.event`
 - **10 React Email templates** -- server-rendered HTML via `@react-email/render`
 - **User preferences** -- channel toggles (in-app, email, push), category toggles (7 categories), quiet hours
 
@@ -41,13 +41,13 @@ graph TD
 
 ### Backend Services
 
-| File                            | Purpose                                                                                         |
-| ------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `lib/novu/client.ts`            | Singleton Novu client, `isNovuConfigured()` guard                                               |
-| `lib/novu/service.ts`           | 20+ trigger functions: `notifyAppointmentBooked`, `notifyPaymentSuccess`, etc.                  |
-| `lib/novu/workflows.ts`         | 28 workflow ID constants + 17 typed payload interfaces                                          |
-| `lib/novu/subscriber.ts`        | `syncSubscriber`, `updateSubscriberPreferences`, `deleteSubscriber`                             |
-| `lib/email.ts`                  | 6 Resend email functions (welcome, password reset, account linked, payment link/success/failed) |
+| File                     | Purpose                                                                                                   |
+| ------------------------ | --------------------------------------------------------------------------------------------------------- |
+| `lib/novu/client.ts`     | Singleton Novu client, `isNovuConfigured()` guard                                                         |
+| `lib/novu/service.ts`    | 20+ trigger functions: `notifyAppointmentBooked`, `notifyPaymentSuccess`, etc.                            |
+| `lib/novu/workflows.ts`  | 69 event id constants and their typed payloads; `lib/novu/templates/` maps them onto 16 workflow families |
+| `lib/novu/subscriber.ts` | `syncSubscriber`, `updateSubscriberPreferences`, `deleteSubscriber`                                       |
+| `lib/email.ts`           | 6 Resend email functions (welcome, password reset, account linked, payment link/success/failed)           |
 
 ### Frontend
 
@@ -66,16 +66,16 @@ graph TD
 
 ### Email Templates (`emails/`)
 
-| Template                                  | Category | Sent Via      |
-| ----------------------------------------- | -------- | ------------- |
-| `waitlist/WaitlistConfirmEmail.tsx`       | Newsletter | lib/email.ts |
-| `waitlist/WaitlistWelcomeEmail.tsx`       | Newsletter | lib/email.ts |
-| `auth/WelcomeEmail.tsx`                   | Auth     | Resend direct |
-| `auth/PasswordResetEmail.tsx`             | Auth     | Resend direct |
-| `auth/AccountLinkedEmail.tsx`             | Auth     | Resend direct |
-| `payments/PaymentLinkEmail.tsx`           | Payments | Resend direct |
-| `payments/PaymentSuccessEmail.tsx`        | Payments | Resend direct |
-| `payments/PaymentFailedEmail.tsx`         | Payments | Resend direct |
+| Template                            | Category   | Sent Via      |
+| ----------------------------------- | ---------- | ------------- |
+| `waitlist/WaitlistConfirmEmail.tsx` | Newsletter | lib/email.ts  |
+| `waitlist/WaitlistWelcomeEmail.tsx` | Newsletter | lib/email.ts  |
+| `auth/WelcomeEmail.tsx`             | Auth       | Resend direct |
+| `auth/PasswordResetEmail.tsx`       | Auth       | Resend direct |
+| `auth/AccountLinkedEmail.tsx`       | Auth       | Resend direct |
+| `payments/PaymentLinkEmail.tsx`     | Payments   | Resend direct |
+| `payments/PaymentSuccessEmail.tsx`  | Payments   | Resend direct |
+| `payments/PaymentFailedEmail.tsx`   | Payments   | Resend direct |
 
 ### Schemas
 
@@ -83,11 +83,15 @@ graph TD
 | ----------------- | -------------------------------------------------------------------- |
 | `schemas/user.ts` | `NotificationPreferenceSchema`, `NotificationPreferenceUpdateSchema` |
 
+## Source of truth for Novu templates
+
+`lib/novu/templates/` is the source of truth for every Novu workflow's in-app copy, redirect and opt-out category; `scripts/novu/sync-workflows.ts` writes it to the Novu environment as one workflow per family. Run `npm run novu:sync -- --dry-run` to preview a change, `npm run novu:sync` to apply it, and `npm run novu:check` to check for drift (the CI-side guard). See [ADR 30](../enterprise/70-design-decisions/30-novu-templates-as-code-and-workflow-families.md) for why the templates moved into the repository and why they are grouped into families.
+
 ## Quick Navigation
 
-| I want to...                           | Go to                                                      |
-| -------------------------------------- | ---------------------------------------------------------- |
-| Understand the dual-layer architecture | [01-architecture.md](./01-architecture.md)                 |
-| See all 27 workflows and API endpoints | [02-workflows-and-api.md](./02-workflows-and-api.md)       |
-| Understand the payment system          | [../payments/architecture.md](../payments/architecture.md) |
-| Check the database schema              | [../../prisma/schema.prisma](../../prisma/schema.prisma)   |
+| I want to...                                         | Go to                                                      |
+| ---------------------------------------------------- | ---------------------------------------------------------- |
+| Understand the dual-layer architecture               | [01-architecture.md](./01-architecture.md)                 |
+| See all 69 events, the 16 families and API endpoints | [02-workflows-and-api.md](./02-workflows-and-api.md)       |
+| Understand the payment system                        | [../payments/architecture.md](../payments/architecture.md) |
+| Check the database schema                            | [../../prisma/schema.prisma](../../prisma/schema.prisma)   |
