@@ -14,7 +14,7 @@
  * for any consumer that has to compute or branch on it.
  */
 
-import type { CancellationReason } from "@prisma/client";
+import type { CancellationReason, SupportTicketStatus } from "@prisma/client";
 import prisma from "@/lib/prisma";
 import {
   formatCurrencyAmount,
@@ -114,13 +114,11 @@ export function formatNotificationMoney(
 /**
  * The same amount with the symbol or code stripped: `55,679.48`.
  *
- * Four live in-app templates — `payment-success`, `payment-failed`,
- * `refund-processed` and `refund-requested` — render `{{currency}} {{amount}}`,
- * and the Novu plan in use cannot edit them today. A symbol-bearing `amount`
- * would read "INR ₹55,679.48" there, so those four send the bare figure and let
- * the template supply the ISO code it already prints (#536). Their payloads
- * also carry `amountFormatted` with the symbol, for whichever template is
- * written next.
+ * The legacy `payment-success`, `payment-failed`, `refund-processed` and
+ * `refund-requested` templates rendered `{{currency}} {{amount}}`, so those
+ * four payloads send the bare figure as `amount` and the symbol-bearing string
+ * as `amountFormatted` (#536). The templates in lib/novu/templates now print
+ * `amountFormatted`; `amount` stays bare until the payloads are renamed.
  */
 export function formatNotificationAmountBare(
   amountInSmallestUnit: number | bigint,
@@ -192,6 +190,28 @@ export function cancellationReasonLabel(
   // Free text a user typed is returned verbatim; only an exact enum member is
   // rewritten, so a sentence that happens to contain a member's words survives.
   return CANCELLATION_REASON_LABEL[key as CancellationReason] ?? raw;
+}
+
+/**
+ * A ticket status as the clause that follows "is now": `IN_PROGRESS` reaches
+ * the inbox as "in progress". Exhaustive over the enum so a new status fails
+ * the build rather than shouting its identifier at a customer.
+ */
+const SUPPORT_TICKET_STATUS_LABEL: Record<SupportTicketStatus, string> = {
+  OPEN: "open",
+  IN_PROGRESS: "in progress",
+  ON_HOLD: "on hold",
+  RESOLVED: "resolved",
+  CLOSED: "closed",
+};
+
+export function supportTicketStatusLabel(
+  status: SupportTicketStatus | string,
+): string {
+  return (
+    SUPPORT_TICKET_STATUS_LABEL[status as SupportTicketStatus] ??
+    status.toLowerCase().replace(/_/g, " ")
+  );
 }
 
 /**

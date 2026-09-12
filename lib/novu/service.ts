@@ -7,6 +7,8 @@
 import { createHash } from "node:crypto";
 import * as Sentry from "@sentry/nextjs";
 import { getNovuClient, isNovuConfigured } from "./client";
+import { toWire } from "./templates";
+import type { NovuWorkflowId } from "./templates/types";
 import {
   NOVU_WORKFLOWS,
   type AccountBannedPayload,
@@ -213,7 +215,7 @@ function deriveTransactionId(
 }
 
 async function triggerWorkflow<T extends NovuPayload>(
-  workflowId: string,
+  workflowId: NovuWorkflowId,
   subscriberId: string,
   payload: T,
   dedupeKey?: string,
@@ -225,10 +227,11 @@ async function triggerWorkflow<T extends NovuPayload>(
 
   try {
     const novu = getNovuClient();
+    const wire = toWire(workflowId, payload);
     await novu.trigger({
-      workflowId,
+      workflowId: wire.workflowId,
       to: subscriberId,
-      payload,
+      payload: wire.payload,
       transactionId: deriveTransactionId(
         workflowId,
         subscriberId,
@@ -256,7 +259,7 @@ async function triggerWorkflow<T extends NovuPayload>(
  * Uses a single API call with array `to` field (max 100 per call).
  */
 async function triggerForMultiple<T extends NovuPayload>(
-  workflowId: string,
+  workflowId: NovuWorkflowId,
   userIds: string[],
   payload: T,
   dedupeKey?: string,
@@ -280,10 +283,11 @@ async function triggerForMultiple<T extends NovuPayload>(
     const batch = userIds.slice(i, i + BATCH_SIZE);
     try {
       const novu = getNovuClient();
+      const wire = toWire(workflowId, payload);
       await novu.trigger({
-        workflowId,
+        workflowId: wire.workflowId,
         to: batch,
-        payload,
+        payload: wire.payload,
         transactionId: deriveTransactionId(
           workflowId,
           batch,
@@ -316,7 +320,7 @@ async function triggerForMultiple<T extends NovuPayload>(
  * Uses Novu's triggerBroadcast API — no need to fetch user IDs.
  */
 async function triggerBroadcastWorkflow<T extends NovuPayload>(
-  workflowId: string,
+  workflowId: NovuWorkflowId,
   payload: T,
 ): Promise<TriggerResult> {
   if (!isNovuConfigured()) {
@@ -326,9 +330,10 @@ async function triggerBroadcastWorkflow<T extends NovuPayload>(
 
   try {
     const novu = getNovuClient();
+    const wire = toWire(workflowId, payload);
     await novu.triggerBroadcast({
-      name: workflowId,
-      payload,
+      name: wire.workflowId,
+      payload: wire.payload,
     });
     console.log(`[Novu] Broadcast triggered: ${workflowId}`);
     return { success: true };
@@ -359,7 +364,7 @@ async function triggerBroadcastWorkflow<T extends NovuPayload>(
  * why that read is bounded and never throws.
  */
 async function triggerForMultipleZoned(
-  workflowId: string,
+  workflowId: NovuWorkflowId,
   userIds: string[],
   build: (timezone: string) => NovuPayload,
   dedupeKey?: string,
@@ -393,7 +398,7 @@ async function triggerForMultipleZoned(
 
 /** Single-recipient sibling of {@link triggerForMultipleZoned}. */
 async function triggerWorkflowZoned(
-  workflowId: string,
+  workflowId: NovuWorkflowId,
   subscriberId: string,
   build: (timezone: string) => NovuPayload,
   dedupeKey?: string,
@@ -713,18 +718,19 @@ export async function notifySupportTicketUpdate(
 }
 
 /**
- * #705 — the ops side of a ticket update, fanned out to several staff.
- * A user replying into an escalated thread used to page nobody at all, so the
- * only way staff learned of it was reopening the inbox.
+ * #705 — the ops side of a ticket: the customer replied or reopened, fanned
+ * out to the assignee or the whole queue. Its own workflow, not the owner's
+ * SUPPORT_TICKET_UPDATE, so staff can digest it later without touching the
+ * customer's bell.
  */
-export async function notifySupportTicketUpdateForStaff(
-  userIds: string[],
+export async function notifySupportTicketActivity(
+  staffUserIds: string[],
   payload: SupportTicketPayload,
   dedupeKey?: string,
 ) {
   return triggerForMultiple(
-    NOVU_WORKFLOWS.SUPPORT_TICKET_UPDATE,
-    userIds,
+    NOVU_WORKFLOWS.SUPPORT_TICKET_ACTIVITY,
+    staffUserIds,
     payload,
     dedupeKey,
   );

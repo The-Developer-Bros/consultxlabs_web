@@ -584,8 +584,12 @@ async function escalate(
     title: string;
     organizationId: string | null;
     referenceNumber: string | null;
+    userId: string;
   } | null = null;
 
+  // The first stored message of this turn — the stable id the ops bell is
+  // deduplicated on, so a replayed re-escalation cannot page the queue twice.
+  let turnMessageId: string | undefined;
   const ticketId = await prisma.$transaction(
     async (tx) => {
       // Claim the thread FIRST, compare-and-set on CLOSED, before anything is
@@ -624,9 +628,11 @@ async function escalate(
       ];
       let seq = await allocateMessageSeq(tx, threadId, outgoing.length);
       for (const m of outgoing) {
-        await tx.supportMessage.create({
+        const stored = await tx.supportMessage.create({
           data: { threadId, seq: ++seq, ...m },
+          select: { id: true },
         });
+        turnMessageId ??= stored.id;
       }
 
       let linkedTicketId = existingTicketId;
@@ -670,6 +676,7 @@ async function escalate(
             title: true,
             organizationId: true,
             referenceNumber: true,
+            userId: true,
           },
         });
         linkedTicketId = ticket.id;
@@ -745,14 +752,17 @@ async function escalate(
     await resumeTicketClock(ticketId).catch((error) => {
       console.error("support: SLA resume failed", { ticketId, error });
     });
-    await notifyStaffOfTicketActivity(ticketId, ctx.organizationId).catch(
-      (error) => {
-        console.error("support: re-escalation notification failed", {
-          threadId,
-          error,
-        });
-      },
-    );
+    await notifyStaffOfTicketActivity(
+      ticketId,
+      ctx.organizationId,
+      turnMessageId,
+      "reopened",
+    ).catch((error) => {
+      console.error("support: re-escalation notification failed", {
+        threadId,
+        error,
+      });
+    });
   }
 
   return {

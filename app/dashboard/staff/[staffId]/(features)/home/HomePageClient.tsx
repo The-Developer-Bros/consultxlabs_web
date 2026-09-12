@@ -26,6 +26,8 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { ticketLabel } from "@/utils/supportTicketUrl";
+import { format } from "date-fns";
+import { useActiveAnnouncements } from "@/hooks/useActiveAnnouncements";
 
 interface RecentTicket {
   id: string;
@@ -54,22 +56,6 @@ async function fetchStaffStats(): Promise<StaffStats> {
   if (!response.ok) throw new Error("Failed to fetch stats");
   return response.json();
 }
-
-// Static announcements (these could come from an API in the future)
-const announcements = [
-  {
-    title: "System Maintenance Scheduled",
-    description: "Platform maintenance on Saturday 2 AM - 4 AM IST",
-    date: "Dec 21, 2025",
-    type: "warning",
-  },
-  {
-    title: "New Ticket Categories Added",
-    description: "Please review the updated ticket categorization guidelines",
-    date: "Dec 19, 2025",
-    type: "info",
-  },
-];
 
 const getStatusColor = (status: string) => {
   switch (status) {
@@ -131,6 +117,7 @@ export default function HomePageClient({
     queryFn: fetchStaffStats,
     refetchOnWindowFocus: false,
   });
+  const { data: announcements = [] } = useActiveAnnouncements();
 
   const loading = isLoading || isFetching;
 
@@ -218,15 +205,6 @@ export default function HomePageClient({
               <RefreshCw
                 className={`h-4 w-4 ${loading ? "animate-spin" : ""}`}
               />
-            </Button>
-            <Button variant="outline" className="gap-2">
-              <Bell className="h-4 w-4" />
-              Notifications
-              {stats && stats.openTickets > 0 && (
-                <Badge variant="destructive" className="ml-1">
-                  {stats.openTickets}
-                </Badge>
-              )}
             </Button>
           </>
         }
@@ -358,33 +336,45 @@ export default function HomePageClient({
             <CardDescription>Important updates from admin</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="space-y-4">
-              {announcements.map((announcement, index) => (
-                <div
-                  key={index}
-                  className="p-3 rounded-lg border border-border"
-                >
-                  <div className="flex items-start gap-2">
-                    {announcement.type === "warning" ? (
-                      <AlertTriangle className="h-4 w-4 text-amber-500 mt-0.5" />
-                    ) : (
+            {/* The live rows behind the site-wide banner, not a placeholder:
+                this card carried two hard-coded items dated December 2025. */}
+            {announcements.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No announcements right now.
+              </p>
+            ) : (
+              <div className="space-y-4">
+                {announcements.map((announcement) => (
+                  <div
+                    key={announcement.id}
+                    className="p-3 rounded-lg border border-border"
+                  >
+                    <div className="flex items-start gap-2">
                       <Bell className="h-4 w-4 text-muted-foreground mt-0.5" />
-                    )}
-                    <div>
-                      <p className="text-sm font-medium text-foreground">
-                        {announcement.title}
-                      </p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        {announcement.description}
-                      </p>
-                      <p className="text-xs text-muted-foreground/70 mt-2">
-                        {announcement.date}
-                      </p>
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-foreground">
+                          {announcement.title}
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {announcement.content}
+                        </p>
+                        {(announcement.startDate ?? announcement.createdAt) && (
+                          <p className="text-xs text-muted-foreground/70 mt-2">
+                            {format(
+                              new Date(
+                                (announcement.startDate ??
+                                  announcement.createdAt)!,
+                              ),
+                              "d MMM yyyy",
+                            )}
+                          </p>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

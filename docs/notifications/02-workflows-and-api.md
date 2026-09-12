@@ -64,6 +64,33 @@ graph TD
     end
 ```
 
+Every node in the diagram above is an event id, the id the application still triggers with; the Novu workflow that actually receives the trigger is the event's family (see "Workflow families" below), not a node with that name.
+
+---
+
+## Workflow families
+
+The Novu plan in use caps an environment at 20 workflows, and the application now has 69 events, so a Novu workflow is a family — one per audience-and-opt-out combination — rather than one per event. The event id the application triggers is unchanged; `toWire` in `lib/novu/templates/families.ts` maps it to its family and adds `payload.event`, and the family's body branches on that field with a Liquid `case`. There are 16 families, listed below with the events each one carries.
+
+| Family ID        | Events                                                                                                                                                                                                                     |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `appointment`    | appointment-booked, appointment-partially-scheduled, appointment-cancelled, appointment-rescheduled, appointment-reminder, appointment-completed, new-booking-request                                                      |
+| `session-media`  | recording-available, recording-failed, recording-expiring, document-uploaded, document-reviewed                                                                                                                            |
+| `payment`        | payment-success, payment-failed, referral-credits-applied                                                                                                                                                                  |
+| `refund`         | refund-requested, refund-processed, refund-failed, dispute-created, dispute-resolved                                                                                                                                       |
+| `payout`         | payout-processed                                                                                                                                                                                                           |
+| `referral`       | referral-bonus-earned, referee-welcome-bonus                                                                                                                                                                               |
+| `subscription`   | subscription-started, subscription-cancelled, subscription-renewed                                                                                                                                                         |
+| `trial`          | trial-session-requested, trial-session-scheduled, trial-session-completed, trial-session-cancelled                                                                                                                         |
+| `support-ticket` | support-ticket-created, support-ticket-activity, support-ticket-update, support-ticket-response                                                                                                                            |
+| `feedback`       | feedback-received, new-review-received                                                                                                                                                                                     |
+| `account`        | verification-status-changed, new-consultant-application, moderation-warning, account-suspended, account-banned                                                                                                             |
+| `collaborator`   | collaborator-invited, collaborator-accepted, collaborator-removed, collaborator-declined, collaborator-withdrawn                                                                                                           |
+| `platform`       | general-announcement, maintenance-scheduled, maintenance-started, maintenance-ended                                                                                                                                        |
+| `org-billing`    | org-invoice-issued, org-invoice-paid, org-invoice-overdue, org-wallet-topup-confirmed, org-wallet-low, org-payout-completed, org-payout-failed, org-payout-reversed, org-member-overage-timed-out, org-program-overage-due |
+| `org-membership` | org-invite-sent, org-invite-accepted, org-expert-removed, org-sso-provider-deleted, org-sso-cert-expiring                                                                                                                  |
+| `org-program`    | org-program-exhausted, org-program-cap-near, org-license-renewal-upcoming, org-data-export-ready                                                                                                                           |
+
 ---
 
 ## Payload conventions
@@ -115,7 +142,7 @@ The `appointment-rescheduled` template renders a "from X to Y" sentence, and thr
 | `appointment-completed`           | `notifyAppointmentCompleted(userIds[], payload)`          | Both parties   | `AppointmentPayload`                   |
 | `appointment-partially-scheduled` | `notifyAppointmentPartiallyScheduled(userIds[], payload)` | Consultee only | `AppointmentPartiallyScheduledPayload` |
 
-The last of these is the only appointment workflow addressed to one party. It fires alongside `appointment-booked` when a consultant accepts a partial allocation (#1206), because the sessions that were placed are a real booking and already read as one; what the consultee would otherwise never learn is that the rest of the plan has no times yet. Its payload extends `AppointmentPayload` with `placedSessions`, `requiredSessions` and `unplacedSessions`, all whole sessions, all derived at the moment of allocation and none of them stored. Like every other workflow here, the definition must be created in the Novu dashboard under exactly that slug in each environment before the feature is released; the trigger is fire-and-forget, so a missing definition costs the notification silently rather than failing the allocation.
+The last of these is the only appointment workflow addressed to one party. It fires alongside `appointment-booked` when a consultant accepts a partial allocation (#1206), because the sessions that were placed are a real booking and already read as one; what the consultee would otherwise never learn is that the rest of the plan has no times yet. Its payload extends `AppointmentPayload` with `placedSessions`, `requiredSessions` and `unplacedSessions`, all whole sessions, all derived at the moment of allocation and none of them stored. Like every other event here, it is an application-side id: the Novu workflow that carries it is its family (`appointment`), and `npm run novu:sync` provisions the family from `lib/novu/templates/`. The trigger is fire-and-forget, so a family missing from the environment costs the notification silently rather than failing the allocation, which is what `npm run novu:check` exists to catch.
 
 ```mermaid
 sequenceDiagram
@@ -158,13 +185,16 @@ sequenceDiagram
 
 ### Support Tickets
 
-| Workflow ID               | Trigger Function                                      | Recipients    | Payload Type           |
-| ------------------------- | ----------------------------------------------------- | ------------- | ---------------------- |
-| `support-ticket-created`  | `notifySupportTicketCreated(staffUserIds[], payload)` | Staff team    | `SupportTicketPayload` |
-| `support-ticket-update`   | `notifySupportTicketUpdate(userId, payload)`          | Ticket author | `SupportTicketPayload` |
-| `support-ticket-response` | `notifySupportTicketResponse(userId, payload)`        | Ticket author | `SupportTicketPayload` |
+| Workflow ID               | Trigger Function                                                   | Recipients                     | Payload Type           |
+| ------------------------- | ------------------------------------------------------------------ | ------------------------------ | ---------------------- |
+| `support-ticket-created`  | `notifySupportTicketCreated(staffUserIds[], payload)`              | Staff team                     | `SupportTicketPayload` |
+| `support-ticket-activity` | `notifySupportTicketActivity(staffUserIds[], payload, dedupeKey?)` | Assignee, else all STAFF/ADMIN | `SupportTicketPayload` |
+| `support-ticket-update`   | `notifySupportTicketUpdate(userId, payload)`                       | Ticket author                  | `SupportTicketPayload` |
+| `support-ticket-response` | `notifySupportTicketResponse(userId, payload)`                     | Ticket author                  | `SupportTicketPayload` |
 
-**SupportTicketPayload**: `ticketId`, `ticketTitle`, `status?`, `message?`, `respondedBy?`, `dashboardUrl`
+`support-ticket-activity` is the ops side of a ticket — the customer replied or reopened — and is its own event rather than reusing `support-ticket-update`, so staff can later digest or throttle it without touching the ticket owner's bell.
+
+**SupportTicketPayload**: `ticketId`, `reference?` (e.g. `FAM-2026-000007`), `ticketTitle`, `status?` (a sentence fragment, e.g. "in progress"), `statusCode?` (the raw enum), `userName?` (the customer, on the ops-facing workflows), `activity?` (`"replied" | "reopened"`, on `support-ticket-activity`), `message?`, `respondedBy?`, `dashboardUrl`
 
 ---
 
@@ -405,8 +435,9 @@ graph TD
 
 ### Adding a New Notification
 
-1. **Add workflow ID** to `NOVU_WORKFLOWS` in `lib/novu/workflows.ts`
+1. **Add the event id** to `NOVU_WORKFLOWS` in `lib/novu/workflows.ts`
 2. **Add payload type** in the same file
 3. **Add trigger function** in `lib/novu/service.ts` using `triggerWorkflow` or `triggerForMultiple`
-4. **Create workflow** in the Novu dashboard with matching ID
-5. **Call the trigger function** from the relevant API route/webhook handler (inside try-catch, after the main transaction)
+4. **Add the template** to `lib/novu/templates/b2c.ts` or `org.ts` (subject, Liquid body, the payload field the tap should open) and **map the event to a family** in `lib/novu/templates/families.ts`; the unit test refuses an unmapped event or a bare Liquid variable
+5. **Sync**: `npm run novu:sync -- --dry-run`, then `npm run novu:sync` (a production operation — see the checklist). Never create a per-event workflow in the dashboard: the event is not a Novu workflow, its family is, and the plan caps the environment at 20 workflows
+6. **Call the trigger function** from the relevant API route/webhook handler (inside try-catch, after the main transaction)
