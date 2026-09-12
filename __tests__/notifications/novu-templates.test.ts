@@ -20,6 +20,7 @@ import {
   toWire,
 } from "@/lib/novu/templates";
 import { inAppSkipRule } from "@/lib/novu/templates/conditions";
+import { Liquid } from "liquidjs";
 import { supportTicketStatusLabel } from "@/lib/novu/humanize";
 
 /** Every identifier a Liquid output or control tag can name. */
@@ -111,7 +112,7 @@ describe("Novu workflow templates", () => {
       controlValues: { body: string; redirect: { url: string } };
     };
     for (const t of templatesInFamily("support-ticket")) {
-      expect(step.controlValues.body).toContain(`{% when "${t.workflowId}" %}`);
+      expect(step.controlValues.body).toContain(`{% when '${t.workflowId}' %}`);
     }
     expect(step.controlValues.body.startsWith("{% case payload.event %}")).toBe(
       true,
@@ -158,14 +159,95 @@ describe("Novu workflow templates", () => {
     );
   });
 
+  it("compiles under Novu's JSON-stringified Liquid pass, and never uses a double-quoted literal inside a tag", () => {
+    // Novu's framework client JSON.stringifies the whole controls object and
+    // parses THAT as Liquid (packages/framework/src/client.ts, compileControls),
+    // so a `"` inside a tag arrives as `\"` and is a TokenizationError. The
+    // first production sync failed every family this way on 2026-09-13.
+    const engine = new Liquid();
+    for (const f of FAMILIES) {
+      const step = toFamilyDto(f).steps[0] as {
+        controlValues: Record<string, unknown>;
+      };
+      const { skip: _skip, ...controls } = step.controlValues;
+      expect(() => engine.parse(JSON.stringify(controls))).not.toThrow();
+    }
+    for (const t of NOVU_WORKFLOW_TEMPLATES) {
+      const text = [t.inApp.subject, t.inApp.body].filter(Boolean).join("\n");
+      for (const [, tag] of text.matchAll(LIQUID_TAG)) {
+        expect({ id: t.workflowId, tag }).not.toMatchObject({
+          tag: expect.stringContaining('"'),
+        });
+      }
+      for (const [output] of text.matchAll(/\{\{[^}]*\}\}/g)) {
+        expect({ id: t.workflowId, output }).not.toMatchObject({
+          output: expect.stringContaining('"'),
+        });
+      }
+    }
+  });
+
+  it("renders a real event through the same round-trip Novu uses", () => {
+    const engine = new Liquid();
+    const step = toFamilyDto(FAMILIES.find((f) => f.id === "support-ticket")!)
+      .steps[0] as { controlValues: Record<string, unknown> };
+    const { skip: _skip, ...controls } = step.controlValues;
+    const rendered = JSON.parse(
+      engine.parseAndRenderSync(JSON.stringify(controls), {
+        payload: toWire("support-ticket-response", {
+          reference: "FAM-2026-000004",
+          ticketTitle: "Can't access my account settings",
+          respondedBy: "Maria Brown",
+          message: "Sign out and in once; it is fixed.",
+          dashboardUrl: "/dashboard",
+        }).payload,
+      }),
+    ) as { subject: string; body: string; redirect: { url: string } };
+    expect(rendered.subject).toBe("Reply from support");
+    expect(rendered.body).toBe(
+      'Maria Brown replied on FAM-2026-000004 — Can\'t access my account settings: "Sign out and in once; it is fixed."',
+    );
+    expect(rendered.redirect.url).toBe("/dashboard");
+  });
+
   it("gates the bell on 'not explicitly false', never 'is true'", () => {
     expect(inAppSkipRule("support")).toEqual({
       and: [
-        { "!=": [{ var: "subscriber.data.routingBell" }, false] },
-        { "!=": [{ var: "subscriber.data.categorySupport" }, false] },
+        { "!=": [{ var: "subscriber.data.routingBell" }, "false"] },
+        { "!=": [{ var: "subscriber.data.categorySupport" }, "false"] },
       ],
     });
     expect(inAppSkipRule(null).and).toHaveLength(1);
+  });
+
+  it("runs for a never-written flag under Novu's own != — the boolean form did not", () => {
+    // Novu's query-parser.service.ts replaces json-logic's `!=`: booleans and
+    // the strings "true"/"false" compare as booleans; anything else falls to
+    // Number(), where null and false are both 0; then to strict inequality.
+    const asBoolean = (d: unknown) =>
+      typeof d === "boolean"
+        ? d
+        : d === "true"
+          ? true
+          : d === "false"
+            ? false
+            : undefined;
+    const novuNotEqual = (a: unknown, b: unknown): boolean => {
+      const ba = asBoolean(a);
+      const bb = asBoolean(b);
+      if (ba !== undefined && bb !== undefined) return ba !== bb;
+      const na = Number(a);
+      const nb = Number(b);
+      if (!Number.isNaN(na) && !Number.isNaN(nb)) return na !== nb;
+      return a !== b;
+    };
+    const [, comparison] = inAppSkipRule("support").and[1]["!="];
+    expect(novuNotEqual(null, comparison)).toBe(true); // never written → runs
+    expect(novuNotEqual(true, comparison)).toBe(true); // opted in → runs
+    expect(novuNotEqual(false, comparison)).toBe(false); // opted out → skipped
+    expect(novuNotEqual("false", comparison)).toBe(false);
+    // The trap this test exists for:
+    expect(novuNotEqual(null, false)).toBe(false);
   });
 
   it("humanises a ticket status for the owner's bell", () => {
