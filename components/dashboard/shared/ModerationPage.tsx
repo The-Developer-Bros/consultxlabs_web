@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { formatDistanceToNow } from "date-fns";
 import {
   keepPreviousData,
   useMutation,
@@ -51,6 +52,7 @@ import type {
   ModerationCapabilities,
   ModerationLatestAction,
   ModerationReport,
+  ModerationReportDetail,
   ModerationReview,
   ModerationSideEffects,
   ModerationStats,
@@ -97,6 +99,114 @@ const formatDate = (dateString: string) => {
     minute: "2-digit",
   });
 };
+
+/**
+ * #1300 — every `ModerationActionType` value, in plain words. The queue used
+ * to show `USER_BANNED` verbatim in the one place that is supposed to tell a
+ * moderator what already happened.
+ */
+const ACTION_TYPE_LABELS: Record<string, string> = {
+  WARNING_ISSUED: "Warning issued",
+  CONTENT_REMOVED: "Content removed",
+  USER_SUSPENDED: "Suspended",
+  USER_BANNED: "Banned",
+  PROFILE_UNVERIFIED: "Profile unverified",
+  NO_ACTION: "No action",
+  USER_REINSTATED: "Reinstated",
+  REVIEW_REMOVED: "Review removed",
+  REVIEW_REPLY_REMOVED: "Review reply removed",
+  REVIEW_EXCLUDED_FROM_AGGREGATE: "Review excluded from rating",
+  FEEDBACK_EXCLUDED_FROM_AGGREGATE: "Feedback excluded from rating",
+};
+
+const humaniseActionType = (actionType: string): string =>
+  ACTION_TYPE_LABELS[actionType] ?? actionType.replace(/_/g, " ").toLowerCase();
+
+const relativeDate = (dateString: string) =>
+  formatDistanceToNow(new Date(dateString), { addSuffix: true });
+
+/**
+ * #1300 — the report card was titled with a truncated report id
+ * (`bd5c586a...`), which names the row in the database and nothing a
+ * moderator is looking for. This names the thing that was reported.
+ */
+function reportTitle(report: ModerationReport): {
+  primary: string;
+  secondary?: string;
+} {
+  switch (report.type) {
+    case "PROFILE":
+      return { primary: `Profile · ${report.targetUser.name ?? "Unknown"}` };
+    case "USER":
+      return { primary: `Account · ${report.targetUser.name ?? "Unknown"}` };
+    case "REVIEW": {
+      const consultantName =
+        report.review?.consultantProfile.user.name ?? "Unknown consultant";
+      const rating = report.review?.rating;
+      const excerpt = report.review?.reviewDescription?.slice(0, 60) ?? "";
+      return {
+        primary: `Review of ${consultantName}${
+          rating !== undefined ? ` · ${rating}★` : ""
+        }`,
+        secondary: excerpt || undefined,
+      };
+    }
+    case "MESSAGE": {
+      const cid = report.streamChannelCid;
+      const lastSegment = cid?.split(":").pop() ?? cid;
+      return { primary: `Message · ${lastSegment ?? "unknown channel"}` };
+    }
+    default:
+      return { primary: `Account · ${report.targetUser.name ?? "Unknown"}` };
+  }
+}
+
+/**
+ * #1300 — the fixed-shape fields of `ModerationSideEffects`, rendered only
+ * when the action actually wrote them. Reading the object's own keys (rather
+ * than a hardcoded list) would show internal field names nobody wrote
+ * intentionally for display; this instead names exactly the outcomes
+ * `lib/moderation/side-effects.ts` produces.
+ */
+function sideEffectLines(sideEffects: ModerationSideEffects | null): string[] {
+  if (!sideEffects) return [];
+  const lines: string[] = [];
+  if (sideEffects.stream) lines.push(`Stream: ${sideEffects.stream}`);
+  if (sideEffects.sessionsRevoked !== undefined) {
+    lines.push(`sessions revoked: ${sideEffects.sessionsRevoked}`);
+  }
+  if (sideEffects.earningsHeld !== undefined) {
+    lines.push(`earnings held: ${sideEffects.earningsHeld}`);
+  }
+  if (sideEffects.profilesUnverified !== undefined) {
+    lines.push(`profiles unverified: ${sideEffects.profilesUnverified}`);
+  }
+  if (sideEffects.reviewRemoved) lines.push("review removed: yes");
+  if (sideEffects.cancellations?.engagementsCancelled !== undefined) {
+    lines.push(
+      `engagements cancelled: ${sideEffects.cancellations.engagementsCancelled}`,
+    );
+  }
+  if (sideEffects.cancellations?.refundsIssued !== undefined) {
+    lines.push(`refunds issued: ${sideEffects.cancellations.refundsIssued}`);
+  }
+  if (sideEffects.collaborationsRemoved?.length) {
+    lines.push(
+      `collaborations removed: ${sideEffects.collaborationsRemoved.length}`,
+    );
+  }
+  if (sideEffects.collaboratorRevocation) {
+    lines.push(
+      `collaborator revocation: ${sideEffects.collaboratorRevocation}`,
+    );
+  }
+  if (sideEffects.notification) {
+    lines.push(`notification: ${sideEffects.notification}`);
+  }
+  if (sideEffects.errors?.length)
+    lines.push(`errors: ${sideEffects.errors.join(", ")}`);
+  return lines;
+}
 
 /**
  * The enforcement suffix shown beside a target's role. Extracted from a nested
@@ -219,6 +329,43 @@ function EnforcementSummary({
   );
 }
 
+/**
+ * #1300 — the report drawer showed one truncated id and nothing about who had
+ * acted on it. This is the full history from
+ * `GET /api/staff/moderation/reports/[reportId]`, oldest first, so a
+ * moderator opening a report with three prior actions can read them in the
+ * order they happened rather than guessing from the single latest one.
+ */
+function ActionAuditTrail({
+  actions,
+}: Readonly<{ actions: ModerationReportDetail["actions"] }>) {
+  if (actions.length === 0) {
+    return <p className="text-sm text-muted-foreground">No action yet.</p>;
+  }
+  return (
+    <ul className="space-y-2">
+      {actions.map((action) => {
+        const lines = sideEffectLines(action.sideEffects);
+        return (
+          <li key={action.id} className="text-sm">
+            <p>
+              {humaniseActionType(action.actionType)} —{" "}
+              {action.takenBy?.name ?? "a departed staff member"} —{" "}
+              {formatDate(action.createdAt)}
+              {action.notes ? ` — ${action.notes}` : ""}
+            </p>
+            {lines.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                {lines.join(", ")}
+              </p>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 export function ModerationPage() {
   const [activeTab, setActiveTab] = useState("reports");
   const [searchQuery, setSearchQuery] = useState("");
@@ -330,6 +477,24 @@ export function ModerationPage() {
     placeholderData: keepPreviousData,
   });
   const reviews = reviewsData?.reviews ?? [];
+
+  // #1300 — the list row only carries the latest action; the drawer's full
+  // audit trail comes from the report's own detail route, fetched only once
+  // a report is opened.
+  const { data: selectedReportDetail } = useQuery({
+    queryKey: ["staff-moderation-report-detail", selectedReport?.id],
+    queryFn: async (): Promise<ModerationReportDetail> => {
+      const response = await fetch(
+        `/api/staff/moderation/reports/${selectedReport?.id}`,
+      );
+      if (!response.ok) throw new Error("Failed to fetch report detail");
+      const body = (await response.json()) as {
+        report: ModerationReportDetail;
+      };
+      return body.report;
+    },
+    enabled: !!selectedReport,
+  });
 
   const isRefreshing =
     fetchingStats || fetchingReports || fetchingProfiles || fetchingReviews;
@@ -816,73 +981,102 @@ export function ModerationPage() {
             </p>
           ) : (
             <div className="space-y-3">
-              {reports.map((report) => (
-                <Card
-                  key={report.id}
-                  className="cursor-pointer hover:shadow-md transition-shadow"
-                  onClick={() => setSelectedReport(report)}
-                >
-                  <CardContent className="p-4">
-                    <div className="flex items-start justify-between">
-                      <div className="flex items-start gap-3">
-                        <div className="p-2 rounded-lg bg-muted text-foreground">
-                          {getTypeIcon(report.type)}
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <p className="font-medium">
-                              {report.id.slice(0, 8)}...
-                            </p>
-                            <Badge variant="outline" className="capitalize">
-                              {report.type}
-                            </Badge>
-                            <Badge
-                              className={getStatusColor(report.status)}
-                              variant="secondary"
-                            >
-                              {report.status}
-                            </Badge>
+              {reports.map((report) => {
+                const title = reportTitle(report);
+                return (
+                  <Card
+                    key={report.id}
+                    className="cursor-pointer hover:shadow-md transition-shadow"
+                    onClick={() => setSelectedReport(report)}
+                  >
+                    <CardContent className="p-4">
+                      <div className="flex items-start justify-between">
+                        <div className="flex items-start gap-3">
+                          <div className="p-2 rounded-lg bg-muted text-foreground">
+                            {getTypeIcon(report.type)}
                           </div>
-                          <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
-                            {report.contentText ||
-                              report.description ||
-                              report.reason}
-                          </p>
-                          <div className="flex flex-wrap items-center gap-4 mt-2 text-xs text-muted-foreground">
-                            <span>
-                              Reported by:{" "}
-                              {report.reportedBy?.name || "Anonymous"}
-                            </span>
-                            <span>
-                              Against:{" "}
-                              {report.targetUser.name ||
-                                report.targetUser.email}
-                            </span>
-                            <span>Reason: {report.reason}</span>
-                            {report.reportCount > 1 && (
-                              <span>{report.reportCount} reports</span>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <p className="font-medium">{title.primary}</p>
+                              <Badge variant="outline" className="capitalize">
+                                {report.type}
+                              </Badge>
+                              <Badge
+                                className={getStatusColor(report.status)}
+                                variant="secondary"
+                              >
+                                {report.status}
+                              </Badge>
+                            </div>
+                            {title.secondary && (
+                              <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
+                                {title.secondary}
+                              </p>
+                            )}
+                            <div className="flex flex-wrap items-center gap-4 mt-2 text-xs text-muted-foreground">
+                              <span>
+                                Reported by{" "}
+                                {report.reportedBy?.name || "Anonymous"} (
+                                {report.reportedBy?.role ?? "unknown"})
+                              </span>
+                              <span className="flex items-center gap-1">
+                                Against{" "}
+                                {report.targetUser.name ||
+                                  report.targetUser.email}{" "}
+                                ({report.targetUser.role})
+                                {report.targetUser.banned && (
+                                  <Badge
+                                    variant="destructive"
+                                    className="ml-1 px-1.5 py-0 text-[10px]"
+                                  >
+                                    banned
+                                  </Badge>
+                                )}
+                              </span>
+                              <span>Reason: {report.reason}</span>
+                              {report.reportCount > 1 && (
+                                <span>{report.reportCount} reports</span>
+                              )}
+                              <span
+                                className="font-mono text-muted-foreground/70"
+                                title={report.id}
+                              >
+                                #{report.id.slice(0, 8)}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              {report.actionCount > 0 && report.latestAction
+                                ? `Last action: ${humaniseActionType(
+                                    report.latestAction.actionType,
+                                  )} by ${
+                                    report.latestAction.takenBy?.name ??
+                                    "a departed staff member"
+                                  } · ${relativeDate(
+                                    report.latestAction.createdAt,
+                                  )}`
+                                : "No action yet"}
+                            </p>
+                            {enforcementIncomplete(
+                              report.latestAction?.sideEffects,
+                            ) && (
+                              <p className="mt-2 flex items-center gap-1 text-xs text-destructive">
+                                <AlertTriangle className="h-3 w-3" />
+                                Enforcement incomplete —{" "}
+                                {describeStreamGap(
+                                  report.latestAction?.actionType ?? "",
+                                )}
+                              </p>
                             )}
                           </div>
-                          {enforcementIncomplete(
-                            report.latestAction?.sideEffects,
-                          ) && (
-                            <p className="mt-2 flex items-center gap-1 text-xs text-destructive">
-                              <AlertTriangle className="h-3 w-3" />
-                              Enforcement incomplete —{" "}
-                              {describeStreamGap(
-                                report.latestAction?.actionType ?? "",
-                              )}
-                            </p>
-                          )}
                         </div>
+                        <span className="text-xs text-muted-foreground/70">
+                          {formatDate(report.createdAt)}
+                        </span>
                       </div>
-                      <span className="text-xs text-muted-foreground/70">
-                        {formatDate(report.createdAt)}
-                      </span>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
+                    </CardContent>
+                  </Card>
+                );
+              })}
             </div>
           )}
         </TabsContent>
@@ -1022,10 +1216,15 @@ export function ModerationPage() {
           ) : (
             <div className="space-y-3">
               {reviews.map((review) => {
-                const consulteeName = review.consultee?.name || "Anonymous";
-                const consulteeImage = review.consultee?.image || "";
-                const consultantName =
-                  review.consultation?.consultant?.user?.name || "Consultant";
+                // #1300 — this used to read `review.consultee` /
+                // `review.consultation.consultant.user`, neither of which the
+                // route has ever sent; every card fell back to "Anonymous" /
+                // "Consultant" regardless of the real names.
+                const reviewerName = review.isAnonymous
+                  ? "Anonymous"
+                  : review.reviewer.name || "Anonymous";
+                const consultantName = review.consultant.name || "Consultant";
+                const latestModerationAction = review.moderationActions[0];
 
                 return (
                   <Card key={review.id}>
@@ -1033,9 +1232,9 @@ export function ModerationPage() {
                       <div className="flex items-start justify-between">
                         <div className="flex items-start gap-3">
                           <Avatar>
-                            <AvatarImage src={consulteeImage} />
+                            <AvatarImage src={review.reviewer.image || ""} />
                             <AvatarFallback>
-                              {consulteeName
+                              {reviewerName
                                 .split(" ")
                                 .map((n) => n[0])
                                 .join("")}
@@ -1043,7 +1242,7 @@ export function ModerationPage() {
                           </Avatar>
                           <div>
                             <div className="flex items-center gap-2">
-                              <p className="font-medium">{consulteeName}</p>
+                              <p className="font-medium">{reviewerName}</p>
                               <span className="text-muted-foreground/70">
                                 →
                               </span>
@@ -1063,9 +1262,37 @@ export function ModerationPage() {
                                 />
                               ))}
                             </div>
-                            {review.comment && (
+                            {review.reviewDescription && (
                               <p className="text-sm text-muted-foreground mt-2">
-                                {review.comment}
+                                {review.reviewDescription}
+                              </p>
+                            )}
+                            {/* #1300 — the tab never said whether a review or
+                                its reply had already been taken down, so a
+                                removed row looked identical to a live one. */}
+                            {review.deletedAt && (
+                              <p className="mt-1 text-xs text-destructive">
+                                {review.removedBy === "MODERATION"
+                                  ? "Removed by moderation"
+                                  : "Withdrawn by the author"}
+                              </p>
+                            )}
+                            {review.replyDeletedAt && (
+                              <p className="mt-1 text-xs text-destructive">
+                                {review.replyRemovedBy === "MODERATION"
+                                  ? "Reply removed by moderation"
+                                  : "Reply withdrawn by the consultant"}
+                              </p>
+                            )}
+                            {latestModerationAction && (
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {humaniseActionType(
+                                  latestModerationAction.actionType,
+                                )}{" "}
+                                by{" "}
+                                {latestModerationAction.takenBy?.name ??
+                                  "a departed staff member"}{" "}
+                                · {formatDate(latestModerationAction.createdAt)}
                               </p>
                             )}
                           </div>
@@ -1188,6 +1415,14 @@ export function ModerationPage() {
                   <EnforcementSummary action={selectedReport.latestAction} />
                 )}
                 <div>
+                  <Label className="text-sm font-medium">Audit trail</Label>
+                  <div className="mt-1">
+                    <ActionAuditTrail
+                      actions={selectedReportDetail?.actions ?? []}
+                    />
+                  </div>
+                </div>
+                <div>
                   <Label htmlFor="note">Moderation Note</Label>
                   <Textarea
                     id="note"
@@ -1276,8 +1511,7 @@ export function ModerationPage() {
                           action used to spin all of them and read as though the
                           whole panel were busy. */}
                       {reportActionMutation.isPending &&
-                      reportActionMutation.variables?.action ===
-                        action.key ? (
+                      reportActionMutation.variables?.action === action.key ? (
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                       ) : (
                         <Icon className="h-4 w-4 mr-2" />

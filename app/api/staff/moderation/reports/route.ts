@@ -57,7 +57,13 @@ export async function GET(req: NextRequest) {
         where,
         include: {
           reportedBy: {
-            select: { id: true, name: true, email: true, image: true },
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              image: true,
+              role: true,
+            },
           },
           targetUser: {
             select: {
@@ -85,10 +91,30 @@ export async function GET(req: NextRequest) {
               actionType: true,
               createdAt: true,
               sideEffects: true,
+              // #1300 — the card's audit line needs who acted and, when they
+              // left one, why; without these the "last action" was a verb with
+              // no author.
+              notes: true,
+              takenBy: { select: { name: true } },
             },
           },
           _count: {
             select: { actions: true },
+          },
+          // #1300 — a REVIEW report's card was titled with the report's own id.
+          // The review's author is already `targetUser`; this is what the
+          // review says and who it is about. `consulteeProfile` is
+          // deliberately excluded — the same PII allowlist as the reviews
+          // queue (#946, #1561).
+          review: {
+            select: {
+              id: true,
+              rating: true,
+              reviewDescription: true,
+              consultantProfile: {
+                select: { user: { select: { name: true } } },
+              },
+            },
           },
         },
         orderBy: [
@@ -116,6 +142,7 @@ export async function GET(req: NextRequest) {
       reportedBy: report.reportedBy,
       targetUser: report.targetUser,
       reviewId: report.reviewId,
+      review: report.review,
       assignedToId: report.assignedToId,
       actionCount: report._count.actions,
       latestAction: report.actions[0] ?? null,
@@ -163,7 +190,10 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "staff" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "staff" } },
+    );
     console.error("Error fetching moderation reports:", error);
     return NextResponse.json(
       { error: "Failed to fetch moderation reports" },
