@@ -131,7 +131,7 @@ export const ORG_TEMPLATES: WorkflowTemplate[] = [
     category: "orgMembership",
     inApp: {
       subject: "You're invited",
-      body: '{{payload.inviterName}} invited you to join {{payload.orgName}} as {{payload.role | downcase | replace: "_", " "}}. The invitation expires on {{payload.expiresAt}}.',
+      body: "{{payload.inviterName}} invited you to join {{payload.orgName}} as {{payload.role | downcase | replace: '_', ' '}}. The invitation expires on {{payload.expiresAt}}.",
       redirect: "inviteUrl",
     },
   },
@@ -142,7 +142,7 @@ export const ORG_TEMPLATES: WorkflowTemplate[] = [
     category: "orgMembership",
     inApp: {
       subject: "New member",
-      body: '{{payload.accepteeName}} ({{payload.accepteeEmail}}) joined {{payload.orgName}} as {{payload.role | downcase | replace: "_", " "}}.',
+      body: "{{payload.accepteeName}} ({{payload.accepteeEmail}}) joined {{payload.orgName}} as {{payload.role | downcase | replace: '_', ' '}}.",
       redirect: "dashboardUrl",
     },
   },
@@ -175,7 +175,7 @@ export const ORG_TEMPLATES: WorkflowTemplate[] = [
     category: "orgMembership",
     inApp: {
       subject: "SSO certificate",
-      body: '{% if payload.severity == "EXPIRED" %}The SSO certificate for {{payload.orgName}} ({{payload.providerId}}) expired on {{payload.notAfter}} and single sign-on is failing.{% else %}The SSO certificate for {{payload.orgName}} ({{payload.providerId}}) expires on {{payload.notAfter}} — {{payload.daysRemaining}} day{% if payload.daysRemaining != 1 %}s{% endif %} left.{% endif %} Upload a new certificate.',
+      body: "{% if payload.severity == 'EXPIRED' %}The SSO certificate for {{payload.orgName}} ({{payload.providerId}}) expired on {{payload.notAfter}} and single sign-on is failing.{% else %}The SSO certificate for {{payload.orgName}} ({{payload.providerId}}) expires on {{payload.notAfter}} — {{payload.daysRemaining}} day{% if payload.daysRemaining != 1 %}s{% endif %} left.{% endif %} Upload a new certificate.",
       redirect: "dashboardUrl",
     },
   },

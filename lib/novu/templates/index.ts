@@ -79,7 +79,7 @@ function caseOverEvents(
   const branches = templates
     .map((t) => [t.workflowId, pick(t)] as const)
     .filter(([, text]) => !!text)
-    .map(([event, text]) => `{% when "${event}" %}${text}`)
+    .map(([event, text]) => `{% when '${event}' %}${text}`)
     .join("");
   return branches ? `{% case payload.event %}${branches}{% endcase %}` : "";
 }
