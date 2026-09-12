@@ -47,13 +47,13 @@ When a user signs in via OAuth with an email that already exists (from a credent
 
 ### 2.3 UI Configuration
 
-[`lib/auth-providers.ts`](../../../../lib/auth-providers.ts) centralizes the button labels, CSS classes, and type-safe IDs:
+[`lib/auth-providers.ts`](../../../../lib/auth-providers.ts) centralizes the button labels and type-safe IDs. Buttons share one neutral outline treatment in `SocialLoginButtons` — per-provider fills are intentionally not configured (a red Google fill violates Google's Sign-In branding guidelines; black GitHub is invisible on the dark auth pages):
 
 ```typescript
 export const AUTH_PROVIDERS = [
-  { id: "github",   label: "GitHub",   className: "bg-black hover:bg-gray-700" },
-  { id: "google",   label: "Google",   className: "bg-red-600 hover:bg-red-500" },
-  { id: "facebook", label: "Facebook", className: "bg-blue-600 hover:bg-blue-500" },
+  { id: "github",   label: "GitHub" },
+  { id: "google",   label: "Google" },
+  { id: "facebook", label: "Facebook" },
 ] as const;
 ```
 
@@ -70,9 +70,9 @@ export const AUTH_PROVIDERS = [
    },
    ```
 
-2. **`lib/auth-providers.ts`** — Add UI config:
+2. **`lib/auth-providers.ts`** — Add UI config (id + label only; styling is shared in `SocialLoginButtons`):
    ```typescript
-   { id: "apple", label: "Apple", className: "bg-gray-900 hover:bg-gray-800" },
+   { id: "apple", label: "Apple" },
    ```
 
 3. **`components/auth/auth-icons.tsx`** — Add icon + update `PROVIDER_ICONS` map.
