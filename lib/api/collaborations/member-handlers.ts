@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-server";
 import prisma from "@/lib/prisma";
 import {
+  CollaboratorCapError,
   CollaboratorNotFoundError,
   CollaboratorTermsLockedError,
   updateCollaborator,
@@ -112,6 +113,10 @@ export async function patchCollaborator(
     return NextResponse.json({ data: collab });
   } catch (error) {
     if (error instanceof CollaboratorTermsLockedError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    // A re-role into a second presenter is refused by the cap, not a fault (#1580 §6).
+    if (error instanceof CollaboratorCapError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
     if (error instanceof CollaboratorNotFoundError) {

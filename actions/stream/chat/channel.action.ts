@@ -462,9 +462,12 @@ export async function createConsultationChannel(
   // on a self-pair, so skip rather than take the whole approval path down.
   // Same guard the search routes apply per row.
   if (consultantId === consulteeId) {
-    streamLogger.warn("Skipping consultation channel — consultant and consultee are the same user", {
-      consultationId,
-    });
+    streamLogger.warn(
+      "Skipping consultation channel — consultant and consultee are the same user",
+      {
+        consultationId,
+      },
+    );
     return null;
   }
 
@@ -559,9 +562,12 @@ export async function createSubscriptionChannel(
 
   // Same self-pair guard as the consultation path above.
   if (consultantId === consulteeId) {
-    streamLogger.warn("Skipping subscription channel — consultant and consultee are the same user", {
-      subscriptionId,
-    });
+    streamLogger.warn(
+      "Skipping subscription channel — consultant and consultee are the same user",
+      {
+        subscriptionId,
+      },
+    );
     return null;
   }
 
@@ -683,6 +689,10 @@ export async function createCollaboratorChannel(
 
   const channelId = `collab-${planType}-${planId}`;
   const client = getStreamChatClient();
+
+  // Stream refuses a channel whose members it has never seen; every other
+  // creator here upserts first, and this one did not (FAMILIARISE_WEB-37, #1580).
+  await upsertUsersToStream(expectedMemberIds);
 
   const channel = client.channel("messaging", channelId, {
     name: `${title} - Collaborators`,
