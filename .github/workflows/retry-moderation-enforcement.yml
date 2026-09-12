@@ -58,7 +58,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           # No git write happens here, so the runner has no use for a token that
           # can push. Leaving it persisted is a credential sitting in a process
