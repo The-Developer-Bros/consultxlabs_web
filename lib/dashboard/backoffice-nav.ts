@@ -96,7 +96,7 @@ function groupSpecs({ showTds = false }: BackofficeNavOptions): NavGroupSpec[] {
         },
         {
           // #support-hub — the per-appointment conversation inbox.
-          name: "Conversations",
+          name: "Support Conversations",
           icon: MessagesSquare,
           path: "threads",
           surface: "threads.manage",

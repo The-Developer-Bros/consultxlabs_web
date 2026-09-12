@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import {
   getConsultantDetail,
   getConsultantReviews,
+  getConsultantReviewTracks,
 } from "@/lib/data/consultant-detail";
 import { TUserWithProfessionalBackground } from "@/types/user";
 import { ExpertProfileClient } from "./ExpertProfileClient";
@@ -49,9 +50,10 @@ export default async function ExpertProfile({
   // [], so a parameter being rendered for the first time has NO cached copy to
   // fall back on and its visitor gets the error boundary. Only a *revalidation*
   // of an already-cached profile keeps serving the last good copy.
-  const [consultant, reviews] = await Promise.all([
+  const [consultant, reviews, reviewTracks] = await Promise.all([
     getConsultantDetail(consultantId),
     getConsultantReviews(consultantId),
+    getConsultantReviewTracks(consultantId),
   ]);
 
   if (!consultant || !consultant.user) {
@@ -64,6 +66,7 @@ export default async function ExpertProfile({
         consultantDetails={consultant}
         userDetails={consultant.user as TUserWithProfessionalBackground}
         reviews={reviews}
+        reviewTracks={reviewTracks}
       />
     </Suspense>
   );

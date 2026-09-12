@@ -33,9 +33,10 @@ export function formatTicketReference(year: number, seq: number): string {
  * `@unique`, which turns any residual duplicate into a P2002 to retry rather
  * than two tickets quietly sharing a number.
  *
- * Gaps are fine here — a rolled-back ticket burns a number and nothing depends
- * on the series being unbroken. That is the difference from a GST invoice
- * series, where CGST Rule 46 would not allow it.
+ * Runs on the caller's transaction, so a rolled-back ticket rolls the increment
+ * back with it and leaves no gap. Nothing depends on the series being unbroken
+ * either way; that is the difference from a GST invoice series, where CGST
+ * Rule 46 would not allow one.
  */
 export async function allocateTicketReference(
   tx: Tx,

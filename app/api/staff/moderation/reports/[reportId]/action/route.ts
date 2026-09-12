@@ -184,6 +184,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
       where: { id: reportId },
       select: {
         id: true,
+        type: true,
         status: true,
         targetUserId: true,
         reviewId: true,
@@ -210,6 +211,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
       actionType: actionType as ModerationActionType,
       report: {
         id: report.id,
+        type: report.type,
         targetUserId: report.targetUserId,
         reviewId: report.reviewId,
         streamMessageId: report.streamMessageId,

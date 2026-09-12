@@ -48,7 +48,13 @@ export interface ClassInstance {
 }
 
 type ProgramConsultantProfile = {
-  rating?: number;
+  /** #1300 — the two published scores. NULL on either means SUPPRESSED, which a
+   *  card must render as nothing rather than as 0.0. Resolve with
+   *  `displayedScore` from lib/reviews, preferring GROUP on a program card. */
+  publishedRatingOneToOne?: number | null;
+  publishedRatingGroup?: number | null;
+  ratedClientsOneToOne?: number;
+  ratedEventsGroup?: number;
   headline?: string | null;
   user?: {
     name?: string | null;

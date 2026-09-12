@@ -20,7 +20,10 @@
  * applyStreamEnforcement) and because a step is skipped outright once the state
  * that justified it is gone: a lifted ban is never re-revoked.
  */
-import type { ModerationActionType } from "@prisma/client";
+import type {
+  ModerationActionType,
+  ModerationReportType,
+} from "@prisma/client";
 import * as Sentry from "@sentry/nextjs";
 import prisma from "@/lib/prisma";
 import { withCronLock } from "@/lib/cron/with-cron-lock";
@@ -71,6 +74,7 @@ type ActionRow = {
   sideEffects: unknown;
   report: {
     id: string;
+    type: ModerationReportType;
     targetUserId: string;
     reviewId: string | null;
     streamMessageId: string | null;
@@ -87,6 +91,7 @@ function summaryOf(row: ActionRow): SideEffectSummary {
 function reportRefOf(row: ActionRow): ModerationReportRef {
   return {
     id: row.report.id,
+    type: row.report.type,
     targetUserId: row.report.targetUserId,
     reviewId: row.report.reviewId,
     streamMessageId: row.report.streamMessageId,
@@ -166,6 +171,7 @@ async function retryModerationEnforcementUnlocked(
       report: {
         select: {
           id: true,
+          type: true,
           targetUserId: true,
           reviewId: true,
           streamMessageId: true,

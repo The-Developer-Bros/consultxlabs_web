@@ -2,15 +2,16 @@ import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import prisma from "@/lib/prisma";
-import { consultantPublicScalars } from "@/lib/data/consultant-public";
 import {
   requireApiAuth,
-  isPrivileged,
   checkOwnership,
   forbiddenResponse,
 } from "@/lib/auth-helpers";
 import { recomputeConsultantRating, ModeratedReviewError } from "@/lib/reviews";
-import { stripAnonymousReviewer } from "@/lib/data/review-privacy";
+import {
+  publicReviewSelect,
+  sanitisePublicReview,
+} from "@/lib/data/review-public";
 import { purgeReviewSurfaces } from "@/lib/data/public-cache";
 import { withSerializableRetry } from "@/lib/db/serializable-retry";
 import { UpdateReviewSchema } from "@/schemas/feedbacks";
@@ -23,19 +24,20 @@ export async function GET(
   try {
     const { id } = await params;
 
-    const review = await prisma.consultantReview.findUnique({
-      where: { id: id },
-      include: {
-        // #946 allowlist. `consultantProfile: true` returns every scalar,
-        // including panNumber / ibanOrAccount / swiftBic / udyamNumber — and
-        // this route is public.
-        consultantProfile: { select: consultantPublicScalars },
-        consulteeProfile: { select: { id: true, userId: true } },
-      },
+    const review = await prisma.consultantReview.findFirst({
+      // #693 — a moderation-removed review reads as gone. In the WHERE rather
+      // than a branch below, so `deletedAt` never has to be selected onto a
+      // public payload to be checked.
+      where: { id, deletedAt: null },
+      // #1300 — the shared public allowlist. This selected
+      // `consulteeProfile: { id, userId }`, so a public route returned the
+      // reviewer's User id for every NAMED review; the anonymity strip only
+      // nulls it for rows that asked to be anonymous. A review card needs a name
+      // and an avatar, and nothing else about the person.
+      select: publicReviewSelect,
     });
 
-    // #693 — a moderation-removed review reads as gone
-    if (!review || review.deletedAt) {
+    if (!review) {
       return NextResponse.json({ error: "Review not found" }, { status: 404 });
     }
 
@@ -45,7 +47,7 @@ export async function GET(
     // userId for a review they marked anonymous — one GET per id and the whole
     // feature was cosmetic. The strip belongs on every public read, not just
     // the list.
-    return NextResponse.json(stripAnonymousReviewer(review), { status: 200 });
+    return NextResponse.json(sanitisePublicReview(review), { status: 200 });
   } catch (error) {
     Sentry.captureException(
       error instanceof Error ? error : new Error(String(error)),
@@ -59,7 +61,9 @@ export async function GET(
   }
 }
 
-// PUT: Requires auth + ownership
+// PUT: the AUTHOR edits their words. Staff never write here — a staff member
+// rewriting or un-anonymising a consumer review is impersonation, however well
+// it is logged; moderation removes or excludes through its own routes.
 export async function PUT(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -87,13 +91,7 @@ export async function PUT(
       return NextResponse.json({ error: "Review not found" }, { status: 404 });
     }
 
-    // Check authorization: privileged users can update any, others only their own
-    const isOwner = checkOwnership(
-      session,
-      review.consulteeProfileId,
-      "consultee",
-    );
-    if (!isPrivileged(session.user.role) && !isOwner) {
+    if (!checkOwnership(session, review.consulteeProfileId, "consultee")) {
       return forbiddenResponse("You can only update your own reviews");
     }
 
@@ -119,9 +117,45 @@ export async function PUT(
           // it published.
           const current = await tx.consultantReview.findUnique({
             where: { id: id },
-            select: { deletedAt: true },
+            select: {
+              deletedAt: true,
+              rating: true,
+              reviewDescription: true,
+              repliedAt: true,
+              replyDeletedAt: true,
+            },
           });
           if (current?.deletedAt) throw new ModeratedReviewError();
+
+          // Only a changed OPINION is a revision. `isAnonymous` is a display
+          // choice, not a change to what was said.
+          const textChanged =
+            current !== null &&
+            ((body.rating !== undefined && body.rating !== current.rating) ||
+              (body.reviewDescription !== undefined &&
+                (body.reviewDescription ?? null) !==
+                  (current.reviewDescription ?? null)));
+          if (textChanged && current) {
+            // Allocated by an atomic increment, not from the read above — see the
+            // POST route: the row lock turns a concurrent editor's P2002 into a
+            // retried P2034.
+            const bumped = await tx.consultantReview.update({
+              where: { id: id },
+              data: { revisionNo: { increment: 1 }, editedAt: new Date() },
+              select: { revisionNo: true },
+            });
+            await tx.consultantReviewRevision.create({
+              data: {
+                reviewId: id,
+                revisionNo: bumped.revisionNo - 1,
+                rating: current.rating,
+                reviewDescription: current.reviewDescription,
+                afterPublicReply:
+                  current.repliedAt !== null && current.replyDeletedAt === null,
+                editorUserId: session.user.id,
+              },
+            });
+          }
 
           const updated = await tx.consultantReview.update({
             where: { id: id },
@@ -130,10 +164,8 @@ export async function PUT(
               reviewDescription: body.reviewDescription,
               isAnonymous: body.isAnonymous,
             },
-            include: {
-              consultantProfile: { select: consultantPublicScalars },
-              consulteeProfile: { select: { id: true, userId: true } },
-            },
+            // Explicit select, never `include` — see the POST route.
+            select: publicReviewSelect,
           });
 
           await recomputeConsultantRating(tx, review.consultantProfileId);
@@ -146,7 +178,9 @@ export async function PUT(
 
     purgeReviewSurfaces(review.consultantProfileId);
 
-    return NextResponse.json(updatedReview, { status: 200 });
+    return NextResponse.json(sanitisePublicReview(updatedReview), {
+      status: 200,
+    });
   } catch (error) {
     // The re-read inside the transaction throws this when moderation removed
     // the row mid-edit. Without a branch here it fell through to the generic
@@ -173,7 +207,8 @@ export async function PUT(
   }
 }
 
-// DELETE: Requires auth + ownership
+// DELETE: the AUTHOR withdraws their review (soft, revivable by them). Staff
+// take a review down through /api/staff/moderation, which is attributed as such.
 export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -196,33 +231,29 @@ export async function DELETE(
       },
     });
 
-    // #693 — an AUTHOR must not be able to hard-delete a review moderation has
-    // removed. The soft delete is the audit trail, and the unique on
-    // (consultantProfileId, consulteeProfileId) is deliberately not partial on
-    // deletedAt precisely so the row keeps occupying the slot: deleting it here
-    // both destroyed the record and freed the pair for the same person to
-    // re-post the text that was taken down. Staff keep the power.
-    if (!review || (review.deletedAt && !isPrivileged(session.user.role))) {
+    // #693 / #1300 — nobody hard-deletes a review any more, so an
+    // already-removed row is simply gone as far as this handler is concerned.
+    if (!review || review.deletedAt) {
       return NextResponse.json({ error: "Review not found" }, { status: 404 });
     }
 
-    // Check authorization: privileged users can delete any, others only their own
-    const isOwner = checkOwnership(
-      session,
-      review.consulteeProfileId,
-      "consultee",
-    );
-    if (!isPrivileged(session.user.role) && !isOwner) {
+    if (!checkOwnership(session, review.consulteeProfileId, "consultee")) {
       return forbiddenResponse("You can only delete your own reviews");
     }
 
-    // Delete + rating recompute in one transaction — see PUT.
+    // Soft, never hard: the unique is not partial on `deletedAt`, so the withdrawn
+    // row keeps its slot and `deletedByUserId` is what lets the author revive it.
     await withSerializableRetry(() =>
       prisma.$transaction(
         async (tx) => {
-          await tx.consultantReview.delete({
-            where: { id: id },
+          const removed = await tx.consultantReview.updateMany({
+            // Idempotent and race-safe: the second of two concurrent deletes
+            // writes nothing rather than overwriting the first one's timestamp
+            // and its attribution.
+            where: { id, deletedAt: null },
+            data: { deletedAt: new Date(), deletedByUserId: session.user.id },
           });
+          if (removed.count === 0) return;
           await recomputeConsultantRating(tx, review.consultantProfileId);
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },

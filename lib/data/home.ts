@@ -1,6 +1,14 @@
 import { unstable_cache } from "next/cache";
 import prisma from "@/lib/prisma";
-import { stripAnonymousReviewers } from "@/lib/data/review-privacy";
+import {
+  publicReviewSelect,
+  sanitisePublicReviews,
+} from "@/lib/data/review-public";
+import {
+  displayedScore,
+  displayedScoreCount,
+  PERSON_SCORE_ORDER,
+} from "@/lib/reviews-display";
 import { toPlain } from "@/lib/data/serialize";
 import { consultantPublicScalars } from "@/lib/data/consultant-public";
 import { deriveDirectoryRating } from "@/lib/data/public-stats";
@@ -28,7 +36,9 @@ export const getHomeExperts = unstable_cache(
     const consultants = await prisma.consultantProfile.findMany({
       // #781 §B — soft-deleted profiles leave public surfaces
       where: { verificationStatus: "VERIFIED", deletedAt: null },
-      orderBy: { rating: "desc" },
+      // Chosen by the same score the card shows — the raw mean picked ten by a
+      // number the card then hid.
+      orderBy: [...PERSON_SCORE_ORDER],
       take: 10,
       select: {
         ...consultantPublicScalars,
@@ -70,7 +80,19 @@ export const getHomeExperts = unstable_cache(
     // price is already number at the JS boundary (#780 result extension);
     // toPlain strips the extension's inspect symbol so the rows can cross
     // the RSC boundary.
-    return toPlain(consultants);
+    //
+    // #1300 — `rating` on a card means THE PUBLISHED 1:1 SCORE, no fallback
+    // (#1566). NULL stays NULL: the card renders "not enough yet", never 0.0.
+    return toPlain(
+      consultants.map((c) => {
+        const { score, track } = displayedScore(c);
+        return {
+          ...c,
+          rating: score,
+          reviewCount: displayedScoreCount(c, track),
+        };
+      }),
+    );
   },
   ["home-experts"],
   { revalidate: 3600, tags: ["experts", "home"] },
@@ -87,22 +109,13 @@ export const getHomeReviews = unstable_cache(
         consultantProfile: { deletedAt: null },
       },
       take: 20,
-      include: {
-        consultantProfile: {
-          select: {
-            ...consultantPublicScalars,
-            user: { select: { name: true } },
-          },
-        },
-        consulteeProfile: {
-          include: {
-            user: { select: { name: true, image: true } },
-          },
-        },
-      },
+      // #1300 — the allowlist, not a bare `include`: these rows are cached for an
+      // hour and serialised into the landing page's RSC payload for every
+      // anonymous visitor, which is the widest audience any review read has.
+      select: publicReviewSelect,
       orderBy: { rating: "desc" },
     });
-    return toPlain(stripAnonymousReviewers(reviews));
+    return toPlain(sanitisePublicReviews(reviews));
   },
   ["home-reviews"],
   { revalidate: 3600, tags: ["reviews", "home"] },
@@ -135,19 +148,16 @@ export const getHomeStats = unstable_cache(
         prisma.consultantProfile.count({
           where: { verificationStatus: "VERIFIED", deletedAt: null },
         }),
-        // The PUBLISHED score, not the raw `rating` mean: `rating` defaults to
-        // 0 and every unreviewed profile carries that default. `publishedRating`
-        // is NULL below the #705 suppression threshold, so filtering it out
-        // leaves only publishable scores. Weighting by review happens in the
-        // shared `deriveDirectoryRating`, which `/explore/experts` calls too so
-        // the landing hero and the directory cannot drift (#1485).
+        // The PUBLISHED 1:1 score, never the raw `rating` mean (0 on every
+        // unreviewed profile). Weighted by rated clients in the shared
+        // `deriveDirectoryRating`, which /explore/experts calls too (#1485).
         prisma.consultantProfile.findMany({
           where: {
             verificationStatus: "VERIFIED",
             deletedAt: null,
-            publishedRating: { not: null },
+            publishedRatingOneToOne: { not: null },
           },
-          select: { publishedRating: true, reviewCount: true },
+          select: { publishedRatingOneToOne: true, ratedClientsOneToOne: true },
         }),
         // Meetings actually held. The unit is the SLOT: an Appointment carries
         // no status of its own and a subscription spans many meetings.
@@ -170,7 +180,12 @@ export const getHomeStats = unstable_cache(
 
     return {
       totalConsultants,
-      ...deriveDirectoryRating(ratedProfiles),
+      ...deriveDirectoryRating(
+        ratedProfiles.map((p) => ({
+          publishedRating: p.publishedRatingOneToOne,
+          reviewCount: p.ratedClientsOneToOne,
+        })),
+      ),
       completedSessions,
       // Keyed lowercase so the hardcoded category labels can look themselves up
       // without depending on how a domain happens to be capitalised.

@@ -332,6 +332,8 @@ erDiagram
     Topic }o--o{ ClassPlan : "on plan"
 ```
 
+`ConsultantReview` is the public reputation rail and #1300 gave it three companions that the diagram above omits for space: `ConsultantReviewRevision` (one append-only row per superseded version of a review's text), `ScoringSnapshot` (one immutable row per scoring run, holding the priors and parameters that produced each profile's two published scores), and the enums `ReviewTrack` (`ONE_TO_ONE` or `GROUP`) and `RatingCause` (what a rater says drove a low score, shared with `AppointmentFeedback`). The reference for all four is [`docs/reviews/`](../reviews/README.md), and the column-by-column list is [`docs/reviews/06-schema-reference.md`](../reviews/06-schema-reference.md).
+
 ---
 
 ## 5. Professional Background
@@ -1736,6 +1738,8 @@ erDiagram
     User ||--o{ SupportResponse : "responds"
     User ||--o{ Feedback : "submits"
 ```
+
+The diagram above is the original ticket model. The `#support-hub` work added `AppointmentSupportThread`, `SupportMessage`, `SupportTicketCounter` and `SupportFlowOutcome`, and the private per-call rating `AppointmentFeedback` sits beside them. The support tables are documented in [`docs/support/05-schema-reference.md`](../support/05-schema-reference.md) and the rating table in [`docs/feedback/03-schema-reference.md`](../feedback/03-schema-reference.md).
 
 ---
 

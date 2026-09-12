@@ -4,10 +4,21 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import prisma from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 
 import { requirePrivilegedAuth } from "@/lib/auth-helpers";
+
+// `parseInt("abc")` is NaN, which Prisma rejects as `skip` — a 500 for a typo.
+const querySchema = z.object({
+  consultantProfileId: z.string().min(1).optional(),
+  minRating: z.coerce.number().int().min(1).max(5).optional(),
+  maxRating: z.coerce.number().int().min(1).max(5).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
 /**
  * GET /api/staff/moderation/reviews
  * List reviews (optionally filtered)
@@ -17,12 +28,17 @@ export async function GET(req: NextRequest) {
     const auth = await requirePrivilegedAuth();
     if (auth.error) return auth.error;
 
-    const { searchParams } = new URL(req.url);
-    const consultantProfileId = searchParams.get("consultantProfileId");
-    const minRating = searchParams.get("minRating");
-    const maxRating = searchParams.get("maxRating");
-    const page = parseInt(searchParams.get("page") || "1");
-    const limit = parseInt(searchParams.get("limit") || "20");
+    const parsed = querySchema.safeParse(
+      Object.fromEntries(new URL(req.url).searchParams),
+    );
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: "Invalid query", details: parsed.error.flatten() },
+        { status: 400 },
+      );
+    }
+    const { consultantProfileId, minRating, maxRating, page, limit } =
+      parsed.data;
     const offset = (page - 1) * limit;
 
     const where: Prisma.ConsultantReviewWhereInput = {};
@@ -30,29 +46,41 @@ export async function GET(req: NextRequest) {
     if (consultantProfileId) {
       where.consultantProfileId = consultantProfileId;
     }
-    if (minRating || maxRating) {
+    if (minRating !== undefined || maxRating !== undefined) {
       where.rating = {
-        ...(minRating && { gte: parseInt(minRating) }),
-        ...(maxRating && { lte: parseInt(maxRating) }),
+        ...(minRating !== undefined && { gte: minRating }),
+        ...(maxRating !== undefined && { lte: maxRating }),
       };
     }
 
     const [reviews, total] = await Promise.all([
       prisma.consultantReview.findMany({
         where,
-        include: {
+        // An allowlist, not a bare include: the profiles carry statutory PII
+        // this queue never renders, so it is not fetched either (#946, #1561).
+        select: {
+          id: true,
+          rating: true,
+          reviewDescription: true,
+          createdAt: true,
+          deletedAt: true,
+          deletedByUserId: true,
+          isAnonymous: true,
+          replyBody: true,
+          repliedAt: true,
+          replyDeletedAt: true,
+          replyDeletedByUserId: true,
+          editedAt: true,
           consultantProfile: {
-            include: {
-              user: {
-                select: { id: true, name: true, email: true, image: true },
-              },
+            select: {
+              id: true,
+              user: { select: { name: true, email: true, image: true } },
             },
           },
           consulteeProfile: {
-            include: {
-              user: {
-                select: { id: true, name: true, email: true, image: true },
-              },
+            select: {
+              id: true,
+              user: { select: { name: true, email: true, image: true } },
             },
           },
         },
@@ -80,11 +108,34 @@ export async function GET(req: NextRequest) {
         image: review.consulteeProfile.user.image,
       },
       createdAt: review.createdAt,
+      // #1300 — this queue deliberately does NOT filter `deletedAt`, so staff see
+      // removed rows; it then projected neither `deletedAt` nor `isAnonymous`, so
+      // a removed review was indistinguishable from a live one and an anonymous
+      // author from a named one — on the one surface whose whole job is telling
+      // them apart. `editedAt` is here for the same reason: a review that has
+      // been rewritten since it was reported is a different review.
+      deletedAt: review.deletedAt,
+      deletedByUserId: review.deletedByUserId,
+      isAnonymous: review.isAnonymous,
+      // The reply and its state: live, withdrawn by the consultant, or taken down.
+      replyBody: review.replyBody,
+      repliedAt: review.repliedAt,
+      replyDeletedAt: review.replyDeletedAt,
+      replyDeletedByUserId: review.replyDeletedByUserId,
+      editedAt: review.editedAt,
     }));
 
-    // Get rating distribution
+    // Get rating distribution.
+    // #1300 — the SAME population as the list, from the same `where`. It had no
+    // `where` at all, and scoping it to live rows only half-fixed that: the list
+    // applies `consultantProfileId` and the rating bounds and deliberately does not
+    // filter `deletedAt`, so a filtered queue still showed a histogram of a
+    // different population. Two numbers on one screen have to count the same rows,
+    // and on this screen that includes the removed ones — telling them apart is
+    // what the queue is for.
     const ratingDistribution = await prisma.consultantReview.groupBy({
       by: ["rating"],
+      where,
       _count: { id: true },
     });
 

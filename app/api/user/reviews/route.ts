@@ -1,21 +1,25 @@
 import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import { stripAnonymousReviewers } from "@/lib/data/review-privacy";
-import { consultantPublicScalars } from "@/lib/data/consultant-public";
+import {
+  publicReviewSelect,
+  sanitisePublicReview,
+  sanitisePublicReviews,
+} from "@/lib/data/review-public";
 import { Prisma } from "@prisma/client";
 import { notifyNewReview } from "@/lib/novu";
 import { CreateReviewSchema } from "@/schemas/feedbacks";
 import { apiError } from "@/lib/errors";
 import { getSession } from "@/lib/auth-server";
 import { purgeReviewSurfaces } from "@/lib/data/public-cache";
-import { spamLimiter, applyRateLimit } from "@/lib/rate-limit";
+import { reviewWriteLimiter, applyRateLimit } from "@/lib/rate-limit";
 import {
   ModeratedReviewError,
   recomputeConsultantRating,
   resolveReviewableSession,
 } from "@/lib/reviews";
 import { withSerializableRetry } from "@/lib/db/serializable-retry";
+import { z } from "zod";
 
 export async function GET(req: NextRequest) {
   try {
@@ -26,10 +30,17 @@ export async function GET(req: NextRequest) {
 
     const whereClause: Prisma.ConsultantReviewWhereInput = {};
 
-    if (rating) {
-      whereClause.rating = {
-        gte: parseInt(rating), // Greater than or equal to the specified rating
-      };
+    if (rating !== null) {
+      // `parseInt("4junk")` is 4 and `parseInt("abc")` is NaN; neither belongs
+      // in a Prisma filter.
+      const minRating = z.coerce.number().int().min(1).max(5).safeParse(rating);
+      if (!minRating.success) {
+        return NextResponse.json(
+          { error: "rating must be an integer from 1 to 5" },
+          { status: 400 },
+        );
+      }
+      whereClause.rating = { gte: minRating.data };
     }
 
     if (consultantId) {
@@ -57,28 +68,11 @@ export async function GET(req: NextRequest) {
     const reviews = await prisma.consultantReview.findMany({
       where: whereClause,
       take: 50,
-      include: {
-        // #946 allowlist. This route is PUBLIC (middleware.ts marks it so) and
-        // its response is CDN-cached, so a bare `include:` here published every
-        // reviewed consultant's panNumber / ibanOrAccount / swiftBic /
-        // udyamNumber to anonymous callers.
-        consultantProfile: {
-          select: {
-            ...consultantPublicScalars,
-            user: { select: { name: true } },
-          },
-        },
-        consulteeProfile: {
-          include: {
-            user: {
-              select: {
-                name: true,
-                image: true,
-              },
-            },
-          },
-        },
-      },
+      // The allowlist. This route is PUBLIC (middleware.ts marks it so) and its
+      // response is CDN-cached, so a bare `include:` here published every
+      // reviewed consultant's statutory PII AND every named reviewer's private
+      // profile — `goals`, `aboutMe`, `careerStage`, `budgetPreference`.
+      select: publicReviewSelect,
       orderBy: {
         rating: "desc",
       },
@@ -87,7 +81,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(
       // PUBLIC and CDN-cached: a name withheld by the reviewer must not ship
       // in the payload, or the anonymity is cosmetic.
-      { data: stripAnonymousReviewers(reviews) },
+      { data: sanitisePublicReviews(reviews) },
       {
         status: 200,
         headers: {
@@ -111,8 +105,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Rate limit: 5 reviews per hour per user
-    const rl = await applyRateLimit(spamLimiter, `reviews:${session.user.id}`);
+    // 20 writes an hour: an edit is a POST too, so 5 shut out "write, tweak twice".
+    const rl = await applyRateLimit(
+      reviewWriteLimiter,
+      `reviews:${session.user.id}`,
+    );
     if (rl) return rl;
 
     const body = await req.json();
@@ -159,89 +156,148 @@ export async function POST(req: NextRequest) {
     const writeResult = await withSerializableRetry(() =>
       prisma.$transaction(
         async (tx) => {
-          // A review that moderation removed cannot be edited back into existence,
-          // and accepting the edit silently would tell the author it was published
-          // when nothing changed on the page.
-          const existing = await tx.consultantReview.findUnique({
+          // The pair's review, whatever its track: the unique is the two-column
+          // pair until #1549, so filtering on track would miss the row and 409.
+          const existing = await tx.consultantReview.findFirst({
             where: {
-              consultantProfileId_consulteeProfileId: {
-                consultantProfileId: reviewable.consultantProfileId,
-                consulteeProfileId: sessionConsulteeProfileId,
-              },
-            },
-            select: { deletedAt: true },
-          });
-          if (existing?.deletedAt) throw new ModeratedReviewError();
-
-          // UPSERT, not create. There is one review per consultant per consultee,
-          // so a second session with the same person updates the opinion rather
-          // than colliding on the unique — and `appointmentId`/`ratingUnitId` move
-          // to the session that prompted this edit, which is what keeps the group
-          // weighting pointed at the most recent thing they actually attended.
-          const created = await tx.consultantReview.upsert({
-            where: {
-              consultantProfileId_consulteeProfileId: {
-                consultantProfileId: reviewable.consultantProfileId,
-                consulteeProfileId: sessionConsulteeProfileId,
-              },
-            },
-            update: {
-              rating: validatedData.rating,
-              reviewDescription: validatedData.reviewDescription,
-              appointmentId: reviewable.appointmentId,
-              // ratingUnitId deliberately NOT moved. It is the bucket the
-              // group weighting averages within, so reassigning it on an edit
-              // merges units that were separate: two 1:1 clients who both
-              // later attend the same webinar and re-post collapse from two
-              // rated units into one, and a consultant sitting on the
-              // five-unit publication threshold loses their public score
-              // because two people edited their reviews. The unit belongs to
-              // the session that first grounded the review.
-              isAnonymous: validatedData.isAnonymous ?? undefined,
-              // A moderated-away review must not be resurrected by re-submitting.
-              deletedAt: undefined,
-            },
-            create: {
-              rating: validatedData.rating,
-              reviewDescription: validatedData.reviewDescription,
               consultantProfileId: reviewable.consultantProfileId,
               consulteeProfileId: sessionConsulteeProfileId,
-              appointmentId: reviewable.appointmentId,
-              isAnonymous: validatedData.isAnonymous ?? false,
-              // Denormalized at write time: `groupBy` can only group on this
-              // model's own scalars, and this is what makes a 200-seat webinar one
-              // data point instead of two hundred.
-              ratingUnitId: reviewable.ratingUnitId,
             },
-            include: {
-              // #946 allowlist — the response goes back to the consultee who wrote
-              // the review; a bare `include:` handed them the consultant's PAN and
-              // bank account.
-              consultantProfile: {
-                select: {
-                  ...consultantPublicScalars,
-                  user: { select: { name: true } },
-                },
-              },
-              consulteeProfile: {
-                include: {
-                  user: {
-                    select: {
-                      name: true,
-                      image: true,
-                    },
-                  },
-                },
-              },
+            select: {
+              id: true,
+              deletedAt: true,
+              deletedByUserId: true,
+              track: true,
+              rating: true,
+              reviewDescription: true,
+              revisionNo: true,
+              repliedAt: true,
+              replyDeletedAt: true,
             },
           });
+          // An author's withdrawal is revivable; a moderation removal is not. A
+          // NULL remover on a removed row reads as moderation (fails closed).
+          const withdrawnByAuthor =
+            existing !== null &&
+            existing.deletedAt !== null &&
+            existing.deletedByUserId === session.user.id;
+          if (existing?.deletedAt && !withdrawnByAuthor) {
+            throw new ModeratedReviewError();
+          }
+
+          // An explicit select, never `include`: `include` returns every scalar on
+          // the row, which (a) hands the author staff-only columns and (b) fails
+          // with P2022 whenever the schema is pushed ahead of the deploy — the
+          // documented order. Only what the notification below reads.
+          const select = {
+            ...publicReviewSelect,
+            consultantProfile: {
+              select: { userId: true, user: { select: { name: true } } },
+            },
+            consulteeProfile: {
+              select: { user: { select: { name: true, image: true } } },
+            },
+          } as const;
+
+          let created;
+          if (existing) {
+            // Only a changed OPINION is an edit. Re-submitting the same stars and
+            // the same words is idempotent, so it must not manufacture a
+            // revision or stamp `editedAt` — otherwise a double-tapped Save reads
+            // as "this person keeps changing their mind".
+            const textChanged =
+              existing.rating !== validatedData.rating ||
+              (existing.reviewDescription ?? null) !==
+                (validatedData.reviewDescription ?? null);
+
+            if (textChanged) {
+              // The revision number is allocated by an atomic increment on the
+              // review row, never from the `existing` read: two editors who both
+              // read N would otherwise both insert revision N and the loser got a
+              // P2002 that `withSerializableRetry` does not retry. The increment
+              // takes the row lock, so the loser aborts with P2034 and retries.
+              const bumped = await tx.consultantReview.update({
+                where: { id: existing.id },
+                data: { revisionNo: { increment: 1 }, editedAt: new Date() },
+                select: { revisionNo: true },
+              });
+              // The trail stores what the review USED to say.
+              await tx.consultantReviewRevision.create({
+                data: {
+                  reviewId: existing.id,
+                  revisionNo: bumped.revisionNo - 1,
+                  rating: existing.rating,
+                  reviewDescription: existing.reviewDescription,
+                  // Recorded for moderation context. It does NOT decide whether
+                  // the public surface marks the edit — every edit is marked, or
+                  // a consultant could reply to everything and brand every
+                  // subsequent revision.
+                  afterPublicReply:
+                    existing.repliedAt !== null &&
+                    existing.replyDeletedAt === null,
+                  editorUserId: session.user.id,
+                },
+              });
+            }
+
+            // Provenance moves as ONE fact — appointment, session clock, track
+            // and event key together — and only when the new session is in the
+            // row's own track. GROUP follows the latest event (its bucket, clock
+            // and provenance then agree) until #1549 gives each event its own row;
+            // a cross-track edit before #1549 changes the words and nothing else.
+            const sameTrack =
+              existing.track === null || existing.track === reviewable.track;
+            created = await tx.consultantReview.update({
+              where: { id: existing.id },
+              data: {
+                rating: validatedData.rating,
+                reviewDescription: validatedData.reviewDescription,
+                ...(sameTrack
+                  ? {
+                      appointmentId: reviewable.appointmentId,
+                      track: reviewable.track,
+                      ratingUnitId: reviewable.ratingUnitId,
+                      // `heldAt` is the slot's end, never now(): re-saving cannot
+                      // refresh a recency weight. Kept when unknown (offline).
+                      ...(reviewable.heldAt
+                        ? { ratedSessionAt: reviewable.heldAt }
+                        : {}),
+                    }
+                  : {}),
+                isAnonymous: validatedData.isAnonymous ?? undefined,
+                ...(withdrawnByAuthor
+                  ? { deletedAt: null, deletedByUserId: null }
+                  : {}),
+              },
+              select,
+            });
+          } else {
+            created = await tx.consultantReview.create({
+              data: {
+                rating: validatedData.rating,
+                reviewDescription: validatedData.reviewDescription,
+                consultantProfileId: reviewable.consultantProfileId,
+                consulteeProfileId: sessionConsulteeProfileId,
+                appointmentId: reviewable.appointmentId,
+                isAnonymous: validatedData.isAnonymous ?? false,
+                track: reviewable.track,
+                // Group only — see lib/reviews.ts. NULL on a 1:1 review, where
+                // the review is already one data point.
+                ratingUnitId: reviewable.ratingUnitId,
+                // The SESSION's clock, for recency weighting. The age of the
+                // conversation, not of the row: a client editing a year-old
+                // review this week has not held a recent session.
+                ratedSessionAt: reviewable.heldAt,
+              },
+              select,
+            });
+          }
 
           await recomputeConsultantRating(tx, created.consultantProfileId);
 
-          // The write is an upsert, so the caller cannot tell a create from an
-          // edit by looking at the row. `existing` is the answer and the
-          // transaction already has it.
-          return { review: created, isNew: !existing };
+          // A revived withdrawal is news to the consultant just as a first
+          // review is: the profile regains a review they were not told about.
+          return { review: created, isNew: !existing || withdrawnByAuthor };
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
       ),
@@ -249,9 +305,7 @@ export async function POST(req: NextRequest) {
 
     const { review: newReview, isNew } = writeResult;
 
-    // Only a genuinely NEW review is news. Under the upsert every edit pinged
-    // the consultant again as though a fresh review had landed, so a consultee
-    // refining their wording could notify them repeatedly for one opinion.
+    // Only a NEW (or revived) review is news; an edit must not re-notify.
     if (isNew) {
       void notifyNewReview(newReview.consultantProfile.userId, {
         // The reviewer withheld their name from the public page; sending it to
@@ -275,8 +329,16 @@ export async function POST(req: NextRequest) {
     // until purged, and the landing page's window is an hour.
     purgeReviewSurfaces(newReview.consultantProfileId);
 
-    // 201 only when something was created; an edit is a 200.
-    return NextResponse.json(newReview, { status: isNew ? 201 : 200 });
+    // The public shape, exactly as a reader would get it: a removed reply is
+    // stripped and the consultant's user id (notification-only) does not travel.
+    const { consultantProfile, ...publicRow } = newReview;
+    return NextResponse.json(
+      sanitisePublicReview({
+        ...publicRow,
+        consultantProfile: { user: consultantProfile.user },
+      }),
+      { status: isNew ? 201 : 200 },
+    );
   } catch (error) {
     if (error instanceof ModeratedReviewError) {
       return NextResponse.json(
@@ -287,15 +349,12 @@ export async function POST(req: NextRequest) {
         { status: 409 },
       );
     }
-    // @@unique([consultantProfileId, consulteeProfileId]) — one per consultant.
+    // The pair unique, lost as a find-then-create race. Per consultant until
+    // #1549 (then per consultant per track, per event for GROUP).
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2002"
     ) {
-      // Reachable only as a race: the upsert's own read-then-write can lose to
-      // a concurrent insert of the same pair. Not "this session" any more —
-      // the unique is per CONSULTANT, and the copy has to say so or the reader
-      // goes looking for a session they never double-reviewed.
       return NextResponse.json(
         {
           error:

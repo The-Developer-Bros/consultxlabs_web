@@ -19,14 +19,22 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Star } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { throwSupportError } from "@/lib/support/error-copy";
+import { bookingFeedbackKey } from "@/hooks/useSessionFeedback";
 
 export function SessionRatingRow({
   appointmentId,
+  bookingAppointmentId,
   slotId,
   existingRating,
   readOnly = false,
 }: Readonly<{
+  /** The CHILD appointment this session belongs to — where the rating is POSTed. */
   appointmentId: string;
+  /** The BOOKING the page is showing, which owns the cache entry to invalidate.
+   *  #1540 consolidated the read to one request for the whole booking, so
+   *  invalidating this row's own child id would leave the stars unchanged after a
+   *  save. */
+  bookingAppointmentId: string;
   slotId: string;
   existingRating: number | null;
   /** The consultant's view: what this call scored, not something to set. */
@@ -53,7 +61,7 @@ export function SessionRatingRow({
     },
     onSuccess: () => {
       void qc.invalidateQueries({
-        queryKey: ["appointment-feedback", appointmentId],
+        queryKey: bookingFeedbackKey(bookingAppointmentId),
       });
     },
     onError: (e: unknown) => {

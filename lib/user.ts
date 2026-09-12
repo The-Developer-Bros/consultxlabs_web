@@ -4,7 +4,6 @@ import { TConsultantProfile } from "@/types/consultant";
 import { TConsulteeProfile } from "@/types/consultee";
 import { TStaffProfile } from "@/types/staff";
 import { TUserWithProfessionalBackground } from "@/types/user";
-import type { TConsultantReview } from "@/types/review";
 
 export const fetchUserDetails = async (
   userId: string,
@@ -54,18 +53,6 @@ export const fetchStaffDetails = async (
     throw new Error(`Failed to fetch staff details: ${response.statusText}`);
   const staffData: { data: TStaffProfile } = await response.json();
   return staffData.data;
-};
-
-export const fetchReviews = async (
-  consultantId: string,
-): Promise<TConsultantReview[]> => {
-  const response = await fetch(
-    `/api/user/reviews?consultantId=${consultantId}`,
-  );
-  if (!response.ok)
-    throw new Error(`Failed to fetch reviews: ${response.statusText}`);
-  const reviewsData: { data: TConsultantReview[] } = await response.json();
-  return reviewsData.data;
 };
 
 /**

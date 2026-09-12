@@ -85,6 +85,30 @@ const create = jest.fn(async ({ data }: CreateArgs) => {
 
 const mockGetMessage = jest.fn();
 
+/** The reviewed rows a REVIEW report is checked against. `review-1` is live and was
+ *  written by target-1 — the happy path every other case here needs so it can get
+ *  past the gate to the dedup lookup being asserted. `review-removed` is the same
+ *  review after moderation took it down.
+ *
+ *  The store HONOURS `deletedAt`, rather than matching on the id alone. A mock that
+ *  ignores the predicate cannot tell a route that filters `deletedAt: null` from one
+ *  that forgot to, so the regression guard guarded nothing. */
+const reviewRows = [
+  { id: "review-1", deletedAt: null as Date | null, authorUserId: "target-1" },
+  {
+    id: "review-removed",
+    deletedAt: new Date("2026-09-01T00:00:00Z") as Date | null,
+    authorUserId: "target-1",
+  },
+];
+
+const reviewFindFirst = jest.fn(async ({ where }: FindFirstArgs) => {
+  const row = reviewRows.find((r) => r.id === where.id);
+  if (!row) return null;
+  if ("deletedAt" in where && row.deletedAt !== where.deletedAt) return null;
+  return { consulteeProfile: { userId: row.authorUserId } };
+});
+
 jest.mock("@sentry/nextjs", () => ({ captureException: jest.fn() }));
 
 // #1270 — the report route verifies a reported message against Stream now, so
@@ -114,6 +138,13 @@ jest.mock("../../lib/prisma", () => ({
       create: (args: CreateArgs) => create(args),
     },
     user: { findUnique: jest.fn(async () => ({ id: "target-1" })) },
+    // #1300 — a REVIEW report is now verified against the review it names: it
+    // must exist, be live, and have been written by the user being reported.
+    // Without that, a report could name one person's review while pointing
+    // moderation's enforcement at somebody else.
+    consultantReview: {
+      findFirst: (args: FindFirstArgs) => reviewFindFirst(args),
+    },
   },
 }));
 
@@ -292,5 +323,110 @@ describe("POST /api/report — message reports aggregate per message", () => {
     expect(findFirst.mock.calls[0][0].where).not.toHaveProperty(
       "streamMessageId",
     );
+  });
+
+  it("refuses a review report that names a review nobody wrote", async () => {
+    const res = await post({
+      type: "REVIEW",
+      reason: "Fake review",
+      targetUserId: "target-1",
+      reviewId: "does-not-exist",
+    });
+    expect(res.status).toBe(404);
+    // Nothing filed: a report naming content that does not exist is one
+    // CONTENT_REMOVED would later report success on while removing nothing.
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("targets the review's author whatever the caller guessed, and answers the same either way", async () => {
+    // The target of a review report is its AUTHOR, read from the review. It used
+    // to be COMPARED with the caller's `targetUserId` and answer 400 on a
+    // mismatch — which let a consultant de-anonymise a review by probing their
+    // clients one id at a time until the answer changed. Now the guess is
+    // ignored: the row names the author, and a wrong guess and a right one are
+    // indistinguishable from outside.
+    const wrong = await post({
+      type: "REVIEW",
+      reason: "Fake review",
+      targetUserId: "someone-else",
+      reviewId: "review-1",
+    });
+    expect(wrong.status).toBe(201);
+    expect(rows[0].targetUserId).toBe("target-1");
+
+    (getSession as jest.Mock).mockResolvedValue({ user: { id: "reporter-2" } });
+    const right = await post({
+      type: "REVIEW",
+      reason: "Fake review",
+      targetUserId: "target-1",
+      reviewId: "review-1",
+    });
+    // Same content, second reporter: aggregated onto the same row, 200 either way.
+    expect(right.status).toBe(200);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].reportCount).toBe(2);
+  });
+
+  it("needs no targetUserId at all on a review report", async () => {
+    const res = await post({
+      type: "REVIEW",
+      reason: "Fake review",
+      reviewId: "review-1",
+    });
+    expect(res.status).toBe(201);
+    expect(rows[0].targetUserId).toBe("target-1");
+  });
+
+  it("never stores a review id on a report that is not about a review", async () => {
+    // A PROFILE report carrying somebody's review id used to be persisted as
+    // sent, "Remove content" was offered on it, and CONTENT_REMOVED soft-deleted
+    // the unrelated review. The id is derived from the type now.
+    const res = await post({
+      type: "PROFILE",
+      reason: "Fake profile",
+      targetUserId: "target-1",
+      reviewId: "review-1",
+      streamMessageId: "msg-1",
+    });
+    expect(res.status).toBe(201);
+    expect(rows[0].reviewId).toBeNull();
+    expect(rows[0].streamMessageId).toBeNull();
+    expect(mockGetMessage).not.toHaveBeenCalled();
+  });
+
+  it("never stores a review id on a message report", async () => {
+    await post(
+      messageReport({ streamMessageId: "msg-1", reviewId: "review-1" }),
+    );
+    expect(rows[0].reviewId).toBeNull();
+    expect(rows[0].streamMessageId).toBe("msg-1");
+  });
+
+  it("refuses a review report that names a review moderation removed", async () => {
+    // The row still exists, so an id check alone finds it. Reporting it would file
+    // a report whose CONTENT_REMOVED action has nothing left to remove, and would
+    // let a removed review keep accruing reports against its author.
+    const res = await post({
+      type: "REVIEW",
+      reason: "Fake review",
+      targetUserId: "target-1",
+      reviewId: "review-removed",
+    });
+    expect(res.status).toBe(404);
+    expect(create).not.toHaveBeenCalled();
+    // The predicate, not just the outcome: this is what the mock now enforces.
+    expect(reviewFindFirst.mock.calls[0][0].where).toMatchObject({
+      deletedAt: null,
+    });
+  });
+
+  it("requires a review report to name a review at all", async () => {
+    const res = await post({
+      type: "REVIEW",
+      reason: "Fake review",
+      targetUserId: "target-1",
+    });
+    expect(res.status).toBe(400);
+    expect(create).not.toHaveBeenCalled();
   });
 });

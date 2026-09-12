@@ -2,8 +2,16 @@ import { unstable_cache } from "next/cache";
 import prisma from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import type { IConsultantCardData } from "@/types/consultant";
-import { stripAnonymousReviewers } from "@/lib/data/review-privacy";
+import {
+  publicReviewSelect,
+  sanitisePublicReviews,
+} from "@/lib/data/review-public";
 import { deriveDirectoryRating } from "@/lib/data/public-stats";
+import {
+  displayedScore,
+  displayedScoreCount,
+  PERSON_SCORE_ORDER,
+} from "@/lib/reviews-display";
 
 /**
  * Server-side data access for the explore experts page.
@@ -124,13 +132,13 @@ type ConsultantCardRow = Prisma.Result<
 export function toConsultantCard(row: ConsultantCardRow): IConsultantCardData {
   const { memberships, ...c } = row;
   const firstOrg = memberships[0]?.organization ?? null;
+  // #1300 — a person card shows the 1:1 score, no fallback (#1566), and the
+  // count beside it is the same track's denominator. Null renders as "not
+  // enough reviews yet", never 0.0.
   return {
     id: c.id,
-    // #705 — the suppressed-below-threshold score, never the raw mean. Null
-    // renders as "not enough reviews yet" rather than a number one client can
-    // define.
-    rating: c.publishedRating,
-    reviewCount: c.reviewCount,
+    rating: displayedScore(c).score,
+    reviewCount: displayedScoreCount(c, "ONE_TO_ONE"),
     headline: c.headline,
     experience: c.experience,
     description: c.description,
@@ -170,11 +178,16 @@ export function toConsultantCard(row: ConsultantCardRow): IConsultantCardData {
 // default page below). Unknown/absent sort falls back to name A→Z.
 export function orderByForSort(
   sort: string,
-): Prisma.ConsultantProfileOrderByWithRelationInput {
+):
+  | Prisma.ConsultantProfileOrderByWithRelationInput
+  | Prisma.ConsultantProfileOrderByWithRelationInput[] {
   switch (sort) {
     case "nameDesc":
       return { user: { name: "desc" } };
     case "reviewCount":
+      // The number the card prints is the 1:1 client count, so "Most Reviews"
+      // orders on it — the order and the number shown agree.
+      return { ratedClientsOneToOne: "desc" };
     case "trending":
       // #705 — the denormalized count, which excludes soft-deleted reviews.
       // `{ reviews: { _count: "desc" } }` counted them: Prisma cannot filter a
@@ -182,9 +195,10 @@ export function orderByForSort(
       // pushing its consultant up the trending list.
       return { reviewCount: "desc" };
     case "rating":
-      // The PUBLISHED score, nulls last. Sorting on the raw mean let a 5.0 from
-      // a single session outrank a 4.8 from two hundred.
-      return { publishedRating: { sort: "desc", nulls: "last" } };
+      // The same two-track policy as the card's star, so the order and the
+      // number shown agree. Sorting on the raw mean let a 5.0 from a single
+      // session outrank a 4.8 from two hundred.
+      return [...PERSON_SCORE_ORDER];
     case "newest":
       return { createdAt: "desc" };
     case "nameAsc":
@@ -243,20 +257,17 @@ export async function fetchExpertsMetadata() {
             },
           },
         }),
-        // #1485 — the PUBLISHED score, not the raw `rating` mean. `rating`
-        // defaults to 0 and every unreviewed profile carries that default, so
-        // averaging it across the directory was not a number anyone could
-        // defend. `publishedRating` is NULL below the #705 suppression
-        // threshold, so filtering it out leaves only publishable scores. The
-        // rows are weighted by review in `deriveDirectoryRating` rather than
-        // by `_avg`, which cannot express a weighted mean.
+        // #1485 / #1300 — the PUBLISHED 1:1 score, never the raw `rating`
+        // mean (which defaults to 0 on every unreviewed profile). NULL below the
+        // publication gate, so filtering it out leaves publishable scores only;
+        // `deriveDirectoryRating` weights them by rated clients.
         prisma.consultantProfile.findMany({
           where: {
             verificationStatus: "VERIFIED",
             deletedAt: null,
-            publishedRating: { not: null },
+            publishedRatingOneToOne: { not: null },
           },
-          select: { publishedRating: true, reviewCount: true },
+          select: { publishedRatingOneToOne: true, ratedClientsOneToOne: true },
         }),
         // #1485 — the real "sessions completed" figure, replacing a hardcoded
         // "50K+". The unit is the SLOT, not the appointment: a slot is one
@@ -277,7 +288,12 @@ export async function fetchExpertsMetadata() {
           name: d.name,
           consultantCount: d._count.consultantProfiles,
         })),
-        ...deriveDirectoryRating(ratedProfiles),
+        ...deriveDirectoryRating(
+          ratedProfiles.map((p) => ({
+            publishedRating: p.publishedRatingOneToOne,
+            reviewCount: p.ratedClientsOneToOne,
+          })),
+        ),
         completedSessions,
       };
     })(),
@@ -364,20 +380,13 @@ const getCachedRecentReviews = unstable_cache(
       },
       orderBy: { createdAt: "desc" },
       take: limit,
-      include: {
-        consultantProfile: {
-          include: {
-            user: { select: { name: true } },
-          },
-        },
-        consulteeProfile: {
-          include: {
-            user: { select: { name: true, image: true } },
-          },
-        },
-      },
+      // #1300 — the allowlist, not a bare `include`. This one was the worst of the
+      // three: `consultantProfile: { include: … }` returned every ConsultantProfile
+      // scalar, so the statutory-PII columns `consultantPublicScalars` exists to
+      // keep out of a public payload (#946) were being fetched and cached too.
+      select: publicReviewSelect,
     });
-    return stripAnonymousReviewers(rows);
+    return sanitisePublicReviews(rows);
   },
   ["recent-reviews"],
   { revalidate: 120, tags: ["reviews"] },

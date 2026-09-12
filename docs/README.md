@@ -154,13 +154,45 @@ Notification system: Resend (transactional email) + Novu (multi-channel orchestr
 
 ---
 
-### Support & Feedback
+### Support
 
 The `#support-hub` system: per-appointment support threads, stateless platform
-intake, org triage, and private CSAT feedback.
+intake, org triage, ticket references, SLA clocks, and the deflection counter.
 
-- [support-hub.md](./support/support-hub.md) - Two-scope architecture, the error envelope + Sentry policy, authz gate, ticket references, the SLA model, the deflection counter, invariants, testing map
-- [engineering-log-2026-08-29.md](./support/engineering-log-2026-08-29.md) - The support-drawer turn loss: eight causes, the schema they required, and two stale audit claims
+- [README.md](./support/README.md) - System overview, the three sibling subsystems, source code map, recommended reading order
+- [01-architecture.md](./support/01-architecture.md) - Two scopes on one engine, the error envelope and Sentry policy, the authz gate, the hub surfaces
+- [02-the-grid.md](./support/02-the-grid.md) - What each record is anchored to, who may see it, and when it exists, across every actor and booking shape
+- [03-ticket-references-and-sla.md](./support/03-ticket-references-and-sla.md) - The `FAM-` reference series and the statutory SLA model
+- [04-deflection-and-support-csat.md](./support/04-deflection-and-support-csat.md) - What fraction the tree resolves, and the two halves of support CSAT
+- [05-schema-reference.md](./support/05-schema-reference.md) - Every support column and index, and why
+- [06-invariants-and-testing.md](./support/06-invariants-and-testing.md) - Eleven invariants to know before editing, and the test map
+- [07-engineering-log-2026-08-29.md](./support/07-engineering-log-2026-08-29.md) - The support-drawer turn loss: eight causes, the schema they required, and two stale audit claims
+
+---
+
+### Feedback
+
+The private per-call CSAT rail (`AppointmentFeedback`): one rating per person per session, and the organisation's floored aggregate over it.
+
+- [README.md](./feedback/README.md) - System overview, source code map, recommended reading order
+- [01-architecture.md](./feedback/01-architecture.md) - One rating per call, `raterRole` and fail-closed provenance, the API, edit semantics, soft-delete
+- [02-org-quality-signal.md](./feedback/02-org-quality-signal.md) - The per-consultant rollup, `quality.read`, the k-anonymity floors and three suppression rules
+- [03-schema-reference.md](./feedback/03-schema-reference.md) - Every column and index of `AppointmentFeedback`
+
+---
+
+### Reviews
+
+The public reputation rail (`ConsultantReview`, `ConsultantReviewRevision`, `ScoringSnapshot`, and the score columns on `ConsultantProfile`).
+
+- [README.md](./reviews/README.md) - System overview, source code map, recommended reading order
+- [01-architecture.md](./reviews/01-architecture.md) - One review per relationship, anonymity, the right of reply, attributed removal, the public read allowlist
+- [02-two-track-scoring.md](./reviews/02-two-track-scoring.md) - The 1:1 and group tracks, the shrinkage formula, the constants, `ScoringSnapshot`, the recompute
+- [03-edit-trail-and-disclosure.md](./reviews/03-edit-trail-and-disclosure.md) - The revision trail, `editedAt` versus `updatedAt`, and why every edit is marked
+- [04-rating-cause-and-aggregate-exclusion.md](./reviews/04-rating-cause-and-aggregate-exclusion.md) - Ratings protection: the shared cause taxonomy, claim versus adjudication, excluded versus deleted
+- [05-moderation-and-reports.md](./reviews/05-moderation-and-reports.md) - Reporting a review, soft-delete on `CONTENT_REMOVED`, the staff queue
+- [06-schema-reference.md](./reviews/06-schema-reference.md) - Every column and index of the four models, with the index rationale
+- [07-deployment-and-deferred-work.md](./reviews/07-deployment-and-deferred-work.md) - Why the schema is additive-only, `db:preflight`, the push-then-recompute order, and the deferred issues
 
 ---
 
@@ -260,15 +292,15 @@ Internal team documentation — onboarding, testing guides, and contributor reso
 
 Competitor analysis and research.
 
-- [README.md](./competitors/README.md) - Competitors overview
-- [01-topmate-io.md](./competitors/01-topmate-io.md) - Topmate analysis
-- [02-preplaced-in.md](./competitors/02-preplaced-in.md) - Preplaced analysis
-- [03-metvy-com.md](./competitors/03-metvy-com.md) - Metvy analysis
-- [04-upgrad-com.md](./competitors/04-upgrad-com.md) - upGrad analysis
-- [05-propeers-in.md](./competitors/05-propeers-in.md) - ProPeers analysis
-- [06-growthschool-io.md](./competitors/06-growthschool-io.md) - GrowthSchool analysis
+- [README.md](./competition/competitors/README.md) - Competitors overview
+- [01-topmate-io.md](./competition/competitors/01-topmate-io.md) - Topmate analysis
+- [02-preplaced-in.md](./competition/competitors/02-preplaced-in.md) - Preplaced analysis
+- [03-metvy-com.md](./competition/competitors/03-metvy-com.md) - Metvy analysis
+- [04-upgrad-com.md](./competition/competitors/04-upgrad-com.md) - upGrad analysis
+- [05-propeers-in.md](./competition/competitors/05-propeers-in.md) - ProPeers analysis
+- [06-growthschool-io.md](./competition/competitors/06-growthschool-io.md) - GrowthSchool analysis
 
-- [competitor-analysis.md](./competitor-analysis.md) - Consolidated competitor analysis
+- [competitor-analysis.md](./competition/competitors/competitor-analysis.md) - Consolidated competitor analysis
 
 ---
 

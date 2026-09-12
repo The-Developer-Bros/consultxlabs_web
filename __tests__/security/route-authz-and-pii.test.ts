@@ -85,9 +85,17 @@ describe("consultant statutory PII is never returned by a bare include", () => {
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/^\s*\/\/.*$/gm, "");
 
-    expect(src).toContain("consultantPublicScalars");
+    // Either the scalar allowlist itself or `publicReviewSelect`, which is
+    // built on it (asserted below) and is the whole-review allowlist.
+    expect(src).toMatch(/consultantPublicScalars|publicReviewSelect/);
     expect(src).not.toMatch(/consultantProfile: true/);
     expect(src).not.toMatch(/consultantProfile: \{\s*\n\s*include:/);
+  });
+
+  it("publicReviewSelect is built on the scalar allowlist", () => {
+    expect(read("lib/data/review-public.ts")).toContain(
+      "...consultantPublicScalars",
+    );
   });
 
   // The plan reads. Two of these are PUBLIC (middleware.ts lists
@@ -114,7 +122,7 @@ describe("consultant statutory PII is never returned by a bare include", () => {
     const get = src.slice(start, next === -1 ? undefined : next);
     expect(get).toContain("planConsultantSelect");
     expect(get).not.toMatch(/consultantProfile: true/);
-    expect(get).not.toMatch(/consultantProfile: \{\s*\n\s*include:/);
+    expect(get).not.toMatch(/consultantProfile\s*:\s*\{\s*include\s*:/);
   });
 
   it("the plan projection is built on the public allowlist", () => {
@@ -124,11 +132,16 @@ describe("consultant statutory PII is never returned by a bare include", () => {
   });
 
   it("the public reviews list is not serving PII to anonymous callers", () => {
-    const src = read("app/api/user/reviews/route.ts");
+    // Comments stripped: the route's own comments name the anti-pattern.
+    const src = read("app/api/user/reviews/route.ts")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
     // middleware.ts marks this route public and the response is CDN-cached,
     // so a leak here is world-readable and persisted at the edge.
     expect(src).toContain("Cache-Control");
-    expect(src).toContain("...consultantPublicScalars");
+    expect(src).toContain("select: publicReviewSelect");
+    // The write paths too: `include` returns every scalar on the row.
+    expect(src).not.toMatch(/\binclude\s*(?::|,)/);
   });
 });
 

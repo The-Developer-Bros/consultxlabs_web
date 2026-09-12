@@ -1,44 +1,30 @@
-import { Prisma } from "@prisma/client";
-import type { ConsultantPublicScalars } from "@/lib/data/consultant-public";
-import type { SanitisedReview } from "@/lib/data/review-privacy";
+import type { Prisma, ReviewTrack } from "@prisma/client";
+import type {
+  publicReviewSelect,
+  PublicReview,
+} from "@/lib/data/review-public";
 
 /**
- * Review with both consultant and consultee profile data.
- * Matches the include pattern in GET /api/user/reviews.
- * Used by home page testimonials and upcoming events sections.
- * The consultantProfile is projected to the public allowlist (no statutory PII). (#946)
+ * A review row exactly as the public projection returns it, before sanitising.
+ *
+ * Derived from `publicReviewSelect` rather than restated, so adding a column to
+ * the allowlist cannot leave the type behind — and, more importantly, so a column
+ * NOT on the allowlist cannot be referenced by a component that then compiles.
  */
 export type TConsultantReview = Prisma.ConsultantReviewGetPayload<{
-  include: {
-    consultantProfile: {
-      select: ConsultantPublicScalars & {
-        user: {
-          select: {
-            name: true;
-          };
-        };
-      };
-    };
-    consulteeProfile: {
-      include: {
-        user: {
-          select: {
-            name: true;
-            image: true;
-          };
-        };
-      };
-    };
-  };
+  select: typeof publicReviewSelect;
 }>;
 
 /**
- * What a PUBLIC surface actually receives. Every public read runs its rows
- * through `stripAnonymousReviewer`, which nulls the reviewer's profile and the
- * two ids that identify them, so a component rendering these must handle the
- * absence rather than be typed as though the reviewer is always there.
+ * What a PUBLIC surface actually receives: anonymity applied and a
+ * moderation-removed reply dropped. Components must handle the reviewer being
+ * absent rather than be typed as though they are always there.
  */
-export type TPublicConsultantReview = SanitisedReview<TConsultantReview>;
+export type TPublicConsultantReview = PublicReview<TConsultantReview>;
 
-/** @deprecated Use TPublicConsultantReview instead */
-export type ReviewWithProfiles = TPublicConsultantReview;
+/**
+ * Which tracks a consultant has at least one live review in. Answered by its own
+ * query, never derived from a paginated review list: a GROUP review past the
+ * page would otherwise hide the whole track.
+ */
+export type TReviewTrackPresence = Record<ReviewTrack, boolean>;

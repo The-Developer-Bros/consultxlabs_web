@@ -7,9 +7,9 @@ import { Star } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import type { ReviewWithProfiles } from "@/types/review";
+import type { TPublicConsultantReview } from "@/types/review";
 
-function TestimonialCard({ review }: { review: ReviewWithProfiles }) {
+function TestimonialCard({ review }: { review: TPublicConsultantReview }) {
   return (
     <Card className="w-[350px] flex-shrink-0 mx-3 border border-zinc-800 bg-zinc-900/50 backdrop-blur-sm">
       <CardContent className="p-6">
@@ -57,7 +57,7 @@ function TestimonialLoadingSkeleton() {
 }
 
 interface TestimonialsSectionProps {
-  reviews: ReviewWithProfiles[];
+  reviews: TPublicConsultantReview[];
   isLoading: boolean;
 }
 

@@ -9,6 +9,7 @@ import { useRouter } from "next/navigation";
 import { useCurrency } from "@/hooks/useCurrency";
 import { CompanyLogo } from "@/components/ui/company-logo";
 import { isClassProgram, Program } from "@/lib/explore/programs";
+import { displayedScore } from "@/lib/reviews-display";
 
 type ProgramCardVariant = "grid" | "list" | "carousel";
 export type ProgramBadge = "featured" | "trending" | "new";
@@ -71,24 +72,35 @@ function ExtraBadge({ badge }: { badge: ProgramBadge }) {
   );
 }
 
-/** Extract consultant rating from plan data if available (API includes consultantProfile). */
+/**
+ * The star on a program card: the GROUP score or nothing (#1566) — a group
+ * product never wears a 1:1 reputation. NULL means suppressed, no star.
+ */
 function getProgramRating(program: Program): number | null {
-  return program.consultantProfile?.rating ?? null;
+  const profile = program.consultantProfile;
+  if (!profile) return null;
+  return displayedScore(
+    {
+      publishedRatingOneToOne: profile.publishedRatingOneToOne ?? null,
+      publishedRatingGroup: profile.publishedRatingGroup ?? null,
+    },
+    "GROUP",
+  ).score;
 }
 
 /** Extract consultant headline from plan data if available. */
-function getProgramInstructor(
-  program: Program,
-): { headline: string } | null {
+function getProgramInstructor(program: Program): { headline: string } | null {
   const headline = program.consultantProfile?.headline;
   if (headline) return { headline };
   return null;
 }
 
 /** Extract instructor work experiences (for company logo stickers), including collaborator experiences (deduplicated). */
-function getInstructorWorkExperiences(
-  program: Program,
-): Array<{ company: string; companyDomain: string | null; isCurrent: boolean }> {
+function getInstructorWorkExperiences(program: Program): Array<{
+  company: string;
+  companyDomain: string | null;
+  isCurrent: boolean;
+}> {
   const primaryExps = program.consultantProfile?.user?.workExperiences ?? [];
 
   // Merge collaborator work experiences
@@ -201,7 +213,7 @@ function GridCard({
             <div className="text-xl font-bold text-foreground">
               {formatPrice(program.price)}
             </div>
-            {rating !== null && rating > 0 && (
+            {rating !== null && (
               <div className="flex items-center gap-0.5 ml-1">
                 <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
                 <span className="text-xs font-medium text-muted-foreground">
@@ -223,7 +235,9 @@ function GridCard({
             width={12}
             height={12}
           />
-          <span className="text-[10px] text-muted-foreground/70">on Familiarise</span>
+          <span className="text-[10px] text-muted-foreground/70">
+            on Familiarise
+          </span>
         </div>
       </div>
     </div>
@@ -322,7 +336,7 @@ function ListCard({
               <div className="text-xl font-bold text-foreground">
                 {formatPrice(program.price)}
               </div>
-              {rating !== null && rating > 0 && (
+              {rating !== null && (
                 <div className="flex items-center gap-0.5 ml-1">
                   <Star className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
                   <span className="text-xs font-medium text-muted-foreground">
@@ -350,7 +364,9 @@ function ListCard({
               width={12}
               height={12}
             />
-            <span className="text-[10px] text-muted-foreground/70">on Familiarise</span>
+            <span className="text-[10px] text-muted-foreground/70">
+              on Familiarise
+            </span>
           </div>
         </div>
       </div>

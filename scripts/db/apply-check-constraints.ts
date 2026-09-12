@@ -26,7 +26,23 @@ async function main(): Promise<void> {
       console.log(stmt.replace(/^(--.*\n)+/, "").trim());
       continue;
     }
-    await prisma.$executeRawUnsafe(stmt);
+    // A DROP INDEX or ADD CONSTRAINT needs ACCESS EXCLUSIVE. Queued behind one
+    // open transaction it blocks every subsequent query on that table in FIFO
+    // order, so a lock we cannot take within seconds becomes an outage rather
+    // than a slow script. Fail fast and let the operator retry.
+    //
+    // `SET lock_timeout` is SESSION state and `prisma` is a pooled `PrismaPg`
+    // client, so issuing it on its own guaranteed nothing: the DDL that followed
+    // could be handed a different connection, with the default (0 = wait forever)
+    // still in force. `SET LOCAL` inside a transaction binds the timeout to the
+    // connection that runs the ALTER. One transaction PER statement, not one for
+    // the file — a single wrapping transaction would hold every table's ACCESS
+    // EXCLUSIVE until the last constraint finished validating, which is the outage
+    // this timeout exists to avoid.
+    await prisma.$transaction([
+      prisma.$executeRawUnsafe("SET LOCAL lock_timeout = '3s'"),
+      prisma.$executeRawUnsafe(stmt),
+    ]);
   }
 
   console.log(

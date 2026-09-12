@@ -4,7 +4,10 @@ import { useToast } from "@/components/ui/use-toast";
 import type { ConsultantDetailData } from "./types";
 import { TSlotTiming } from "@/types/slots";
 import { TUserWithProfessionalBackground } from "@/types/user";
-import { TPublicConsultantReview } from "@/types/review";
+import type {
+  TPublicConsultantReview,
+  TReviewTrackPresence,
+} from "@/types/review";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
@@ -18,6 +21,7 @@ import { ExperienceSection } from "./components/ExperienceSection";
 import { ExpertPricing } from "./components/ExpertPricing";
 import { ProfileHeader } from "./components/ProfileHeader";
 import { ReviewsSection } from "./components/ReviewsSection";
+import { ProfileReviewComposer } from "@/components/reviews/ProfileReviewComposer";
 import { useTimezone } from "./hooks/useTimezone";
 import { formatInTimeZone } from "date-fns-tz";
 
@@ -25,12 +29,14 @@ interface ExpertProfileClientProps {
   consultantDetails: ConsultantDetailData;
   userDetails: TUserWithProfessionalBackground;
   reviews: TPublicConsultantReview[];
+  reviewTracks: TReviewTrackPresence;
 }
 
 export function ExpertProfileClient({
   consultantDetails,
   userDetails,
   reviews,
+  reviewTracks,
 }: ExpertProfileClientProps) {
   const searchParams = useSearchParams();
   const { data: session } = useSession();
@@ -377,8 +383,28 @@ export function ExpertProfileClient({
           >
             <ReviewsSection
               reviews={reviews}
+              reviewTracks={reviewTracks}
               publishedRating={consultantDetails.publishedRating}
               reviewCount={consultantDetails.reviewCount}
+              publishedRatingOneToOne={
+                consultantDetails.publishedRatingOneToOne
+              }
+              publishedRatingGroup={consultantDetails.publishedRatingGroup}
+              ratedClientsOneToOne={consultantDetails.ratedClientsOneToOne}
+              ratedEventsGroup={consultantDetails.ratedEventsGroup}
+              // #1300 — a review is about the CONSULTANT, so it is written on
+              // their profile. It was only ever writable from the appointment
+              // detail page, which contradicted the model. A client island
+              // because eligibility is a per-user answer and this page is
+              // statically cached — rendering it server-side would either force
+              // the page dynamic or land one viewer's eligibility in a shared
+              // cache entry.
+              composer={
+                <ProfileReviewComposer
+                  consultantProfileId={consultantDetails.id}
+                  consultantName={consultantDetails.user?.name ?? null}
+                />
+              }
             />
           </motion.div>
           {/* Spacer to match pricing sidebar width */}

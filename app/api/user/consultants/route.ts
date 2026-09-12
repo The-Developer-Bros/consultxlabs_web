@@ -10,6 +10,15 @@ import {
 } from "@/lib/data/explore-experts";
 import { apiError } from "@/lib/errors";
 import { isTransientDbError, reportTransient } from "@/lib/data/fail-open";
+import { personScoreAtLeast } from "@/lib/reviews-display";
+
+// #1560 — Netlify's durable cache keys on the query string only for the
+// parameters `Netlify-Vary` names; without it every filter served page 1.
+const LIST_CACHE_HEADERS = {
+  "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300",
+  "Netlify-Vary":
+    "query=page|limit|sort|domain|subdomain|tags|experience|minPrice|maxPrice|minRating|companies|language|affiliationType|search",
+};
 
 export async function GET(request: NextRequest) {
   // Hoisted out of the try so the fail-open branch can echo them back in `meta`.
@@ -42,17 +51,12 @@ export async function GET(request: NextRequest) {
     const maxPrice = rawMaxPrice ? parseFloat(rawMaxPrice) : undefined;
     const minRating = rawMinRating ? parseFloat(rawMinRating) : undefined;
 
-    // Admin/staff can list unverified; public listings are verified-only.
-    const includeUnverified =
-      searchParams.get("includeUnverified") === "true";
-
     // The unfiltered first page is the explore landing's default view — serve it
     // from the Next data cache (getDefaultConsultantsPage) so it doesn't open a
     // cross-region pooled connection on every load. Anything filtered/searched or
     // beyond page 1 falls through to a live query. (#945, #932)
     const isDefaultView =
       page === 1 &&
-      !includeUnverified &&
       !domain &&
       !subdomain &&
       tags.length === 0 &&
@@ -68,19 +72,16 @@ export async function GET(request: NextRequest) {
     if (isDefaultView) {
       const result = await getDefaultConsultantsPage(sort, limit);
       return NextResponse.json(result, {
-        headers: {
-          "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300",
-        },
+        headers: LIST_CACHE_HEADERS,
       });
     }
 
     // Build where clause using an explicit conditions array
     const conditions: Prisma.ConsultantProfileWhereInput[] = [];
 
-    // Only show verified consultants in public listings
-    if (!includeUnverified) {
-      conditions.push({ verificationStatus: "VERIFIED" });
-    }
+    // Public listing: verified only, unconditionally. An `includeUnverified`
+    // switch used to skip this with no auth and no caller; staff have their own routes.
+    conditions.push({ verificationStatus: "VERIFIED" });
     // #781 §B — soft-deleted profiles leave public surfaces
     conditions.push({ deletedAt: null });
 
@@ -126,9 +127,9 @@ export async function GET(request: NextRequest) {
       });
     }
     if (minRating !== undefined && !isNaN(minRating)) {
-      // #705 — filter on the published score, so a suppressed consultant is
-      // not surfaced by a rating the profile page refuses to display.
-      conditions.push({ publishedRating: { gte: minRating } });
+      // The score the card SHOWS (1:1, else group), so a filter never surfaces
+      // a consultant under a number the card then refuses to display.
+      conditions.push(personScoreAtLeast(minRating));
     }
     if (companies.length > 0) {
       conditions.push({
@@ -158,7 +159,9 @@ export async function GET(request: NextRequest) {
               some: { name: { contains: search, mode: "insensitive" } },
             },
           },
-          { tags: { some: { name: { contains: search, mode: "insensitive" } } } },
+          {
+            tags: { some: { name: { contains: search, mode: "insensitive" } } },
+          },
         ],
       });
     }
@@ -191,9 +194,7 @@ export async function GET(request: NextRequest) {
         },
       },
       {
-        headers: {
-          "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300",
-        },
+        headers: LIST_CACHE_HEADERS,
       },
     );
   } catch (error) {
