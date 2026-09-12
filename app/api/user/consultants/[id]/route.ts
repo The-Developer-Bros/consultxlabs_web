@@ -766,45 +766,30 @@ export async function DELETE(
     }
 
     // No money ever moved — full hard delete is safe. The collaborator rows
-    // cascade with the profile, so their plans are captured first for the
-    // Stream revocation (#1580).
-    const hardRemoved = await prisma.$transaction(async (tx) =>
-      removeCollaboratorStanding(tx, session.user.id),
-    );
-    await prisma.$transaction([
-      // Delete slots
-      prisma.slotOfAvailabilityWeekly.deleteMany({
+    // cascade with the profile, so their plans are captured in the same
+    // transaction as the deletes, before the profile goes (#1580).
+    const hardRemoved = await prisma.$transaction(async (tx) => {
+      const removed = await removeCollaboratorStanding(tx, session.user.id);
+      await tx.slotOfAvailabilityWeekly.deleteMany({
         where: { consultantProfileId: id },
-      }),
-      prisma.slotOfAvailabilityCustom.deleteMany({
+      });
+      await tx.slotOfAvailabilityCustom.deleteMany({
         where: { consultantProfileId: id },
-      }),
-
-      // Delete plans
-      prisma.consultationPlan.deleteMany({
+      });
+      await tx.consultationPlan.deleteMany({
         where: { consultantProfileId: id },
-      }),
-      prisma.subscriptionPlan.deleteMany({
+      });
+      await tx.subscriptionPlan.deleteMany({
         where: { consultantProfileId: id },
-      }),
-      prisma.webinarPlan.deleteMany({
+      });
+      await tx.webinarPlan.deleteMany({ where: { consultantProfileId: id } });
+      await tx.classPlan.deleteMany({ where: { consultantProfileId: id } });
+      await tx.consultantReview.deleteMany({
         where: { consultantProfileId: id },
-      }),
-      prisma.classPlan.deleteMany({
-        where: { consultantProfileId: id },
-      }),
-
-      // Delete reviews
-      prisma.consultantReview.deleteMany({
-        where: { consultantProfileId: id },
-      }),
-
-      // Delete the consultant profile
-      prisma.consultantProfile.delete({
-        where: { id },
-      }),
-    ]);
-
+      });
+      await tx.consultantProfile.delete({ where: { id } });
+      return removed;
+    });
     await revokeRemovedCollaborations(hardRemoved, session.user.id);
     purgeExpertSurfaces(id);
     return NextResponse.json({ message: "Consultant deleted successfully" });

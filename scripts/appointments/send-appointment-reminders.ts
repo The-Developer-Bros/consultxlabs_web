@@ -142,6 +142,9 @@ async function sendRemindersForWindow(window: {
     if (!ids) {
       ids = collaboratorUserIds(planType, planId);
       collaboratorsByPlan.set(key, ids);
+      // A failed lookup must not be memoised, or every later session of the
+      // plan in this window would skip its reminders too.
+      ids.catch(() => collaboratorsByPlan.delete(key));
     }
     return ids;
   };

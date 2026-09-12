@@ -53,7 +53,7 @@ jest.mock("../../actions/stream/chat/user.action", () => ({
   upsertUserToStream: jest.fn().mockResolvedValue({}),
   upsertUsersToStream: jest.fn(async (ids: string[]) => {
     calls.push(`upsert:${ids.join(",")}`);
-    return { users: {} };
+    return { users: {}, droppedIds: [] };
   }),
 }));
 
