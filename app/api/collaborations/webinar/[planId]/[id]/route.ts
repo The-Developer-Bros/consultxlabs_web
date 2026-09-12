@@ -87,28 +87,47 @@ export async function DELETE(
 
     const { planId, id } = await params;
 
-    // Verify the requester is the plan owner
     const plan = await prisma.webinarPlan.findUnique({
       where: { id: planId },
+      select: { consultantProfileId: true },
     });
 
-    const ownerProfile = await prisma.consultantProfile.findFirst({
+    const callerProfile = await prisma.consultantProfile.findFirst({
       where: { userId: session.user.id },
+      select: { id: true },
     });
 
-    if (plan?.consultantProfileId !== ownerProfile?.id) {
+    if (!plan || !callerProfile) {
       return NextResponse.json(
-        { error: "Only the plan owner can remove collaborators" },
+        {
+          error:
+            "Only the plan owner or the collaborator can remove this collaboration",
+        },
         { status: 403 },
       );
     }
 
-    const collab = await removeCollaborator("webinar", id, planId);
+    // The owner removes any row; a collaborator may withdraw their own
+    // PENDING/ACCEPTED row (#1580 C-P1-7), in which case the host is notified.
+    const isOwner = plan.consultantProfileId === callerProfile.id;
+    const collab = isOwner
+      ? await removeCollaborator("webinar", id, planId)
+      : await removeCollaborator("webinar", id, planId, {
+          withdrawnByProfileId: callerProfile.id,
+        });
     if (!collab) {
-      return NextResponse.json(
-        { error: "Failed to remove collaborator" },
-        { status: 400 },
-      );
+      return isOwner
+        ? NextResponse.json(
+            { error: "Failed to remove collaborator" },
+            { status: 400 },
+          )
+        : NextResponse.json(
+            {
+              error:
+                "Only the plan owner or the collaborator can remove this collaboration",
+            },
+            { status: 403 },
+          );
     }
 
     return NextResponse.json({ data: collab });

@@ -26,6 +26,7 @@ import {
   type CollaboratorAcceptedPayload,
   type CollaboratorInvitedPayload,
   type CollaboratorRemovedPayload,
+  type CollaboratorWithdrawnPayload,
   type ConsultantApplicationPayload,
   type DisputeInput,
   type DisputePayload,
@@ -1158,6 +1159,18 @@ export async function notifyCollaboratorRemoved(
   return triggerWorkflow(
     NOVU_WORKFLOWS.COLLABORATOR_REMOVED,
     consultantUserId,
+    payload,
+  );
+}
+
+/** #1580 C-P1-7 — the host learns that a collaborator withdrew their own row. */
+export async function notifyCollaboratorWithdrawn(
+  ownerUserId: string,
+  payload: CollaboratorWithdrawnPayload,
+) {
+  return triggerWorkflow(
+    NOVU_WORKFLOWS.COLLABORATOR_WITHDRAWN,
+    ownerUserId,
     payload,
   );
 }

@@ -14,6 +14,7 @@ import {
   notifyCollaboratorInvited,
   notifyCollaboratorAccepted,
   notifyCollaboratorRemoved,
+  notifyCollaboratorWithdrawn,
 } from "@/lib/novu/service";
 import { getAppUrl } from "@/lib/url";
 import { scopeToWhereOrgId, type Scope } from "@/lib/api/scope/parse";
@@ -472,6 +473,12 @@ export async function respondToInvitation(
 /**
  * Remove a collaborator (soft-delete: set status to REMOVED).
  * Requires planId to prevent IDOR — ensures the collaborator belongs to the specified plan.
+ *
+ * #1580 C-P1-7 — with `withdrawnByProfileId` the same path serves the
+ * collaborator withdrawing their own PENDING/ACCEPTED row: the row must be
+ * theirs (else null), the removal notice goes to the HOST instead of to them.
+ * Earnings already settled to the collaborator are untouched either way:
+ * `calculateRevenueSplit` only reads ACCEPTED rows for future payments.
  */
 /** The removed row plus whether every Stream membership went with it. */
 export type RemovedCollaborator = Collaborator & { accessRevoked: boolean };
@@ -480,9 +487,19 @@ export async function removeCollaborator(
   planType: PlanType,
   collaborationId: string,
   planId: string,
+  opts: { withdrawnByProfileId?: string } = {},
 ): Promise<RemovedCollaborator | null> {
   const collab = await prisma.collaborator.findFirst({
-    where: { id: collaborationId, ...planWhere(planType, planId) },
+    where: {
+      id: collaborationId,
+      ...planWhere(planType, planId),
+      ...(opts.withdrawnByProfileId
+        ? {
+            consultantProfileId: opts.withdrawnByProfileId,
+            status: { in: ["PENDING", "ACCEPTED"] },
+          }
+        : {}),
+    },
   });
   if (!collab) return null;
 
@@ -496,7 +513,7 @@ export async function removeCollaborator(
   const profile = await prisma.consultantProfile
     .findUnique({
       where: { id: collab.consultantProfileId },
-      select: { userId: true },
+      select: { userId: true, user: { select: { name: true } } },
     })
     .catch((error) => {
       // A null here skips BOTH the removal notification and the Stream
@@ -510,16 +527,67 @@ export async function removeCollaborator(
       return null;
     });
 
+  const withdrawn = Boolean(opts.withdrawnByProfileId);
+
   // The row is REMOVED either way; whether Stream access actually went with it
   // is reported to the caller rather than swallowed (#1580).
   let accessRevoked = false;
   if (profile?.userId) {
     accessRevoked = (
-      await revokeCollaboratorAccess(planType, planId, profile.userId)
+      await revokeCollaboratorAccess(planType, planId, profile.userId, {
+        notify: !withdrawn,
+      })
     ).success;
   }
 
+  if (withdrawn) {
+    await notifyHostOfWithdrawal(
+      planType,
+      planId,
+      profile?.user?.name ?? "A collaborator",
+    );
+  }
+
   return { ...result, accessRevoked };
+}
+
+/** #1580 C-P1-7 — the host's notice; a Novu miss is logged, never thrown. */
+async function notifyHostOfWithdrawal(
+  planType: PlanType,
+  planId: string,
+  collaboratorName: string,
+): Promise<void> {
+  try {
+    const plan =
+      planType === "webinar"
+        ? await prisma.webinarPlan.findUnique({
+            where: { id: planId },
+            select: {
+              title: true,
+              consultantProfile: { select: { userId: true } },
+            },
+          })
+        : await prisma.classPlan.findUnique({
+            where: { id: planId },
+            select: {
+              title: true,
+              consultantProfile: { select: { userId: true } },
+            },
+          });
+    if (!plan?.consultantProfile?.userId) return;
+    await notifyCollaboratorWithdrawn(plan.consultantProfile.userId, {
+      planTitle: plan.title,
+      planType,
+      collaboratorName,
+      dashboardUrl: `${getAppUrl()}/dashboard`,
+    });
+  } catch (error) {
+    reportSentryError(error, {
+      subsystem: "collaborators",
+      op: "removeCollaborator.notifyHostOfWithdrawal",
+      extra: { planId, planType },
+    });
+  }
 }
 
 /**
