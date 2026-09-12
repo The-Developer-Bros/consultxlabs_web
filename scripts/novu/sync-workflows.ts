@@ -66,8 +66,9 @@ function diff(live: WorkflowResponseDto, want: CreateWorkflowDto): string[] {
   if ((live.description ?? "") !== (want.description ?? "")) {
     changed.push("description");
   }
-  const liveTags = [...(live.tags ?? [])].sort().join(",");
-  if (liveTags !== [...(want.tags ?? [])].sort().join(",")) {
+  const byCodePoint = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  const liveTags = [...(live.tags ?? [])].sort(byCodePoint).join(",");
+  if (liveTags !== [...(want.tags ?? [])].sort(byCodePoint).join(",")) {
     changed.push("tags");
   }
   if (live.steps.length !== 1 || live.steps[0]?.type !== "in_app") {
