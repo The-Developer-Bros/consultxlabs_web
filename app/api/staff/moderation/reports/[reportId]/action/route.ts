@@ -107,6 +107,10 @@ function applyModerationTransaction(
           actionType,
           notes,
           takenById: staffUserId,
+          // #1562 — the audit row names the content it was about, so "who removed
+          // this review and why" is one join from the review.
+          reviewId:
+            input.report.type === "REVIEW" ? input.report.reviewId : null,
         },
         include: {
           takenBy: {
@@ -203,6 +207,20 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     if (report.status === "ACTION_TAKEN" || report.status === "DISMISSED") {
       return NextResponse.json(
         { error: "This report has already been resolved" },
+        { status: 409 },
+      );
+    }
+
+    // A REVIEW report with no review to act on would be resolved and audited
+    // while `softDeleteReview` removed nothing. The sidecar CHECK
+    // `moderation_report_review_has_review` refuses the row; this refuses the act.
+    if (
+      actionType === "CONTENT_REMOVED" &&
+      report.type === "REVIEW" &&
+      !report.reviewId
+    ) {
+      return NextResponse.json(
+        { error: "This review report names no review to remove" },
         { status: 409 },
       );
     }

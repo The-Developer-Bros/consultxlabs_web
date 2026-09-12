@@ -64,13 +64,24 @@ export async function GET(req: NextRequest) {
           reviewDescription: true,
           createdAt: true,
           deletedAt: true,
-          deletedByUserId: true,
+          removedBy: true,
           isAnonymous: true,
           replyBody: true,
           repliedAt: true,
           replyDeletedAt: true,
-          replyDeletedByUserId: true,
+          replyRemovedBy: true,
           editedAt: true,
+          // #1562 — who acted and why lives on the audit row, newest first.
+          moderationActions: {
+            select: {
+              actionType: true,
+              notes: true,
+              createdAt: true,
+              takenBy: { select: { id: true, name: true } },
+            },
+            orderBy: { createdAt: "desc" },
+            take: 5,
+          },
           consultantProfile: {
             select: {
               id: true,
@@ -115,14 +126,15 @@ export async function GET(req: NextRequest) {
       // them apart. `editedAt` is here for the same reason: a review that has
       // been rewritten since it was reported is a different review.
       deletedAt: review.deletedAt,
-      deletedByUserId: review.deletedByUserId,
+      removedBy: review.removedBy,
       isAnonymous: review.isAnonymous,
       // The reply and its state: live, withdrawn by the consultant, or taken down.
       replyBody: review.replyBody,
       repliedAt: review.repliedAt,
       replyDeletedAt: review.replyDeletedAt,
-      replyDeletedByUserId: review.replyDeletedByUserId,
+      replyRemovedBy: review.replyRemovedBy,
       editedAt: review.editedAt,
+      moderationActions: review.moderationActions,
     }));
 
     // Get rating distribution.

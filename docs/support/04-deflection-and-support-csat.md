@@ -16,7 +16,7 @@ Three design points are worth stating, because each of them looks like an unnece
 
 Support satisfaction is two different questions with two different suppliers, so it is two columns on two models rather than one number.
 
-**Half one: did the self-serve tree help?** That is `SupportFlowOutcome.helpfulRating`, with `helpfulRatedAt` beside it. It is bound to the flow **terminal** rather than to a ticket, which is Uber's pattern and the only place the question is answerable at all: a `RESOLVED` outcome writes no ticket, so there is nothing else to hang it on.
+**Half one: did the self-serve tree help?** That is `SupportFlowOutcome.helpfulRating`. It is bound to the flow **terminal** rather than to a ticket, which is Uber's pattern and the only place the question is answerable at all: a `RESOLVED` outcome writes no ticket, so there is nothing else to hang it on.
 
 **Half two: did a person fix it?** That is the resolution rating on the escalated case, which lands with the support-case unification designed on #1541. Until then, the deflection counter answers whether the tree resolved the problem and nothing yet asks the user whether a human did.
 

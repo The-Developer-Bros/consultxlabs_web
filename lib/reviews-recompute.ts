@@ -1,36 +1,26 @@
 import { Prisma } from "@prisma/client";
 
 import prisma from "@/lib/prisma";
-import {
-  SCORING_PARAMS,
-  computePlatformPriors,
-  recomputeConsultantRating,
-  type ScoringPriors,
-  type ScoringTx,
-} from "@/lib/reviews";
+import { recomputeConsultantRating, type ScoringTx } from "@/lib/reviews";
 import { withSerializableRetry } from "@/lib/db/serializable-retry";
 
 /**
- * Recompute every consultant's rating aggregates under ONE `ScoringSnapshot`,
- * so every profile in the run is shrunk toward the same platform mean. Shared by
+ * Recompute every consultant's rating aggregates. Shared by
  * `npm run db:recompute-ratings` and the seed; see
  * docs/reviews/02-two-track-scoring.md for what a run does and why it is a
- * script rather than a migration.
+ * script rather than a migration. With no prior and no decay (#1566) a score
+ * only moves on a review mutation, so this is a bootstrap and a drift check,
+ * not a scheduled job.
  */
 
 // The columns a run writes that are FUNCTIONS OF THE DATA, so a dry run can diff
-// them against what is stored. `ratingAggregatedAt` and `scoringSnapshotId` are
-// omitted on purpose: both change on every run, so either would report every
-// profile as changed.
+// them against what is stored. `ratingAggregatedAt` is omitted on purpose: it
+// changes on every run, so it would report every profile as changed.
 const SCORE_COLUMNS = {
   publishedRatingOneToOne: true,
   publishedRatingGroup: true,
   ratedClientsOneToOne: true,
   ratedEventsGroup: true,
-  rawRatingOneToOne: true,
-  rawRatingGroup: true,
-  effectiveSampleOneToOne: true,
-  effectiveSampleGroup: true,
   rating: true,
   publishedRating: true,
   ratingUnitCount: true,
@@ -39,20 +29,17 @@ const SCORE_COLUMNS = {
 
 type StoredScore = Record<keyof typeof SCORE_COLUMNS, number | null>;
 
-type Run = { priors: ScoringPriors; snapshotId: string | null; now: Date };
-
 // Runs the REAL scoring function against a capturing transaction and returns
 // what it would have written — never a second copy of the arithmetic.
 async function previewConsultantRating(
   consultantProfileId: string,
-  run: Run,
+  now: Date,
 ): Promise<StoredScore> {
   let captured: StoredScore | null = null;
   // Typed as ScoringTx so a delegate the scorer starts using is a compile error
   // here; only the one swallowed write is cast.
   const capturingTx: ScoringTx = {
     consultantReview: prisma.consultantReview,
-    scoringSnapshot: prisma.scoringSnapshot,
     consultantProfile: {
       update: (async ({ data }: { data: StoredScore }) => {
         captured = data;
@@ -60,7 +47,7 @@ async function previewConsultantRating(
       }) as unknown as ScoringTx["consultantProfile"]["update"],
     },
   };
-  await recomputeConsultantRating(capturingTx, consultantProfileId, run);
+  await recomputeConsultantRating(capturingTx, consultantProfileId, now);
   if (!captured) throw new Error("preview captured no write");
   return captured;
 }
@@ -72,9 +59,6 @@ const differs = (a: StoredScore, b: StoredScore) =>
 
 export type RecomputeAllResult = {
   profiles: number;
-  priors: ScoringPriors;
-  params: typeof SCORING_PARAMS;
-  snapshotId: string | null;
   recomputed: number;
   wouldChange: number;
   failed: { id: string; error: string }[];
@@ -90,23 +74,11 @@ export async function recomputeAllConsultantRatings(
   const dryRun = options.dryRun ?? false;
   const now = options.now ?? new Date();
 
-  const priors = await computePlatformPriors(prisma);
-
-  // A dry run pins nothing: a run that invented its own priors must not leave a
-  // snapshot claiming it produced the stored scores.
-  const snapshot = dryRun
-    ? null
-    : await prisma.scoringSnapshot.create({
-        data: { ...priors, ...SCORING_PARAMS, computedAt: now },
-        select: { id: true },
-      });
-
   const profiles = await prisma.consultantProfile.findMany({
     select: { id: true, ...SCORE_COLUMNS },
     orderBy: { id: "asc" },
   });
 
-  const run: Run = { priors, snapshotId: snapshot?.id ?? null, now };
   let recomputed = 0;
   let wouldChange = 0;
   const failed: { id: string; error: string }[] = [];
@@ -114,7 +86,7 @@ export async function recomputeAllConsultantRatings(
   for (const { id, ...stored } of profiles) {
     try {
       if (dryRun) {
-        const preview = await previewConsultantRating(id, run);
+        const preview = await previewConsultantRating(id, now);
         if (differs(preview, stored as StoredScore)) wouldChange += 1;
         continue;
       }
@@ -122,7 +94,7 @@ export async function recomputeAllConsultantRatings(
       // mid-run must not lose-update the average this writes.
       await withSerializableRetry(() =>
         prisma.$transaction(
-          async (tx) => recomputeConsultantRating(tx, id, run),
+          async (tx) => recomputeConsultantRating(tx, id, now),
           { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
         ),
       );
@@ -138,9 +110,6 @@ export async function recomputeAllConsultantRatings(
 
   return {
     profiles: profiles.length,
-    priors,
-    params: SCORING_PARAMS,
-    snapshotId: snapshot?.id ?? null,
     recomputed,
     wouldChange,
     failed,

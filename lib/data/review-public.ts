@@ -10,7 +10,7 @@
  * 124 of 142 consultee profiles have `goals` filled in.
  *
  * It also made every future column public by default, which is how a
- * staff-internal `excludedReason` would have shipped to anonymous callers the
+ * staff-internal column such as `removedBy` would ship to anonymous callers the
  * moment it was added. An allowlist inverts that: a new column is private until
  * somebody names it here, in a diff a reviewer reads.
  *
@@ -27,7 +27,7 @@ import {
  *
  * Deliberately absent: `consulteeProfileId` (an enumerable id nothing renders),
  * `revisionNo`, `ratedSessionAt`, `ratingCause`, `excludedFromAggregateAt`,
- * `excludedReason`, `excludedByUserId` (staff moderation material), and
+ * `removedBy`, `replyRemovedBy` (staff moderation material), and
  * `updatedAt` (which moves when the consultant replies, so it cannot be read as
  * "the review changed" — that is what `editedAt` is for).
  */

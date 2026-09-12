@@ -102,8 +102,10 @@ node-payment-main/
 # Agent + scratch artefacts that live in the working tree but are not the app.
 # `.claude/worktrees/` in particular holds OTHER agents' checkouts — committing
 # it drags their in-flight branches into this one. These were swept in once by a
-# `git add -A`; ignoring them means the next one cannot repeat it.
+# `git add -A`; ignoring them means the next one cannot repeat it. `.claude/audits/`
+# holds agents' audit drafts; the published issue is the record (#1580 was swept once).
 .claude/worktrees/
+.claude/audits/
 screens/
 prompts/
 

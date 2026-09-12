@@ -134,12 +134,16 @@ export async function applyTransactionalEffects(
       // A reported chat message is removed in phase 2 — the delete is a Stream
       // API call and cannot join this transaction (#1270).
       if (report.type !== "REVIEW") return {};
-      return softDeleteReview(tx, report.reviewId, input.staffUserId);
+      return softDeleteReview(tx, report.reviewId);
     case "WARNING_ISSUED":
     case "NO_ACTION":
     case "USER_REINSTATED":
-      // A reinstatement is taken through the unban route, which owns clearing
-      // the ban columns and restoring Stream access; it never lands here.
+    case "REVIEW_REMOVED":
+    case "REVIEW_REPLY_REMOVED":
+    case "REVIEW_EXCLUDED_FROM_AGGREGATE":
+    case "FEEDBACK_EXCLUDED_FROM_AGGREGATE":
+      // A reinstatement is taken through the unban route, and the four #1562 acts
+      // are written by their own routes with the audit row; none lands here.
       return {};
   }
 }
@@ -240,31 +244,22 @@ async function unverifyProfiles(
 async function softDeleteReview(
   tx: Tx,
   reviewId: string | null,
-  staffUserId: string,
 ): Promise<TransactionalEffectResult> {
   if (!reviewId) return {};
   const review = await tx.consultantReview.findUnique({
     where: { id: reviewId },
-    select: {
-      consultantProfileId: true,
-      deletedAt: true,
-      deletedByUserId: true,
-      consulteeProfile: { select: { userId: true } },
-    },
+    select: { consultantProfileId: true, deletedAt: true, removedBy: true },
   });
   if (!review) return {};
-  const authorId = review.consulteeProfile.userId;
   // Already taken down by moderation: nothing to do. An AUTHOR's withdrawal is
   // not a takedown — it is revivable — so moderation still stamps itself over
-  // it, or the author could revive content staff resolved as removed.
-  if (review.deletedAt && review.deletedByUserId !== authorId) return {};
+  // it, or the author could revive content staff resolved as removed. The actor
+  // and reason are the report's ModerationAction row (#1562).
+  if (review.deletedAt && review.removedBy === "MODERATION") return {};
   // CAS'd in the WHERE rather than trusting the read above.
   const removed = await tx.consultantReview.updateMany({
-    where: {
-      id: reviewId,
-      OR: [{ deletedAt: null }, { deletedByUserId: authorId }],
-    },
-    data: { deletedAt: new Date(), deletedByUserId: staffUserId },
+    where: { id: reviewId, OR: [{ deletedAt: null }, { removedBy: "AUTHOR" }] },
+    data: { deletedAt: new Date(), removedBy: "MODERATION" },
   });
   if (removed.count === 0) return {};
   // #705 — one implementation of the rating rule, never an inlined `_avg`.
@@ -564,9 +559,13 @@ function triggerModerationNotification(
       });
     case "NO_ACTION":
     case "USER_REINSTATED":
+    case "REVIEW_REMOVED":
+    case "REVIEW_REPLY_REMOVED":
+    case "REVIEW_EXCLUDED_FROM_AGGREGATE":
+    case "FEEDBACK_EXCLUDED_FROM_AGGREGATE":
       // No Novu workflow exists for a reinstatement, and inventing a
       // log-and-skip trigger would report "skipped" for one nobody plans to
-      // build.
+      // build. The #1562 acts are never taken through a report.
       return Promise.resolve(null);
   }
 }

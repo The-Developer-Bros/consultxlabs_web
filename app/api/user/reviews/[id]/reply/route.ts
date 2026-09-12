@@ -44,7 +44,7 @@ async function authorizeReply(reviewId: string, userId: string, role?: string) {
       id: true,
       deletedAt: true,
       replyDeletedAt: true,
-      replyDeletedByUserId: true,
+      replyRemovedBy: true,
       consultantProfileId: true,
       consultantProfile: { select: { userId: true } },
     },
@@ -103,11 +103,10 @@ export async function PUT(
     }
 
     // A reply moderation removed stays removed: overwriting it would destroy the
-    // evidence for the takedown. The consultant's own withdrawal is theirs to
-    // replace. A NULL remover on a removed reply reads as moderation.
+    // evidence for the takedown. The consultant's own withdrawal is theirs to replace.
     const takenDown =
       auth.review.replyDeletedAt !== null &&
-      auth.review.replyDeletedByUserId !== session.user.id;
+      auth.review.replyRemovedBy === "MODERATION";
     if (takenDown) {
       return NextResponse.json(
         {
@@ -137,16 +136,13 @@ export async function PUT(
       where: {
         id,
         deletedAt: null,
-        OR: [
-          { replyDeletedAt: null },
-          { replyDeletedByUserId: session.user.id },
-        ],
+        OR: [{ replyDeletedAt: null }, { replyRemovedBy: "AUTHOR" }],
       },
       data: {
         replyBody: parsed.data.body,
         repliedAt,
         replyDeletedAt: null,
-        replyDeletedByUserId: null,
+        replyRemovedBy: null,
       },
     });
     // Zero rows: the review stopped being live, or staff removed the reply,
@@ -214,15 +210,25 @@ export async function DELETE(
       );
     }
 
-    // Idempotent and CAS'd: two staff acting at once cannot move the stamp
-    // twice. Attributed, because the consultant may replace their own
-    // withdrawal and may not replace a takedown.
-    const removed = await prisma.consultantReview.updateMany({
-      where: { id, replyDeletedAt: null, replyBody: { not: null } },
-      data: {
-        replyDeletedAt: new Date(),
-        replyDeletedByUserId: session.user.id,
-      },
+    // Idempotent and CAS'd: two staff acting at once cannot move the stamp twice.
+    // The actor decides whether the consultant may write again; a staff takedown
+    // also writes the audit row (#1562) in the same transaction.
+    const actor = auth.isSubject ? "AUTHOR" : "MODERATION";
+    const removed = await prisma.$transaction(async (tx) => {
+      const result = await tx.consultantReview.updateMany({
+        where: { id, replyDeletedAt: null, replyBody: { not: null } },
+        data: { replyDeletedAt: new Date(), replyRemovedBy: actor },
+      });
+      if (result.count > 0 && actor === "MODERATION") {
+        await tx.moderationAction.create({
+          data: {
+            actionType: "REVIEW_REPLY_REMOVED",
+            reviewId: id,
+            takenById: session.user.id,
+          },
+        });
+      }
+      return result;
     });
     if (removed.count > 0) {
       purgeReviewSurfaces(auth.review.consultantProfileId);
