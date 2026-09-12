@@ -4,7 +4,10 @@ import prisma, { type PrismaLike, type Tx } from "@/lib/prisma";
 import { Prisma, type CollaboratorRole } from "@prisma/client";
 import type { Collaborator, CollaboratorStatus } from "@prisma/client";
 import { removeUserFromEventChannel } from "@/actions/stream/chat/event-channel.action";
-import { getStreamChatClient } from "@/lib/stream-client";
+import {
+  getStreamChatClient,
+  isExpectedStreamError,
+} from "@/lib/stream-client";
 import type { RevenueSplit } from "@/types/collaborators";
 import {
   WEBINAR_COLLABORATOR_ROLES,
@@ -807,6 +810,9 @@ export async function revokeCollaboratorAccess(
       .channel("messaging", `collab-${planType}-${planId}`)
       .removeMembers([userId])
       .catch((error) => {
+        // A channel that never existed (rows accepted before the create was
+        // fixed, FAMILIARISE_WEB-38) holds no access to revoke: not a failure.
+        if (isExpectedStreamError(error)) return;
         success = false;
         // Separate from the event channels above: this is the collaborator
         // coordination channel, and losing it is not the same access grant.
