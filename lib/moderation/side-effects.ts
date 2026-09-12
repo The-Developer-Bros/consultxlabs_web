@@ -99,6 +99,8 @@ export interface SideEffectSummary extends TransactionalEffectResult {
   notification?: StepStatus;
   /** #1580 C-P0-4 — Stream revocation for every plan in `collaborationsRemoved`. */
   collaboratorRevocation?: StepStatus;
+  /** #1580 — how many times the sweep has re-driven a failed revocation. */
+  collaboratorRevocationAttempts?: number;
   errors?: string[];
 }
 
