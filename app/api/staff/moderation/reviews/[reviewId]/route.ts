@@ -33,34 +33,35 @@ export async function DELETE(req: NextRequest, { params }: RouteParams) {
 
     const review = await prisma.consultantReview.findUnique({
       where: { id: reviewId },
-      select: {
-        consultantProfileId: true,
-        deletedAt: true,
-        deletedByUserId: true,
-        consulteeProfile: { select: { userId: true } },
-      },
+      select: { consultantProfileId: true, deletedAt: true },
     });
 
     if (!review) {
       return NextResponse.json({ error: "Review not found" }, { status: 404 });
     }
 
-    // Soft, attributed, and CAS'd in the WHERE. A takedown also lands on an
+    // Soft, CAS'd in the WHERE, audited (#1562). A takedown also lands on an
     // AUTHOR-withdrawn row (moderation wins; the author could otherwise revive
     // it), and is a no-op on a row moderation already removed. Serializable +
     // retry so the recompute cannot lose-update against a concurrent review write.
-    const authorId = review.consulteeProfile.userId;
     await withSerializableRetry(() =>
       prisma.$transaction(
         async (tx) => {
           const removed = await tx.consultantReview.updateMany({
             where: {
               id: reviewId,
-              OR: [{ deletedAt: null }, { deletedByUserId: authorId }],
+              OR: [{ deletedAt: null }, { removedBy: "AUTHOR" }],
             },
-            data: { deletedAt: new Date(), deletedByUserId: session.user.id },
+            data: { deletedAt: new Date(), removedBy: "MODERATION" },
           });
           if (removed.count === 0) return;
+          await tx.moderationAction.create({
+            data: {
+              actionType: "REVIEW_REMOVED",
+              reviewId,
+              takenById: session.user.id,
+            },
+          });
           await recomputeConsultantRating(tx, review.consultantProfileId);
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },

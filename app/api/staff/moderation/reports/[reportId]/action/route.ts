@@ -107,6 +107,10 @@ function applyModerationTransaction(
           actionType,
           notes,
           takenById: staffUserId,
+          // #1562 — the audit row names the content it was about, so "who removed
+          // this review and why" is one join from the review.
+          reviewId:
+            input.report.type === "REVIEW" ? input.report.reviewId : null,
         },
         include: {
           takenBy: {
