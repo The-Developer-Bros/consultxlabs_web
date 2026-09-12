@@ -76,6 +76,7 @@ describe("app/error.tsx — maintenance-aware rendering", () => {
         "We're doing scheduled maintenance",
       );
       expect(container.textContent).toContain("Rolling out a schema change.");
+      expect(global.fetch).toHaveBeenCalledWith("/api/health");
     },
   );
 
