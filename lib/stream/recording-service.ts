@@ -29,6 +29,9 @@ import {
   classPlanRecordingInclude,
 } from "./recording-types";
 
+/** One composite file per call, the shape every reader of `Recording` expects. */
+const RECORDING_TYPE = "composite";
+
 // Types for Stream Recording API responses
 export interface StreamRecording {
   filename: string;
@@ -88,8 +91,10 @@ export class RecordingService {
       // stopRecording in a loop of up to MAX_DRAIN_BATCH sessions, so an
       // unbounded call here holds the OFFLINE transition open for the duration
       // of the very outage it is transitioning for.
+      // `recording_type` is a PATH segment of Stream's start/stop endpoints and
+      // accepts composite | individual | raw; "default" was refused (#1580 §4 E2E).
       await withStreamCircuitBreaker(() =>
-        call.startRecording({ recording_type: "default" }),
+        call.startRecording({ recording_type: RECORDING_TYPE }),
       );
 
       streamLogger.info("Recording started via API", {
@@ -124,7 +129,7 @@ export class RecordingService {
 
       const call = client.video.call(callType, callId);
       await withStreamCircuitBreaker(() =>
-        call.stopRecording({ recording_type: "default" }),
+        call.stopRecording({ recording_type: RECORDING_TYPE }),
       );
 
       streamLogger.info("Recording stopped via API", {
