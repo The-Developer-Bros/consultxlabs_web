@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 
 import prisma from "@/lib/prisma";
+import { isPresenterRole } from "@/lib/collaborators/roles";
 import {
   getStreamVideoClient,
   isStreamConfigured,
@@ -426,7 +427,10 @@ export async function resolveMeetingAccess(
     return grant("host", "Access granted as meeting host");
   }
 
-  // An accepted collaborator on the webinar/class hosts alongside the owner.
+  // An accepted collaborator on the webinar/class joins alongside the owner.
+  // #1580 C-P1-4 — only the co-presenter shares the HOST role, which is what
+  // the end route keys "end for everyone" on; a crew member ending a paid
+  // class for the whole room is the hazard #1270 closed for consultees.
   if (userProfile?.consultantProfileId) {
     const webinarPlanId = appointment.webinar?.webinarPlan?.id;
     const classPlanId = appointment.class?.classPlan?.id;
@@ -438,10 +442,12 @@ export async function resolveMeetingAccess(
           status: "ACCEPTED",
           ...(webinarPlanId ? { webinarPlanId } : { classPlanId }),
         },
-        select: { id: true },
+        select: { id: true, role: true },
       });
       if (collab) {
-        return grant("host", "Access granted as accepted collaborator");
+        return isPresenterRole(collab.role)
+          ? grant("host", "Access granted as accepted co-presenter")
+          : grant("participant", "Access granted as accepted collaborator");
       }
     }
   }

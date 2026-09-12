@@ -14,13 +14,13 @@ When a collaborator accepts an invitation, a private Stream.io messaging channel
 
 The platform distinguishes channel purposes by ID prefix; the canonical prefix constants and the type-inference helper live in `lib/stream-channel-ids.ts`.
 
-| Purpose | Channel ID pattern | Channel type | Members |
-| --- | --- | --- | --- |
-| Direct message | `dm-{...}` | `messaging` | The two participants |
-| Webinar event | `webinar-{webinarId}` | `team` | Host + participants |
-| Class event | `class-{classId}` | `team` | Host + participants |
-| **Collaborator (webinar)** | `collab-webinar-{webinarPlanId}` | `messaging` | Host + accepted collaborators |
-| **Collaborator (class)** | `collab-class-{classPlanId}` | `messaging` | Host + accepted collaborators |
+| Purpose                    | Channel ID pattern               | Channel type | Members                       |
+| -------------------------- | -------------------------------- | ------------ | ----------------------------- |
+| Direct message             | `dm-{...}`                       | `messaging`  | The two participants          |
+| Webinar event              | `webinar-{webinarId}`            | `team`       | Host + participants           |
+| Class event                | `class-{classId}`                | `team`       | Host + participants           |
+| **Collaborator (webinar)** | `collab-webinar-{webinarPlanId}` | `messaging`  | Host + accepted collaborators |
+| **Collaborator (class)**   | `collab-class-{classPlanId}`     | `messaging`  | Host + accepted collaborators |
 
 The `consultation-{id}` and `subscription-{id}` patterns are **legacy** — nothing creates them any more (#1134 P0-7); 1:1 conversations are DMs. `getChannelTypeFromId()` still resolves all messaging-side prefixes (including `collab-`) so existing rows keep working.
 
@@ -88,18 +88,20 @@ Notification and Stream revocation run in separate try/catch blocks so a Novu ou
 
 ---
 
-## Video call roles (deferred)
+## Video call roles
 
-Stream video calls support role-based permissions, and the intended mapping is recorded here for when the work is picked up.
+Video calls are created server-side: `provisionAppointmentMeeting` in `actions/stream/meetings/meeting.action.ts` mints the call, names its members and stamps the `custom` blob, so no browser can name itself a host. Every ACCEPTED collaborator is a call member under the single `call_member` Stream role; the Stream role is irrelevant to host controls, because ending the call for everyone and starting or stopping a recording both go through our own routes rather than through Stream permissions.
 
-| Collaborator role | Intended Stream role | Status |
-| --- | --- | --- |
-| CO_HOST / CO_INSTRUCTOR | `host` | Deferred |
-| MODERATOR / TEACHING_ASSISTANT | `moderator` | Deferred |
-| GUEST_SPEAKER / GUEST_LECTURER | `speaker` | Deferred |
-| TECHNICAL_SUPPORT / CONTENT_CREATOR | `attendee` | Deferred |
+Host controls reach presenters only (#1580 C-P1-4). The set is the plan owner plus the ACCEPTED co-presenter (`CO_HOST` or `CO_INSTRUCTOR`, at most one per plan under the §6 cap); crew roles (`MODERATOR`, `TEACHING_ASSISTANT`, `GUEST_SPEAKER`, `GUEST_LECTURER`, `TECHNICAL_SUPPORT`, `CONTENT_CREATOR`) join the room but cannot close it or record it. This is Zoom's alternative-host shape, and it exists because a crew member ending a paid class for the whole room is the same hazard #1270 closed for consultees. The following table lists where that one set is read.
 
-The reason it is deferred is that video calls are created client-side (`lib/meeting.ts` `call.getOrCreate()`). Assigning collaborator-specific roles requires either server-side call creation (an architectural change) or client-side role assignment after creation (racy). The collaborator data in the DB is the foundation for a future implementation.
+| Surface                                                                                               | Where it is decided                                                                                                                    |
+| ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `custom.hostUserIds` on the call (`custom.consultantUserId` stays the owner for calls minted earlier) | `buildCallCustom` from `SessionCallProfile.hostControlUserIds`                                                                         |
+| "End for everyone" and the recording buttons in the room                                              | `useSessionInfo().isHost` reads `hostUserIds.includes(me)` in `app/meetings/[id]/session-info.ts`                                      |
+| `POST /api/meetings/[id]/end`                                                                         | `resolveMeetingAccess` in `lib/meetings/access.ts` grants the `host` role to the owner and the co-presenter, and `participant` to crew |
+| `POST /api/stream/recordings/start` and `/stop`                                                       | `isAppointmentOwner` in `lib/stream/recording-utils.ts` admits the owner and an ACCEPTED presenter                                     |
+
+The presenter set is derived from the same `ACCEPTED` rows the revenue split and the roster read, so a collaborator removed from the plan loses the controls with the next call the server mints.
 
 ---
 

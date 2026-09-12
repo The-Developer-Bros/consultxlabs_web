@@ -19,6 +19,7 @@ import {
 import { getAppUrl } from "@/lib/url";
 import { scopeToWhereOrgId, type Scope } from "@/lib/api/scope/parse";
 import { reportSentryError } from "@/lib/observability/report";
+import { PRESENTER_ROLES } from "@/lib/collaborators/roles";
 
 // The flip a ban and an erasure share lives in its own module so the
 // moderation transaction does not load this module's Stream and Novu graph.
@@ -34,10 +35,7 @@ const MIN_HOST_SHARE = 10; // Host must keep at least 10%
 // #1580 §6 — at most three collaborators in PENDING + ACCEPTED per plan, and
 // only one of them a co-presenter; the host stays the accountable party.
 export const MAX_COLLABORATORS_PER_PLAN = 3;
-export const PRESENTER_ROLES: readonly CollaboratorRole[] = [
-  "CO_HOST",
-  "CO_INSTRUCTOR",
-];
+export { PRESENTER_ROLES } from "@/lib/collaborators/roles";
 
 // #772 B5 — collaborator shares are stored as basis points (bps) for integer
 // money math. The public API/param surface stays in percent (0–90); convert at
