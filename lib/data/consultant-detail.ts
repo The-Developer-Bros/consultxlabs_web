@@ -134,7 +134,7 @@ export const getConsultantReviews = cache(
       take: 20,
       // #1300 — the ALLOWLIST, not a bare `include`. `sanitisePublicReviews` only
       // strips the anonymous reviewer and a removed reply; swapping the sanitiser
-      // while leaving the projection wide still shipped `excludedReason`,
+      // while leaving the projection wide still shipped `removedBy`,
       // `revisionNo`, `ratedSessionAt` and the reviewer's whole ConsulteeProfile
       // row into this page's client props.
       select: publicReviewSelect,
