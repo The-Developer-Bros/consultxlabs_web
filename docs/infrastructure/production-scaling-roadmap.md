@@ -34,22 +34,23 @@ The "Supabase can only handle ~100 queries per second" figure is **not real**. T
 
 ### Actual Supabase Benchmarks (from official docs)
 
-| Compute Size | Reads/sec | Writes/sec | Monthly Cost |
-|-------------|-----------|------------|-------------|
-| **Nano (Free)** | ~1,200 | ~1,000 | $0 |
-| **Micro (Pro default)** | ~1,200 | ~1,000 | $0 (included with $25 Pro) |
-| **Small** | ~2,500 | ~2,100 | ~$65/month |
-| **Medium** | ~4,800 | ~4,200 | ~$130/month |
-| **Large** | ~7,200 | ~6,500 | ~$260/month |
-| **XL** | ~8,100 | ~7,200 | ~$520/month |
-| **2XL** | ~10,249 | ~8,931 | ~$1,040/month |
-| **4XL** | ~15,000+ | ~12,000+ | ~$2,080/month |
+| Compute Size            | Reads/sec | Writes/sec | Monthly Cost               |
+| ----------------------- | --------- | ---------- | -------------------------- |
+| **Nano (Free)**         | ~1,200    | ~1,000     | $0                         |
+| **Micro (Pro default)** | ~1,200    | ~1,000     | $0 (included with $25 Pro) |
+| **Small**               | ~2,500    | ~2,100     | ~$65/month                 |
+| **Medium**              | ~4,800    | ~4,200     | ~$130/month                |
+| **Large**               | ~7,200    | ~6,500     | ~$260/month                |
+| **XL**                  | ~8,100    | ~7,200     | ~$520/month                |
+| **2XL**                 | ~10,249   | ~8,931     | ~$1,040/month              |
+| **4XL**                 | ~15,000+  | ~12,000+   | ~$2,080/month              |
 
 **Source**: [Supabase Compute and Disk](https://supabase.com/docs/guides/platform/compute-and-disk)
 
 ### Why People Think It's 100 QPS
 
 The "~100 QPS" perception comes from:
+
 1. **Row Level Security (RLS) overhead**: RLS can cause 100x+ slowdown on unindexed queries. A query doing 1,200 QPS without RLS drops to ~12 QPS with poorly configured RLS policies.
 2. **Missing indexes**: A `count(*)` on a 100K-row table without indexes can take 500ms+ (= 2 QPS effectively).
 3. **Connection exhaustion**: Not QPS itself, but hitting the 60-connection limit causes queuing that looks like a QPS cap.
@@ -73,15 +74,15 @@ Each serverless function instance (Vercel/Netlify) creates its own database conn
 
 ### Supabase Connection Limits by Tier
 
-| Compute | Direct Connections | Supavisor Pooler Clients | Supavisor Pool Size |
-|---------|-------------------|--------------------------|---------------------|
-| **Nano/Micro** | 60 | 200 | 15 |
-| **Small** | 90 | 400 | 30 |
-| **Medium** | 120 | 600 | 50 |
-| **Large** | 160 | 800 | 75 |
-| **XL** | 240 | 1,200 | 100 |
-| **2XL** | 380 | 1,500 | 150 |
-| **4XL** | 480 | 3,000 | 200 |
+| Compute        | Direct Connections | Supavisor Pooler Clients | Supavisor Pool Size |
+| -------------- | ------------------ | ------------------------ | ------------------- |
+| **Nano/Micro** | 60                 | 200                      | 15                  |
+| **Small**      | 90                 | 400                      | 30                  |
+| **Medium**     | 120                | 600                      | 50                  |
+| **Large**      | 160                | 800                      | 75                  |
+| **XL**         | 240                | 1,200                    | 100                 |
+| **2XL**        | 380                | 1,500                    | 150                 |
+| **4XL**        | 480                | 3,000                    | 200                 |
 
 **Current risk**: On Micro (default Pro), we have **200 Supavisor pooler clients**. If 200+ serverless functions connect simultaneously, new connections are **refused** (503 errors).
 
@@ -98,6 +99,7 @@ The Prisma client uses `@prisma/adapter-pg` with the `DATABASE_URL` (pooled conn
 ### Fix (CRITICAL — Before Launch)
 
 **Approach A (Recommended)**: Add `connection_limit=1` to `DATABASE_URL`:
+
 ```
 postgresql://user:pass@project.pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=1
 ```
@@ -105,6 +107,7 @@ postgresql://user:pass@project.pooler.supabase.com:6543/postgres?pgbouncer=true&
 Each serverless function uses exactly 1 connection. 200 concurrent functions = 200 connections = exactly at the Supavisor limit.
 
 **Approach B**: Use Prisma's `datasources.db.pool_size` override:
+
 ```prisma
 // In Prisma client initialization
 const prisma = new PrismaClient({
@@ -130,6 +133,7 @@ const prisma = new PrismaClient({
 ### B2-1: Unindexed count() Operations on Admin Dashboards (HIGH)
 
 **Files**:
+
 - `app/api/admin/stats/route.ts` (lines 35, 43, 55)
 - `app/api/admin/analytics/route.ts` (lines 28-130) — **12+ count() calls in Promise.all()**
 - `app/api/staff/metrics/route.ts` (lines 49-111)
@@ -140,14 +144,15 @@ At 100K rows, each count takes 100-500ms. The analytics page becomes unusable (2
 
 **Approaches**:
 
-| Approach | Effort | Impact | Selected? |
-|----------|--------|--------|-----------|
-| **A: Add database indexes on status columns** | 1 hour | Counts drop from 500ms to <5ms | **Yes (now)** |
-| B: Cache count results in Redis (5-min TTL) | 2 hours | Eliminates repeated DB hits | Yes (later) |
-| C: Materialized views for analytics | 4 hours | Pre-computed aggregates | Overkill for now |
-| D: Move analytics to PostHog/Mixpanel | 1 day | Offload entirely | Consider at 100K users |
+| Approach                                      | Effort  | Impact                         | Selected?              |
+| --------------------------------------------- | ------- | ------------------------------ | ---------------------- |
+| **A: Add database indexes on status columns** | 1 hour  | Counts drop from 500ms to <5ms | **Yes (now)**          |
+| B: Cache count results in Redis (5-min TTL)   | 2 hours | Eliminates repeated DB hits    | Yes (later)            |
+| C: Materialized views for analytics           | 4 hours | Pre-computed aggregates        | Overkill for now       |
+| D: Move analytics to PostHog/Mixpanel         | 1 day   | Offload entirely               | Consider at 100K users |
 
 **Recommended indexes** (add to Prisma schema):
+
 ```prisma
 @@index([paymentStatus])   // on Payment model
 @@index([refundStatus])     // on PaymentRefund model
@@ -162,10 +167,12 @@ At 100K rows, each count takes 100-500ms. The analytics page becomes unusable (2
 ### B2-2: Heavy Nested Includes on Consultant Listings (MEDIUM-HIGH)
 
 **Files**:
+
 - `lib/data/explore-experts.ts` (lines 13-39) — `consultantListInclude` object
 - `app/api/user/consultants/route.ts` (line 192) — uses the include
 
 **Problem**: Every consultant list query fetches per consultant:
+
 - User profile (1 query)
 - Domain + SubDomains (2 queries)
 - Tags (1 query)
@@ -176,12 +183,12 @@ For a page of 10 consultants = ~60 queries. The `include` pattern causes N+1 at 
 
 **Approaches**:
 
-| Approach | Effort | Impact | Selected? |
-|----------|--------|--------|-----------|
-| **A: Use `select` instead of `include`** | 2 hours | Fetch only needed fields, reduce payload 60-70% | **Yes (now)** |
-| B: Lazy-load reviews/plans via separate API | 3 hours | Consultant list loads fast, details load on click | Yes (consider) |
-| C: Denormalize rating into ConsultantProfile | 1 hour | Eliminate review queries entirely for list view | Yes (high impact) |
-| D: Full-text search via Supabase pg_trgm | 4 hours | Replace Prisma queries with optimized search | At 50K consultants |
+| Approach                                     | Effort  | Impact                                            | Selected?          |
+| -------------------------------------------- | ------- | ------------------------------------------------- | ------------------ |
+| **A: Use `select` instead of `include`**     | 2 hours | Fetch only needed fields, reduce payload 60-70%   | **Yes (now)**      |
+| B: Lazy-load reviews/plans via separate API  | 3 hours | Consultant list loads fast, details load on click | Yes (consider)     |
+| C: Denormalize rating into ConsultantProfile | 1 hour  | Eliminate review queries entirely for list view   | Yes (high impact)  |
+| D: Full-text search via Supabase pg_trgm     | 4 hours | Replace Prisma queries with optimized search      | At 50K consultants |
 
 **Quick win**: Add `@@avg_rating Float?` to `ConsultantProfile` model, update on each new review. Eliminates loading 10 reviews per consultant just to compute average.
 
@@ -192,6 +199,7 @@ For a page of 10 consultants = ~60 queries. The `include` pattern causes N+1 at 
 **File**: `scripts/payouts/create-payout-batch.ts` (lines 97-205)
 
 **Problem**: Loop with 3-4 sequential DB calls per consultant:
+
 ```typescript
 for (const consultant of eligibleConsultants) {
   const account = await prisma.payoutAccount.findFirst(...)  // DB call 1
@@ -204,19 +212,20 @@ At 100 consultants = 300+ sequential DB round trips (~3-5 seconds). At 1,000 con
 
 **Approaches**:
 
-| Approach | Effort | Impact | Selected? |
-|----------|--------|--------|-----------|
-| **A: Batch-fetch accounts and profiles before loop** | 2 hours | Reduce to ~3 DB calls total + N transactions | **Yes (now)** |
-| B: Use `createMany` with a single transaction | 3 hours | Single DB call for all payouts | More complex |
-| C: Move to background job with chunking | 4 hours | Process 50 at a time with delay | At 500+ consultants |
+| Approach                                             | Effort  | Impact                                       | Selected?           |
+| ---------------------------------------------------- | ------- | -------------------------------------------- | ------------------- |
+| **A: Batch-fetch accounts and profiles before loop** | 2 hours | Reduce to ~3 DB calls total + N transactions | **Yes (now)**       |
+| B: Use `createMany` with a single transaction        | 3 hours | Single DB call for all payouts               | More complex        |
+| C: Move to background job with chunking              | 4 hours | Process 50 at a time with delay              | At 500+ consultants |
 
 ---
 
 ### B2-4: Unbounded Queries in Search and Availability (MEDIUM)
 
 **Files**:
+
 - `app/api/stream/search-consultees/route.ts` (lines 51-176) — loads ALL consultations, subscriptions, webinars, classes with nested includes, **no pagination**
-- `app/api/collaborators/[consultantProfileId]/availability/route.ts` — three unbounded queries
+- `app/api/collaborators/[consultantProfileId]/availability/route.ts` — three unbounded queries (route deleted in #1580 C-P1-8; nothing fetched it)
 
 **Fix**: Add `take: 100` to all `findMany()` calls. Add cursor-based pagination for endpoints returning lists.
 
@@ -232,11 +241,11 @@ At 100 consultants = 300+ sequential DB round trips (~3-5 seconds). At 1,000 con
 
 **Approaches**:
 
-| Approach | Effort | Impact | Selected? |
-|----------|--------|--------|-----------|
-| **A: Return signed URL (redirect, not proxy)** | 1 hour | Zero memory usage, direct Supabase → client | **Yes (now)** |
-| B: Stream file via ReadableStream | 2 hours | Low memory, but still proxied through function | Alternative |
-| C: Set max file size (50MB) | 30 min | Prevents OOM but doesn't fix the pattern | Band-aid |
+| Approach                                       | Effort  | Impact                                         | Selected?     |
+| ---------------------------------------------- | ------- | ---------------------------------------------- | ------------- |
+| **A: Return signed URL (redirect, not proxy)** | 1 hour  | Zero memory usage, direct Supabase → client    | **Yes (now)** |
+| B: Stream file via ReadableStream              | 2 hours | Low memory, but still proxied through function | Alternative   |
+| C: Set max file size (50MB)                    | 30 min  | Prevents OOM but doesn't fix the pattern       | Band-aid      |
 
 Selected approach: Generate a signed Supabase URL (already supported by Supabase Storage) and redirect the client. No file data passes through the serverless function.
 
@@ -250,11 +259,11 @@ Selected approach: Generate a signed Supabase URL (already supported by Supabase
 
 **Approaches**:
 
-| Approach | Effort | Impact | Selected? |
-|----------|--------|--------|-----------|
-| A: Store circuit state in Upstash Redis itself | Paradox | Can't check Redis to see if Redis is down | No |
-| **B: Accept the limitation, add fast timeout** | 30 min | Each instance independently detects failure within 5 calls | **Yes (now)** |
-| C: Use Upstash's built-in circuit breaker | 1 hour | Upstash REST SDK handles this natively | Investigate |
+| Approach                                       | Effort  | Impact                                                     | Selected?     |
+| ---------------------------------------------- | ------- | ---------------------------------------------------------- | ------------- |
+| A: Store circuit state in Upstash Redis itself | Paradox | Can't check Redis to see if Redis is down                  | No            |
+| **B: Accept the limitation, add fast timeout** | 30 min  | Each instance independently detects failure within 5 calls | **Yes (now)** |
+| C: Use Upstash's built-in circuit breaker      | 1 hour  | Upstash REST SDK handles this natively                     | Investigate   |
 
 The current behavior is acceptable for our scale. Each instance will independently open its circuit after 5 failures (lines 74-79). The 30-second reset timer means at most 30 seconds of degraded performance per instance.
 
@@ -267,10 +276,14 @@ The current behavior is acceptable for our scale. Each instance will independent
 **Problem**: When Redis is unreachable, all rate limiters fail **open** (allow the request through). This is correct for read endpoints (better to serve than block), but dangerous for auth endpoints — a Redis outage disables brute-force protection.
 
 **Fix**: Change auth rate limiters to fail **closed** (reject request if Redis is unavailable):
+
 ```typescript
 // For auth endpoints only:
 if (redisUnavailable) {
-  return NextResponse.json({ error: "Service temporarily unavailable" }, { status: 503 });
+  return NextResponse.json(
+    { error: "Service temporarily unavailable" },
+    { status: 503 },
+  );
 }
 ```
 
@@ -285,6 +298,7 @@ if (redisUnavailable) {
 **Problem**: `generateChatToken()` and `generateVideoToken()` generate a new JWT on every call. If a user makes 10 API calls in a session, 10 tokens are generated. Token generation is fast (~1-2ms) but adds unnecessary crypto overhead.
 
 **Fix**: Cache tokens per userId with 50-minute TTL (tokens expire at 60 min):
+
 ```typescript
 const tokenCache = new Map<string, { token: string; expires: number }>();
 
@@ -308,6 +322,7 @@ function getCachedToken(userId: string, generator: () => string): string {
 **Problem**: The middleware checks maintenance state via Redis on every matched request. At 1,000 req/s, this is 1,000 Redis calls/second just for maintenance checks.
 
 **Fix**: Cache maintenance state for 30 seconds in-memory:
+
 ```typescript
 let maintenanceCache = { state: null, expires: 0 };
 ```
@@ -335,6 +350,7 @@ Redis call only happens every 30 seconds instead of every request. During a main
 **File**: `app/api/staff/metrics/route.ts` (lines 76-95)
 
 **Problem**: Fetches all rows then computes distinct in-app instead of using `distinct` at DB level:
+
 ```typescript
 // Current: fetches full rows, filters in JS
 prisma.supportTicket.findMany({...}).then(tickets => tickets.length)
@@ -354,6 +370,7 @@ prisma.supportTicket.findMany({ distinct: ['userId'] })
 **File**: `package.json`
 
 **Problem**: Stream React SDKs are heavy:
+
 - `stream-chat-react`: ~200KB gzipped
 - `@stream-io/video-react-sdk`: ~400KB gzipped
 - Combined: ~600KB
@@ -361,6 +378,7 @@ prisma.supportTicket.findMany({ distinct: ['userId'] })
 If loaded on every page (not lazy-loaded), Indian users on 3G/slow 4G experience 2-4 second additional load time.
 
 **Fix**: Dynamic import Stream SDKs only on meeting/chat pages:
+
 ```typescript
 const StreamChat = dynamic(() => import('@/components/stream/ChatComponent'), {
   loading: () => <Skeleton />,
@@ -387,10 +405,12 @@ The block has been **lifted**. Supabase is currently accessible from India.
 If Supabase is blocked again:
 
 **Immediate (within hours)**:
+
 1. Set up Cloudflare proxy to route `*.supabase.co` traffic through a non-blocked IP
 2. Or use Supabase's custom domain feature (Pro plan) — `db.familiarisenow.com` instead of `*.supabase.co`
 
 **Short-term (within days)**:
+
 1. Migrate to **Neon** (serverless Postgres, no India ban history):
    - Same PostgreSQL, Prisma works identically
    - Change `DATABASE_URL` and `DIRECT_URL` — zero code changes
@@ -398,6 +418,7 @@ If Supabase is blocked again:
    - Pricing: $0 free tier, ~$19/month Pro (cheaper than Supabase for intermittent workloads)
 
 **Long-term (if Supabase is repeatedly blocked)**:
+
 1. Migrate to **AWS RDS ap-south-1** (Mumbai region):
    - Self-managed but no risk of government blocking
    - $25-50/month for db.t4g.micro
@@ -415,12 +436,12 @@ If Supabase is blocked again:
 
 ### Pricing Breakdown
 
-| Plan | MAU | Video Minutes | Monthly Cost |
-|------|-----|--------------|-------------|
-| **Maker (current)** | 2,000 | 333,000 | $0 |
-| **Start** | 10,000 | Custom | ~$499 |
-| **Growth** | 25,000 | Custom | ~$1,299 |
-| **Enterprise** | Unlimited | Custom | Custom ($3K+) |
+| Plan                | MAU       | Video Minutes | Monthly Cost  |
+| ------------------- | --------- | ------------- | ------------- |
+| **Maker (current)** | 2,000     | 333,000       | $0            |
+| **Start**           | 10,000    | Custom        | ~$499         |
+| **Growth**          | 25,000    | Custom        | ~$1,299       |
+| **Enterprise**      | Unlimited | Custom        | Custom ($3K+) |
 
 ### The MAU Counting Trap
 
@@ -431,11 +452,11 @@ If Supabase is blocked again:
 ### When We Hit the Cliff
 
 | Our MAU | Stream Plan Needed | Monthly Cost Jump |
-|---------|-------------------|-------------------|
-| 0-2,000 | Maker (free) | $0 |
-| 2,001 | Start | **+$499** |
-| 10,001 | Growth | **+$800** |
-| 25,001+ | Enterprise | **+$1,700+** |
+| ------- | ------------------ | ----------------- |
+| 0-2,000 | Maker (free)       | $0                |
+| 2,001   | Start              | **+$499**         |
+| 10,001  | Growth             | **+$800**         |
+| 25,001+ | Enterprise         | **+$1,700+**      |
 
 Also triggered by: receiving $100K funding, team growing to 5+, or exceeding $10K monthly revenue.
 
@@ -458,27 +479,29 @@ Also triggered by: receiving $100K funding, team growing to 5+, or exceeding $10
 
 ### Vercel Function Limits
 
-| Tier | Max Concurrent Functions | Timeout | Cold Start |
-|------|--------------------------|---------|-----------|
-| Hobby | 10 | 10s | 1-3s |
-| Pro | 1,000 | 300s | ~0 (Fluid Compute, 99.37%) |
-| Enterprise | Custom | 900s | ~0 |
+| Tier       | Max Concurrent Functions | Timeout | Cold Start                 |
+| ---------- | ------------------------ | ------- | -------------------------- |
+| Hobby      | 10                       | 10s     | 1-3s                       |
+| Pro        | 1,000                    | 300s    | ~0 (Fluid Compute, 99.37%) |
+| Enterprise | Custom                   | 900s    | ~0                         |
 
 ### Netlify Function Limits
 
 | Tier | Max Concurrent | Timeout | Cold Start |
-|------|---------------|---------|-----------|
-| Free | 10-50 | 10s | 1-3s |
-| Pro | ~200 | 26s | 1-3s |
+| ---- | -------------- | ------- | ---------- |
+| Free | 10-50          | 10s     | 1-3s       |
+| Pro  | ~200           | 26s     | 1-3s       |
 
 ### Impact on Our App
 
 At 1,000 concurrent users:
+
 - ~1,000 simultaneous function invocations needed
 - **Vercel Pro handles this** (1,000 concurrent limit)
 - **Netlify Pro may struggle** (~200 concurrent, queuing the rest)
 
 At 10,000 concurrent users:
+
 - Need Vercel Enterprise or self-hosted infrastructure
 
 ### Cold Start Mitigation
@@ -501,12 +524,12 @@ Our 61 cron jobs run via GitHub Actions scheduled workflows. Known issues:
 
 ### Approaches
 
-| Approach | Effort | Cost | Reliability | Selected? |
-|----------|--------|------|-------------|-----------|
-| **A: Keep GitHub Actions, add monitoring** | 1 hour | $0 | Medium (delays OK for non-critical jobs) | **Yes (launch)** |
-| B: Migrate to QStash CRON (Upstash) | 4 hours | $1/100K messages | High (HTTP-based, exact scheduling) | Yes (at 10K users) |
-| C: Migrate to Vercel Cron (if on Vercel) | 2 hours | $0 (included) | High (100 jobs, per-minute) | If we migrate to Vercel |
-| D: Migrate to Inngest | 6 hours | $0 (25K runs/month free) | Very high (retries, fan-out, dashboard) | At 50K users |
+| Approach                                   | Effort  | Cost                     | Reliability                              | Selected?               |
+| ------------------------------------------ | ------- | ------------------------ | ---------------------------------------- | ----------------------- |
+| **A: Keep GitHub Actions, add monitoring** | 1 hour  | $0                       | Medium (delays OK for non-critical jobs) | **Yes (launch)**        |
+| B: Migrate to QStash CRON (Upstash)        | 4 hours | $1/100K messages         | High (HTTP-based, exact scheduling)      | Yes (at 10K users)      |
+| C: Migrate to Vercel Cron (if on Vercel)   | 2 hours | $0 (included)            | High (100 jobs, per-minute)              | If we migrate to Vercel |
+| D: Migrate to Inngest                      | 6 hours | $0 (25K runs/month free) | Very high (retries, fan-out, dashboard)  | At 50K users            |
 
 ### For Now
 
@@ -527,11 +550,11 @@ Our 61 cron jobs run via GitHub Actions scheduled workflows. Known issues:
 
 ### Network Reality in India (2025-2026)
 
-| Metric | Jio 4G | Airtel 4G | 3G / Rural |
-|--------|--------|-----------|-----------|
-| Avg latency | 21ms | 35ms | 100-200ms |
-| Download speed | 28-42 Mbps | 30-45 Mbps | 2-8 Mbps |
-| Packet loss | ~1% | ~0.5% | 3-5% |
+| Metric         | Jio 4G     | Airtel 4G  | 3G / Rural |
+| -------------- | ---------- | ---------- | ---------- |
+| Avg latency    | 21ms       | 35ms       | 100-200ms  |
+| Download speed | 28-42 Mbps | 30-45 Mbps | 2-8 Mbps   |
+| Packet loss    | ~1%        | ~0.5%      | 3-5%       |
 
 ### Critical Optimizations
 
@@ -540,6 +563,7 @@ Our 61 cron jobs run via GitHub Actions scheduled workflows. Known issues:
 **Default region on Vercel**: `iad1` (US East — Virginia). Every API call from India adds **150-300ms round trip**.
 
 **Fix**: Set function region to **Mumbai (bom1)** in `vercel.json`:
+
 ```json
 { "regions": ["bom1"] }
 ```
@@ -555,6 +579,7 @@ Or in Netlify: Functions auto-deploy to the nearest region, but verify this.
 **Current concern**: Stream SDKs (~600KB gzipped) should be lazy-loaded on meeting/chat pages only.
 
 **Checklist**:
+
 - [ ] Run `ANALYZE=true npm run build` to check bundle sizes
 - [ ] Dynamic import Stream SDKs
 - [ ] Dynamic import Razorpay checkout SDK (~100KB)
@@ -576,6 +601,7 @@ Or in Netlify: Functions auto-deploy to the nearest region, but verify this.
 #### 7.4 WebSocket Resilience (Stream.io)
 
 Indian 4G connections frequently drop WebSocket connections. Stream SDKs have built-in reconnection, but:
+
 - Chat messages may appear delayed
 - Video calls may briefly freeze
 
@@ -584,6 +610,7 @@ Indian 4G connections frequently drop WebSocket connections. Stream SDKs have bu
 #### 7.5 Payment Checkout on Slow Networks
 
 Razorpay checkout modal loads external JS. On 3G:
+
 - Modal may take 3-5 seconds to appear
 - Users may click "Pay" again (double payment risk)
 
@@ -606,6 +633,7 @@ Razorpay checkout modal loads external JS. On 3G:
 QStash is a serverless message queue by Upstash — **fits our existing ecosystem** (we already use Upstash Redis).
 
 **How it works for webhooks**:
+
 ```
 Stripe → /api/webhooks/stripe → verify signature → respond 200 immediately
                                       ↓
@@ -622,12 +650,12 @@ Stripe → /api/webhooks/stripe → verify signature → respond 200 immediately
 
 **Alternatives considered**:
 
-| Service | Cost | Effort | Best For |
-|---------|------|--------|----------|
-| **QStash** | $1/100K msg | 2-3 hours | Simple webhook queuing (our use case) |
-| **Inngest** | Free 25K runs/month | 4-6 hours | Complex workflows with fan-out |
-| **Trigger.dev** | Free 5K runs/month | 4-6 hours | Long-running background jobs |
-| **BullMQ** | $0 (self-hosted) | 8 hours | Full control, needs Redis |
+| Service         | Cost                | Effort    | Best For                              |
+| --------------- | ------------------- | --------- | ------------------------------------- |
+| **QStash**      | $1/100K msg         | 2-3 hours | Simple webhook queuing (our use case) |
+| **Inngest**     | Free 25K runs/month | 4-6 hours | Complex workflows with fan-out        |
+| **Trigger.dev** | Free 5K runs/month  | 4-6 hours | Long-running background jobs          |
+| **BullMQ**      | $0 (self-hosted)    | 8 hours   | Full control, needs Redis             |
 
 ---
 
@@ -686,12 +714,12 @@ npx prisma migrate deploy
 
 ### Expected Impact
 
-| Query | Before (10K rows) | After (with index) |
-|-------|-------------------|-------------------|
-| `payment.count({ where: { status } })` | ~50ms | ~2ms |
-| `consultation.findMany({ where: { status, consultantId } })` | ~30ms | ~3ms |
-| `webhookEvent.findMany({ where: { createdAt < threshold } })` | ~100ms | ~5ms |
-| `user.count({ where: { createdAt > date } })` | ~40ms | ~2ms |
+| Query                                                         | Before (10K rows) | After (with index) |
+| ------------------------------------------------------------- | ----------------- | ------------------ |
+| `payment.count({ where: { status } })`                        | ~50ms             | ~2ms               |
+| `consultation.findMany({ where: { status, consultantId } })`  | ~30ms             | ~3ms               |
+| `webhookEvent.findMany({ where: { createdAt < threshold } })` | ~100ms            | ~5ms               |
+| `user.count({ where: { createdAt > date } })`                 | ~40ms             | ~2ms               |
 
 ---
 
@@ -700,12 +728,14 @@ npx prisma migrate deploy
 ### At 1K Users (Launch → Month 3)
 
 **Infrastructure**:
+
 - Supabase Pro Micro ($25/month) — sufficient
 - Netlify/Vercel Pro ($19-20/month)
 - Stream.io Maker (free, well within 2K MAU)
 - All other services on free tiers
 
 **Code changes needed**:
+
 - [ ] Add `connection_limit=1` to DATABASE_URL
 - [ ] Add database indexes (Section 9)
 - [ ] Fix unbounded queries (B2-4)
@@ -721,6 +751,7 @@ npx prisma migrate deploy
 ### At 10K Users (Month 3-6)
 
 **Infrastructure changes**:
+
 - Supabase Small compute (~$65/month) — 2,500 reads/sec, 400 pooler clients
 - Stream.io Start plan (~$499/month)
 - Resend Pro ($20/month)
@@ -728,6 +759,7 @@ npx prisma migrate deploy
 - Consider QStash for webhook processing
 
 **Code changes needed**:
+
 - [ ] Implement Redis caching for consultant listings (5-min TTL)
 - [ ] Cache count() results for admin dashboards
 - [ ] Batch payout processing (B2-3)
@@ -742,6 +774,7 @@ npx prisma migrate deploy
 ### At 100K Users (Month 6-18)
 
 **Infrastructure changes**:
+
 - Supabase Large compute (~$260/month) — 7,200 reads/sec, 800 pooler clients
 - Supabase read replica (~$260/month) — route GET requests to replica
 - Stream.io Growth/Enterprise (~$1,300+/month)
@@ -749,6 +782,7 @@ npx prisma migrate deploy
 - Vercel may need Enterprise, or migrate to containers
 
 **Code changes needed**:
+
 - [ ] Read/write splitting with Prisma (read replica for GET, primary for writes)
 - [ ] Full Redis caching layer (consultant profiles, availability, plan details)
 - [ ] CDN caching strategy (cache consultant pages at edge)
@@ -763,6 +797,7 @@ npx prisma migrate deploy
 ### At 1M Users (Month 18+)
 
 **Infrastructure changes**:
+
 - Supabase 4XL or Enterprise (~$2,000+/month) — or migrate to AWS RDS
 - Multiple read replicas, geo-distributed
 - Stream.io Enterprise (custom, ~$3K+/month)
@@ -770,6 +805,7 @@ npx prisma migrate deploy
 - Dedicated infrastructure (Fly.io, AWS ECS, or self-managed K8s)
 
 **Architectural changes**:
+
 - [ ] Microservices for payment processing (separate from main app)
 - [ ] Event-driven architecture (Kafka/EventBridge for inter-service communication)
 - [ ] Full CDN edge caching strategy
@@ -784,31 +820,31 @@ npx prisma migrate deploy
 
 ### Total Monthly Costs (All Services)
 
-| Service | 1K Users | 10K Users | 100K Users | 1M Users |
-|---------|----------|-----------|------------|----------|
-| **Supabase** | $25 | $65 | $520 (XL + replica) | $2,000+ |
-| **Hosting (Vercel/Netlify)** | $20 | $20 | $99+ | $500+ |
-| **Stream.io** | $0 | $499 | $1,299 | $3,000+ |
-| **Resend** | $20 | $20 | $80 | $350 |
-| **Upstash Redis** | $0 | $10 | $50 | $100 |
-| **Novu** | $0 | $0 | $250 | $500 (self-host) |
-| **Sentry** | $0 | $26 | $80 | $200 |
-| **QStash** | $0 | $1 | $5 | $20 |
-| **Stripe/Razorpay fees** | ~$50 | ~$500 | ~$5,000 | ~$50,000 |
-| **Total (excl. payment fees)** | **~$65** | **~$641** | **~$2,383** | **~$6,670+** |
-| **Total (incl. payment fees)** | **~$115** | **~$1,141** | **~$7,383** | **~$56,670+** |
+| Service                        | 1K Users  | 10K Users   | 100K Users          | 1M Users         |
+| ------------------------------ | --------- | ----------- | ------------------- | ---------------- |
+| **Supabase**                   | $25       | $65         | $520 (XL + replica) | $2,000+          |
+| **Hosting (Vercel/Netlify)**   | $20       | $20         | $99+                | $500+            |
+| **Stream.io**                  | $0        | $499        | $1,299              | $3,000+          |
+| **Resend**                     | $20       | $20         | $80                 | $350             |
+| **Upstash Redis**              | $0        | $10         | $50                 | $100             |
+| **Novu**                       | $0        | $0          | $250                | $500 (self-host) |
+| **Sentry**                     | $0        | $26         | $80                 | $200             |
+| **QStash**                     | $0        | $1          | $5                  | $20              |
+| **Stripe/Razorpay fees**       | ~$50      | ~$500       | ~$5,000             | ~$50,000         |
+| **Total (excl. payment fees)** | **~$65**  | **~$641**   | **~$2,383**         | **~$6,670+**     |
+| **Total (incl. payment fees)** | **~$115** | **~$1,141** | **~$7,383**         | **~$56,670+**    |
 
 > **Note**: Payment gateway fees (2-3% per transaction) become the dominant cost at scale, not infrastructure. At 1M users doing $50 avg transaction, payment fees alone = ~$50K/month. This is why pushing UPI (0% fee via Razorpay) is critical.
 
 ### Supabase Compute Upgrade Timeline
 
-| Trigger | Current Compute | Upgrade To | Cost Delta |
-|---------|----------------|-----------|------------|
-| >150 concurrent connections | Micro | Small | +$65/month |
-| >300 concurrent connections | Small | Medium | +$65/month |
-| Analytics queries >500ms | Medium | Large | +$130/month |
-| Need read replicas | Large | Large + Replica | +$260/month |
-| >800 concurrent connections | Large | XL | +$260/month |
+| Trigger                     | Current Compute | Upgrade To      | Cost Delta  |
+| --------------------------- | --------------- | --------------- | ----------- |
+| >150 concurrent connections | Micro           | Small           | +$65/month  |
+| >300 concurrent connections | Small           | Medium          | +$65/month  |
+| Analytics queries >500ms    | Medium          | Large           | +$130/month |
+| Need read replicas          | Large           | Large + Replica | +$260/month |
+| >800 concurrent connections | Large           | XL              | +$260/month |
 
 ---
 
@@ -816,46 +852,46 @@ npx prisma migrate deploy
 
 ### Before Launch (Week 1)
 
-| # | Fix | File | Effort | Impact |
-|---|-----|------|--------|--------|
-| 1 | Add `connection_limit=1` to DATABASE_URL | Environment variable | 5 min | Prevents connection exhaustion |
-| 2 | Add database indexes | `prisma/schema.prisma` | 1 hour | 10-25x faster dashboard queries |
-| 3 | Add `take` limits to unbounded queries | 3-4 files | 1 hour | Prevents egress spikes |
-| 4 | Fix file download buffering → signed URLs | `documents/download/route.ts` | 1 hour | Prevents OOM crashes |
-| 5 | Set function region to Mumbai | `vercel.json` or Netlify config | 5 min | -150ms on every API call for Indian users |
-| 6 | Dynamic import Stream SDKs | Components importing Stream | 2 hours | -600KB initial bundle |
+| #   | Fix                                       | File                            | Effort  | Impact                                    |
+| --- | ----------------------------------------- | ------------------------------- | ------- | ----------------------------------------- |
+| 1   | Add `connection_limit=1` to DATABASE_URL  | Environment variable            | 5 min   | Prevents connection exhaustion            |
+| 2   | Add database indexes                      | `prisma/schema.prisma`          | 1 hour  | 10-25x faster dashboard queries           |
+| 3   | Add `take` limits to unbounded queries    | 3-4 files                       | 1 hour  | Prevents egress spikes                    |
+| 4   | Fix file download buffering → signed URLs | `documents/download/route.ts`   | 1 hour  | Prevents OOM crashes                      |
+| 5   | Set function region to Mumbai             | `vercel.json` or Netlify config | 5 min   | -150ms on every API call for Indian users |
+| 6   | Dynamic import Stream SDKs                | Components importing Stream     | 2 hours | -600KB initial bundle                     |
 
 ### After Launch (Month 1)
 
-| # | Fix | Effort | Impact |
-|---|-----|--------|--------|
-| 7 | Cache count() results in Redis | 2 hours | Faster admin dashboards |
-| 8 | Batch payout account fetches | 2 hours | Prevents cron timeouts |
-| 9 | Auth rate limiter fail-closed | 1 hour | Security hardening |
-| 10 | Stream token caching | 30 min | Reduce crypto overhead |
-| 11 | Maintenance state caching | 30 min | Reduce Redis calls |
-| 12 | Stagger cron schedules | 30 min | Prevent connection storms |
-| 13 | Denormalize avg rating | 2 hours | Faster consultant listings |
+| #   | Fix                            | Effort  | Impact                     |
+| --- | ------------------------------ | ------- | -------------------------- |
+| 7   | Cache count() results in Redis | 2 hours | Faster admin dashboards    |
+| 8   | Batch payout account fetches   | 2 hours | Prevents cron timeouts     |
+| 9   | Auth rate limiter fail-closed  | 1 hour  | Security hardening         |
+| 10  | Stream token caching           | 30 min  | Reduce crypto overhead     |
+| 11  | Maintenance state caching      | 30 min  | Reduce Redis calls         |
+| 12  | Stagger cron schedules         | 30 min  | Prevent connection storms  |
+| 13  | Denormalize avg rating         | 2 hours | Faster consultant listings |
 
 ### At 10K Users
 
-| # | Fix | Effort | Impact |
-|---|-----|--------|--------|
-| 14 | Full Redis caching layer | 1-2 days | Major performance improvement |
-| 15 | Migrate crons to QStash | 4 hours | Reliable scheduling |
-| 16 | Add QStash for webhooks | 3 hours | Resilient payment processing |
-| 17 | Supabase compute upgrade (Small) | Dashboard | Handle 400 pooler clients |
-| 18 | Bundle size audit | 2 hours | Faster loads on Indian 3G |
+| #   | Fix                              | Effort    | Impact                        |
+| --- | -------------------------------- | --------- | ----------------------------- |
+| 14  | Full Redis caching layer         | 1-2 days  | Major performance improvement |
+| 15  | Migrate crons to QStash          | 4 hours   | Reliable scheduling           |
+| 16  | Add QStash for webhooks          | 3 hours   | Resilient payment processing  |
+| 17  | Supabase compute upgrade (Small) | Dashboard | Handle 400 pooler clients     |
+| 18  | Bundle size audit                | 2 hours   | Faster loads on Indian 3G     |
 
 ### At 100K Users
 
-| # | Fix | Effort | Impact |
-|---|-----|--------|--------|
-| 19 | Read replica + Prisma read/write splitting | 1 day | Double read throughput |
-| 20 | Table partitioning (WebhookEvent, Payment) | 4 hours | Prevent table bloat slowdown |
-| 21 | Evaluate Prisma → Drizzle migration | 1 week | 700ms cold start improvement |
-| 22 | Self-host Novu | 1 day | Eliminate $250/month |
-| 23 | Edge caching for consultant pages | 1 day | Sub-100ms page loads |
+| #   | Fix                                        | Effort  | Impact                       |
+| --- | ------------------------------------------ | ------- | ---------------------------- |
+| 19  | Read replica + Prisma read/write splitting | 1 day   | Double read throughput       |
+| 20  | Table partitioning (WebhookEvent, Payment) | 4 hours | Prevent table bloat slowdown |
+| 21  | Evaluate Prisma → Drizzle migration        | 1 week  | 700ms cold start improvement |
+| 22  | Self-host Novu                             | 1 day   | Eliminate $250/month         |
+| 23  | Edge caching for consultant pages          | 1 day   | Sub-100ms page loads         |
 
 ---
 
@@ -863,17 +899,17 @@ npx prisma migrate deploy
 
 **Yes, with staged upgrades.** Here's the honest assessment:
 
-| Concern | Reality | Verdict |
-|---------|---------|---------|
-| "Supabase can only do 100 QPS" | Myth. 1,200+ reads/sec on Micro, 15,000+ on 4XL. | Not a blocker |
-| Connection exhaustion | Real risk. Fix with `connection_limit=1` before launch. | Easy fix |
-| Codebase query efficiency | 15+ bottlenecks found. Most are 1-2 hour fixes. | Easy fixes |
-| Stream.io cost | $0 → $499 at 2K MAU. Budget for it. | Not a blocker (just expensive) |
-| Supabase India ban | Lifted. Document Neon as fallback. | Low risk with contingency |
-| Serverless concurrency | Vercel Pro handles 1,000 concurrent. Enterprise for more. | Not a blocker |
-| Indian network conditions | Set Mumbai region + lazy-load heavy SDKs. | Easy fixes |
-| Message queue | Not needed until 10K users. QStash when ready. | Deferred |
-| GitHub Actions crons | Unreliable at scale. Migrate to QStash/Vercel Cron later. | Manageable |
+| Concern                        | Reality                                                   | Verdict                        |
+| ------------------------------ | --------------------------------------------------------- | ------------------------------ |
+| "Supabase can only do 100 QPS" | Myth. 1,200+ reads/sec on Micro, 15,000+ on 4XL.          | Not a blocker                  |
+| Connection exhaustion          | Real risk. Fix with `connection_limit=1` before launch.   | Easy fix                       |
+| Codebase query efficiency      | 15+ bottlenecks found. Most are 1-2 hour fixes.           | Easy fixes                     |
+| Stream.io cost                 | $0 → $499 at 2K MAU. Budget for it.                       | Not a blocker (just expensive) |
+| Supabase India ban             | Lifted. Document Neon as fallback.                        | Low risk with contingency      |
+| Serverless concurrency         | Vercel Pro handles 1,000 concurrent. Enterprise for more. | Not a blocker                  |
+| Indian network conditions      | Set Mumbai region + lazy-load heavy SDKs.                 | Easy fixes                     |
+| Message queue                  | Not needed until 10K users. QStash when ready.            | Deferred                       |
+| GitHub Actions crons           | Unreliable at scale. Migrate to QStash/Vercel Cron later. | Manageable                     |
 
 **No Kafka, RabbitMQ, or complex infrastructure needed at launch.** The app's current architecture (serverless + managed services) scales to 100K users with staged compute upgrades and the code fixes listed above. At 1M users, consider dedicated infrastructure.
 

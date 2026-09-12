@@ -58,6 +58,11 @@ export async function POST(req: NextRequest) {
                       select: {
                         consultantProfileId: true,
                         recordingEnabled: true,
+                        // #1580 C-P1-4 — the accepted co-presenter may record too.
+                        collaborators: {
+                          where: { status: "ACCEPTED" as const },
+                          select: { consultantProfileId: true, role: true },
+                        },
                       },
                     },
                   },
@@ -68,6 +73,11 @@ export async function POST(req: NextRequest) {
                       select: {
                         consultantProfileId: true,
                         recordingEnabled: true,
+                        // #1580 C-P1-4 — the accepted co-presenter may record too.
+                        collaborators: {
+                          where: { status: "ACCEPTED" as const },
+                          select: { consultantProfileId: true, role: true },
+                        },
                       },
                     },
                   },
@@ -208,7 +218,11 @@ export async function POST(req: NextRequest) {
       // Revert the DB state since Stream API failed
       await prisma.meetingSession.update({
         where: { id: meetingSessionId },
-        data: { isRecording: false, recordingStartedAt: null, recordingStartedBy: null },
+        data: {
+          isRecording: false,
+          recordingStartedAt: null,
+          recordingStartedBy: null,
+        },
       });
       return NextResponse.json(
         { error: result.error || "Failed to start recording" },

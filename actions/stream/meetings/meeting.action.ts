@@ -8,6 +8,7 @@ import { findSessionRun } from "@/lib/appointments/slots";
 import { ConsentRequiredError } from "@/lib/compliance/dpdp";
 import { resolveMaxCallDurationSeconds } from "@/lib/meetings/duration-cap";
 import { resolvePlanOwnerIds } from "@/lib/booking/plan-owners";
+import { isPresenterRole } from "@/lib/collaborators/roles";
 import { getMaintenanceState } from "@/lib/maintenance";
 import { getSession } from "@/lib/auth-server";
 import { isPrivileged } from "@/lib/auth-helpers";
@@ -71,7 +72,8 @@ const ownerProfileSelect = {
 } as const;
 const collaboratorsSelect = {
   where: { status: "ACCEPTED" as const },
-  select: { consultantProfile: ownerProfileSelect },
+  // `role` decides host controls: presenters only (#1580 C-P1-4).
+  select: { role: true, consultantProfile: ownerProfileSelect },
 } as const;
 
 /**
@@ -335,6 +337,12 @@ export type SessionCallProfile = {
   offeringTitle: string | null;
   members: SessionCallMember[];
   hostUserIds: string[];
+  /**
+   * #1580 C-P1-4 — who may end the call for everyone and record: the owner
+   * and the ACCEPTED co-presenter. A subset of `hostUserIds`, which still
+   * names every accepted collaborator as a member.
+   */
+  hostControlUserIds: string[];
   guestUserIds: string[];
   /**
    * Display names for the two sides. Carried so the meeting screens can name
@@ -433,6 +441,28 @@ export async function resolveSessionCallProfile(
           .filter((userId): userId is string => Boolean(userId)),
       ),
     ];
+    const presenterProfileIds = new Set(
+      [
+        ...(appointment.webinar?.webinarPlan?.collaborators ?? []),
+        ...(appointment.class?.classPlan?.collaborators ?? []),
+      ]
+        .filter((collaborator) => isPresenterRole(collaborator.role))
+        .map((collaborator) => collaborator.consultantProfile?.id),
+    );
+    const ownerProfileId =
+      appointment.consultation?.consultationPlan?.consultantProfile?.id ??
+      appointment.subscription?.subscriptionPlan?.consultantProfile?.id ??
+      appointment.webinar?.webinarPlan?.consultantProfile?.id ??
+      appointment.class?.classPlan?.consultantProfile?.id ??
+      appointment.trialSession?.subscriptionPlan?.consultantProfile?.id ??
+      null;
+    const hostControlUserIds = [
+      ...new Set(
+        [ownerProfileId, ...presenterProfileIds]
+          .map((profileId) => (profileId ? profileToUser.get(profileId) : null))
+          .filter((userId): userId is string => Boolean(userId)),
+      ),
+    ];
 
     // Attendees are named only for the 1:1 types, where both sides are
     // connected to the slot. A webinar or class can hold hundreds of them and
@@ -504,6 +534,7 @@ export async function resolveSessionCallProfile(
         role: CALL_MEMBER_ROLE,
       })),
       hostUserIds,
+      hostControlUserIds,
       guestUserIds,
       // Only the first of each side is named. A 1:1 session has exactly one
       // per side, and a group event names no guests at all, so a list would
@@ -950,8 +981,11 @@ function buildCallCustom(args: {
   // resolvePlanOwnerIds and slot membership rather than accepted from the
   // caller: this is what useSessionInfo() reads to decide who may end the call
   // for everyone, so a browser must not be able to name itself here.
+  // `consultantUserId` stays the owner for calls and screens minted before
+  // #1580; `hostUserIds` is the owner plus the accepted co-presenter.
   const consultantUserId = profile?.hostUserIds[0] ?? null;
   const consulteeUserId = profile?.guestUserIds[0] ?? null;
+  const hostUserIds = profile?.hostControlUserIds ?? [];
 
   return {
     title,
@@ -965,6 +999,7 @@ function buildCallCustom(args: {
     appointmentType: args.appointmentType,
     ...(args.organizationId ? { organizationId: args.organizationId } : {}),
     ...(consultantUserId ? { consultantUserId } : {}),
+    ...(hostUserIds.length > 0 ? { hostUserIds } : {}),
     ...(consulteeUserId ? { consulteeUserId } : {}),
     // #1070 — the session's real shape. `CallRequest` has no `ends_at`, so the
     // end travels as call metadata; see provisionAppointmentMeeting for why the
