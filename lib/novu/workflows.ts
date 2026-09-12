@@ -92,6 +92,8 @@ export const NOVU_WORKFLOWS = {
   COLLABORATOR_REMOVED: "collaborator-removed",
   // #1580 C-P1-7 — to the host when a collaborator withdraws their own row.
   COLLABORATOR_WITHDRAWN: "collaborator-withdrawn",
+  // #1580 C-P1-5 — to the host when an invitee declines.
+  COLLABORATOR_DECLINED: "collaborator-declined",
 
   // Maintenance
   MAINTENANCE_SCHEDULED: "maintenance-scheduled",
@@ -700,6 +702,9 @@ export type CollaboratorAcceptedPayload = {
   role: string;
   dashboardUrl: string;
 };
+
+/** The host's copy of a decline; the same shape as the accept. */
+export type CollaboratorDeclinedPayload = CollaboratorAcceptedPayload;
 
 export type CollaboratorRemovedPayload = {
   planTitle: string;

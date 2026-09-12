@@ -11,6 +11,7 @@
  */
 import * as Sentry from "@sentry/nextjs";
 import prisma from "@/lib/prisma";
+import { collaboratorUserIdsForEvent } from "@/lib/collaborators/recipients";
 import { notifyAppointmentCancelled } from "@/lib/novu";
 import { notificationScope } from "@/lib/novu/workflows";
 import { notificationHref } from "@/lib/novu/resolve-href";
@@ -547,7 +548,14 @@ async function cancelGroupEvent(
       appointment: { select: { organizationId: true } },
     },
   });
-  const attendeeIds = Array.from(new Set(attendees.map((p) => p.userId)));
+  // #1580 C-P1-5 — the event's accepted collaborators lose it too.
+  const collaboratorIds = await collaboratorUserIdsForEvent(
+    isWebinar ? "webinar" : "class",
+    eventId,
+  );
+  const attendeeIds = Array.from(
+    new Set([...attendees.map((p) => p.userId), ...collaboratorIds]),
+  );
   if (attendeeIds.length > 0) {
     const eventOrgId = attendees[0]?.appointment?.organizationId ?? null;
     void notifyAppointmentCancelled(attendeeIds, {

@@ -13,6 +13,7 @@ import {
 import {
   notifyCollaboratorInvited,
   notifyCollaboratorAccepted,
+  notifyCollaboratorDeclined,
   notifyCollaboratorRemoved,
   notifyCollaboratorWithdrawn,
 } from "@/lib/novu/service";
@@ -27,6 +28,10 @@ export {
   removeCollaboratorStanding,
   type CollaborationRef,
 } from "@/lib/collaborators/standing";
+export {
+  collaboratorUserIds,
+  collaboratorUserIdsForEvent,
+} from "@/lib/collaborators/recipients";
 
 type PlanType = "webinar" | "class";
 
@@ -421,51 +426,64 @@ export async function respondToInvitation(
       );
       console.error("Failed to create collaborator channel:", err);
     }
-
-    // Notify plan owner that collaborator accepted
-    try {
-      const plan =
-        planType === "webinar"
-          ? await prisma.webinarPlan.findUnique({
-              where: { id: planId },
-              select: {
-                title: true,
-                consultantProfile: { select: { userId: true } },
-              },
-            })
-          : await prisma.classPlan.findUnique({
-              where: { id: planId },
-              select: {
-                title: true,
-                consultantProfile: { select: { userId: true } },
-              },
-            });
-      const collabProfile = await prisma.consultantProfile.findUnique({
-        where: { id: consultantProfileId },
-        select: { user: { select: { name: true } } },
-      });
-      if (plan?.consultantProfile?.userId) {
-        await notifyCollaboratorAccepted(plan.consultantProfile.userId, {
-          planTitle: plan.title,
-          planType,
-          collaboratorName: collabProfile?.user?.name ?? "Collaborator",
-          role: updated.role,
-          dashboardUrl: `${getAppUrl()}/dashboard`,
-        });
-      }
-    } catch (error) {
-      Sentry.captureException(
-        error instanceof Error ? error : new Error(String(error)),
-        { tags: { subsystem: "stream" }, level: "warning" },
-      );
-      console.error(
-        "[collaborators] Failed to send acceptance notification:",
-        error,
-      );
-    }
   }
 
+  // The host hears either answer (#1580 C-P1-5 added the decline).
+  await notifyHostOfResponse(planType, planId, consultantProfileId, updated);
+
   return updated;
+}
+
+async function notifyHostOfResponse(
+  planType: PlanType,
+  planId: string,
+  consultantProfileId: string,
+  updated: Collaborator,
+): Promise<void> {
+  try {
+    const plan =
+      planType === "webinar"
+        ? await prisma.webinarPlan.findUnique({
+            where: { id: planId },
+            select: {
+              title: true,
+              consultantProfile: { select: { userId: true } },
+            },
+          })
+        : await prisma.classPlan.findUnique({
+            where: { id: planId },
+            select: {
+              title: true,
+              consultantProfile: { select: { userId: true } },
+            },
+          });
+    const collabProfile = await prisma.consultantProfile.findUnique({
+      where: { id: consultantProfileId },
+      select: { user: { select: { name: true } } },
+    });
+    if (!plan?.consultantProfile?.userId) return;
+    const payload = {
+      planTitle: plan.title,
+      planType,
+      collaboratorName: collabProfile?.user?.name ?? "Collaborator",
+      role: updated.role,
+      dashboardUrl: `${getAppUrl()}/dashboard`,
+    };
+    if (updated.status === "ACCEPTED") {
+      await notifyCollaboratorAccepted(plan.consultantProfile.userId, payload);
+    } else {
+      await notifyCollaboratorDeclined(plan.consultantProfile.userId, payload);
+    }
+  } catch (error) {
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "stream" }, level: "warning" },
+    );
+    console.error(
+      "[collaborators] Failed to send response notification:",
+      error,
+    );
+  }
 }
 
 /**

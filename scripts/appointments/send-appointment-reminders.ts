@@ -14,6 +14,7 @@
  */
 
 import prisma from "../../lib/prisma";
+import { collaboratorUserIds } from "@/lib/collaborators/recipients";
 import redis from "../../lib/redis";
 import { notifyAppointmentReminder } from "../../lib/novu/service";
 import { notificationScope } from "../../lib/novu/workflows";
@@ -179,19 +180,30 @@ async function sendRemindersForWindow(window: {
         consultantName =
           apt.webinar.webinarPlan?.consultantProfile?.user?.name ??
           "Consultant";
-        // For webinars, notify all connected users (participants)
+        // Attendees, the host (missing until #1580 — only the slot's joined
+        // users were reminded) and the accepted collaborators (C-P1-5).
         for (const user of slot.user) {
           userIds.push(user.id);
         }
+        const hostId = apt.webinar.webinarPlan?.consultantProfile?.userId;
+        if (hostId) userIds.push(hostId);
+        userIds.push(
+          ...(await collaboratorUserIds("webinar", apt.webinar.webinarPlanId)),
+        );
       } else if (apt.class) {
         appointmentType = "class";
         planTitle = apt.class.classPlan?.title ?? "Class";
         consultantName =
           apt.class.classPlan?.consultantProfile?.user?.name ?? "Consultant";
-        // For classes, notify all connected users (participants)
+        // Same three parties as the webinar branch above.
         for (const user of slot.user) {
           userIds.push(user.id);
         }
+        const hostId = apt.class.classPlan?.consultantProfile?.userId;
+        if (hostId) userIds.push(hostId);
+        userIds.push(
+          ...(await collaboratorUserIds("class", apt.class.classPlanId)),
+        );
       }
 
       // Deduplicate user IDs

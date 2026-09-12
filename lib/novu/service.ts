@@ -24,6 +24,7 @@ import {
   type BookingRequestInput,
   type BookingRequestPayload,
   type CollaboratorAcceptedPayload,
+  type CollaboratorDeclinedPayload,
   type CollaboratorInvitedPayload,
   type CollaboratorRemovedPayload,
   type CollaboratorWithdrawnPayload,
@@ -1147,6 +1148,18 @@ export async function notifyCollaboratorAccepted(
 ) {
   return triggerWorkflow(
     NOVU_WORKFLOWS.COLLABORATOR_ACCEPTED,
+    ownerUserId,
+    payload,
+  );
+}
+
+/** #1580 C-P1-5 — the host learns that the invitee declined. */
+export async function notifyCollaboratorDeclined(
+  ownerUserId: string,
+  payload: CollaboratorDeclinedPayload,
+) {
+  return triggerWorkflow(
+    NOVU_WORKFLOWS.COLLABORATOR_DECLINED,
     ownerUserId,
     payload,
   );
