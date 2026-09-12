@@ -51,8 +51,6 @@ export async function GET(request: NextRequest) {
     const maxPrice = rawMaxPrice ? parseFloat(rawMaxPrice) : undefined;
     const minRating = rawMinRating ? parseFloat(rawMinRating) : undefined;
 
-    // Admin/staff can list unverified; public listings are verified-only.
-
     // The unfiltered first page is the explore landing's default view — serve it
     // from the Next data cache (getDefaultConsultantsPage) so it doesn't open a
     // cross-region pooled connection on every load. Anything filtered/searched or
