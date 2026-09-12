@@ -10,14 +10,14 @@ When a webinar or class with accepted collaborators is paid for, settlement divi
 
 The enforcement points for each rule are listed alongside it.
 
-| Rule | Value | Enforcement |
-| --- | --- | --- |
-| Minimum host share | 10% of the pool | Collaborator total ≤ 9000 bps, validated inside a Serializable transaction at invite and update time |
-| Share storage | Integer basis points (`revenueShareBps`; 2500 = 25%) | `pctToBps()` converts the percent API surface at the DB boundary (`service.ts:28`) |
-| Platform fee | 20% of gross, floored, applied once | `PLATFORM_FEE_PERCENTAGE = 20` (`lib/payments/payouts/constants.ts:11`); floors per #778 §C-2 |
-| Collaborator share | `floor(pool × bps / 10000)` | `calculateRevenueSplit()` (`service.ts:900`) |
-| Host share | Pool minus the collaborator shares (the remainder) | The owner is the pool's designated residual party |
-| Over-allocation | Σbps > 10000 throws | A mis-configured plan is refused rather than allowed to mint money |
+| Rule               | Value                                                | Enforcement                                                                                          |
+| ------------------ | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Minimum host share | 10% of the pool                                      | Collaborator total ≤ 9000 bps, validated inside a Serializable transaction at invite and update time |
+| Share storage      | Integer basis points (`revenueShareBps`; 2500 = 25%) | `pctToBps()` converts the percent API surface at the DB boundary (`service.ts:28`)                   |
+| Platform fee       | 20% of gross, floored, applied once                  | `PLATFORM_FEE_PERCENTAGE = 20` (`lib/payments/payouts/constants.ts:11`); floors per #778 §C-2        |
+| Collaborator share | `floor(pool × bps / 10000)`                          | `calculateRevenueSplit()` (`service.ts:900`)                                                         |
+| Host share         | Pool minus the collaborator shares (the remainder)   | The owner is the pool's designated residual party                                                    |
+| Over-allocation    | Σbps > 10000 throws                                  | A mis-configured plan is refused rather than allowed to mint money                                   |
 
 ---
 
@@ -32,7 +32,7 @@ platformFeePaise = floor(gross × 20 / 100)
 pool             = gross − platformFeePaise
 ```
 
-When the plan is org-owned, the pool instead comes from the org rate-card split (`resolveOrgSplit`), and the org's cut is carved out before collaborators see anything. `calculateRevenueSplit(planType, planId, pool)` is then called **with the pool**, not the gross.
+When the plan is org-owned, the pool instead comes from the org rate-card split (`resolveOrgSplit`), and the org's cut is carved out before collaborators see anything. `calculateRevenueSplit(planType, planId, pool, tx)` is then called **with the pool**, not the gross, and **through the settlement transaction**: the function and `getCollaborators` take a trailing `db` client that defaults to the global one, and `createEarningsFromPayment` passes its own `tx`. That matters on Netlify, where `PG_POOL_MAX=1` means a global-client read issued while the settlement transaction is open waits on the very connection the transaction holds until the connect timeout fires — the #1435 shape, closed here by #1580 C-P0-1.
 
 Taking the fee per party or once up front produces the same proportions in exact arithmetic; with integer floors they differ by paise, and the code's order of operations — fee first, floors per collaborator, owner absorbs — is the authoritative one.
 
@@ -112,12 +112,12 @@ Payout batch run:
 
 The behaviors below are the ones tests should pin.
 
-| Scenario | Behavior |
-| --- | --- |
-| No collaborators accepted | `calculateRevenueSplit` returns `[]`; the single-owner path writes one row with the full pool |
-| Collaborator removed after payment | Existing rows remain; future settlements use the new split |
-| Invitation declined while pending | The reserved share is freed; no earnings are ever created for a non-accepted collaborator |
-| Rounding | Collaborator shares floor; the owner absorbs the remainder; `shareBps` caches sum to exactly 10000 via last-row absorption (#812) |
-| Σ revenueShareBps > 10000 | Settlement throws — a mis-configured plan is refused |
-| Free service (amount 0) | Shares floor to 0; nothing meaningful accrues |
-| Refund on a collaborative service | All parties (and org accruals) reverse proportionally; platform absorbs the floored paise |
+| Scenario                           | Behavior                                                                                                                          |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| No collaborators accepted          | `calculateRevenueSplit` returns `[]`; the single-owner path writes one row with the full pool                                     |
+| Collaborator removed after payment | Existing rows remain; future settlements use the new split                                                                        |
+| Invitation declined while pending  | The reserved share is freed; no earnings are ever created for a non-accepted collaborator                                         |
+| Rounding                           | Collaborator shares floor; the owner absorbs the remainder; `shareBps` caches sum to exactly 10000 via last-row absorption (#812) |
+| Σ revenueShareBps > 10000          | Settlement throws — a mis-configured plan is refused                                                                              |
+| Free service (amount 0)            | Shares floor to 0; nothing meaningful accrues                                                                                     |
+| Refund on a collaborative service  | All parties (and org accruals) reverse proportionally; platform absorbs the floored paise                                         |

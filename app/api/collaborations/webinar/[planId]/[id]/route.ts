@@ -3,9 +3,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-server";
 import prisma from "@/lib/prisma";
 import {
+  CollaboratorNotFoundError,
+  CollaboratorTermsLockedError,
   updateCollaborator,
   removeCollaborator,
 } from "@/lib/collaborators/service";
+import { updateWebinarCollaboratorSchema } from "@/schemas/collaborators";
 
 export async function PATCH(
   req: NextRequest,
@@ -36,8 +39,15 @@ export async function PATCH(
     }
 
     const body = await req.json();
+    const parsed = updateWebinarCollaboratorSchema.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: parsed.error.errors.map((e) => e.message).join(", ") },
+        { status: 400 },
+      );
+    }
 
-    const collab = await updateCollaborator("webinar", id, planId, body);
+    const collab = await updateCollaborator("webinar", id, planId, parsed.data);
     if (!collab) {
       return NextResponse.json(
         { error: "Failed to update collaborator" },
@@ -47,7 +57,16 @@ export async function PATCH(
 
     return NextResponse.json({ data: collab });
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "collaborations" } });
+    if (error instanceof CollaboratorTermsLockedError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    if (error instanceof CollaboratorNotFoundError) {
+      return NextResponse.json({ error: error.message }, { status: 404 });
+    }
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "collaborations" } },
+    );
     console.error("Error updating webinar collaborator:", error);
     return NextResponse.json(
       { error: "Failed to update collaborator" },
@@ -94,7 +113,10 @@ export async function DELETE(
 
     return NextResponse.json({ data: collab });
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "collaborations" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "collaborations" } },
+    );
     console.error("Error removing webinar collaborator:", error);
     return NextResponse.json(
       { error: "Failed to remove collaborator" },

@@ -77,7 +77,7 @@ describe("a user cannot book their own plan", () => {
 
   it("guards every paid path, not only org-sponsored ones", () => {
     const body = insideLock();
-    const open = body.indexOf("if (\n      plan.consultantProfileId &&");
+    const open = body.indexOf("if (\n      user.consultantProfile &&");
     // Anchor first: without this the slice below is empty on unfixed code and
     // the two `not.toContain`s pass vacuously.
     expect(open).toBeGreaterThan(-1);
@@ -95,16 +95,48 @@ describe("a user cannot book their own plan", () => {
     expect(guardBlock).not.toContain("organizationId");
   });
 
+  it("refuses an ACCEPTED collaborator on the plan as well (#1580 C-P0-2)", () => {
+    // A collaborator holds a share of the price, so buying a seat routes part
+    // of it back to themselves — the same loop the owner guard closes. The
+    // plan lookup surfaces ACCEPTED collaborators and the guard reads them.
+    const lookupStart = SRC.indexOf(
+      "async function verifyPlanExistsInsideLock(",
+    );
+    expect(lookupStart).toBeGreaterThan(-1);
+    const lookup = SRC.slice(
+      lookupStart,
+      SRC.indexOf("\nasync function ", lookupStart + 1),
+    );
+    expect(lookup).toContain('where: { status: "ACCEPTED" as const }');
+    expect(lookup).toContain("collaboratorProfileIds");
+
+    const body = insideLock();
+    const guard = body.slice(
+      body.indexOf("if (\n      user.consultantProfile &&"),
+      body.indexOf("You cannot book your own plan."),
+    );
+    expect(guard).toContain(
+      "plan.collaboratorProfileIds.includes(user.consultantProfile.id)",
+    );
+    // Not gated on the owner existing: an org-owned plan has a NULL owner and
+    // can still carry collaborators, so `plan.consultantProfileId &&` would
+    // skip the collaborator arm exactly there.
+    expect(guard).not.toContain("plan.consultantProfileId &&");
+  });
+
   it("still allows the ordinary case — a plan owned by someone else", () => {
     const body = insideLock();
 
-    // Both sides must be present before it throws, so a consultee with no
-    // consultant profile (the overwhelming majority) is never caught by it.
+    // The buyer must hold a consultant profile before it throws, so a consultee
+    // with none (the overwhelming majority) is never caught by it; the plan
+    // side is an equality, not a presence test (see the collaborator case).
     const guard = body.slice(
-      body.indexOf("if (\n      plan.consultantProfileId &&"),
+      body.indexOf("if (\n      user.consultantProfile &&"),
       body.indexOf("You cannot book your own plan."),
     );
-    expect(guard).toContain("plan.consultantProfileId &&");
     expect(guard).toContain("user.consultantProfile &&");
+    expect(guard).toContain(
+      "plan.consultantProfileId === user.consultantProfile.id",
+    );
   });
 });

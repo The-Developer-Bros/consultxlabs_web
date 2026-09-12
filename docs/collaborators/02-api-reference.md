@@ -189,7 +189,12 @@ Returns a co-host's availability and booking status for one date; the host's sch
     "scheduleType": "WEEKLY",
     "date": "2026-03-15",
     "weeklySlots": [
-      { "startDay": "MONDAY", "startTimeUtc": 540, "endDay": "MONDAY", "endTimeUtc": 1020 }
+      {
+        "startDay": "MONDAY",
+        "startTimeUtc": 540,
+        "endDay": "MONDAY",
+        "endTimeUtc": 1020
+      }
     ],
     "customSlots": [],
     "bookedSlots": [
@@ -199,4 +204,4 @@ Returns a co-host's availability and booking status for one date; the host's sch
 }
 ```
 
-`bookedSlots` uses overlap semantics against the day and includes events the co-host has accepted a collaboration on, not only events they own. The overlay interpretation is: green when availability exists and no booking overlaps, yellow when no availability is defined for the time, red when a booking overlaps. The overlay is advice for picking a time. On the webinar path that advice is backed by hard enforcement — `assertCollaboratorsAvailable` returns 409 — but on the class path the overlay is all there is, because no class route calls the guard. Both cases are described in [01-architecture.md §5](./01-architecture.md#5-scheduling-with-enforced-co-host-availability).
+`bookedSlots` uses overlap semantics against the day and includes events the co-host has accepted a collaboration on, not only events they own. The overlay interpretation is: green when availability exists and no booking overlaps, yellow when no availability is defined for the time, red when a booking overlaps. The overlay is advice for picking a time, and on both the webinar and the class path that advice is backed by hard enforcement — `assertCollaboratorsAvailable` and `assertCollaboratorsAvailableForWindows` return 409 on a clash. Both cases are described in [01-architecture.md §5](./01-architecture.md#5-scheduling-with-enforced-co-host-availability).
