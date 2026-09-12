@@ -213,11 +213,41 @@ describe("Novu workflow templates", () => {
   it("gates the bell on 'not explicitly false', never 'is true'", () => {
     expect(inAppSkipRule("support")).toEqual({
       and: [
-        { "!=": [{ var: "subscriber.data.routingBell" }, false] },
-        { "!=": [{ var: "subscriber.data.categorySupport" }, false] },
+        { "!=": [{ var: "subscriber.data.routingBell" }, "false"] },
+        { "!=": [{ var: "subscriber.data.categorySupport" }, "false"] },
       ],
     });
     expect(inAppSkipRule(null).and).toHaveLength(1);
+  });
+
+  it("runs for a never-written flag under Novu's own != — the boolean form did not", () => {
+    // Novu's query-parser.service.ts replaces json-logic's `!=`: booleans and
+    // the strings "true"/"false" compare as booleans; anything else falls to
+    // Number(), where null and false are both 0; then to strict inequality.
+    const asBoolean = (d: unknown) =>
+      typeof d === "boolean"
+        ? d
+        : d === "true"
+          ? true
+          : d === "false"
+            ? false
+            : undefined;
+    const novuNotEqual = (a: unknown, b: unknown): boolean => {
+      const ba = asBoolean(a);
+      const bb = asBoolean(b);
+      if (ba !== undefined && bb !== undefined) return ba !== bb;
+      const na = Number(a);
+      const nb = Number(b);
+      if (!Number.isNaN(na) && !Number.isNaN(nb)) return na !== nb;
+      return a !== b;
+    };
+    const [, comparison] = inAppSkipRule("support").and[1]["!="];
+    expect(novuNotEqual(null, comparison)).toBe(true); // never written → runs
+    expect(novuNotEqual(true, comparison)).toBe(true); // opted in → runs
+    expect(novuNotEqual(false, comparison)).toBe(false); // opted out → skipped
+    expect(novuNotEqual("false", comparison)).toBe(false);
+    // The trap this test exists for:
+    expect(novuNotEqual(null, false)).toBe(false);
   });
 
   it("humanises a ticket status for the owner's bell", () => {

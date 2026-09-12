@@ -119,16 +119,21 @@ export async function notifySupportStaff(
       select: { name: true },
     }),
   ]);
-  for (const recipient of recipients) {
-    void notifySupportTicketCreated([recipient.id], {
-      ticketId: ticket.id,
-      reference: ticket.referenceNumber ?? undefined,
-      ticketTitle: ticket.title || "Support Ticket",
-      userName: customer?.name ?? undefined,
-      dashboardUrl: recipient.dashboardUrl,
-      ...notificationScope(ticket.organizationId, orgName),
-    });
-  }
+  // Awaited, not void: a Netlify instance freezes once the response is sent,
+  // and a trigger still in flight at that moment is lost (seen on the first
+  // sync, 2026-09-13). The SDK caps a trigger at five seconds.
+  await Promise.all(
+    recipients.map((recipient) =>
+      notifySupportTicketCreated([recipient.id], {
+        ticketId: ticket.id,
+        reference: ticket.referenceNumber ?? undefined,
+        ticketTitle: ticket.title || "Support Ticket",
+        userName: customer?.name ?? undefined,
+        dashboardUrl: recipient.dashboardUrl,
+        ...notificationScope(ticket.organizationId, orgName),
+      }),
+    ),
+  );
 }
 
 /**
@@ -164,21 +169,23 @@ export async function notifyStaffOfTicketActivity(
   const recipients = await opsRecipients(ticket.assignedToId);
   if (recipients.length === 0) return;
   const dedupeKey = eventId ?? `${ticketId}:${Date.now()}`;
-  for (const recipient of recipients) {
-    void notifySupportTicketActivity(
-      [recipient.id],
-      {
-        ticketId,
-        reference: ticket.referenceNumber ?? undefined,
-        ticketTitle: ticket.title,
-        userName: ticket.user.name ?? undefined,
-        activity,
-        dashboardUrl: recipient.dashboardUrl,
-        ...notificationScope(organizationId ?? ticket.organizationId),
-      },
-      dedupeKey,
-    );
-  }
+  await Promise.all(
+    recipients.map((recipient) =>
+      notifySupportTicketActivity(
+        [recipient.id],
+        {
+          ticketId,
+          reference: ticket.referenceNumber ?? undefined,
+          ticketTitle: ticket.title,
+          userName: ticket.user.name ?? undefined,
+          activity,
+          dashboardUrl: recipient.dashboardUrl,
+          ...notificationScope(organizationId ?? ticket.organizationId),
+        },
+        dedupeKey,
+      ),
+    ),
+  );
 }
 
 /**
