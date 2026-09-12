@@ -13,7 +13,11 @@ function TestimonialCard({ review }: { review: ReviewWithProfiles }) {
   return (
     <Card className="w-[350px] flex-shrink-0 mx-3 border border-zinc-800 bg-zinc-900/50 backdrop-blur-sm">
       <CardContent className="p-6">
-        <div className="flex items-center gap-1 mb-4">
+        <div
+          className="flex items-center gap-1 mb-4"
+          role="img"
+          aria-label={`Rated ${review.rating} out of 5 stars`}
+        >
           {Array.from({ length: 5 }).map((_, i) => (
             <Star
               key={i}
@@ -29,7 +33,10 @@ function TestimonialCard({ review }: { review: ReviewWithProfiles }) {
         </p>
         <div className="flex items-center gap-3">
           <Avatar className="w-10 h-10 border border-zinc-700">
-            <AvatarImage src={review.consulteeProfile?.user?.image ?? ""} />
+            <AvatarImage
+              src={review.consulteeProfile?.user?.image ?? ""}
+              alt={review.consulteeProfile?.user?.name ?? "Reviewer"}
+            />
             <AvatarFallback className="bg-zinc-800 text-zinc-300 text-sm">
               {review.consulteeProfile?.user?.name?.charAt(0) ?? "U"}
             </AvatarFallback>
@@ -38,7 +45,7 @@ function TestimonialCard({ review }: { review: ReviewWithProfiles }) {
             <p className="font-medium text-white text-sm">
               {review.consulteeProfile?.user?.name || "Anonymous"}
             </p>
-            <p className="text-xs text-zinc-500">
+            <p className="text-xs text-zinc-400">
               Session with {review.consultantProfile?.user?.name}
             </p>
           </div>
@@ -97,32 +104,36 @@ export function TestimonialsSection({
           <h2 className="text-fluid-4xl font-bold text-white mb-4 tracking-tight">
             Loved by <span className="text-zinc-400">professionals</span>
           </h2>
-          <p className="text-lg text-zinc-500 max-w-2xl mx-auto">
+          <p className="text-lg text-zinc-400 max-w-2xl mx-auto">
             See what our community has to say about their experience
           </p>
         </motion.div>
       </div>
 
-      {/* First marquee row - left to right */}
+      {/* First marquee row - left to right. Duplicated sets are aria-hidden;
+          animation pauses on hover/focus; edge fades shrink on phones. */}
       <div className="relative mb-8">
-        <div className="absolute left-0 top-0 bottom-0 w-32 bg-gradient-to-r from-zinc-950 to-transparent z-10" />
-        <div className="absolute right-0 top-0 bottom-0 w-32 bg-gradient-to-l from-zinc-950 to-transparent z-10" />
+        <div className="absolute left-0 top-0 bottom-0 w-8 md:w-32 bg-gradient-to-r from-zinc-950 to-transparent z-10 pointer-events-none" />
+        <div className="absolute right-0 top-0 bottom-0 w-8 md:w-32 bg-gradient-to-l from-zinc-950 to-transparent z-10 pointer-events-none" />
 
-        <div className="flex animate-marquee">
+        <div className="flex animate-marquee hover:[animation-play-state:paused] focus-within:[animation-play-state:paused]">
           {isLoading ? (
             Array.from({ length: 4 }).map((_, i) => (
               <TestimonialLoadingSkeleton key={i} />
             ))
           ) : (
             <>
-              {[...displayReviews, ...displayReviews, ...displayReviews].map(
-                (review, i) => (
+              {displayReviews.map((review) => (
+                <TestimonialCard key={`ltr-${review.id}`} review={review} />
+              ))}
+              <div aria-hidden="true" className="contents">
+                {displayReviews.map((review) => (
                   <TestimonialCard
-                    key={`ltr-${review.id}-${i}`}
+                    key={`ltr-clone-${review.id}`}
                     review={review}
                   />
-                ),
-              )}
+                ))}
+              </div>
             </>
           )}
         </div>
@@ -130,24 +141,27 @@ export function TestimonialsSection({
 
       {/* Second marquee row - right to left */}
       <div className="relative">
-        <div className="absolute left-0 top-0 bottom-0 w-32 bg-gradient-to-r from-zinc-950 to-transparent z-10" />
-        <div className="absolute right-0 top-0 bottom-0 w-32 bg-gradient-to-l from-zinc-950 to-transparent z-10" />
+        <div className="absolute left-0 top-0 bottom-0 w-8 md:w-32 bg-gradient-to-r from-zinc-950 to-transparent z-10 pointer-events-none" />
+        <div className="absolute right-0 top-0 bottom-0 w-8 md:w-32 bg-gradient-to-l from-zinc-950 to-transparent z-10 pointer-events-none" />
 
-        <div className="flex animate-marquee-reverse">
+        <div className="flex animate-marquee-reverse hover:[animation-play-state:paused] focus-within:[animation-play-state:paused]">
           {isLoading ? (
             Array.from({ length: 4 }).map((_, i) => (
               <TestimonialLoadingSkeleton key={i} />
             ))
           ) : (
             <>
-              {[...displayReviews, ...displayReviews, ...displayReviews]
-                .reverse()
-                .map((review, i) => (
+              {[...displayReviews].reverse().map((review) => (
+                <TestimonialCard key={`rtl-${review.id}`} review={review} />
+              ))}
+              <div aria-hidden="true" className="contents">
+                {[...displayReviews].reverse().map((review) => (
                   <TestimonialCard
-                    key={`rtl-${review.id}-${i}`}
+                    key={`rtl-clone-${review.id}`}
                     review={review}
                   />
                 ))}
+              </div>
             </>
           )}
         </div>

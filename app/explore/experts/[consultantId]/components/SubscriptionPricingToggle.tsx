@@ -327,7 +327,8 @@ export default function SubscriptionPricingToggle({
             <TabsTrigger
               key={option.id}
               value={option.id}
-              className="relative flex-1 py-2.5 text-xs sm:text-sm font-medium rounded-xl data-[state=active]:text-zinc-900 data-[state=active]:bg-transparent data-[state=active]:shadow-none text-zinc-400 transition-colors duration-300 z-10 h-auto whitespace-nowrap"
+              title={option.description}
+              className="relative flex-1 py-2 text-xs sm:text-sm font-medium rounded-xl data-[state=active]:text-zinc-900 data-[state=active]:bg-transparent data-[state=active]:shadow-none text-zinc-400 transition-colors duration-300 z-10 h-auto whitespace-nowrap"
             >
               {isActive && (
                 <motion.div
@@ -336,7 +337,19 @@ export default function SubscriptionPricingToggle({
                   transition={{ type: "spring", bounce: 0.15, duration: 0.35 }}
                 />
               )}
-              <span className="relative z-10">{option.title}</span>
+              {/* Price lives inside the chooser — duration alone forced a
+                  tap-then-scroll to discover the cost. */}
+              <span className="relative z-10 flex flex-col items-center leading-tight">
+                <span>{option.title}</span>
+                <span
+                  className={`text-[11px] font-semibold ${isActive ? "text-zinc-600" : "text-zinc-500"}`}
+                >
+                  {formatCurrencyAmount(
+                    option.price,
+                    option.priceCurrency || "INR",
+                  )}
+                </span>
+              </span>
             </TabsTrigger>
           );
         })}
@@ -362,17 +375,34 @@ export default function SubscriptionPricingToggle({
               <p className="text-xs text-zinc-500">{option.description}</p>
             </div>
 
-            <div className="flex items-end gap-2 my-5">
-              {/* #1396 — this is the headline price of a plan the server will
-                  charge, so it renders in the plan's own currency, exactly as
-                  the trial price above it does for the reason given at #1167.
-                  `formatPrice` took INR paise and applied the viewer's FX rate,
-                  which relabelled the plan and disagreed with the trial line
-                  two elements away. */}
-              <span className="text-5xl font-bold tracking-tight text-white">
-                {formatCurrencyAmount(option.price, option.priceCurrency || "INR")}
-              </span>
-              <span className="text-zinc-500 text-sm mb-1.5">/ month</span>
+            {/* option.price is the TOTAL for durationInMonths — "/ month" on a
+                3/6-month plan understated the charge. Show the total with the
+                span, plus the per-month equivalent underneath.
+                #1396 — renders in the plan's own currency via
+                formatCurrencyAmount, NOT formatPrice: formatPrice applies the
+                viewer's FX rate, which relabelled the plan and disagreed with
+                the trial line. */}
+            <div className="my-5">
+              <div className="flex items-end gap-2">
+                <span className="text-4xl sm:text-5xl font-bold tracking-tight text-white">
+                  {formatCurrencyAmount(option.price, option.priceCurrency || "INR")}
+                </span>
+                <span className="text-zinc-500 text-sm mb-1.5">
+                  {option.durationInMonths && option.durationInMonths > 1
+                    ? `total for ${option.durationInMonths} months`
+                    : "/ month"}
+                </span>
+              </div>
+              {option.durationInMonths && option.durationInMonths > 1 && (
+                <p className="mt-1 text-sm text-zinc-400">
+                  ≈{" "}
+                  {formatCurrencyAmount(
+                    Math.round(option.price / option.durationInMonths),
+                    option.priceCurrency || "INR",
+                  )}{" "}
+                  per month
+                </p>
+              )}
             </div>
 
             {option.features && option.features.length > 0 && (

@@ -48,7 +48,9 @@ export function SatisfiedTestimonial() {
       </div>
       <div className="absolute inset-0 grid-pattern opacity-20" />
 
-      <div className="max-w-[1600px] mx-auto px-4 md:px-8 lg:px-12 relative z-10">
+      {/* Same container + gutters as every other landing section so the page
+          gutter doesn't jump on this band. */}
+      <div className="container mx-auto px-4 md:px-6 relative z-10">
         {/* Section Header */}
         <motion.div
           className="text-center mb-16"

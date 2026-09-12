@@ -253,7 +253,7 @@ function ListCard({
 
   return (
     <div
-      className="group bg-card rounded-2xl overflow-hidden border border-border hover:border-border hover:shadow-xl transition-all duration-300 cursor-pointer flex"
+      className="group bg-card rounded-2xl overflow-hidden border border-border hover:border-border hover:shadow-xl transition-all duration-300 cursor-pointer flex flex-col sm:flex-row"
       onClick={handleClick}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -265,13 +265,15 @@ function ListCard({
       role="button"
       aria-label={`View details for ${program.title}`}
     >
-      <div className="relative w-48 md:w-64 flex-shrink-0">
+      {/* Stacked image on phones (fixed w-48 row cramped text at 360px);
+          side-by-side from sm up. */}
+      <div className="relative h-40 sm:h-auto sm:w-48 md:w-64 flex-shrink-0">
         <Image
           src={program.imageUrl}
           alt={program.title}
           fill
           className="object-cover"
-          sizes="256px"
+          sizes="(max-width: 640px) 100vw, 256px"
         />
         <div className="absolute top-3 left-3 flex gap-2">
           <TypeBadge type={program.type} />

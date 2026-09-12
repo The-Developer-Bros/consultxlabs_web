@@ -35,9 +35,9 @@ function HowItWorksStep({
           )}
         </div>
         <div className="pb-12 min-w-0">
-          <h4 className="text-xl font-semibold text-foreground mb-2">
+          <h3 className="text-xl font-semibold text-foreground mb-2">
             {step.title}
-          </h4>
+          </h3>
           <p className="text-muted-foreground leading-relaxed">
             {step.description}
           </p>
@@ -61,12 +61,15 @@ export function HowItWorksSection() {
 
       <div className="container mx-auto px-4 md:px-6 relative z-10">
         <div className="grid lg:grid-cols-2 gap-16 items-start">
+          {/* Sticky offset derives from the live header height (navbar +
+              announcement/cookie bars) instead of a hardcoded 128px, so the
+              panel never slides under the fixed chrome. */}
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             whileInView={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5 }}
             viewport={{ once: true }}
-            className="lg:sticky lg:top-32"
+            className="lg:sticky lg:top-[calc(var(--header-height)+2rem)]"
           >
             <Badge
               variant="secondary"

@@ -63,7 +63,9 @@ function AdvancedFiltersImpl({
   const [topicDropdownOpen, setTopicDropdownOpen] = useState(false);
   const topicRef = useRef<HTMLDivElement>(null);
 
-  // Close topic dropdown on outside click
+  // Close topic dropdown on outside click or Escape, restoring focus to
+  // the input so keyboard users don't lose their place.
+  const topicInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (!topicDropdownOpen) return;
     const handleClick = (e: MouseEvent) => {
@@ -72,8 +74,19 @@ function AdvancedFiltersImpl({
         setTopicSearch("");
       }
     };
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setTopicDropdownOpen(false);
+        setTopicSearch("");
+        topicInputRef.current?.focus();
+      }
+    };
     document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("keydown", handleKey);
+    };
   }, [topicDropdownOpen]);
 
   const currentPriceRange = (() => {
@@ -140,7 +153,11 @@ function AdvancedFiltersImpl({
           </Label>
           <div>
             <input
+              ref={topicInputRef}
               type="text"
+              role="combobox"
+              aria-expanded={topicDropdownOpen}
+              aria-label="Search topics"
               placeholder={
                 selectedTopicNames.length > 0
                   ? `${selectedTopicNames.length} selected`

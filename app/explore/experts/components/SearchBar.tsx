@@ -87,7 +87,9 @@ function SearchBarImpl({
       <div className="flex items-center gap-2">
         <div className="flex items-center gap-2 px-4 h-14 bg-muted border border-border rounded-xl">
           <SlidersHorizontal className="w-4 h-4 text-muted-foreground" />
-          <span className="text-sm font-medium text-muted-foreground hidden sm:inline">
+          {/* Label stays visible on phones too — otherwise the icon box reads
+              as a dead button next to the select. */}
+          <span className="text-sm font-medium text-muted-foreground whitespace-nowrap">
             Sort by
           </span>
         </div>

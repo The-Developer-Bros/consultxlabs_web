@@ -96,7 +96,8 @@ export function ExpertPricing({
       if ((durationCounts.get(duration) || 0) <= 1) return label;
       const next = (seen.get(duration) || 0) + 1;
       seen.set(duration, next);
-      return `${label} (${next})`;
+      // "· Option 2" reads as a distinct plan; "(2)" read as a typo.
+      return `${label} · Option ${next}`;
     };
 
     return plans.map((plan) => {

@@ -2,8 +2,9 @@
 
 import { memo, type RefObject } from "react";
 import { motion } from "framer-motion";
-import { Search } from "lucide-react";
+import { Search, RotateCcw } from "lucide-react";
 import type { Program } from "@/lib/explore/programs";
+import { Button } from "@/components/ui/button";
 import ProgramCard from "./ProgramCard";
 
 interface ProgramResultsProps {
@@ -13,9 +14,11 @@ interface ProgramResultsProps {
   sentinelRef: RefObject<HTMLDivElement>;
   /** #664 — viewer's ACTIVE org memberships as { orgId: orgName }. */
   viewerOrgs?: Record<string, string>;
+  /** Clears every filter — offered in the empty state. */
+  onClearAll?: () => void;
 }
 
-function EmptyState() {
+function EmptyState({ onClearAll }: { onClearAll?: () => void }) {
   return (
     <motion.div
       className="text-center py-16"
@@ -29,9 +32,15 @@ function EmptyState() {
       <h3 className="text-xl font-semibold text-foreground mb-2">
         No programs found
       </h3>
-      <p className="text-muted-foreground max-w-md mx-auto">
+      <p className="text-muted-foreground max-w-md mx-auto mb-6">
         Try adjusting your filters or search terms to discover more programs
       </p>
+      {onClearAll && (
+        <Button variant="outline" onClick={onClearAll} className="gap-2">
+          <RotateCcw className="w-4 h-4" />
+          Clear all filters
+        </Button>
+      )}
     </motion.div>
   );
 }
@@ -47,6 +56,7 @@ function ProgramResultsImpl({
   viewMode,
   sentinelRef,
   viewerOrgs,
+  onClearAll,
 }: ProgramResultsProps) {
   return (
     <>
@@ -86,7 +96,9 @@ function ProgramResultsImpl({
         </div>
       )}
 
-      {programs.length === 0 && !isLoading && <EmptyState />}
+      {programs.length === 0 && !isLoading && (
+        <EmptyState onClearAll={onClearAll} />
+      )}
 
       {/* Sentinel for infinite scroll — observed by useInfiniteScroll. */}
       <div ref={sentinelRef} aria-hidden="true" />

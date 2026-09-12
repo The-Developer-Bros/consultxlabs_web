@@ -58,9 +58,9 @@ export function BenefitsSection({ images }: BenefitsSectionProps) {
                     <benefit.icon className="w-6 h-6 text-primary-foreground" />
                   </div>
                   <div className="min-w-0">
-                    <h4 className="font-semibold text-foreground mb-1">
+                    <h3 className="font-semibold text-foreground mb-1">
                       {benefit.title}
-                    </h4>
+                    </h3>
                     <p className="text-muted-foreground text-sm leading-relaxed">
                       {benefit.description}
                     </p>

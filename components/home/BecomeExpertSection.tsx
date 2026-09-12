@@ -72,12 +72,15 @@ export function BecomeExpertSection() {
                 <ArrowRight className="ml-2 w-5 h-5" />
               </Button>
             </Link>
+            {/* Previously a plain Button with no href — a dead CTA. "Learn
+                More" scrolls to the How It Works explainer on this page. */}
             <Button
               size="lg"
               variant="outline"
               className="px-8 h-14 text-base rounded-xl border-border hover:bg-muted"
+              asChild
             >
-              Learn More
+              <Link href="/#how-it-works">Learn More</Link>
             </Button>
           </div>
         </motion.div>

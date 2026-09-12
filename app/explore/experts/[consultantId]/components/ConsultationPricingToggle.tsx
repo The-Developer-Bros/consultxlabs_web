@@ -325,7 +325,8 @@ export default function ConsultationPricingToggle({
             <TabsTrigger
               key={option.id}
               value={option.id}
-              className="relative flex-1 py-2.5 text-xs sm:text-sm font-medium rounded-xl data-[state=active]:text-zinc-900 data-[state=active]:bg-transparent data-[state=active]:shadow-none text-zinc-400 transition-colors duration-300 z-10 h-auto whitespace-nowrap"
+              title={option.description}
+              className="relative flex-1 py-2 text-xs sm:text-sm font-medium rounded-xl data-[state=active]:text-zinc-900 data-[state=active]:bg-transparent data-[state=active]:shadow-none text-zinc-400 transition-colors duration-300 z-10 h-auto whitespace-nowrap"
             >
               {isActive && (
                 <motion.div
@@ -334,7 +335,16 @@ export default function ConsultationPricingToggle({
                   transition={{ type: "spring", bounce: 0.15, duration: 0.35 }}
                 />
               )}
-              <span className="relative z-10">{option.title}</span>
+              {/* Price lives inside the chooser — duration alone forced a
+                  tap-then-scroll to discover the cost. */}
+              <span className="relative z-10 flex flex-col items-center leading-tight">
+                <span>{option.title}</span>
+                <span
+                  className={`text-[11px] font-semibold ${isActive ? "text-zinc-600" : "text-zinc-500"}`}
+                >
+                  {formatPrice(option.price)}
+                </span>
+              </span>
             </TabsTrigger>
           );
         })}
@@ -361,7 +371,7 @@ export default function ConsultationPricingToggle({
             </div>
 
             <div className="flex items-end gap-2 my-5">
-              <span className="text-5xl font-bold tracking-tight text-white">
+              <span className="text-4xl sm:text-5xl font-bold tracking-tight text-white">
                 {formatPrice(option.price)}
               </span>
               <span className="text-zinc-500 text-sm mb-1.5">/ session</span>

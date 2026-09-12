@@ -29,9 +29,9 @@ function ExpertCard({ expert }: { expert: IConsultantCardData }) {
               </AvatarFallback>
             </Avatar>
             <div className="flex-1 min-w-0">
-              <h4 className="font-semibold text-foreground truncate">
+              <h3 className="font-semibold text-foreground truncate">
                 {expert.user.name}
-              </h4>
+              </h3>
               <p className="text-sm text-muted-foreground truncate">
                 {expert.headline || expert.domain?.name}
               </p>
@@ -128,21 +128,28 @@ export function FeaturedExpertsSection({
         </motion.div>
       </div>
 
-      {/* Marquee */}
+      {/* Marquee — duplicates are aria-hidden so screen readers hear each
+          expert once; animation pauses on hover/focus; edge fades shrink on
+          phones so they don't cover the cards. */}
       <div className="relative">
-        <div className="absolute left-0 top-0 bottom-0 w-32 bg-gradient-to-r from-background to-transparent z-10" />
-        <div className="absolute right-0 top-0 bottom-0 w-32 bg-gradient-to-l from-background to-transparent z-10" />
+        <div className="absolute left-0 top-0 bottom-0 w-8 md:w-32 bg-gradient-to-r from-background to-transparent z-10 pointer-events-none" />
+        <div className="absolute right-0 top-0 bottom-0 w-8 md:w-32 bg-gradient-to-l from-background to-transparent z-10 pointer-events-none" />
 
-        <div className="flex animate-marquee">
+        <div className="flex animate-marquee hover:[animation-play-state:paused] focus-within:[animation-play-state:paused]">
           {isLoading ? (
             Array.from({ length: 6 }).map((_, i) => (
               <ExpertLoadingSkeleton key={i} />
             ))
           ) : (
             <>
-              {[...experts, ...experts].map((expert, i) => (
-                <ExpertCard key={`${expert.id}-${i}`} expert={expert} />
+              {experts.map((expert) => (
+                <ExpertCard key={expert.id} expert={expert} />
               ))}
+              <div aria-hidden="true" className="contents">
+                {experts.map((expert) => (
+                  <ExpertCard key={`clone-${expert.id}`} expert={expert} />
+                ))}
+              </div>
             </>
           )}
         </div>

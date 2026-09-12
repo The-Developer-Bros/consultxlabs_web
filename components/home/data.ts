@@ -284,11 +284,26 @@ export const TRUST_BADGES = [
   },
 ];
 
+/** Upcoming-events rail — dates are computed relative to today so the landing
+ *  never again shows stale past dates. Times stay fixed; only the day rolls
+ *  forward (+9 / +11 / +17 days keeps the original spacing). */
+function upcomingDate(offsetDays: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + offsetDays);
+  return d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
 export const UPCOMING_EVENTS = [
   {
     title: "Breaking into Tech Leadership",
     host: "David Park",
-    date: "Dec 20, 2025",
+    get date() {
+      return upcomingDate(9);
+    },
     time: "6:00 PM EST",
     attendees: 156,
     type: "Webinar",
@@ -296,7 +311,9 @@ export const UPCOMING_EVENTS = [
   {
     title: "Portfolio Review Workshop",
     host: "Lisa Wang",
-    date: "Dec 22, 2025",
+    get date() {
+      return upcomingDate(11);
+    },
     time: "2:00 PM EST",
     attendees: 89,
     type: "Workshop",
@@ -304,7 +321,9 @@ export const UPCOMING_EVENTS = [
   {
     title: "Startup Fundraising 101",
     host: "Alex Rivera",
-    date: "Dec 28, 2025",
+    get date() {
+      return upcomingDate(17);
+    },
     time: "11:00 AM EST",
     attendees: 234,
     type: "Class",

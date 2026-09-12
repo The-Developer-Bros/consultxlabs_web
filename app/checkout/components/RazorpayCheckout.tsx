@@ -287,7 +287,11 @@ export default function RazorpayCheckout({
   };
 
   return (
-    <Button onClick={handleCheckout} disabled={isProcessing || disabled}>
+    <Button
+      onClick={handleCheckout}
+      disabled={isProcessing || disabled}
+      className="w-full sm:w-auto"
+    >
       {isProcessing ? "Processing..." : "Pay with Razorpay"}
     </Button>
   );

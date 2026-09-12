@@ -26,15 +26,15 @@ function SuccessStoryCard({
         <CardContent className="p-6 md:p-8">
           <div className="flex items-center gap-4 mb-6">
             <Avatar className="w-14 h-14 border-2 border-zinc-700">
-              <AvatarImage src={story.image} />
+              <AvatarImage src={story.image} alt={story.name} />
               <AvatarFallback className="bg-zinc-800 text-white">
                 {story.name.charAt(0)}
               </AvatarFallback>
             </Avatar>
             <div>
-              <h4 className="font-semibold text-white">{story.name}</h4>
+              <h3 className="font-semibold text-white">{story.name}</h3>
               <p className="text-sm text-zinc-400">{story.role}</p>
-              <p className="text-xs text-zinc-500">Now at {story.company}</p>
+              <p className="text-xs text-zinc-400">Now at {story.company}</p>
             </div>
           </div>
           <p className="text-zinc-300 mb-6 leading-relaxed">
@@ -76,7 +76,7 @@ export function SuccessStoriesSection() {
             Real transformations,{" "}
             <span className="text-zinc-400">real results</span>
           </h2>
-          <p className="text-lg text-zinc-500 max-w-2xl mx-auto">
+          <p className="text-lg text-zinc-400 max-w-2xl mx-auto">
             See how our mentees have achieved their career goals
           </p>
         </motion.div>

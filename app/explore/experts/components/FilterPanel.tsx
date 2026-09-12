@@ -129,6 +129,22 @@ function FilterPanelImpl({
     [updateFilters],
   );
 
+  // Exact min/max inputs commit here: major units → paise, clamped so
+  // min never exceeds max. Reuses the slider's debounced filter write.
+  const commitPriceBound = useCallback(
+    (which: 0 | 1, raw: string) => {
+      const major = Number(raw);
+      if (!Number.isFinite(major) || major < 0) return;
+      const paise = Math.round(major * 100);
+      const next: [number, number] =
+        which === 0
+          ? [Math.min(paise, localRange[1]), localRange[1]]
+          : [localRange[0], Math.max(paise, localRange[0])];
+      handleSliderChange(next);
+    },
+    [handleSliderChange, localRange],
+  );
+
   const handleDomainChange = (value: string) => {
     updateFilters({
       domain: value === "all" ? null : value,
@@ -402,13 +418,24 @@ function FilterPanelImpl({
           </div>
         </div>
 
-        {/* Price Range — dual-thumb slider */}
+        {/* Price Range — dual-thumb slider + exact min/max inputs */}
         <div className="pb-4 border-b border-border last:border-b-0">
           <div className="flex items-center gap-2 mb-4">
             <DollarSign className="w-4 h-4 text-muted-foreground" />
             <span className="text-sm font-medium text-muted-foreground">
               Price Range
             </span>
+            {(localRange[0] !== 0 || localRange[1] !== MAX_PRICE_PAISE) && (
+              <button
+                type="button"
+                onClick={() =>
+                  updateFilters({ minPrice: undefined, maxPrice: undefined })
+                }
+                className="ml-auto text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+              >
+                Any price
+              </button>
+            )}
           </div>
           <div>
             <div className="flex justify-between mb-3 text-sm font-medium text-muted-foreground">
@@ -428,6 +455,47 @@ function FilterPanelImpl({
               onValueChange={handleSliderChange}
               className="my-2"
             />
+            {/* Exact bounds for users who know their budget — commits on
+                blur/Enter, clamped to the slider range. Keyed by the applied
+                filter so chip removal / clear-all resets the inputs. */}
+            <div
+              key={`${minPrice ?? 0}-${maxPrice ?? MAX_PRICE_PAISE}`}
+              className="mt-3 flex items-center gap-2"
+            >
+              <label className="sr-only" htmlFor="price-min">
+                Minimum price in {currency}
+              </label>
+              <input
+                id="price-min"
+                type="number"
+                inputMode="numeric"
+                min={0}
+                defaultValue={Math.round(localRange[0] / 100)}
+                onBlur={(e) => commitPriceBound(0, e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                }}
+                className="h-10 w-full min-w-0 rounded-lg border border-border bg-muted px-3 text-sm text-foreground focus:border-transparent focus:ring-2 focus:ring-ring"
+              />
+              <span aria-hidden className="text-xs text-muted-foreground">
+                to
+              </span>
+              <label className="sr-only" htmlFor="price-max">
+                Maximum price in {currency}
+              </label>
+              <input
+                id="price-max"
+                type="number"
+                inputMode="numeric"
+                min={0}
+                defaultValue={Math.round(localRange[1] / 100)}
+                onBlur={(e) => commitPriceBound(1, e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                }}
+                className="h-10 w-full min-w-0 rounded-lg border border-border bg-muted px-3 text-sm text-foreground focus:border-transparent focus:ring-2 focus:ring-ring"
+              />
+            </div>
             <div className="flex justify-between mt-2 text-xs text-muted-foreground/70">
               <span>{formatPrice(0)}</span>
               <span>{formatPrice(MAX_PRICE_PAISE)}+</span>

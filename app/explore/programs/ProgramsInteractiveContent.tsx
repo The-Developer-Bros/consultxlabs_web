@@ -310,6 +310,7 @@ export default function ProgramsInteractiveContent({
               viewMode={viewMode}
               sentinelRef={sentinelRef}
               viewerOrgs={viewerOrgs}
+              onClearAll={clearAllFilters}
             />
           </div>
         </div>

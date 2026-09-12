@@ -20,8 +20,8 @@ export function TrustBadgesSection() {
               <div className="w-12 h-12 rounded-full bg-zinc-800 flex items-center justify-center mx-auto mb-3">
                 <badge.icon className="w-6 h-6 text-zinc-300" />
               </div>
-              <h4 className="font-semibold text-white mb-1">{badge.label}</h4>
-              <p className="text-sm text-zinc-500">{badge.description}</p>
+              <h3 className="font-semibold text-white mb-1">{badge.label}</h3>
+              <p className="text-sm text-zinc-400">{badge.description}</p>
             </motion.div>
           ))}
         </div>
