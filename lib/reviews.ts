@@ -586,11 +586,22 @@ function loadReviewableAppointments(
         // between the user and every slot of the shared appointment. A paid
         // seat is required as well, so a cancelled or comped registration
         // cannot buy a review.
+        // #1580 C-P0-2 — an ACCEPTED collaborator on the plan is a consultant-
+        // side party and cannot review the host as a consultee of their own event.
         {
           webinarId: { not: null },
           ...(consultantProfileId
             ? { webinar: { webinarPlan: { consultantProfileId } } }
             : {}),
+          NOT: {
+            webinar: {
+              webinarPlan: {
+                collaborators: {
+                  some: { status: "ACCEPTED", consultantProfile: { userId } },
+                },
+              },
+            },
+          },
           slotsOfAppointment: {
             some: { ...heldSlot(userId), user: { some: { id: userId } } },
           },
@@ -601,6 +612,15 @@ function loadReviewableAppointments(
           ...(consultantProfileId
             ? { class: { classPlan: { consultantProfileId } } }
             : {}),
+          NOT: {
+            class: {
+              classPlan: {
+                collaborators: {
+                  some: { status: "ACCEPTED", consultantProfile: { userId } },
+                },
+              },
+            },
+          },
           slotsOfAppointment: {
             some: { ...heldSlot(userId), user: { some: { id: userId } } },
           },
