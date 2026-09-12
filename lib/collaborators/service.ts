@@ -110,6 +110,119 @@ export class CollaboratorCapError extends Error {
   }
 }
 
+/**
+ * #1580 C-P1-9 — the invitee or the plan cannot take the seat. `httpStatus`
+ * is 400 for a standing problem (deleted, unverified, banned, erased) and
+ * 409 for a state clash (already an attendee, plan archived).
+ */
+export class CollaboratorIneligibleError extends Error {
+  readonly httpStatus: 400 | 409;
+  constructor(message: string, httpStatus: 400 | 409 = 400) {
+    super(message);
+    this.name = "CollaboratorIneligibleError";
+    this.httpStatus = httpStatus;
+  }
+}
+
+/**
+ * The invitee must be a live, VERIFIED consultant on an account that is
+ * neither banned (an expired ban does not count) nor erased. Returns the
+ * user id so the caller can run the seat check without a second lookup, or
+ * null when the profile does not exist at all (the pre-#1580 behaviour).
+ */
+async function assertInviteeEligible(
+  consultantProfileId: string,
+  db: PrismaLike = prisma,
+): Promise<{ userId: string } | null> {
+  const invitee = await db.consultantProfile.findUnique({
+    where: { id: consultantProfileId },
+    select: {
+      deletedAt: true,
+      verificationStatus: true,
+      user: {
+        select: { id: true, banned: true, banExpires: true, erasedAt: true },
+      },
+    },
+  });
+  if (!invitee) return null;
+  if (invitee.deletedAt || invitee.user.erasedAt) {
+    throw new CollaboratorIneligibleError(
+      "This consultant's account is no longer active and cannot collaborate",
+    );
+  }
+  if (invitee.verificationStatus !== "VERIFIED") {
+    throw new CollaboratorIneligibleError(
+      "Only verified consultants can collaborate on a plan",
+    );
+  }
+  const banActive =
+    invitee.user.banned === true &&
+    (!invitee.user.banExpires || invitee.user.banExpires > new Date());
+  if (banActive) {
+    throw new CollaboratorIneligibleError(
+      "This consultant's account is suspended and cannot collaborate",
+    );
+  }
+  return { userId: invitee.user.id };
+}
+
+/**
+ * A collaborator cannot also be an attendee of the plan they share in (the
+ * checkout guard refuses the other direction, #1580 C-P0-2). The slot↔user
+ * join is the seat truth; a cancelled or soft-deleted event does not count.
+ */
+async function assertNotAttendee(
+  planType: PlanType,
+  planId: string,
+  userId: string,
+  db: PrismaLike = prisma,
+): Promise<void> {
+  const seat = await db.slotOfAppointment.findFirst({
+    where: {
+      deletedAt: null,
+      user: { some: { id: userId } },
+      appointment: {
+        deletedAt: null,
+        status: { notIn: ["CANCELLED", "REJECTED", "EXPIRED"] },
+        ...(planType === "webinar"
+          ? { webinar: { webinarPlanId: planId } }
+          : { class: { classPlanId: planId } }),
+      },
+    },
+    select: { id: true },
+  });
+  if (seat) {
+    throw new CollaboratorIneligibleError(
+      "This consultant already holds a seat on one of this plan's events",
+      409,
+    );
+  }
+}
+
+/** An archived (or missing) plan takes no new collaborator and accepts none. */
+async function assertPlanOpen(
+  planType: PlanType,
+  planId: string,
+  db: PrismaLike = prisma,
+): Promise<void> {
+  const plan =
+    planType === "webinar"
+      ? await db.webinarPlan.findUnique({
+          where: { id: planId },
+          select: { archivedAt: true },
+        })
+      : await db.classPlan.findUnique({
+          where: { id: planId },
+          select: { archivedAt: true },
+        });
+  if (!plan || plan.archivedAt) {
+    throw new CollaboratorIneligibleError(
+      "This plan is archived; collaborators cannot be invited or accepted",
+      409,
+    );
+  }
+}
+
 export async function inviteCollaborator(
   planType: PlanType,
   planId: string,
@@ -129,15 +242,12 @@ export async function inviteCollaborator(
 
   const perms = normalizePermissions(permissions);
 
-  // Verify the invited consultant profile exists before creating a collaborator record.
-  // Without this check, a stale or fabricated consultantProfileId creates an orphaned row.
-  const inviteeProfile = await prisma.consultantProfile.findUnique({
-    where: { id: consultantProfileId },
-    select: { id: true },
-  });
-  if (!inviteeProfile) {
-    return null;
-  }
+  // #1580 C-P1-9 — the plan must be open and the invitee in good standing,
+  // and they must not already sit in the audience of this plan's events.
+  await assertPlanOpen(planType, planId);
+  const invitee = await assertInviteeEligible(consultantProfileId);
+  if (!invitee) return null;
+  await assertNotAttendee(planType, planId, invitee.userId);
 
   // FIX B1: Wrap validation + creation in a serializable transaction
   // to prevent concurrent invites from exceeding the 90% cap.
@@ -278,6 +388,15 @@ export async function respondToInvitation(
     planType === "webinar" ? collab.webinarPlanId : collab.classPlanId;
   if (!planId) return null;
   if (collab.status !== "PENDING") return null;
+
+  // #1580 C-P1-9 — standing can change between invite and accept (a ban, an
+  // erasure, an archive, a seat bought meanwhile), so the gates run again.
+  if (response === "ACCEPTED") {
+    await assertPlanOpen(planType, planId);
+    const invitee = await assertInviteeEligible(consultantProfileId);
+    if (!invitee) return null;
+    await assertNotAttendee(planType, planId, invitee.userId);
+  }
 
   const updated = await prisma.collaborator.update({
     where: { id: collaborationId },
