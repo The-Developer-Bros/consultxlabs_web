@@ -528,6 +528,32 @@ ALTER TABLE "ModerationAction" DROP CONSTRAINT IF EXISTS "moderation_action_has_
 -- SPLIT
 ALTER TABLE "ModerationAction" ADD CONSTRAINT "moderation_action_has_target"
   CHECK ("reportId" IS NOT NULL OR "reviewId" IS NOT NULL OR "feedbackId" IS NOT NULL);
+-- SPLIT
+-- #1562 — a direct act names the content its type is about: a review act carries
+-- reviewId, a feedback act carries feedbackId. Report-backed acts are unaffected.
+ALTER TABLE "ModerationAction" DROP CONSTRAINT IF EXISTS "moderation_action_target_matches_type";
+-- SPLIT
+ALTER TABLE "ModerationAction" ADD CONSTRAINT "moderation_action_target_matches_type"
+  CHECK (
+    ("actionType" NOT IN ('REVIEW_REMOVED', 'REVIEW_REPLY_REMOVED', 'REVIEW_EXCLUDED_FROM_AGGREGATE') OR "reviewId" IS NOT NULL)
+    AND ("actionType" <> 'FEEDBACK_EXCLUDED_FROM_AGGREGATE' OR "feedbackId" IS NOT NULL)
+  );
+
+-- SPLIT
+-- #1549 — a GROUP review is one data point about one EVENT; a GROUP row with no
+-- event key can be attributed to nothing, and no fallback is safe.
+ALTER TABLE "ConsultantReview" DROP CONSTRAINT IF EXISTS "consultant_review_group_has_event";
+-- SPLIT
+ALTER TABLE "ConsultantReview" ADD CONSTRAINT "consultant_review_group_has_event"
+  CHECK ("track" IS DISTINCT FROM 'GROUP' OR "ratingUnitId" IS NOT NULL);
+
+-- SPLIT
+-- #1562 — a REVIEW report acts on a review; without one CONTENT_REMOVED would
+-- resolve the report and remove nothing.
+ALTER TABLE "ModerationReport" DROP CONSTRAINT IF EXISTS "moderation_report_review_has_review";
+-- SPLIT
+ALTER TABLE "ModerationReport" ADD CONSTRAINT "moderation_report_review_has_review"
+  CHECK ("type" IS DISTINCT FROM 'REVIEW' OR "reviewId" IS NOT NULL);
 
 -- SPLIT
 -- ============================================================================

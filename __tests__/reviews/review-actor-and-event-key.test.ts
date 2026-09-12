@@ -130,6 +130,19 @@ describe("reply takedown attribution (#1562)", () => {
     });
   });
 
+  it("staff replay: a CAS miss writes no audit row and still answers 200", async () => {
+    // Two staff acting at once: the loser's updateMany moves nothing, so there
+    // is nothing to audit — the insert is gated on the CAS, not on the role.
+    mockedAuth.mockResolvedValue({
+      session: { user: { id: "staff-2", role: "STAFF" } },
+    } as never);
+    updateMany.mockResolvedValue({ count: 0 });
+    const res = await call();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { removed: false } });
+    expect(actionCreate).not.toHaveBeenCalled();
+  });
+
   it("the consultant: AUTHOR and no audit row", async () => {
     mockedAuth.mockResolvedValue({
       session: { user: { id: "consultant-user", role: "CONSULTANT" } },
