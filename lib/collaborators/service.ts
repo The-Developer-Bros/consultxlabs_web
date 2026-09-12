@@ -510,6 +510,17 @@ async function syncCollaboratorParticipants(
           { organizationId: appointment.organizationId },
         );
       }
+      // `recordParticipants` skips a row that already exists, so a collaborator
+      // removed and accepted again kept a CANCELLED seat (#1580 §3 E2E).
+      await tx.appointmentParticipant.updateMany({
+        where: {
+          appointmentId: { in: appointments.map((a) => a.id) },
+          userId: profile.userId,
+          role: "COLLABORATOR",
+          status: "CANCELLED",
+        },
+        data: { status: "CONFIRMED" },
+      });
     });
   } catch (error) {
     reportSentryError(error, {

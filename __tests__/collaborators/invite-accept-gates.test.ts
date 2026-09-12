@@ -58,7 +58,10 @@ const tx = {
     })),
     update: jest.fn(),
   },
-  appointmentParticipant: { createMany: jest.fn(async () => ({ count: 1 })) },
+  appointmentParticipant: {
+    createMany: jest.fn(async () => ({ count: 1 })),
+    updateMany: jest.fn(async () => ({ count: 0 })),
+  },
 };
 // The accept write is a CAS `updateMany` on status PENDING (#1580); the row is
 // re-read afterwards. `collaboratorUpdate` spies on the CAS and shapes the re-read.
@@ -196,6 +199,17 @@ describe("invite and accept gates", () => {
         }),
       ],
       skipDuplicates: true,
+    });
+    // A seat cancelled by an earlier removal is restored on re-accept, because
+    // createMany skips the existing row (#1580 §3 E2E).
+    expect(tx.appointmentParticipant.updateMany).toHaveBeenCalledWith({
+      where: {
+        appointmentId: { in: ["appt-1"] },
+        userId: "u-new",
+        role: "COLLABORATOR",
+        status: "CANCELLED",
+      },
+      data: { status: "CONFIRMED" },
     });
   });
 
