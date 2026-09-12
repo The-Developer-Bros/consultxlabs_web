@@ -17,7 +17,7 @@ import { personScoreAtLeast } from "@/lib/reviews-display";
 const LIST_CACHE_HEADERS = {
   "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300",
   "Netlify-Vary":
-    "query=page|limit|sort|domain|subdomain|tags|experience|minPrice|maxPrice|minRating|companies|language|affiliationType|includeUnverified|search",
+    "query=page|limit|sort|domain|subdomain|tags|experience|minPrice|maxPrice|minRating|companies|language|affiliationType|search",
 };
 
 export async function GET(request: NextRequest) {
@@ -52,7 +52,6 @@ export async function GET(request: NextRequest) {
     const minRating = rawMinRating ? parseFloat(rawMinRating) : undefined;
 
     // Admin/staff can list unverified; public listings are verified-only.
-    const includeUnverified = searchParams.get("includeUnverified") === "true";
 
     // The unfiltered first page is the explore landing's default view — serve it
     // from the Next data cache (getDefaultConsultantsPage) so it doesn't open a
@@ -60,7 +59,6 @@ export async function GET(request: NextRequest) {
     // beyond page 1 falls through to a live query. (#945, #932)
     const isDefaultView =
       page === 1 &&
-      !includeUnverified &&
       !domain &&
       !subdomain &&
       tags.length === 0 &&
@@ -83,10 +81,9 @@ export async function GET(request: NextRequest) {
     // Build where clause using an explicit conditions array
     const conditions: Prisma.ConsultantProfileWhereInput[] = [];
 
-    // Only show verified consultants in public listings
-    if (!includeUnverified) {
-      conditions.push({ verificationStatus: "VERIFIED" });
-    }
+    // Public listing: verified only, unconditionally. An `includeUnverified`
+    // switch used to skip this with no auth and no caller; staff have their own routes.
+    conditions.push({ verificationStatus: "VERIFIED" });
     // #781 §B — soft-deleted profiles leave public surfaces
     conditions.push({ deletedAt: null });
 
