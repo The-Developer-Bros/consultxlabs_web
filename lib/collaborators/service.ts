@@ -23,6 +23,14 @@ type PlanType = "webinar" | "class";
 
 const MIN_HOST_SHARE = 10; // Host must keep at least 10%
 
+// #1580 §6 — at most three collaborators in PENDING + ACCEPTED per plan, and
+// only one of them a co-presenter; the host stays the accountable party.
+export const MAX_COLLABORATORS_PER_PLAN = 3;
+export const PRESENTER_ROLES: readonly CollaboratorRole[] = [
+  "CO_HOST",
+  "CO_INSTRUCTOR",
+];
+
 // #772 B5 — collaborator shares are stored as basis points (bps) for integer
 // money math. The public API/param surface stays in percent (0–90); convert at
 // the DB boundary. 30% -> 3000 bps; the 90% cap -> 9000 bps.
@@ -94,6 +102,14 @@ function normalizePermissions(permissions?: CollaboratorPermissions) {
   };
 }
 
+/** #1580 §6 — the invite transaction refuses a fourth seat or a second presenter. */
+export class CollaboratorCapError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CollaboratorCapError";
+  }
+}
+
 export async function inviteCollaborator(
   planType: PlanType,
   planId: string,
@@ -142,24 +158,32 @@ export async function inviteCollaborator(
         const existing = await tx.collaborator.findFirst({
           where: { ...planWhere(planType, planId), consultantProfileId },
         });
-
-        if (existing) {
-          if (existing.status === "REMOVED" || existing.status === "DECLINED") {
-            // Re-activate with new parameters
-            return tx.collaborator.update({
-              where: { id: existing.id },
-              data: {
-                role: planRole,
-                revenueShareBps: pctToBps(revenueSharePercentage),
-                status: "PENDING",
-                invitedById,
-                respondedAt: null,
-                ...perms,
-              },
-            });
-          }
+        if (
+          existing &&
+          existing.status !== "REMOVED" &&
+          existing.status !== "DECLINED"
+        ) {
           // PENDING or ACCEPTED — already active
           return null;
+        }
+
+        // #1580 §6 — the cap, inside the Serializable tx so two concurrent
+        // invites cannot jointly break it. A re-activation counts as a new invite.
+        await assertCollaboratorCapTx(tx, planType, planId, planRole);
+
+        if (existing) {
+          // REMOVED or DECLINED — re-activate with new parameters
+          return tx.collaborator.update({
+            where: { id: existing.id },
+            data: {
+              role: planRole,
+              revenueShareBps: pctToBps(revenueSharePercentage),
+              status: "PENDING",
+              invitedById,
+              respondedAt: null,
+              ...perms,
+            },
+          });
         }
 
         return tx.collaborator.create({
@@ -921,6 +945,38 @@ export async function getHostedCollaborations(
   ]);
 
   return { webinarPlans, classPlans };
+}
+
+/**
+ * #1580 §6 — refuse the fourth PENDING + ACCEPTED row on a plan, and a second
+ * presenter (CO_HOST / CO_INSTRUCTOR) while one is already pending or accepted.
+ */
+async function assertCollaboratorCapTx(
+  db: PrismaLike,
+  planType: PlanType,
+  planId: string,
+  role: CollaboratorRole,
+): Promise<void> {
+  const active = await db.collaborator.findMany({
+    where: {
+      ...planWhere(planType, planId),
+      status: { in: ["PENDING", "ACCEPTED"] },
+    },
+    select: { role: true },
+  });
+  if (active.length >= MAX_COLLABORATORS_PER_PLAN) {
+    throw new CollaboratorCapError(
+      `A plan can have at most ${MAX_COLLABORATORS_PER_PLAN} pending or accepted collaborators`,
+    );
+  }
+  if (
+    PRESENTER_ROLES.includes(role) &&
+    active.some((c) => PRESENTER_ROLES.includes(c.role))
+  ) {
+    throw new CollaboratorCapError(
+      "A plan can have only one co-presenter (CO_HOST or CO_INSTRUCTOR); remove the existing one first",
+    );
+  }
 }
 
 /**
