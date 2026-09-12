@@ -1033,9 +1033,17 @@ export async function calculateRevenueSplit(
   planId: string,
   totalAmount: number,
   db: PrismaLike = prisma,
+  /** The buyer of the seat being settled: a collaborator is never paid a share of their own purchase (#1580 C-P0-2). */
+  opts: { excludeBuyerUserId?: string } = {},
 ): Promise<RevenueSplit[]> {
   const collabs = await getCollaborators(planType, planId, db);
-  const acceptedCollabs = collabs.filter((c) => c.status === "ACCEPTED");
+  // Closes the window in which an acceptance lands between the checkout guard
+  // and settlement: the exclusion is at the money boundary, not the read.
+  const acceptedCollabs = collabs.filter(
+    (c) =>
+      c.status === "ACCEPTED" &&
+      c.consultantProfile.userId !== opts.excludeBuyerUserId,
+  );
 
   if (acceptedCollabs.length === 0) {
     return []; // No collaborators - regular single-owner flow

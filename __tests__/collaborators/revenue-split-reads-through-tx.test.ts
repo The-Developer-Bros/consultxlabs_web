@@ -43,6 +43,7 @@ function makeTx() {
           status: "ACCEPTED",
           role: "CO_HOST",
           revenueShareBps: 3000,
+          consultantProfile: { userId: "collab-user-1" },
         },
       ]),
     },
@@ -82,6 +83,19 @@ describe("calculateRevenueSplit reads through the client it is given", () => {
     expect(tx.classPlan.findUnique).toHaveBeenCalledTimes(1);
     expect(tx.webinarPlan.findUnique).not.toHaveBeenCalled();
     expect(globalPrisma.classPlan.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("never pays a collaborator a share of their own seat, whatever the checkout guard saw", async () => {
+    // An acceptance can land between the checkout guard's read and settlement;
+    // the exclusion at the money boundary is what makes that window harmless.
+    const splits = await calculateRevenueSplit(
+      "webinar",
+      "plan-1",
+      10_000,
+      makeTx() as never,
+      { excludeBuyerUserId: "collab-user-1" },
+    );
+    expect(splits).toEqual([]);
   });
 
   it("a zero pool splits to zero everywhere, never to a negative owner share", async () => {

@@ -93,11 +93,22 @@ describe("updateCollaborator by row status", () => {
       updateCollaborator("webinar", "c1", "plan-1", { role: "CO_HOST" }),
     ).rejects.toBeInstanceOf(CollaboratorCapError);
     expect(tx.collaborator.update).not.toHaveBeenCalled();
-    // The row's own row is excluded from the check, so re-roling the only
-    // presenter to the other presenter role is allowed.
+    // The row itself is excluded from the check, so the sole presenter can be
+    // re-saved as a presenter: the query must carry `id: { not: "c1" }`, or the
+    // row would block its own re-role.
+    tx.collaborator.findFirst.mockResolvedValue({
+      id: "c1",
+      status: "PENDING",
+      role: "CO_HOST",
+    });
     tx.collaborator.findMany.mockResolvedValueOnce([]);
     await expect(
       updateCollaborator("webinar", "c1", "plan-1", { role: "CO_HOST" }),
     ).resolves.toMatchObject({ role: "CO_HOST" });
+    expect(tx.collaborator.findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: { not: "c1" } }),
+      }),
+    );
   });
 });

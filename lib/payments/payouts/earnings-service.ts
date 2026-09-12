@@ -622,6 +622,7 @@ export async function createEarningsFromPayment({
               planId,
               totalConsultantPool,
               tx,
+              { excludeBuyerUserId: payment.userId },
             );
           }
 
