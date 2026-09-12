@@ -48,31 +48,36 @@ afterEach(() => {
 });
 
 describe("app/error.tsx — maintenance-aware rendering", () => {
-  it("renders the maintenance message when /api/health reports DEGRADED", async () => {
-    global.fetch = jest.fn().mockResolvedValue({
-      json: async () => ({
-        maintenance: {
-          phase: "DEGRADED",
-          reason: "Rolling out a schema change.",
-          estimatedEnd: null,
-        },
-      }),
-    }) as unknown as typeof fetch;
+  it.each(["DEGRADED", "OFFLINE"])(
+    "renders the maintenance message when /api/health reports %s",
+    async (phase) => {
+      global.fetch = jest.fn().mockResolvedValue({
+        json: async () => ({
+          maintenance: {
+            phase,
+            reason: "Rolling out a schema change.",
+            estimatedEnd: null,
+          },
+        }),
+      }) as unknown as typeof fetch;
 
-    await act(async () => {
-      root.render(<GlobalError error={ERROR} reset={() => {}} />);
-    });
-    await flush();
+      await act(async () => {
+        root.render(<GlobalError error={ERROR} reset={() => {}} />);
+      });
+      await flush();
 
-    expect(
-      container.querySelector('[data-testid="maintenance-error"]'),
-    ).not.toBeNull();
-    expect(container.querySelector('[data-testid="generic-error"]')).toBeNull();
-    expect(container.textContent).toContain(
-      "We're doing scheduled maintenance",
-    );
-    expect(container.textContent).toContain("Rolling out a schema change.");
-  });
+      expect(
+        container.querySelector('[data-testid="maintenance-error"]'),
+      ).not.toBeNull();
+      expect(
+        container.querySelector('[data-testid="generic-error"]'),
+      ).toBeNull();
+      expect(container.textContent).toContain(
+        "We're doing scheduled maintenance",
+      );
+      expect(container.textContent).toContain("Rolling out a schema change.");
+    },
+  );
 
   it("renders the generic card when /api/health reports OFF", async () => {
     global.fetch = jest.fn().mockResolvedValue({
@@ -93,6 +98,9 @@ describe("app/error.tsx — maintenance-aware rendering", () => {
       container.querySelector('[data-testid="maintenance-error"]'),
     ).toBeNull();
     expect(container.textContent).toContain("Something went wrong");
+    // The generic card is the initial state, so the effect must be shown to
+    // have asked before the test proves anything.
+    expect(global.fetch).toHaveBeenCalledWith("/api/health");
   });
 
   it("renders the generic card when the health call fails", async () => {
@@ -108,5 +116,6 @@ describe("app/error.tsx — maintenance-aware rendering", () => {
     expect(
       container.querySelector('[data-testid="generic-error"]'),
     ).not.toBeNull();
+    expect(global.fetch).toHaveBeenCalledWith("/api/health");
   });
 });
