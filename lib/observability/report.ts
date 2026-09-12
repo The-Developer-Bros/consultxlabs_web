@@ -50,6 +50,7 @@ function normaliseError(error: unknown): Error {
     const detail =
       nested?.description ??
       obj.description ??
+      nested?.message ??
       obj.message ??
       nested?.code ??
       obj.code;

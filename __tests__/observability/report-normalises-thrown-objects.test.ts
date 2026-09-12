@@ -18,6 +18,16 @@ beforeEach(() => {
 });
 
 describe("reportSentryError normalises a thrown value before capture", () => {
+  it("falls back to a nested error.message when the provider sends no description", () => {
+    reportSentryError(
+      { error: { message: "Gateway timed out" } },
+      { subsystem: "payments", op: "x" },
+    );
+    const captured = captureException.mock.calls[0]?.[0] as Error;
+    expect(captured.message).toContain("Gateway timed out");
+    expect(captured.message).not.toContain("{");
+  });
+
   it("reports a thrown Razorpay-shaped object by its description, not [object Object]", () => {
     reportSentryError(
       {
