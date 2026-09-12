@@ -1730,13 +1730,22 @@ async function verifyPlanExistsInsideLock(
 ): Promise<{
   consultantProfileId: string | null;
   organizationId: string | null;
+  /** ACCEPTED collaborators' profile ids; only webinar and class plans have any. */
+  collaboratorProfileIds: string[];
 }> {
   // ADR 18 — also surface the plan's consultant + org ownership so the
   // allowlist/exclusivity checks below reuse this lookup.
   const select = { consultantProfileId: true, organizationId: true } as const;
+  // #1580 C-P0-2 — the self-booking guard below also refuses an ACCEPTED
+  // collaborator, who would otherwise be paid back part of their own seat.
+  const collaborators = {
+    where: { status: "ACCEPTED" as const },
+    select: { consultantProfileId: true },
+  };
   let plan: {
     consultantProfileId: string | null;
     organizationId: string | null;
+    collaborators?: { consultantProfileId: string }[];
   } | null = null;
 
   switch (appointmentType) {
@@ -1755,13 +1764,13 @@ async function verifyPlanExistsInsideLock(
     case "WEBINAR":
       plan = await tx.webinarPlan.findUnique({
         where: { id: planId },
-        select,
+        select: { ...select, collaborators },
       });
       break;
     case "CLASS":
       plan = await tx.classPlan.findUnique({
         where: { id: planId },
-        select,
+        select: { ...select, collaborators },
       });
       break;
   }
@@ -1771,7 +1780,13 @@ async function verifyPlanExistsInsideLock(
       "This plan is no longer available. Please refresh and try again.",
     );
   }
-  return plan;
+  return {
+    consultantProfileId: plan.consultantProfileId,
+    organizationId: plan.organizationId,
+    collaboratorProfileIds: (plan.collaborators ?? []).map(
+      (c) => c.consultantProfileId,
+    ),
+  };
 }
 
 /**
@@ -1834,10 +1849,17 @@ async function revalidateInsideLock(
     // rather than someone else's money, so it is self-punishing rather than
     // dangerous, but there is no legitimate reason to buy your own session and
     // a rule with no exceptions needs no explanation at the call site.
+    //
+    // An ACCEPTED collaborator is the same party for this purpose: they hold a
+    // share of the price and would be paid back part of their own seat, so the
+    // sponsor-money loop above is reachable through a collaboration too. The
+    // capacity `excludeUserIds` sites are left alone — a buyer refused here
+    // never holds a seat (#1580 C-P0-2).
     if (
       plan.consultantProfileId &&
       user.consultantProfile &&
-      plan.consultantProfileId === user.consultantProfile.id
+      (plan.consultantProfileId === user.consultantProfile.id ||
+        plan.collaboratorProfileIds.includes(user.consultantProfile.id))
     ) {
       throw new Error("You cannot book your own plan.");
     }
