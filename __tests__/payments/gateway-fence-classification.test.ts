@@ -47,7 +47,13 @@ describe("gateway fence classification", () => {
   // codes checkout.ts already throws (lib/payments/operations/checkout.ts:881,
   // :1556, :2538) but BUSINESS_ERROR_CODES only carried GATEWAY_DISABLED and
   // UNSUPPORTED_GATEWAY, so these three fell through to the 500 UNKNOWN path.
-  it.each(["WALLET_FROZEN", "CONSENT_REQUIRED", "CONSENT_WITHDRAWN"])(
+  // SELF_BOOKING joined them in #1593: the owner/collaborator refusal was a 500.
+  it.each([
+    "WALLET_FROZEN",
+    "CONSENT_REQUIRED",
+    "CONSENT_WITHDRAWN",
+    "SELF_BOOKING",
+  ])(
     "classifies %s as a business rejection with an actionable toast",
     (code) => {
       const classified = classifyError(

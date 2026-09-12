@@ -1862,7 +1862,12 @@ async function revalidateInsideLock(
       (plan.consultantProfileId === user.consultantProfile.id ||
         plan.collaboratorProfileIds.includes(user.consultantProfile.id))
     ) {
-      throw new Error("You cannot book your own plan.");
+      // A coded rejection, not a fault: the plain Error answered 500 and paged
+      // Sentry on every legitimate refusal (#1580 §2 E2E).
+      throw Object.assign(new Error("You cannot book your own plan."), {
+        httpStatus: 409,
+        code: "SELF_BOOKING",
+      });
     }
 
     // #1319 (B2B gap 3) — the org gate chain ran BEFORE the locks, so an org
