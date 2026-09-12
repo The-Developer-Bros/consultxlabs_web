@@ -448,8 +448,34 @@ export async function removeCollaborator(
 }
 
 /**
- * Update a collaborator's revenue share or role.
+ * #1580 C-P0-3 — an ACCEPTED row's terms are the deal the collaborator agreed
+ * to. Flipping it back to PENDING for re-consent would drop them from every
+ * ACCEPTED-only reader and pay their share to the host in that window, so a
+ * change is refused; the host removes and re-invites with the new terms.
+ */
+export class CollaboratorTermsLockedError extends Error {
+  constructor() {
+    super(
+      "Accepted terms cannot be changed; remove the collaborator and re-invite with the new terms",
+    );
+    this.name = "CollaboratorTermsLockedError";
+  }
+}
+
+/** The row is missing from the plan, or already REMOVED / DECLINED (→ 404). */
+export class CollaboratorNotFoundError extends Error {
+  constructor() {
+    super("Collaborator not found or no longer active on this plan");
+    this.name = "CollaboratorNotFoundError";
+  }
+}
+
+/**
+ * Update a PENDING collaborator's revenue share or role.
  * Requires planId to prevent IDOR — ensures the collaborator belongs to the specified plan.
+ * Returns null when the new terms fail validation (as before); throws
+ * CollaboratorNotFoundError for a missing / REMOVED / DECLINED row and
+ * CollaboratorTermsLockedError for an ACCEPTED one (#1580 C-P0-3).
  */
 export async function updateCollaborator(
   planType: PlanType,
@@ -482,7 +508,12 @@ export async function updateCollaborator(
         const collab = await tx.collaborator.findFirst({
           where: { id: collaborationId, ...planWhere(planType, planId) },
         });
-        if (!collab) return null;
+        if (!collab) throw new CollaboratorNotFoundError();
+        // A share change during re-consent would drop the collaborator from
+        // every ACCEPTED-only reader and pay their share to the host (#1580).
+        if (collab.status === "ACCEPTED")
+          throw new CollaboratorTermsLockedError();
+        if (collab.status !== "PENDING") throw new CollaboratorNotFoundError();
 
         if (updates.revenueSharePercentage !== undefined) {
           const valid = await validateRevenueSharesTx(

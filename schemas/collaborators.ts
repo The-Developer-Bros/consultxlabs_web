@@ -50,3 +50,25 @@ export const inviteWebinarCollaboratorSchema = inviteCollaboratorSchema.extend({
 export const inviteClassCollaboratorSchema = inviteCollaboratorSchema.extend({
   role: ClassCollaboratorRoleEnum,
 });
+
+// #1580 C-P0-3 — the PATCH body was forwarded unvalidated. `updateCollaborator`
+// changes only the share and the role, so the permission booleans are dropped.
+export const updateWebinarCollaboratorSchema = inviteWebinarCollaboratorSchema
+  .omit({
+    consultantProfileId: true,
+    canApprovePayment: true,
+    canViewAnalytics: true,
+    canEditEvent: true,
+    canSeeAttendees: true,
+  })
+  .partial();
+
+export const updateClassCollaboratorSchema = inviteClassCollaboratorSchema
+  .omit({
+    consultantProfileId: true,
+    canApprovePayment: true,
+    canViewAnalytics: true,
+    canEditEvent: true,
+    canSeeAttendees: true,
+  })
+  .partial();
