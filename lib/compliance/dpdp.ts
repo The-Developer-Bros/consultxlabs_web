@@ -289,6 +289,16 @@ export async function withdrawConsent(params: {
     data: { withdrawnAt: now },
   });
 
+  // A Stream roster built in the next five minutes would otherwise still admit
+  // the user from the sync cache (#1580).
+  if (
+    count > 0 &&
+    (purposeCode === undefined || purposeCode === "STREAM_DATA_PROCESSING")
+  ) {
+    const { forgetUserSynced } = await import("@/lib/stream-cache");
+    forgetUserSynced(userId);
+  }
+
   // LCY-2 consent cascade (#701 / #1230) — after withdrawal, downstream
   // effects fire so the withdrawal actually takes effect on the platform.
   // Currently: log a WARN SystemEvent so ops can see who withdrew what and

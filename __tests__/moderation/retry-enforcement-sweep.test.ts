@@ -43,6 +43,10 @@ jest.mock("../../lib/cron/with-cron-lock", () => ({
   CronLockHeldError: class extends Error {},
 }));
 
+jest.mock("../../lib/collaborators/service", () => ({
+  revokeCollaboratorAccess: jest.fn(async () => ({ success: true })),
+}));
+
 jest.mock("../../lib/moderation/side-effects", () => ({
   __esModule: true,
   applyStreamEnforcement: jest.fn(async () => undefined),
@@ -54,6 +58,7 @@ jest.mock("../../lib/moderation/side-effects", () => ({
 import { retryModerationEnforcement } from "../../scripts/cleanup/retry-moderation-enforcement";
 import prisma from "../../lib/prisma";
 import { applyStreamEnforcement } from "../../lib/moderation/side-effects";
+import { revokeCollaboratorAccess } from "../../lib/collaborators/service";
 
 const findMany = prisma.moderationAction.findMany as jest.Mock;
 const update = prisma.moderationAction.update as jest.Mock;
@@ -86,12 +91,47 @@ beforeEach(() => {
 });
 
 describe("retryModerationEnforcement", () => {
-  it("selects only the actions whose recorded Stream outcome failed", async () => {
+  it("selects only the actions whose recorded Stream or collaborator outcome failed", async () => {
     await retryModerationEnforcement();
 
     expect(findMany.mock.calls[0][0].where).toMatchObject({
-      sideEffects: { path: ["stream"], equals: "failed" },
+      OR: [
+        { sideEffects: { path: ["stream"], equals: "failed" } },
+        { sideEffects: { path: ["collaboratorRevocation"], equals: "failed" } },
+      ],
     });
+  });
+
+  // #1580 — a failed per-plan Stream revocation is re-driven from the same
+  // queue, and the user-level step is left alone when it did not fail.
+  it("re-drives a failed collaborator revocation without touching a landed Stream step", async () => {
+    findMany.mockResolvedValueOnce([
+      failedBan({
+        sideEffects: {
+          stream: "ok",
+          collaboratorRevocation: "failed",
+          collaborationsRemoved: [{ planType: "webinar", planId: "wp-1" }],
+          errors: ["collaborator-revoke: webinar:wp-1"],
+        },
+      }),
+    ]);
+
+    const result = await retryModerationEnforcement();
+
+    expect(revokeCollaboratorAccess).toHaveBeenCalledWith(
+      "webinar",
+      "wp-1",
+      "u1",
+      { notify: false },
+    );
+    expect(enforce).not.toHaveBeenCalled();
+    expect(update.mock.calls[0][0].data.sideEffects).toMatchObject({
+      stream: "ok",
+      collaboratorRevocation: "ok",
+      collaboratorRevocationAttempts: 2,
+    });
+    expect(result.collaboratorRecovered).toBe(1);
+    expect(result.recovered).toBe(0);
   });
 
   it("re-drives the ban and records that it landed", async () => {

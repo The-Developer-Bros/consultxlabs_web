@@ -24,8 +24,10 @@ import {
   type BookingRequestInput,
   type BookingRequestPayload,
   type CollaboratorAcceptedPayload,
+  type CollaboratorDeclinedPayload,
   type CollaboratorInvitedPayload,
   type CollaboratorRemovedPayload,
+  type CollaboratorWithdrawnPayload,
   type ConsultantApplicationPayload,
   type DisputeInput,
   type DisputePayload,
@@ -1151,6 +1153,18 @@ export async function notifyCollaboratorAccepted(
   );
 }
 
+/** #1580 C-P1-5 — the host learns that the invitee declined. */
+export async function notifyCollaboratorDeclined(
+  ownerUserId: string,
+  payload: CollaboratorDeclinedPayload,
+) {
+  return triggerWorkflow(
+    NOVU_WORKFLOWS.COLLABORATOR_DECLINED,
+    ownerUserId,
+    payload,
+  );
+}
+
 export async function notifyCollaboratorRemoved(
   consultantUserId: string,
   payload: CollaboratorRemovedPayload,
@@ -1158,6 +1172,18 @@ export async function notifyCollaboratorRemoved(
   return triggerWorkflow(
     NOVU_WORKFLOWS.COLLABORATOR_REMOVED,
     consultantUserId,
+    payload,
+  );
+}
+
+/** #1580 C-P1-7 — the host learns that a collaborator withdrew their own row. */
+export async function notifyCollaboratorWithdrawn(
+  ownerUserId: string,
+  payload: CollaboratorWithdrawnPayload,
+) {
+  return triggerWorkflow(
+    NOVU_WORKFLOWS.COLLABORATOR_WITHDRAWN,
+    ownerUserId,
     payload,
   );
 }

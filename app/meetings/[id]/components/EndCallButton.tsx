@@ -12,7 +12,12 @@ import { useSessionInfo } from "../session-info";
 /** A generous bound on the end request; a healthy round trip is far under it. */
 const END_CALL_TIMEOUT_MS = 10_000;
 
-const EndCallButton = () => {
+interface EndCallButtonProps {
+  /** Fired once as the end commits, so the room can show "ending" before `call.ended` lands. */
+  onEnding?: () => void;
+}
+
+const EndCallButton = ({ onEnding }: EndCallButtonProps = {}) => {
   const call = useCall();
   const router = useRouter();
   const { data: session } = useSession();
@@ -50,6 +55,7 @@ const EndCallButton = () => {
     if (endingRef.current) return;
     endingRef.current = true;
     setIsEnding(true);
+    onEnding?.();
 
     try {
       // #1270 — the server ends the call, not this button.
@@ -96,7 +102,7 @@ const EndCallButton = () => {
       endingRef.current = false;
       router.push(getDashboardUrl());
     }
-  }, [call, getDashboardUrl, router]);
+  }, [call, getDashboardUrl, onEnding, router]);
 
   useEffect(() => {
     let interval: number;

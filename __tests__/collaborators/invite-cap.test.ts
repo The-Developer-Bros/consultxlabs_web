@@ -41,10 +41,22 @@ jest.mock("../../lib/prisma", () => ({
   __esModule: true,
   default: {
     consultantProfile: {
-      findUnique: jest.fn(async () => ({ id: "cp-new", userId: "u-new" })),
+      // An eligible invitee (#1580 C-P1-9 gates run before the transaction).
+      findUnique: jest.fn(async () => ({
+        id: "cp-new",
+        userId: "u-new",
+        deletedAt: null,
+        verificationStatus: "VERIFIED",
+        user: { id: "u-new", banned: false, banExpires: null, erasedAt: null },
+      })),
     },
-    webinarPlan: { findUnique: jest.fn(async () => ({ title: "T" })) },
-    classPlan: { findUnique: jest.fn(async () => ({ title: "T" })) },
+    webinarPlan: {
+      findUnique: jest.fn(async () => ({ title: "T", archivedAt: null })),
+    },
+    classPlan: {
+      findUnique: jest.fn(async () => ({ title: "T", archivedAt: null })),
+    },
+    slotOfAppointment: { findFirst: jest.fn(async () => null) },
     $transaction: jest.fn(async (fn: (t: unknown) => Promise<unknown>) =>
       fn(tx),
     ),

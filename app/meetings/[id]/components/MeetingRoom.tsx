@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   CallParticipantsList,
   CallStatsButton,
@@ -147,7 +147,11 @@ const MeetingRoom = ({ onRejoin }: MeetingRoomProps) => {
   const { data: session } = useSession();
   const [layout, setLayout] = useState<CallLayoutType>("speaker-left");
   const [showParticipants, setShowParticipants] = useState(false);
-  const [isLeaving, setIsLeaving] = useState(false);
+  // How THIS client is on its way out, set before the request that ends or
+  // leaves, so the `call.ended`/LEFT that follow are not screens for them.
+  const [exit, setExit] = useState<"leaving" | "ending" | null>(null);
+  // Stable: it sits in EndCallButton's hold-timer effect deps.
+  const handleEnding = useCallback(() => setExit("ending"), []);
   const call = useCall();
   const { useCallCallingState, useCallEndedAt, useParticipantCount } =
     useCallStateHooks();
@@ -207,7 +211,7 @@ const MeetingRoom = ({ onRejoin }: MeetingRoomProps) => {
     // A deliberate exit passes through LEFT on its way out. Without this it
     // would flash "You have left this session — Rejoin?" at someone who just
     // pressed Leave and is already being navigated away.
-    setIsLeaving(true);
+    setExit("leaving");
     try {
       await leaveCallAndReleaseMedia(call);
     } catch (error) {
@@ -224,10 +228,15 @@ const MeetingRoom = ({ onRejoin }: MeetingRoomProps) => {
     await cleanupAndNavigate(getDashboardUrl());
   };
 
-  if (callEndedAt && !isHost) {
+  // An ended call is over for EVERYONE here. Exempting the host left a co-host
+  // (#1580), a second tab or an SFU max-duration end on a LEFT call with an
+  // empty stage; the one client on its way out has `exit` set instead.
+  if (callEndedAt && !exit) {
     return (
       <CallEnded
-        message="The call has been ended by the host"
+        message={
+          isHost ? "The call has ended" : "The call has been ended by the host"
+        }
         onRejoin={onRejoin}
         onReturnHome={handleReturnHome}
       />
@@ -238,16 +247,17 @@ const MeetingRoom = ({ onRejoin }: MeetingRoomProps) => {
   // unexplained spinner, so a network blip, an SFU migration and a connection
   // the SDK had permanently given up on all looked identical, and the terminal
   // one had no way out. `describeCallingState` owns which is which.
-  const advice = callEndedAt
-    ? null
-    : isLeaving
-      ? {
-          tone: "loading" as const,
-          title: "Leaving…",
-          description: "Releasing your camera and microphone.",
-          canRejoin: false,
-        }
-      : describeCallingState(callingState);
+  const advice = exit
+    ? {
+        tone: "loading" as const,
+        title: exit === "ending" ? "Ending the call…" : "Leaving…",
+        description:
+          exit === "ending"
+            ? "Closing the room for everyone and releasing your camera and microphone."
+            : "Releasing your camera and microphone.",
+        canRejoin: false,
+      }
+    : describeCallingState(callingState);
   if (advice) {
     return (
       <ConnectionStateScreen
@@ -460,7 +470,7 @@ const MeetingRoom = ({ onRejoin }: MeetingRoomProps) => {
                       Disconnects every participant and closes the room. Leaving
                       instead only removes you.
                     </p>
-                    <EndCallButton />
+                    <EndCallButton onEnding={handleEnding} />
                   </DropdownMenuContent>
                 </DropdownMenu>
               )}

@@ -36,6 +36,9 @@ jest.mock("../../lib/prisma", () => ({
       findMany: jest.fn().mockResolvedValue([]),
     },
     payment: { findMany: jest.fn().mockResolvedValue([]) },
+    // #1580 C-P1-5 — group-event cancel and reschedule read the ACCEPTED
+    // collaborators for the recipient list. Default to none.
+    collaborator: { findMany: jest.fn().mockResolvedValue([]) },
     slotOfAppointment: { findMany: jest.fn(), deleteMany: jest.fn() },
     // #1008 — reschedule/cancel routes read prisma.dispute.findFirst.
     dispute: { findFirst: jest.fn().mockResolvedValue(null) },
