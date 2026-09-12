@@ -6,6 +6,7 @@
  * platform queue (they belong on the per-appointment "Get help" threads).
  */
 
+import { after } from "next/server";
 import prisma, {
   ALLOCATION_TX_MAX_WAIT_MS,
   ALLOCATION_TX_TIMEOUT_MS,
@@ -88,7 +89,23 @@ async function opsRecipients(
 }
 
 /**
- * Fire-and-forget staff notification — shared by every creation path.
+ * #1614 — a bare `void` trigger does not survive the response on Netlify: the
+ * instance freezes once the body is sent, and the SDK's 5 s cap aborts the
+ * in-flight Novu call on thaw. `after()` keeps the invocation alive until the
+ * task settles. Outside a request scope (the no-show job runs under tsx on
+ * GitHub Actions) `after()` throws synchronously, so the task runs inline.
+ * The task must never reject: a rejection inside `after()` is unhandled.
+ */
+async function pastResponse(task: () => Promise<void>): Promise<void> {
+  try {
+    after(task);
+  } catch {
+    await task();
+  }
+}
+
+/**
+ * Staff notification that outlives the response — shared by every creation path.
  *
  * Exported because the per-appointment escalation creates its ticket INSIDE a
  * transaction (atomically with the thread's state change) and so cannot use
@@ -119,16 +136,26 @@ export async function notifySupportStaff(
       select: { name: true },
     }),
   ]);
-  for (const recipient of recipients) {
-    void notifySupportTicketCreated([recipient.id], {
-      ticketId: ticket.id,
-      reference: ticket.referenceNumber ?? undefined,
-      ticketTitle: ticket.title || "Support Ticket",
-      userName: customer?.name ?? undefined,
-      dashboardUrl: recipient.dashboardUrl,
-      ...notificationScope(ticket.organizationId, orgName),
-    });
-  }
+  await pastResponse(async () => {
+    await Promise.all(
+      recipients.map((recipient) =>
+        notifySupportTicketCreated([recipient.id], {
+          ticketId: ticket.id,
+          reference: ticket.referenceNumber ?? undefined,
+          ticketTitle: ticket.title || "Support Ticket",
+          userName: customer?.name ?? undefined,
+          dashboardUrl: recipient.dashboardUrl,
+          ...notificationScope(ticket.organizationId, orgName),
+        }).catch((error) => {
+          console.error("support: ticket-created trigger failed", {
+            ticketId: ticket.id,
+            recipientId: recipient.id,
+            error,
+          });
+        }),
+      ),
+    );
+  });
 }
 
 /**
@@ -164,21 +191,31 @@ export async function notifyStaffOfTicketActivity(
   const recipients = await opsRecipients(ticket.assignedToId);
   if (recipients.length === 0) return;
   const dedupeKey = eventId ?? `${ticketId}:${Date.now()}`;
-  for (const recipient of recipients) {
-    void notifySupportTicketActivity(
-      [recipient.id],
-      {
-        ticketId,
-        reference: ticket.referenceNumber ?? undefined,
-        ticketTitle: ticket.title,
-        userName: ticket.user.name ?? undefined,
-        activity,
-        dashboardUrl: recipient.dashboardUrl,
-        ...notificationScope(organizationId ?? ticket.organizationId),
-      },
-      dedupeKey,
+  await pastResponse(async () => {
+    await Promise.all(
+      recipients.map((recipient) =>
+        notifySupportTicketActivity(
+          [recipient.id],
+          {
+            ticketId,
+            reference: ticket.referenceNumber ?? undefined,
+            ticketTitle: ticket.title,
+            userName: ticket.user.name ?? undefined,
+            activity,
+            dashboardUrl: recipient.dashboardUrl,
+            ...notificationScope(organizationId ?? ticket.organizationId),
+          },
+          dedupeKey,
+        ).catch((error) => {
+          console.error("support: ticket-activity trigger failed", {
+            ticketId,
+            recipientId: recipient.id,
+            error,
+          });
+        }),
+      ),
     );
-  }
+  });
 }
 
 /**
