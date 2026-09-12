@@ -358,6 +358,28 @@ export async function removeCollaborator(
     });
 
   if (profile?.userId) {
+    await revokeCollaboratorAccess(planType, planId, profile.userId);
+  }
+
+  return result;
+}
+
+/**
+ * Everything a collaborator loses after their row leaves PENDING/ACCEPTED:
+ * the removal notification, membership of every event channel on the plan
+ * and of the `collab-<planType>-<planId>` coordination channel. Shared by
+ * `removeCollaborator` and the moderation ban side-effect (#1580 C-P0-4).
+ * Never throws; `success` is false when any Stream revocation did not land.
+ */
+export async function revokeCollaboratorAccess(
+  planType: PlanType,
+  planId: string,
+  userId: string,
+  opts: { notify?: boolean } = {},
+): Promise<{ success: boolean }> {
+  let success = true;
+
+  if (opts.notify ?? true) {
     // Notification — independent failure
     try {
       const plan =
@@ -370,7 +392,7 @@ export async function removeCollaborator(
               where: { id: planId },
               select: { title: true },
             });
-      await notifyCollaboratorRemoved(profile.userId, {
+      await notifyCollaboratorRemoved(userId, {
         planTitle: plan?.title ?? "Unknown Plan",
         planType,
         dashboardUrl: `${getAppUrl()}/dashboard`,
@@ -385,66 +407,69 @@ export async function removeCollaborator(
         error,
       );
     }
-
-    // Stream channel revocation — independent failure
-    try {
-      const events =
-        planType === "webinar"
-          ? await prisma.webinar.findMany({
-              where: { webinarPlanId: planId },
-              select: { id: true },
-            })
-          : await prisma.class.findMany({
-              where: { classPlanId: planId },
-              select: { id: true },
-            });
-      // `removeUserFromEventChannel` REPORTS its own failures by returning
-      // { success: false } — it does not throw — so awaiting it without reading
-      // the result meant a failed revocation looked identical to a successful
-      // one, and the outer catch never fired. A collaborator removed from the
-      // plan kept chat access on every event, silently. (#1125)
-      const revocations = await Promise.all(
-        events.map((event) =>
-          removeUserFromEventChannel(planType, event.id, profile.userId),
-        ),
-      );
-      const failedEventIds = events
-        .filter((_, i) => !revocations[i]?.success)
-        .map((event) => event.id);
-      if (failedEventIds.length > 0) {
-        reportSentryError(
-          new Error(
-            `Chat access not revoked for ${failedEventIds.length} of ${events.length} ${planType} events`,
-          ),
-          {
-            subsystem: "stream",
-            op: "removeCollaborator.revokeEventChannels",
-            extra: { planId, planType, failedEventIds },
-          },
-        );
-      }
-      await getStreamChatClient()
-        .channel("messaging", `collab-${planType}-${planId}`)
-        .removeMembers([profile.userId])
-        .catch((error) => {
-          // Separate from the event channels above: this is the collaborator
-          // coordination channel, and losing it is not the same access grant.
-          reportSentryError(error, {
-            subsystem: "stream",
-            op: "removeCollaborator.revokeCollabChannel",
-            extra: { planId, planType },
-          });
-        });
-    } catch (error) {
-      Sentry.captureException(
-        error instanceof Error ? error : new Error(String(error)),
-        { tags: { subsystem: "stream" }, level: "warning" },
-      );
-      console.error("[collaborators] Failed to revoke Stream access:", error);
-    }
   }
 
-  return result;
+  // Stream channel revocation — independent failure
+  try {
+    const events =
+      planType === "webinar"
+        ? await prisma.webinar.findMany({
+            where: { webinarPlanId: planId },
+            select: { id: true },
+          })
+        : await prisma.class.findMany({
+            where: { classPlanId: planId },
+            select: { id: true },
+          });
+    // `removeUserFromEventChannel` REPORTS its own failures by returning
+    // { success: false } — it does not throw — so awaiting it without reading
+    // the result meant a failed revocation looked identical to a successful
+    // one, and the outer catch never fired. A collaborator removed from the
+    // plan kept chat access on every event, silently. (#1125)
+    const revocations = await Promise.all(
+      events.map((event) =>
+        removeUserFromEventChannel(planType, event.id, userId),
+      ),
+    );
+    const failedEventIds = events
+      .filter((_, i) => !revocations[i]?.success)
+      .map((event) => event.id);
+    if (failedEventIds.length > 0) {
+      success = false;
+      reportSentryError(
+        new Error(
+          `Chat access not revoked for ${failedEventIds.length} of ${events.length} ${planType} events`,
+        ),
+        {
+          subsystem: "stream",
+          op: "removeCollaborator.revokeEventChannels",
+          extra: { planId, planType, failedEventIds },
+        },
+      );
+    }
+    await getStreamChatClient()
+      .channel("messaging", `collab-${planType}-${planId}`)
+      .removeMembers([userId])
+      .catch((error) => {
+        success = false;
+        // Separate from the event channels above: this is the collaborator
+        // coordination channel, and losing it is not the same access grant.
+        reportSentryError(error, {
+          subsystem: "stream",
+          op: "removeCollaborator.revokeCollabChannel",
+          extra: { planId, planType },
+        });
+      });
+  } catch (error) {
+    success = false;
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "stream" }, level: "warning" },
+    );
+    console.error("[collaborators] Failed to revoke Stream access:", error);
+  }
+
+  return { success };
 }
 
 /**

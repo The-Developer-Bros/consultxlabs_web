@@ -73,6 +73,14 @@ export interface TransactionalEffectResult {
    *  because nothing invalidated the cache. */
   reviewRemovedConsultantProfileId?: string;
   banExpires?: string | null;
+  /** #1580 C-P0-4 — the plans whose collaborator row the ban moved to REMOVED;
+   *  phase 2 revokes their Stream access. Reinstatement never restores them. */
+  collaborationsRemoved?: CollaborationRef[];
+}
+
+export interface CollaborationRef {
+  planType: "webinar" | "class";
+  planId: string;
 }
 
 export type StepStatus = "ok" | "failed" | "skipped" | "gave_up";
@@ -90,6 +98,8 @@ export interface SideEffectSummary extends TransactionalEffectResult {
   /** #1270 — how many times the sweep has re-driven a failed Stream step. */
   streamAttempts?: number;
   notification?: StepStatus;
+  /** #1580 C-P0-4 — Stream revocation for every plan in `collaborationsRemoved`. */
+  collaboratorRevocation?: StepStatus;
   errors?: string[];
 }
 
@@ -166,7 +176,53 @@ async function banOrSuspendUser(
     );
     if (earningsHeld !== undefined) result.earningsHeld = earningsHeld;
   }
+
+  const collaborationsRemoved = await removeCollaboratorStanding(
+    tx,
+    report.targetUserId,
+  );
+  if (collaborationsRemoved.length > 0) {
+    result.collaborationsRemoved = collaborationsRemoved;
+  }
   return result;
+}
+
+// #1580 C-P0-4 — a moderated account otherwise stays an ACCEPTED collaborator in
+// every split, roster and recording. REMOVED is final: reinstatement re-invites.
+async function removeCollaboratorStanding(
+  tx: Tx,
+  targetUserId: string,
+): Promise<CollaborationRef[]> {
+  const target = await tx.user.findUnique({
+    where: { id: targetUserId },
+    select: { consultantProfileId: true },
+  });
+  if (!target?.consultantProfileId) return [];
+
+  const rows = await tx.collaborator.findMany({
+    where: {
+      consultantProfileId: target.consultantProfileId,
+      status: { in: ["PENDING", "ACCEPTED"] },
+    },
+    select: { collaboratorType: true, webinarPlanId: true, classPlanId: true },
+  });
+  if (rows.length === 0) return [];
+
+  await tx.collaborator.updateMany({
+    where: {
+      consultantProfileId: target.consultantProfileId,
+      status: { in: ["PENDING", "ACCEPTED"] },
+    },
+    data: { status: "REMOVED", respondedAt: new Date() },
+  });
+
+  return rows.flatMap((row) => {
+    const planId =
+      row.collaboratorType === "WEBINAR" ? row.webinarPlanId : row.classPlanId;
+    if (!planId) return [];
+    const planType = row.collaboratorType === "WEBINAR" ? "webinar" : "class";
+    return [{ planType, planId } as CollaborationRef];
+  });
 }
 
 // Hold the banned consultant's unpaid earnings for admin disposition; HELD is
@@ -270,6 +326,14 @@ export async function applyBestEffortEffects(
   if (hasStreamEnforcement(actionType, input.report)) {
     await runStreamStep(input, summary, errors);
   }
+  if (transactional.collaborationsRemoved?.length) {
+    await runCollaboratorRevocations(
+      input.report.targetUserId,
+      transactional.collaborationsRemoved,
+      summary,
+      errors,
+    );
+  }
 
   await runNotification(input, transactional, summary, errors);
 
@@ -291,6 +355,38 @@ async function runBulkCancellations(
   } catch (error) {
     errors.push(`cancellations: ${errMsg(error)}`);
     captureModerationError(error);
+  }
+}
+
+// #1580 C-P0-4 — the Stream side of the rows phase 1 moved to REMOVED. The ban
+// notification already went out, so the per-plan removal Novu is skipped.
+async function runCollaboratorRevocations(
+  targetUserId: string,
+  plans: CollaborationRef[],
+  summary: SideEffectSummary,
+  errors: string[],
+): Promise<void> {
+  const failed: string[] = [];
+  // Lazy: a static import would pull the auth + email graph into every action.
+  const { revokeCollaboratorAccess } =
+    await import("@/lib/collaborators/service");
+  for (const { planType, planId } of plans) {
+    try {
+      const { success } = await revokeCollaboratorAccess(
+        planType,
+        planId,
+        targetUserId,
+        { notify: false },
+      );
+      if (!success) failed.push(`${planType}:${planId}`);
+    } catch (error) {
+      failed.push(`${planType}:${planId}`);
+      captureModerationError(error);
+    }
+  }
+  summary.collaboratorRevocation = failed.length === 0 ? "ok" : "failed";
+  if (failed.length > 0) {
+    errors.push(`collaborator-revoke: ${failed.join(", ")}`);
   }
 }
 
