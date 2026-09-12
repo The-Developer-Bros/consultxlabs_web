@@ -52,7 +52,8 @@ import {
   type OrgWalletTopupConfirmedPayload,
 } from "./workflows";
 import { getNovuClient, isNovuConfigured } from "./client";
-import { toWire } from "./templates/families";
+import { toWire } from "./templates";
+import type { NovuWorkflowId } from "./templates/types";
 import {
   DEFAULT_NOTIFICATION_TIMEZONE,
   formatNotificationDateTime,
@@ -68,7 +69,7 @@ import {
 type NovuRecord = Record<string, string | number | boolean | null | undefined>;
 
 async function triggerOne<T extends NovuRecord>(
-  workflowId: string,
+  workflowId: NovuWorkflowId,
   subscriberId: string,
   payload: T,
 ): Promise<void> {
@@ -91,7 +92,7 @@ async function triggerOne<T extends NovuRecord>(
 }
 
 async function triggerMany<T extends NovuRecord>(
-  workflowId: string,
+  workflowId: NovuWorkflowId,
   subscriberIds: string[],
   payload: T,
 ): Promise<void> {
@@ -121,7 +122,7 @@ async function triggerMany<T extends NovuRecord>(
  * `lib/novu/service.ts` for the reasoning in full.
  */
 async function triggerManyZoned<T extends NovuRecord>(
-  workflowId: string,
+  workflowId: NovuWorkflowId,
   subscriberIds: string[],
   build: (timezone: string) => T,
 ): Promise<void> {

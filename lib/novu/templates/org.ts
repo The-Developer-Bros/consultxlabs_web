@@ -8,8 +8,6 @@
 import { NOVU_WORKFLOWS as W } from "../workflows";
 import type { WorkflowTemplate } from "./types";
 
-const DASHBOARD = "{{payload.dashboardUrl}}";
-
 export const ORG_TEMPLATES: WorkflowTemplate[] = [
   // ── Billing ─────────────────────────────────────────────────────────────
   {
@@ -20,7 +18,7 @@ export const ORG_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Invoice issued",
       body: "Invoice {{payload.invoiceNumber}} for {{payload.total}} is due on {{payload.dueDate}}.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -31,7 +29,7 @@ export const ORG_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Invoice paid",
       body: "Invoice {{payload.invoiceNumber}} for {{payload.total}} was paid on {{payload.paidAt}}.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -42,7 +40,7 @@ export const ORG_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Invoice overdue",
       body: "Invoice {{payload.invoiceNumber}} for {{payload.total}} is {{payload.daysLate}} day{% if payload.daysLate != 1 %}s{% endif %} overdue.{% if payload.reminderStage > 1 %} This is reminder {{payload.reminderStage}}.{% endif %}",
-      redirectUrl: "{{payload.payUrl}}",
+      redirect: "payUrl",
     },
   },
   {
@@ -53,7 +51,7 @@ export const ORG_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Wallet topped up",
       body: "{{payload.amount}} was added to {{payload.orgName}}'s wallet. New balance: {{payload.newBalance}}.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -65,7 +63,7 @@ export const ORG_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Wallet running low",
       body: "{{payload.orgName}}'s wallet is down to {{payload.balance}}, below the {{payload.minimum}} minimum. Top up to keep bookings flowing.",
-      redirectUrl: "{{payload.topUpUrl}}",
+      redirect: "topUpUrl",
     },
   },
   {
@@ -76,7 +74,7 @@ export const ORG_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Payout sent",
       body: "A payout of {{payload.amount}} to {{payload.orgName}} has been sent.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -87,7 +85,7 @@ export const ORG_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Payout failed",
       body: "A payout of {{payload.amount}} to {{payload.orgName}} failed: {{payload.reason}}.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -98,7 +96,7 @@ export const ORG_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Payout reversed",
       body: "A payout of {{payload.amount}} to {{payload.orgName}} was reversed: {{payload.reason}}.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -109,7 +107,7 @@ export const ORG_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Payment window closed",
       body: "The payment window for your {{payload.programName}} overage of {{payload.amount}} at {{payload.orgName}} has closed. Contact your programme administrator to continue.",
-      redirectUrl: "{{payload.payUrl}}",
+      redirect: "payUrl",
     },
   },
   {
@@ -121,7 +119,7 @@ export const ORG_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Payment due",
       body: "Your booking went over the {{payload.programName}} allowance at {{payload.orgName}}. {{payload.amount}} is due from you to keep it.",
-      redirectUrl: "{{payload.payUrl}}",
+      redirect: "payUrl",
     },
   },
 
@@ -134,7 +132,7 @@ export const ORG_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "You're invited",
       body: '{{payload.inviterName}} invited you to join {{payload.orgName}} as {{payload.role | downcase | replace: "_", " "}}. The invitation expires on {{payload.expiresAt}}.',
-      redirectUrl: "{{payload.inviteUrl}}",
+      redirect: "inviteUrl",
     },
   },
   {
@@ -145,7 +143,7 @@ export const ORG_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "New member",
       body: '{{payload.accepteeName}} ({{payload.accepteeEmail}}) joined {{payload.orgName}} as {{payload.role | downcase | replace: "_", " "}}.',
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -156,7 +154,7 @@ export const ORG_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Membership ended",
       body: "You were removed from {{payload.orgName}} by {{payload.removedByName}}{% if payload.reason %}: {{payload.reason}}{% endif %}.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -167,7 +165,7 @@ export const ORG_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "SSO removed",
       body: "{{payload.deletedByName}} removed the SSO provider {{payload.providerId}} from {{payload.orgName}}. Members now sign in with email.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -178,7 +176,7 @@ export const ORG_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "SSO certificate",
       body: '{% if payload.severity == "EXPIRED" %}The SSO certificate for {{payload.orgName}} ({{payload.providerId}}) expired on {{payload.notAfter}} and single sign-on is failing.{% else %}The SSO certificate for {{payload.orgName}} ({{payload.providerId}}) expires on {{payload.notAfter}} — {{payload.daysRemaining}} day{% if payload.daysRemaining != 1 %}s{% endif %} left.{% endif %} Upload a new certificate.',
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
 
@@ -191,7 +189,7 @@ export const ORG_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Programme cap reached",
       body: "{{payload.assigneeName}} has used every engagement in {{payload.programName}} at {{payload.orgName}}. Further bookings will be refused until the cap is raised.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -202,7 +200,7 @@ export const ORG_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Programme nearly used up",
       body: "{{payload.assigneeName}} has used {{payload.engagementsUsed}} of {{payload.cap}} engagements ({{payload.usedPct}}%) in {{payload.programName}} at {{payload.orgName}}.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -213,7 +211,7 @@ export const ORG_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Licence renews soon",
       body: "{{payload.orgName}}'s {{payload.cycle}} licence renews on {{payload.renewalDate}} — {{payload.daysUntilRenewal}} day{% if payload.daysUntilRenewal != 1 %}s{% endif %} away — for about {{payload.expectedTotal}}.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -224,7 +222,7 @@ export const ORG_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Export ready",
       body: "The data export for {{payload.orgName}} is ready to download. The link expires on {{payload.expiresAt}}.",
-      redirectUrl: "{{payload.downloadUrl}}",
+      redirect: "downloadUrl",
     },
   },
 ];

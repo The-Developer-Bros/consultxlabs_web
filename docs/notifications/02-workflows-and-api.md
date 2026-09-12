@@ -142,7 +142,7 @@ The `appointment-rescheduled` template renders a "from X to Y" sentence, and thr
 | `appointment-completed`           | `notifyAppointmentCompleted(userIds[], payload)`          | Both parties   | `AppointmentPayload`                   |
 | `appointment-partially-scheduled` | `notifyAppointmentPartiallyScheduled(userIds[], payload)` | Consultee only | `AppointmentPartiallyScheduledPayload` |
 
-The last of these is the only appointment workflow addressed to one party. It fires alongside `appointment-booked` when a consultant accepts a partial allocation (#1206), because the sessions that were placed are a real booking and already read as one; what the consultee would otherwise never learn is that the rest of the plan has no times yet. Its payload extends `AppointmentPayload` with `placedSessions`, `requiredSessions` and `unplacedSessions`, all whole sessions, all derived at the moment of allocation and none of them stored. Like every other workflow here, the definition must be created in the Novu dashboard under exactly that slug in each environment before the feature is released; the trigger is fire-and-forget, so a missing definition costs the notification silently rather than failing the allocation.
+The last of these is the only appointment workflow addressed to one party. It fires alongside `appointment-booked` when a consultant accepts a partial allocation (#1206), because the sessions that were placed are a real booking and already read as one; what the consultee would otherwise never learn is that the rest of the plan has no times yet. Its payload extends `AppointmentPayload` with `placedSessions`, `requiredSessions` and `unplacedSessions`, all whole sessions, all derived at the moment of allocation and none of them stored. Like every other event here, it is an application-side id: the Novu workflow that carries it is its family (`appointment`), and `npm run novu:sync` provisions the family from `lib/novu/templates/`. The trigger is fire-and-forget, so a family missing from the environment costs the notification silently rather than failing the allocation, which is what `npm run novu:check` exists to catch.
 
 ```mermaid
 sequenceDiagram
@@ -435,8 +435,9 @@ graph TD
 
 ### Adding a New Notification
 
-1. **Add workflow ID** to `NOVU_WORKFLOWS` in `lib/novu/workflows.ts`
+1. **Add the event id** to `NOVU_WORKFLOWS` in `lib/novu/workflows.ts`
 2. **Add payload type** in the same file
 3. **Add trigger function** in `lib/novu/service.ts` using `triggerWorkflow` or `triggerForMultiple`
-4. **Create workflow** in the Novu dashboard with matching ID
-5. **Call the trigger function** from the relevant API route/webhook handler (inside try-catch, after the main transaction)
+4. **Add the template** to `lib/novu/templates/b2c.ts` or `org.ts` (subject, Liquid body, the payload field the tap should open) and **map the event to a family** in `lib/novu/templates/families.ts`; the unit test refuses an unmapped event or a bare Liquid variable
+5. **Sync**: `npm run novu:sync -- --dry-run`, then `npm run novu:sync` (a production operation — see the checklist). Never create a per-event workflow in the dashboard: the event is not a Novu workflow, its family is, and the plan caps the environment at 20 workflows
+6. **Call the trigger function** from the relevant API route/webhook handler (inside try-catch, after the main transaction)

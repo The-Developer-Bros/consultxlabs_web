@@ -2,7 +2,13 @@ import type { CreateWorkflowDto } from "@novu/api/models/components";
 import { B2C_TEMPLATES } from "./b2c";
 import { ORG_TEMPLATES } from "./org";
 import { inAppSkipRule } from "./conditions";
-import { FAMILIES, familyOf, type Family, type FamilyId } from "./families";
+import {
+  EVENT_FAMILY,
+  FAMILIES,
+  familyOf,
+  type Family,
+  type FamilyId,
+} from "./families";
 import type { NovuWorkflowId, WorkflowTemplate } from "./types";
 
 export type {
@@ -10,7 +16,7 @@ export type {
   PreferenceCategory,
   WorkflowTemplate,
 } from "./types";
-export { EVENT_FAMILY, FAMILIES, familyOf, toWire } from "./families";
+export { EVENT_FAMILY, FAMILIES, familyOf } from "./families";
 export type { Family, FamilyId } from "./families";
 
 export const NOVU_WORKFLOW_TEMPLATES: readonly WorkflowTemplate[] = [
@@ -31,6 +37,37 @@ export function templatesInFamily(id: FamilyId): WorkflowTemplate[] {
 /** The step name is the key the sync uses to match the live step. */
 export const IN_APP_STEP_NAME = "In-app";
 
+/** The one payload field every family's redirect reads. */
+export const HREF_FIELD = "href";
+
+/**
+ * What actually goes over the wire: the family as the workflow, the event
+ * as a payload field the template branches on, and the event's destination
+ * copied into `href` because a redirect cannot branch (types.ts). Every
+ * trigger helper calls this and nothing else knows the families exist.
+ */
+export function toWire<T extends Record<string, unknown>>(
+  event: NovuWorkflowId,
+  payload: T,
+): { workflowId: FamilyId; payload: T & { event: string; href?: string } } {
+  const family = EVENT_FAMILY[event];
+  if (!family) {
+    throw new Error(`Novu: "${event}" has no workflow family`);
+  }
+  const field = templateFor(event)?.inApp.redirect;
+  const destination = field ? payload[field] : undefined;
+  return {
+    workflowId: family,
+    payload: {
+      ...payload,
+      event,
+      ...(typeof destination === "string" && destination
+        ? { [HREF_FIELD]: destination }
+        : {}),
+    },
+  };
+}
+
 /**
  * One Liquid `case` over `payload.event`, on a single line so no branch
  * leaks whitespace into the rendered text.
@@ -49,9 +86,9 @@ function caseOverEvents(
 
 /**
  * The exact document the sync writes for a family. Tags carry the category
- * so the Inbox can filter on it; `payloadSchema` stays open because the
- * app's types are the schema (#1442 — a strict schema rejected a valid
- * trigger once).
+ * so the Inbox can filter on it. Payload validation is off and no
+ * `payloadSchema` is sent: the app's types are the schema, and a strict one
+ * rejected a valid trigger once (#1442).
  */
 export function toFamilyDto(family: Family): CreateWorkflowDto {
   const members = templatesInFamily(family.id);
@@ -59,7 +96,13 @@ export function toFamilyDto(family: Family): CreateWorkflowDto {
     throw new Error(`Novu family "${family.id}" has no events`);
   }
   const subject = caseOverEvents(members, (t) => t.inApp.subject);
-  const redirectUrl = caseOverEvents(members, (t) => t.inApp.redirectUrl);
+  // One variable, not a `case`: Novu's IN_APP_REDIRECT_URL_REGEX admits a
+  // url that starts with `{{…}}`, `http(s)://` or `/` and nothing else. An
+  // event with no destination leaves `href` unset, which renders empty and
+  // Novu then drops the redirect rather than storing a blank one.
+  const redirectUrl = members.some((t) => t.inApp.redirect)
+    ? `{{payload.${HREF_FIELD}}}`
+    : "";
   return {
     workflowId: family.id,
     name: family.name,

@@ -22,7 +22,42 @@ import {
 import { inAppSkipRule } from "@/lib/novu/templates/conditions";
 import { supportTicketStatusLabel } from "@/lib/novu/humanize";
 
-const LIQUID_VARIABLE = /\{\{\s*([a-zA-Z_][\w.]*)/g;
+/** Every identifier a Liquid output or control tag can name. */
+const LIQUID_OUTPUT = /\{\{-?\s*([a-zA-Z_][\w.]*)/g;
+const LIQUID_TAG = /\{%-?\s*([\s\S]*?)\s*-?%\}/g;
+const LIQUID_KEYWORDS = new Set([
+  "if",
+  "elsif",
+  "else",
+  "endif",
+  "unless",
+  "endunless",
+  "case",
+  "when",
+  "endcase",
+  "and",
+  "or",
+  "contains",
+  "true",
+  "false",
+  "nil",
+  "null",
+  "empty",
+  "blank",
+]);
+
+/** Identifiers referenced anywhere in a template's Liquid. */
+function liquidIdentifiers(text: string): string[] {
+  const found: string[] = [];
+  for (const [, v] of text.matchAll(LIQUID_OUTPUT)) found.push(v);
+  for (const [, tag] of text.matchAll(LIQUID_TAG)) {
+    const withoutStrings = tag.replace(/"[^"]*"|'[^']*'/g, " ");
+    for (const [token] of withoutStrings.matchAll(/[a-zA-Z_][\w.]*/g)) {
+      if (!LIQUID_KEYWORDS.has(token)) found.push(token);
+    }
+  }
+  return found;
+}
 const NOVU_WORKFLOW_CAP = 20;
 
 describe("Novu workflow templates", () => {
@@ -52,17 +87,21 @@ describe("Novu workflow templates", () => {
     }
   });
 
-  it("references payload and subscriber fields only through their namespace", () => {
+  it("references payload and subscriber fields only through their namespace, in output and control tags alike", () => {
     for (const t of NOVU_WORKFLOW_TEMPLATES) {
-      const text = [t.inApp.subject, t.inApp.body, t.inApp.redirectUrl]
-        .filter(Boolean)
-        .join("\n");
-      for (const [, variable] of text.matchAll(LIQUID_VARIABLE)) {
+      const text = [t.inApp.subject, t.inApp.body].filter(Boolean).join("\n");
+      for (const variable of liquidIdentifiers(text)) {
         expect({ id: t.workflowId, variable }).toMatchObject({
           variable: expect.stringMatching(/^(payload|subscriber)\./),
         });
       }
+      // A redirect names a payload FIELD, never a Liquid expression.
+      expect(t.inApp.redirect ?? "dashboardUrl").toMatch(/^[a-zA-Z]\w*$/);
     }
+    // The check itself must catch the legacy shapes.
+    expect(
+      liquidIdentifiers("{% if status %}x{% endif %} {{- amount }}"),
+    ).toEqual(["amount", "status"]);
   });
 
   it("composes a family as one case over payload.event, one branch per member", () => {
@@ -77,17 +116,46 @@ describe("Novu workflow templates", () => {
     expect(step.controlValues.body.startsWith("{% case payload.event %}")).toBe(
       true,
     );
-    expect(step.controlValues.redirect.url).toContain(
-      "{{payload.dashboardUrl}}",
-    );
+    // Novu's IN_APP_REDIRECT_URL_REGEX admits `{{var}}…`, `http(s)://…` or
+    // `/…` only — a `case` there is rejected on write and dropped on render.
+    const urls = FAMILIES.map(
+      (f) =>
+        (
+          toFamilyDto(f).steps[0] as {
+            controlValues: { redirect?: { url: string } };
+          }
+        ).controlValues.redirect?.url,
+    ).filter((u): u is string => u !== undefined);
+    expect(urls.length).toBeGreaterThan(0);
+    expect(new Set(urls)).toEqual(new Set(["{{payload.href}}"]));
   });
 
-  it("sends the family as the workflow and the event in the payload", () => {
-    expect(toWire("support-ticket-activity", { ticketId: "t1" })).toEqual({
+  it("sends the family as the workflow, the event and its destination in the payload", () => {
+    expect(
+      toWire("support-ticket-activity", {
+        ticketId: "t1",
+        dashboardUrl: "/dashboard/admin/tickets",
+      }),
+    ).toEqual({
       workflowId: "support-ticket",
-      payload: { ticketId: "t1", event: "support-ticket-activity" },
+      payload: {
+        ticketId: "t1",
+        dashboardUrl: "/dashboard/admin/tickets",
+        event: "support-ticket-activity",
+        href: "/dashboard/admin/tickets",
+      },
     });
-    expect(() => toWire("no-such-event", {})).toThrow(/no workflow family/);
+    // The destination follows the event's own field, and is absent when the
+    // payload has none (the redirect then renders empty and is dropped).
+    expect(
+      toWire("org-wallet-low", { topUpUrl: "/o/x/wallet" }).payload.href,
+    ).toBe("/o/x/wallet");
+    expect(
+      toWire("moderation-warning", { reason: "r" }).payload,
+    ).not.toHaveProperty("href");
+    expect(() => toWire("no-such-event" as never, {})).toThrow(
+      /no workflow family/,
+    );
   });
 
   it("gates the bell on 'not explicitly false', never 'is true'", () => {

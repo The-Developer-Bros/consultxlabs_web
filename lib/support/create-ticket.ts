@@ -66,6 +66,28 @@ export interface CreateSupportTicketInput {
 }
 
 /**
+ * Ops recipients, each with the queue URL THEY can open: `/dashboard/admin/*`
+ * is ADMIN-only and bounces a STAFF user to their home, while the staff tree
+ * admits both roles. One trigger per recipient, since the href differs.
+ */
+async function opsRecipients(
+  assigneeId?: string | null,
+): Promise<Array<{ id: string; dashboardUrl: string }>> {
+  const users = await prisma.user.findMany({
+    where: assigneeId
+      ? { id: assigneeId }
+      : { role: { in: ["STAFF", "ADMIN"] } },
+    select: { id: true, staffProfileId: true },
+  });
+  return users.map((u) => ({
+    id: u.id,
+    dashboardUrl: u.staffProfileId
+      ? `/dashboard/staff/${u.staffProfileId}/tickets`
+      : "/dashboard/admin/tickets",
+  }));
+}
+
+/**
  * Fire-and-forget staff notification — shared by every creation path.
  *
  * Exported because the per-appointment escalation creates its ticket INSIDE a
@@ -90,27 +112,23 @@ export async function notifySupportStaff(
     });
     orgName = org?.name ?? null;
   }
-  const [staffUsers, customer] = await Promise.all([
-    prisma.user.findMany({
-      where: { role: { in: ["STAFF", "ADMIN"] } },
-      select: { id: true },
-    }),
+  const [recipients, customer] = await Promise.all([
+    opsRecipients(),
     prisma.user.findUnique({
       where: { id: ticket.userId },
       select: { name: true },
     }),
   ]);
-  void notifySupportTicketCreated(
-    staffUsers.map((u) => u.id),
-    {
+  for (const recipient of recipients) {
+    void notifySupportTicketCreated([recipient.id], {
       ticketId: ticket.id,
       reference: ticket.referenceNumber ?? undefined,
       ticketTitle: ticket.title || "Support Ticket",
       userName: customer?.name ?? undefined,
-      dashboardUrl: "/dashboard/admin/tickets",
+      dashboardUrl: recipient.dashboardUrl,
       ...notificationScope(ticket.organizationId, orgName),
-    },
-  );
+    });
+  }
 }
 
 /**
@@ -143,28 +161,24 @@ export async function notifyStaffOfTicketActivity(
     },
   });
   if (!ticket) return;
-  const recipients = ticket.assignedToId
-    ? [ticket.assignedToId]
-    : (
-        await prisma.user.findMany({
-          where: { role: { in: ["STAFF", "ADMIN"] } },
-          select: { id: true },
-        })
-      ).map((u) => u.id);
+  const recipients = await opsRecipients(ticket.assignedToId);
   if (recipients.length === 0) return;
-  void notifySupportTicketActivity(
-    recipients,
-    {
-      ticketId,
-      reference: ticket.referenceNumber ?? undefined,
-      ticketTitle: ticket.title,
-      userName: ticket.user.name ?? undefined,
-      activity,
-      dashboardUrl: "/dashboard/admin/tickets",
-      ...notificationScope(organizationId ?? ticket.organizationId),
-    },
-    eventId ?? `${ticketId}:${Date.now()}`,
-  );
+  const dedupeKey = eventId ?? `${ticketId}:${Date.now()}`;
+  for (const recipient of recipients) {
+    void notifySupportTicketActivity(
+      [recipient.id],
+      {
+        ticketId,
+        reference: ticket.referenceNumber ?? undefined,
+        ticketTitle: ticket.title,
+        userName: ticket.user.name ?? undefined,
+        activity,
+        dashboardUrl: recipient.dashboardUrl,
+        ...notificationScope(organizationId ?? ticket.organizationId),
+      },
+      dedupeKey,
+    );
+  }
 }
 
 /**

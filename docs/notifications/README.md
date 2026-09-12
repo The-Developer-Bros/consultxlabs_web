@@ -33,7 +33,7 @@ graph TD
 - **Graceful degradation** -- if `NOVU_SECRET_KEY` or `RESEND_API_KEY` is missing, functions return `{success: false}` instead of throwing
 - **Singleton clients** -- both Resend and Novu use lazy-initialized singleton instances
 - **Subscriber = User** -- Novu `subscriberId` is the Prisma `User.id`
-- **27 Novu workflows** -- each maps to a specific business event with typed payloads
+- **67 notification events in 16 Novu workflow families** -- each event has a typed payload; the family is the Novu workflow and carries the event as `payload.event`
 - **10 React Email templates** -- server-rendered HTML via `@react-email/render`
 - **User preferences** -- channel toggles (in-app, email, push), category toggles (7 categories), quiet hours
 
@@ -89,9 +89,9 @@ graph TD
 
 ## Quick Navigation
 
-| I want to...                           | Go to                                                      |
-| -------------------------------------- | ---------------------------------------------------------- |
-| Understand the dual-layer architecture | [01-architecture.md](./01-architecture.md)                 |
-| See all 27 workflows and API endpoints | [02-workflows-and-api.md](./02-workflows-and-api.md)       |
-| Understand the payment system          | [../payments/architecture.md](../payments/architecture.md) |
-| Check the database schema              | [../../prisma/schema.prisma](../../prisma/schema.prisma)   |
+| I want to...                                         | Go to                                                      |
+| ---------------------------------------------------- | ---------------------------------------------------------- |
+| Understand the dual-layer architecture               | [01-architecture.md](./01-architecture.md)                 |
+| See all 67 events, the 16 families and API endpoints | [02-workflows-and-api.md](./02-workflows-and-api.md)       |
+| Understand the payment system                        | [../payments/architecture.md](../payments/architecture.md) |
+| Check the database schema                            | [../../prisma/schema.prisma](../../prisma/schema.prisma)   |

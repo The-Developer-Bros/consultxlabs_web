@@ -7,8 +7,6 @@
 import { NOVU_WORKFLOWS as W } from "../workflows";
 import type { WorkflowTemplate } from "./types";
 
-const DASHBOARD = "{{payload.dashboardUrl}}";
-
 /** `FAM-2026-000007 — Support for Basic Consultation`, or just the title. */
 const TICKET =
   "{% if payload.reference %}{{payload.reference}} — {% endif %}{{payload.ticketTitle}}";
@@ -26,7 +24,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Booking confirmed",
       body: "Your {{payload.appointmentType}} for {{payload.planTitle}} is booked{% if payload.dateTime %} for {{payload.dateTime}}{% endif %}.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -38,7 +36,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Partly scheduled",
       body: "{{payload.placedSessions}} of {{payload.requiredSessions}} sessions for {{payload.planTitle}} are booked. The remaining {{payload.unplacedSessions}} will be scheduled as availability opens.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -49,7 +47,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Session cancelled",
       body: "{{payload.cancelledBy}} cancelled the {{payload.appointmentType}} for {{payload.planTitle}}{% if payload.dateTime %} on {{payload.dateTime}}{% endif %}. Reason: {{payload.reason}}.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -61,7 +59,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Schedule change",
       body: '{% if payload.outcome == "MOVED" %}Your {{payload.appointmentType}} for {{payload.planTitle}} moved from {{payload.oldDateTime}} to {{payload.newDateTime}}.{% elsif payload.outcome == "PROPOSED" %}A new time was proposed for your {{payload.appointmentType}} for {{payload.planTitle}}: {{payload.newDateTime}} instead of {{payload.oldDateTime}}. Please review it.{% elsif payload.outcome == "RELEASED" %}The {{payload.appointmentType}} for {{payload.planTitle}}{% if payload.oldDateTime %} on {{payload.oldDateTime}}{% endif %} was released. You will be told once a new time is set.{% elsif payload.outcome == "DECLINED" %}The proposed new time for your {{payload.appointmentType}} for {{payload.planTitle}} was declined{% if payload.oldDateTime %}; it stays on {{payload.oldDateTime}}{% endif %}.{% else %}The reschedule request for your {{payload.appointmentType}} for {{payload.planTitle}} was withdrawn{% if payload.oldDateTime %}; it stays on {{payload.oldDateTime}}{% endif %}.{% endif %}',
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -72,7 +70,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Coming up",
       body: "Your {{payload.appointmentType}} for {{payload.planTitle}} is coming up — {{payload.dateTime}}.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -83,7 +81,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Session complete",
       body: "Your {{payload.appointmentType}} for {{payload.planTitle}} has ended. Open it to rate the session or find the recording.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -94,7 +92,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "New booking request",
       body: "{{payload.consulteeName}} requested a {{payload.appointmentType}} for {{payload.planTitle}}{% if payload.requestedDateTime %} on {{payload.requestedDateTime}}{% endif %}.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
 
@@ -107,7 +105,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Payment received",
       body: "Payment of {{payload.amountFormatted}} received for {{payload.planTitle}} with {{payload.consultantName}}.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -118,7 +116,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Payment failed",
       body: "Your payment of {{payload.amountFormatted}}{% if payload.planTitle %} for {{payload.planTitle}}{% endif %} did not go through. {{payload.failureReason}}",
-      redirectUrl: "{{payload.retryUrl}}",
+      redirect: "retryUrl",
     },
   },
   {
@@ -129,7 +127,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Refund requested",
       body: "A refund of {{payload.amountFormatted}} was requested{% if payload.consultantName %} for a session with {{payload.consultantName}}{% endif %}.{% if payload.reason %} Reason: {{payload.reason}}.{% endif %}",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -140,7 +138,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Refund on its way",
       body: "Your refund of {{payload.amountFormatted}}{% if payload.consultantName %} for the session with {{payload.consultantName}}{% endif %} has been processed. Banks usually post it within 5–7 working days.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -151,7 +149,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Refund needs attention",
       body: "The refund of {{payload.amountFormatted}} could not be completed. Our team will retry it — please contact support if it has not arrived in a few days.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -162,7 +160,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Payout sent",
       body: "A payout of {{payload.amount}} has been sent to your bank account.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -173,7 +171,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Payment dispute",
       body: "A payment dispute of {{payload.amount}} was opened{% if payload.consulteeName %} by {{payload.consulteeName}}{% endif %}{% if payload.reason %}: {{payload.reason}}{% endif %}.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -184,7 +182,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Dispute resolved",
       body: 'The dispute of {{payload.amount}} has been resolved{% if payload.status %} — {{payload.status | downcase | replace: "_", " "}}{% endif %}.',
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -195,7 +193,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Referral bonus",
       body: "{{payload.refereeName}} joined with your link — {{payload.bonusAmount}} in credits has been added to your account.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -206,7 +204,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Welcome bonus",
       body: "Welcome! {{payload.bonusAmount}} in credits from {{payload.referrerName}}'s referral has been added to your account.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -217,7 +215,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Credits applied",
       body: "{{payload.creditsUsed}} in referral credits was applied to your {{payload.appointmentType}}. {{payload.remainingCredits}} remains.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
 
@@ -230,7 +228,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Subscription active",
       body: "Your subscription to {{payload.planTitle}} with {{payload.consultantName}} is now active.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -241,7 +239,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Subscription cancelled",
       body: "The subscription to {{payload.planTitle}} has been cancelled.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -252,7 +250,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Subscription renewed",
       body: "Your subscription to {{payload.planTitle}} with {{payload.consultantName}} has renewed for another cycle.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -263,7 +261,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Trial requested",
       body: "{{payload.consulteeName}} requested a free trial session for {{payload.planTitle}}{% if payload.dateTime %} on {{payload.dateTime}}{% endif %}.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -274,7 +272,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Trial scheduled",
       body: "The trial session for {{payload.planTitle}} between {{payload.consulteeName}} and {{payload.consultantName}} is scheduled for {{payload.dateTime}}.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -285,7 +283,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Trial complete",
       body: "The trial session for {{payload.planTitle}} with {{payload.consultantName}} has ended.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -296,7 +294,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Trial cancelled",
       body: "The trial session for {{payload.planTitle}}{% if payload.dateTime %} on {{payload.dateTime}}{% endif %} was cancelled.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
 
@@ -309,7 +307,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "New support ticket",
       body: `{{payload.userName | default: "A customer"}} opened ${TICKET}.`,
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -321,7 +319,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Ticket activity",
       body: `{{payload.userName | default: "The customer"}} {{payload.activity | default: "replied"}} on ${TICKET}.`,
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -332,7 +330,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Ticket updated",
       body: `Your ticket ${TICKET} is now {{payload.status}}.`,
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -343,7 +341,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Reply from support",
       body: `{{payload.respondedBy | default: "Support"}} replied on ${TICKET}{% if payload.message %}: "{{payload.message | truncate: 140}}"{% endif %}`,
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -354,7 +352,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "New feedback",
       body: '{{payload.userName}} sent feedback{% if payload.category %} ({{payload.category}}){% endif %}: "{{payload.message | truncate: 140}}"',
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -365,7 +363,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "New review",
       body: '{{payload.reviewerName}} left a {{payload.rating}}-star review{% if payload.planTitle %} on {{payload.planTitle}}{% endif %}{% if payload.comment %}: "{{payload.comment | truncate: 140}}"{% endif %}',
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
 
@@ -378,7 +376,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Verification update",
       body: '{% case payload.status %}{% when "VERIFIED" %}Your profile is verified and now visible to clients.{% when "REJECTED" %}Your profile verification was not approved.{% else %}Your profile verification is pending review.{% endcase %}{% if payload.reason %} {{payload.reason}}{% endif %}',
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -389,7 +387,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "New expert application",
       body: "{{payload.applicantName}} ({{payload.applicantEmail}}) applied to become an expert.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -430,7 +428,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "{{payload.title}}",
       body: "{{payload.content}}",
-      redirectUrl: "{{payload.linkUrl}}",
+      redirect: "linkUrl",
     },
   },
   {
@@ -473,7 +471,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Recording ready",
       body: "A recording from your {{payload.appointmentType}} is ready to watch.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -484,7 +482,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Recording failed",
       body: "A recording could not be saved{% if payload.errorMessage %}: {{payload.errorMessage}}{% endif %}. The call itself was not affected.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -495,7 +493,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Recordings expiring",
       body: "{{payload.recordingCount}} recording{% if payload.recordingCount != 1 %}s{% endif %} will expire on {{payload.expiresAt}}. Download anything you want to keep before then.",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -506,7 +504,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Document shared",
       body: '{% if payload.uploadedByRole == "CONSULTEE" %}{{payload.consulteeName}}{% else %}{{payload.consultantName}}{% endif %} shared {{payload.fileName}}{% if payload.versionNo > 1 %} (version {{payload.versionNo}}){% endif %}.',
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -517,7 +515,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Document reviewed",
       body: '{{payload.consultantName}} {% case payload.reviewStatus %}{% when "APPROVED" %}approved{% when "REJECTED" %}declined{% when "NEEDS_REVISION" %}sent back{% when "IN_REVIEW" %}is reviewing{% else %}has queued{% endcase %} {{payload.originalName}}.{% if payload.reviewNotes %} "{{payload.reviewNotes | truncate: 140}}"{% endif %}',
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
 
@@ -530,7 +528,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Collaboration invite",
       body: '{{payload.ownerName}} invited you to join {{payload.planTitle}} ({{payload.planType | downcase}}) as {{payload.role | downcase | replace: "_", " "}} with a {{payload.revenueSharePercentage}}% revenue share.',
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -541,7 +539,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Invite accepted",
       body: '{{payload.collaboratorName}} accepted your invitation to {{payload.planTitle}} as {{payload.role | downcase | replace: "_", " "}}.',
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
   {
@@ -552,7 +550,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     inApp: {
       subject: "Removed from a plan",
       body: "You are no longer a collaborator on {{payload.planTitle}} ({{payload.planType | downcase}}).",
-      redirectUrl: DASHBOARD,
+      redirect: "dashboardUrl",
     },
   },
 ];

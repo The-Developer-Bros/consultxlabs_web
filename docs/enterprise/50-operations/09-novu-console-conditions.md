@@ -33,7 +33,7 @@ This gates the channel rather than the event, so the sync applies it to **every*
 
 On each family's **In-App** step, `inAppSkipRule` in `lib/novu/templates/conditions.ts` writes the condition `subscriber.data.routingBell` **is not false**. The operator language changed from "is true" to "is not false" because a subscriber whose flag was never written resolves to `null` in Novu's JSON Logic, and `null == true` evaluates to false — which would have silenced a subscriber who had simply never touched the setting. `!= false` treats `null` the same as `true`, matching the flag's own permissive default.
 
-A subscriber who has never touched the setting is therefore unaffected. Only an operator who has explicitly chosen `BELL_ONLY`, `EMAIL_ONLY` or `NEITHER` in their workspace settings sees a difference — which is the behaviour the settings panel has been promising and now delivers.
+A subscriber who has never touched the setting is therefore unaffected. `syncSubscriber` writes `routingBell` as `true` for `BELL_AND_EMAIL` and `BELL_ONLY` and as `false` for `EMAIL_ONLY` and `NEITHER`, so only an operator who has explicitly chosen `EMAIL_ONLY` or `NEITHER` in their workspace settings has the bell suppressed — which is the behaviour the settings panel has been promising and now delivers.
 
 ## Step two: the organization category flags
 

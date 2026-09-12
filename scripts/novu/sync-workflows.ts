@@ -35,11 +35,19 @@ type Plan =
   | { action: "retire"; id: string; reason: string }
   | { action: "foreign"; id: string };
 
+/** The plan's ceiling on live workflows per environment (Free and Pro). */
+const WORKFLOW_CAP = 20;
+
 const args = process.argv.slice(2);
 const DRY_RUN = args.includes("--dry-run");
 const CHECK = args.includes("--check");
 const ONLY =
   args.indexOf("--only") >= 0 ? args[args.indexOf("--only") + 1] : undefined;
+if (args.includes("--only") && (!ONLY || ONLY.startsWith("--"))) {
+  // A bare `--only` would otherwise widen to a full sync, retirements included.
+  console.error("--only needs a family id");
+  process.exit(2);
+}
 
 function isNotFound(err: unknown): boolean {
   return err instanceof NovuError && err.statusCode === 404;
@@ -54,6 +62,7 @@ function inAppControls(live: WorkflowResponseDto): Record<string, unknown> {
 function diff(live: WorkflowResponseDto, want: CreateWorkflowDto): string[] {
   const changed: string[] = [];
   if (live.name !== want.name) changed.push("name");
+  if (live.active !== (want.active ?? true)) changed.push("active");
   if ((live.description ?? "") !== (want.description ?? "")) {
     changed.push("description");
   }
@@ -191,11 +200,31 @@ async function main() {
   }
   if (DRY_RUN || pending.length === 0) return;
 
-  for (const { p, want } of pending) {
-    process.stdout.write(`applying ${p.action} ${p.id} … `);
-    await apply(novu, p, want);
+  // The cap counts live workflows, so a retirement must precede a create on
+  // a full environment — but only ONE at a time, so a create that fails
+  // leaves at most one legacy row gone, and a rerun completes the rest.
+  // Everything is idempotent: get→update|create, and a retired id is gone.
+  const retirements = pending.filter(({ p }) => p.action === "retire");
+  const writes = pending.filter(({ p }) => p.action !== "retire");
+  let live = (await novu.workflows.list({ limit: 100 })).result.totalCount;
+  const run = async (item: { p: Plan; want?: CreateWorkflowDto }) => {
+    process.stdout.write(`applying ${item.p.action} ${item.p.id} … `);
+    await apply(novu, item.p, item.want);
     console.log("done");
+  };
+  for (const w of writes) {
+    if (w.p.action === "create") {
+      while (live >= WORKFLOW_CAP && retirements.length > 0) {
+        await run(retirements.shift()!);
+        live -= 1;
+      }
+      await run(w);
+      live += 1;
+    } else {
+      await run(w);
+    }
   }
+  for (const r of retirements) await run(r);
 }
 
 main().catch((err) => {

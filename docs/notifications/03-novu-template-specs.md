@@ -1358,7 +1358,7 @@ New Review — {{payload.rating}} Stars from {{payload.reviewerName}}
 **Payload variables** (`VerificationPayload`):
 
 ```
-{{payload.status}}            - "APPROVED" | "REJECTED" | "PENDING"
+{{payload.status}}            - "VERIFIED" | "REJECTED" | "PENDING_VERIFICATION" (the profile enum after the routes map APPROVED→VERIFIED and NEEDS_INFO→PENDING_VERIFICATION)
 {{payload.reason}}            - Reason for status change (optional)
 {{payload.dashboardUrl}}       - Link to dashboard
 ```

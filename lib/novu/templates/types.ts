@@ -38,8 +38,13 @@ export type InAppTemplate = {
   subject?: string;
   /** Liquid sentence. */
   body: string;
-  /** Where a tap lands. Liquid; almost always `{{payload.dashboardUrl}}`. */
-  redirectUrl?: string;
+  /**
+   * The payload field holding the destination (`dashboardUrl`, `payUrl`…).
+   * Novu accepts only `{{var}}`, `http(s)://` or `/` at the start of a
+   * redirect, so a family cannot branch there; `toWire` copies this field
+   * into `payload.href` and every family redirects to `{{payload.href}}`.
+   */
+  redirect?: string;
 };
 
 export type WorkflowTemplate = {

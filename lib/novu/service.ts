@@ -7,7 +7,8 @@
 import { createHash } from "node:crypto";
 import * as Sentry from "@sentry/nextjs";
 import { getNovuClient, isNovuConfigured } from "./client";
-import { toWire } from "./templates/families";
+import { toWire } from "./templates";
+import type { NovuWorkflowId } from "./templates/types";
 import {
   NOVU_WORKFLOWS,
   type AccountBannedPayload,
@@ -214,7 +215,7 @@ function deriveTransactionId(
 }
 
 async function triggerWorkflow<T extends NovuPayload>(
-  workflowId: string,
+  workflowId: NovuWorkflowId,
   subscriberId: string,
   payload: T,
   dedupeKey?: string,
@@ -258,7 +259,7 @@ async function triggerWorkflow<T extends NovuPayload>(
  * Uses a single API call with array `to` field (max 100 per call).
  */
 async function triggerForMultiple<T extends NovuPayload>(
-  workflowId: string,
+  workflowId: NovuWorkflowId,
   userIds: string[],
   payload: T,
   dedupeKey?: string,
@@ -319,7 +320,7 @@ async function triggerForMultiple<T extends NovuPayload>(
  * Uses Novu's triggerBroadcast API — no need to fetch user IDs.
  */
 async function triggerBroadcastWorkflow<T extends NovuPayload>(
-  workflowId: string,
+  workflowId: NovuWorkflowId,
   payload: T,
 ): Promise<TriggerResult> {
   if (!isNovuConfigured()) {
@@ -363,7 +364,7 @@ async function triggerBroadcastWorkflow<T extends NovuPayload>(
  * why that read is bounded and never throws.
  */
 async function triggerForMultipleZoned(
-  workflowId: string,
+  workflowId: NovuWorkflowId,
   userIds: string[],
   build: (timezone: string) => NovuPayload,
   dedupeKey?: string,
@@ -397,7 +398,7 @@ async function triggerForMultipleZoned(
 
 /** Single-recipient sibling of {@link triggerForMultipleZoned}. */
 async function triggerWorkflowZoned(
-  workflowId: string,
+  workflowId: NovuWorkflowId,
   subscriberId: string,
   build: (timezone: string) => NovuPayload,
   dedupeKey?: string,

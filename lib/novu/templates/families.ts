@@ -225,19 +225,3 @@ export const EVENT_FAMILY: Record<Ids[keyof Ids], FamilyId> = {
 export function familyOf(event: NovuWorkflowId): FamilyId {
   return EVENT_FAMILY[event];
 }
-
-/**
- * What actually goes over the wire: the family as the workflow, the event
- * as a payload field the template branches on. Every trigger helper calls
- * this and nothing else knows the families exist.
- */
-export function toWire<T extends Record<string, unknown>>(
-  event: string,
-  payload: T,
-): { workflowId: string; payload: T & { event: string } } {
-  const family = EVENT_FAMILY[event as NovuWorkflowId];
-  if (!family) {
-    throw new Error(`Novu: "${event}" has no workflow family`);
-  }
-  return { workflowId: family, payload: { ...payload, event } };
-}

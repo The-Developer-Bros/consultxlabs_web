@@ -3,30 +3,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { X, ExternalLink } from "lucide-react";
 import Link from "next/link";
-import { useQuery } from "@tanstack/react-query";
 import { useAnnouncementBar } from "@/providers/AnnouncementBarProvider";
-
-interface Announcement {
-  id: string;
-  title: string;
-  content: string;
-  type: string;
-  backgroundColor?: string;
-  textColor?: string;
-  linkUrl?: string;
-  linkText?: string;
-}
+import { useActiveAnnouncements } from "@/hooks/useActiveAnnouncements";
 
 const STORAGE_KEY_PREFIX = "announcement_closed_";
-
-async function fetchAnnouncements(): Promise<Announcement[]> {
-  const response = await fetch("/api/announcements");
-  if (!response.ok) {
-    throw new Error("Failed to fetch announcements");
-  }
-  const result = await response.json();
-  return result.success ? result.data : [];
-}
 
 const AnnouncementBar = () => {
   const [closedIds, setClosedIds] = useState<Set<string>>(new Set());
@@ -34,12 +14,7 @@ const AnnouncementBar = () => {
   const barRef = useRef<HTMLDivElement>(null);
   const { setVisible, setHeight } = useAnnouncementBar();
 
-  const { data: announcements = [] } = useQuery({
-    queryKey: ["announcements"],
-    queryFn: fetchAnnouncements,
-    staleTime: 5 * 60 * 1000, // 5 minutes
-    refetchOnWindowFocus: false,
-  });
+  const { data: announcements = [] } = useActiveAnnouncements();
 
   // Load closed announcements from localStorage on mount
   useEffect(() => {
