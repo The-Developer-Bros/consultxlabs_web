@@ -20,6 +20,7 @@ import { CompanyLogo } from "@/components/ui/company-logo";
 import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import RazorpayCheckout from "../../../components/RazorpayCheckout";
 import StripeCheckout from "../../../components/StripeCheckout";
+import { isMockPayEnabled } from "@/app/checkout/plans/mockPay";
 import {
   createHandleApiError,
   createHandleCheckoutSuccess,
@@ -36,6 +37,7 @@ import { useCheckoutTaxContext } from "../../useCheckoutTaxContext";
 import type { AppliedDiscount } from "@/types/checkout";
 import { OrgPayerSelector } from "@/app/checkout/components/OrgPayerSelector";
 import { FxEstimateNote } from "@/app/checkout/components/FxEstimateNote";
+import { CheckoutBackButton } from "@/app/checkout/components/CheckoutBackButton";
 import {
   BillingStateSelect,
   useBillingState,
@@ -136,6 +138,12 @@ export default function WebinarCheckoutPage({
     isBlocked: isMaintenanceBlocked,
     blockReason: maintenanceBlockReason,
   } = useMaintenanceGuard();
+
+  // Smart-back source: the webinar plan's public detail page. Falls back to
+  // the explore directory when the plan id is unavailable (error state).
+  const webinarBackHref = resolvedParams.planId
+    ? `/explore/programs/plans/webinars/${resolvedParams.planId}`
+    : "/explore";
 
   // Validate search params once with Zod — single source of truth for all checkout flows
   const validatedSearchParams = useMemo((): WebinarSearchParams | null => {
@@ -553,12 +561,12 @@ export default function WebinarCheckoutPage({
           </div>
           <p className="font-semibold text-lg mb-2">Unable to load checkout</p>
           <p className="text-background/70 text-sm">{error}</p>
-          <button
-            onClick={() => window.history.back()}
-            className="mt-5 inline-flex items-center rounded-lg bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors"
-          >
-            Go back
-          </button>
+          <div className="mt-5 flex justify-center">
+            <CheckoutBackButton
+              sourceHref={webinarBackHref}
+              className="text-background/80 hover:bg-background/10 hover:text-background"
+            />
+          </div>
         </div>
       </div>
     );
@@ -600,6 +608,9 @@ export default function WebinarCheckoutPage({
   return (
     <>
       <div className="flex flex-col gap-6 border-r border-border bg-gradient-to-br from-muted via-background to-muted p-6 sm:p-8">
+        <div className="flex justify-start">
+          <CheckoutBackButton sourceHref={webinarBackHref} />
+        </div>
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-4 min-w-0">
             <Avatar className="w-12 h-12 border shrink-0">
@@ -958,7 +969,7 @@ export default function WebinarCheckoutPage({
                           disabled={isMaintenanceBlocked || isSoldOut}
                         />
                       ) : null}
-                      {process.env.NODE_ENV === "development" && (
+                      {isMockPayEnabled() && (
                         <Button
                           variant="secondary"
                           onClick={() => handleCheckout(gateway.gateway, true)}

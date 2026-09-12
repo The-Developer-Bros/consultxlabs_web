@@ -143,13 +143,26 @@ export async function createMockRefund(
 // ============================================================================
 
 /**
- * Check if mock payments should be enabled
+ * Check if mock payments should be enabled. Single server-side source of truth
+ * consumed by createPaymentIntent (lib/payments/index.ts) and, through the
+ * app/checkout/plans/mockPay re-export, by the checkout route and the client
+ * Mock Pay buttons.
+ *
+ * Local development and Netlify deploy previews / branch deploys are always
+ * enabled. `CONTEXT` (deploy-preview / branch-deploy) is server-side only —
+ * it is replaced with `undefined` in client bundles, which is why the preview
+ * flag is ALSO exported as NEXT_PUBLIC_MOCK_PAYMENTS_ENABLED via netlify.toml
+ * for the client button to see. Production is never enabled.
  */
 export function shouldEnableMockPayments(): boolean {
-  // Enable mock payments in development or when explicitly enabled
+  if (process.env.NODE_ENV === "development") return true;
+
+  const context = process.env.CONTEXT as string | undefined;
+  if (context === "deploy-preview" || context === "branch-deploy") return true;
+
   return (
-    process.env.NODE_ENV === "development" ||
-    process.env.ENABLE_MOCK_PAYMENTS === "true"
+    process.env.ENABLE_MOCK_PAYMENTS === "true" ||
+    process.env.NEXT_PUBLIC_MOCK_PAYMENTS_ENABLED === "true"
   );
 }
 

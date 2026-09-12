@@ -61,3 +61,17 @@
     # Continue with normal build for non-Dependabot PRs
     exit 1
   """
+
+  # Mock Pay on previews (see app/checkout/plans/mockPay.ts). The client bundle
+  # cannot see Netlify's `CONTEXT`, so we export the NEXT_PUBLIC flag here and
+  # the server route additionally accepts a deploy-preview CONTEXT. Never
+  # present under [context.production].
+  [context.deploy-preview.environment]
+    NEXT_PUBLIC_MOCK_PAYMENTS_ENABLED = "true"
+
+# Branch deploys (non-prod, non-preview). Preview-equivalent Mock Pay access.
+# Scope today is Mock Pay only: simulating capture webhooks on a preview is a
+# follow-up that ships only after previews are password/ACL protected (see
+# app/checkout/lifecycle.md follow-ups).
+[context.branch-deploy.environment]
+  NEXT_PUBLIC_MOCK_PAYMENTS_ENABLED = "true"

@@ -11,6 +11,7 @@ import { formatCurrencyAmount } from "@/utils/formatting";
 
 import { TrialPayButton } from "./TrialPayButton";
 import { ViewerLocalTime } from "./ViewerLocalTime";
+import { CheckoutBackButton } from "@/app/checkout/components/CheckoutBackButton";
 
 /**
  * Branded checkout page for a paid trial.
@@ -110,6 +111,9 @@ export default async function TrialCheckoutPage({
 
   return (
     <main className="mx-auto max-w-xl px-4 py-16">
+      <div className="mb-4 flex justify-start">
+        <CheckoutBackButton sourceHref="/dashboard" />
+      </div>
       <Card>
         <CardHeader>
           <CardTitle>

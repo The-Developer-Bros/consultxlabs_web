@@ -24,6 +24,7 @@ import { checkoutLimiter, applyRateLimit } from "@/lib/rate-limit";
 import { ZodError } from "zod";
 import { Prisma } from "@prisma/client";
 import { replayByIdempotencyKey } from "@/lib/payments/operations/checkout-replay";
+import { isMockPayEnabled } from "@/app/checkout/plans/mockPay";
 import { routeGateway } from "@/lib/payments/gateway-router";
 import { resolveCheckoutTaxContext } from "@/lib/payments/tax/checkout-context";
 
@@ -47,9 +48,9 @@ export async function POST(req: NextRequest) {
     // Validate request body
     const body = await req.json();
     const validatedData = checkoutSchema.parse(body);
-    // Only allow mock payments in development — prevent client-side bypass in production
-    const isMockPayment =
-      body.isMockPayment === true && process.env.NODE_ENV === "development";
+    // Only allow mock payments in dev or on Netlify preview builds — prevent
+    // client-side bypass in production.
+    const isMockPayment = body.isMockPayment === true && isMockPayEnabled();
 
     // #828 — fast-path replay: a double-click / network retry / second tab
     // with the same key gets the original attempt's response, never a second

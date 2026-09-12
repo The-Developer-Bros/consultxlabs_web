@@ -24,6 +24,7 @@ import {
 import type { AppliedDiscount } from "@/types/checkout";
 import { OrgPayerSelector } from "@/app/checkout/components/OrgPayerSelector";
 import { FxEstimateNote } from "@/app/checkout/components/FxEstimateNote";
+import { CheckoutBackButton } from "@/app/checkout/components/CheckoutBackButton";
 import {
   BillingStateSelect,
   useBillingState,
@@ -45,6 +46,7 @@ import {
   fetchCheckoutWithBusyRetry,
   reportPaymentsError,
 } from "@/app/checkout/plans/utils";
+import { isMockPayEnabled } from "@/app/checkout/plans/mockPay";
 
 // price arrives as number: extended client + JSON serialization (#780)
 type ConsultationPlanWithConsultant = Omit<ConsultationPlan, "price"> & {
@@ -143,6 +145,12 @@ export default function ConsultationCheckoutPage({
     isBlocked: isMaintenanceBlocked,
     blockReason: maintenanceBlockReason,
   } = useMaintenanceGuard();
+
+  // Smart-back source: the expert profile behind this plan. Falls back to the
+  // explore directory when the plan failed to load (error state).
+  const consultantBackHref = eventData?.data?.consultantProfile?.id
+    ? `/explore/experts/${eventData.data.consultantProfile.id}`
+    : "/explore/experts";
 
   // Validate search params once with Zod — single source of truth for all checkout flows
   const validatedSearchParams = useMemo((): ConsultationSearchParams | null => {
@@ -578,12 +586,12 @@ export default function ConsultationCheckoutPage({
           </div>
           <p className="font-semibold text-lg mb-2">Unable to load checkout</p>
           <p className="text-background/70 text-sm">{error}</p>
-          <button
-            onClick={() => window.history.back()}
-            className="mt-5 inline-flex items-center rounded-lg bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors"
-          >
-            Go back
-          </button>
+          <div className="mt-5 flex justify-center">
+            <CheckoutBackButton
+              sourceHref={consultantBackHref}
+              className="text-background/80 hover:bg-background/10 hover:text-background"
+            />
+          </div>
         </div>
       </div>
     );
@@ -595,6 +603,9 @@ export default function ConsultationCheckoutPage({
   return (
     <>
       <div className="flex flex-col gap-6 border-r border-border bg-gradient-to-br from-muted via-background to-muted p-6 sm:p-8">
+        <div className="flex justify-start">
+          <CheckoutBackButton sourceHref={consultantBackHref} />
+        </div>
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-4 min-w-0">
             <Avatar className="w-12 h-12 border shrink-0">
@@ -990,8 +1001,8 @@ export default function ConsultationCheckoutPage({
                           }
                         />
                       ) : null}
-                      {/* Mock Payment Button - development only */}
-                      {process.env.NODE_ENV === "development" && (
+                      {/* Mock Payment Button - dev + Netlify previews only */}
+                      {isMockPayEnabled() && (
                         <Button
                           variant="secondary"
                           onClick={() => handleCheckout(gateway.gateway, true)}
