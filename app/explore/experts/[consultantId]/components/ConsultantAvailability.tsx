@@ -7,6 +7,7 @@ import { SlotStatusLegend } from "@/components/scheduling/SlotStatusLegend";
 import { BUYER_LEGEND_KEYS } from "@/lib/scheduling/slot-status-tokens";
 import { addDays, startOfDay, endOfDay } from "date-fns";
 import { toZonedTime, formatInTimeZone } from "date-fns-tz";
+import { readSlotGridEnvelope } from "@/lib/scheduling/safeJson";
 import type { ConsultantDetailData, ProcessedSlot } from "../types";
 
 interface ConsultantAvailabilityProps {
@@ -62,11 +63,18 @@ export function ConsultantAvailability({
           `/api/slots/availability-with-allocation/${consultantDetails.id}?startDateInUtc=${startDateInUtc.toISOString()}&endDateInUtc=${endDateInUtc.toISOString()}&timezone=${encodeURIComponent(timezone)}`,
         );
 
-        if (!response.ok) {
-          throw new Error("Failed to fetch availability data");
-        }
-
-        const { data } = await response.json();
+        // Hotfix: platform timeouts are text/plain — parse defensively so a
+        // timeout keeps the last grid state instead of throwing
+        // "Unexpected token 'h'...".
+        const data = await readSlotGridEnvelope<
+          Record<
+            string,
+            (TSlotTiming & {
+              isAllocated: boolean;
+              bookingStatus: "available" | "partially-booked" | "fully-booked";
+            })[]
+          >
+        >(response, "Failed to fetch availability data");
         setAvailabilityData(data);
       } catch (error) {
         console.error("Error fetching availability data:", error);

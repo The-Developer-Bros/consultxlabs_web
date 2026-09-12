@@ -2,6 +2,7 @@ import { reportSentryError } from "@/lib/observability/report";
 import { isEventIdFormat } from "@/schemas/slotAllocation/validationSchemas";
 import { TimeSlot } from "./calendarUtils";
 import type { SlotConflictResult } from "@/utils/slotAllocation/types";
+import { readJsonSafe } from "./safeJson";
 
 /** #997 Phase 2 — tooltip display metadata for a booked slot, computed
  * server-side (only present when `includeAppointmentDetails` was authorized). */
@@ -578,16 +579,26 @@ export class AllocationService {
         return { etag: ifNoneMatch ?? null, notModified: true as const };
       }
       if (!response.ok) {
-        const errorData = await response.json();
+        // Hotfix: the platform timeout body is text/plain ("the edge function
+        // timed out") — read as text first so it maps to a retryable message
+        // instead of "Unexpected token 'h'... is not valid JSON".
+        const body = await readJsonSafe<{ error?: string }>(
+          response,
+          "Failed to fetch availability slots",
+        );
         // See fetchConsultantData: httpStatus lets the catch distinguish a
         // 4xx business answer from a real fault without changing the thrown
         // Error's message/shape.
         throw Object.assign(
-          new Error(errorData.error || "Failed to fetch availability slots"),
+          new Error(
+            body?.error || "Failed to fetch availability slots",
+          ),
           { httpStatus: response.status },
         );
       }
-      const result = await response.json();
+      const result = await readJsonSafe<{
+        data: Record<string, RawAvailabilityApiSlot[]>;
+      }>(response, "Failed to fetch availability slots");
       const { data: slotsByDate } = result;
 
       // Flatten the grouped-by-date slots into a single array
@@ -666,7 +677,10 @@ export class AllocationService {
         });
       }
 
-      const { data, weeklyConfirmedCallCounts } = await response.json();
+      const { data, weeklyConfirmedCallCounts } = await readJsonSafe<{
+        data: unknown;
+        weeklyConfirmedCallCounts?: Record<string, number>;
+      }>(response, "Failed to fetch event slots");
       return {
         data: data || [],
         weeklyConfirmedCallCounts:

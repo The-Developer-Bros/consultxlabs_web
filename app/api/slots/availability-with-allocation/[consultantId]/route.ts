@@ -28,6 +28,10 @@ import {
   ifNoneMatchSatisfied,
   readAvailabilityGridMarker,
 } from "@/lib/scheduling/availabilityGridMarker";
+import {
+  MAX_AVAILABILITY_WINDOW_DAYS,
+  SLOT_GRID_WINDOW_TOO_LARGE_CODE,
+} from "@/lib/scheduling/safeJson";
 import type { TSlotTiming } from "@/types/slots";
 import type { BookingStatus } from "@/utils/timeSlotsProcessing";
 
@@ -213,9 +217,32 @@ export async function GET(
       if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
         throw new Error("Invalid date format");
       }
+      if (endDate <= startDate) {
+        return NextResponse.json(
+          { error: "endDateInUtc must be after startDateInUtc" },
+          { status: 400 },
+        );
+      }
     } catch (_error) {
       return NextResponse.json(
         { error: "Dates must be in UTC ISO format" },
+        { status: 400 },
+      );
+    }
+
+    // Hotfix: the grid is O(window width) CPU — a full 1/6/12-month scheduling
+    // period exceeds the ~26s function ceiling and the platform substitutes a
+    // text/plain timeout the client used to surface as
+    // "Unexpected token 'h'...". Clamp to 31 days so callers paginate
+    // (visible week/month) instead of timing out. No schema change.
+    const windowMs = endDate.getTime() - startDate.getTime();
+    if (windowMs > MAX_AVAILABILITY_WINDOW_DAYS * 24 * 60 * 60 * 1000) {
+      return NextResponse.json(
+        {
+          error: `Date window too large. Max ${MAX_AVAILABILITY_WINDOW_DAYS} days per request — fetch the visible week/month and paginate.`,
+          code: SLOT_GRID_WINDOW_TOO_LARGE_CODE,
+          maxWindowDays: MAX_AVAILABILITY_WINDOW_DAYS,
+        },
         { status: 400 },
       );
     }
