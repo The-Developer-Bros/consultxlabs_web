@@ -33,6 +33,9 @@ jest.mock("../../lib/prisma", () => ({
     // #1003 — group-event cancel reads the attendee roster off the payments so
     // it can notify them. Default to an empty event.
     payment: { findMany: jest.fn().mockResolvedValue([]) },
+    // #1580 C-P1-5 — group-event cancel and reschedule read the ACCEPTED
+    // collaborators for the recipient list. Default to none.
+    collaborator: { findMany: jest.fn().mockResolvedValue([]) },
     slotOfAppointment: {
       findMany: jest.fn(),
       updateManyAndReturn: jest.fn().mockResolvedValue([]),

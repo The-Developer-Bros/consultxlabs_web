@@ -2,7 +2,10 @@ import * as Sentry from "@sentry/nextjs";
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-server";
 import prisma from "@/lib/prisma";
-import { respondToInvitation } from "@/lib/collaborators/service";
+import {
+  CollaboratorIneligibleError,
+  respondToInvitation,
+} from "@/lib/collaborators/service";
 
 export async function PATCH(
   req: NextRequest,
@@ -59,7 +62,16 @@ export async function PATCH(
 
     return NextResponse.json({ data: collab });
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "collaborations" } });
+    if (error instanceof CollaboratorIneligibleError) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.httpStatus },
+      );
+    }
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "collaborations" } },
+    );
     console.error("Error responding to collaboration:", error);
     return NextResponse.json(
       { error: "Failed to respond to invitation" },

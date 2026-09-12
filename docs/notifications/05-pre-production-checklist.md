@@ -90,7 +90,7 @@ newsletter@familiarise.com
 | Digest/batching            | Limited   | Full             |
 | Activity feed retention    | 7 days    | 30 days          |
 | Subscribers                | Unlimited | Unlimited        |
-| Workflows                  | Unlimited | Unlimited        |
+| Workflows                  | 20        | 20 (100 on Team) |
 
 **What an "event" is:**
 
@@ -150,7 +150,7 @@ newsletter@familiarise.com
 
 - [ ] Create account at [novu.co](https://novu.co)
 - [ ] Add Resend as email provider in Novu → Integrations
-- [ ] Configure 16 Tier 1 workflows (see [Novu Dashboard Configuration](#novu-dashboard-configuration))
+- [ ] Sync the workflows (see [Novu Dashboard Configuration](#novu-dashboard-configuration))
 - [ ] Copy Secret Key + App ID → save for Step 5
 
 ### Step 4: Prisma Migration
@@ -216,30 +216,30 @@ Use the template specs at `docs/notifications/03-novu-template-specs.md` for cop
 4. Set default From: `Familiarise <notifications@yourdomain.com>`
 5. Save and activate
 
-### 2. Create 16 Tier 1 Workflows
+### 2. Sync the workflows
 
-For each workflow in the template specs doc:
+The workflows are no longer created by hand. `lib/novu/templates/` is the source of truth, and `scripts/novu/sync-workflows.ts` writes it to the Novu environment with three commands:
 
-1. Go to **Workflows** → **"Create Workflow"**
-2. Set **Workflow ID** to match exactly (e.g., `appointment-booked`)
-3. Add an **In-App** step → paste the in-app notification text
-4. Add an **Email** step → paste the subject line and HTML body
-5. Set the **Redirect URL** to `{{payload.dashboardUrl}}`
-6. Save
+- `npm run novu:sync -- --dry-run` prints the plan without writing anything.
+- `npm run novu:sync` applies the plan. It retires the 19 legacy workflows first, because the environment's 20-workflow cap counts live workflows and a create on a full environment fails. This apply is a production operation: local development and production both point at the same Development environment, so running it writes to what customers see. Run it by hand after a merge, never from CI.
+- `npm run novu:check` exits 1 if the live environment has drifted from the manifest. This is the drift guard CI runs on every pull request.
 
-### 3. Configure Preference Categories
+### 3. Preference categories and step conditions
 
-Map workflows to categories in each workflow's settings:
+Nothing to configure by hand. Each family carries its opt-out category as a tag and as a step condition (`subscriber.data.<categoryFlag> != false`, plus `routingBell != false`), both written by the sync from `FAMILIES` and `inAppSkipRule` in `lib/novu/templates/`. The family-to-category map is the table in `03-novu-template-specs.md`, and the runbook in `docs/enterprise/50-operations/09-novu-console-conditions.md` describes what the sync writes and how to verify it.
 
-| Category              | Workflows                                                                                          |
-| --------------------- | -------------------------------------------------------------------------------------------------- |
-| `appointments`        | appointment-booked, appointment-cancelled, appointment-reminder, new-booking-request               |
-| `payments`            | payment-success, payment-failed                                                                    |
-| `subscriptions`       | subscription-started, subscription-cancelled                                                       |
-| `trials`              | trial-session-requested, trial-session-scheduled, trial-session-completed, trial-session-cancelled |
-| `support`             | support-ticket-created, support-ticket-response                                                    |
-| `feedback`            | new-review-received                                                                                |
-| (none — always sends) | verification-status-changed                                                                        |
+### 4. Gate the production deploy on the sync
+
+The `prod` branch deploys on merge, and the code it carries triggers family ids. Before merging `dev` into `prod` after any change under `lib/novu/templates/`, run `npm run novu:sync` and then `npm run novu:check` and confirm it reports nothing to change; a deploy that lands before the sync drops every notification of a missing family silently. The same order applies in reverse for the first migration: merge, sync, then verify one event per changed family in an inbox.
+
+--------------------- | -------------------------------------------------------------------------------------------------- |
+| `appointments` | appointment-booked, appointment-cancelled, appointment-reminder, new-booking-request |
+| `payments` | payment-success, payment-failed |
+| `subscriptions` | subscription-started, subscription-cancelled |
+| `trials` | trial-session-requested, trial-session-scheduled, trial-session-completed, trial-session-cancelled |
+| `support` | support-ticket-created, support-ticket-response |
+| `feedback` | new-review-received |
+| (none — always sends) | verification-status-changed |
 
 ---
 
@@ -344,6 +344,8 @@ openssl rand -hex 32  # → NEWSLETTER_HMAC_SECRET
 - Exceeding 10K events/month
 - Need activity feed retention >7 days
 - Need advanced digest/batching rules
+
+Note that Pro keeps the 20-workflow cap; only Team ($250/month) raises it to 100. The 16 workflow families exist so that the cap is not the reason to upgrade.
 
 **Expected timeline:** Month 3-6 post-launch (when you have ~100+ DAU)
 

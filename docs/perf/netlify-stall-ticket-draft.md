@@ -53,3 +53,7 @@ No improvement (possibly worse). We reverted.
 ## Impact
 
 User-visible: landing-page/explore clicks stall 20–30s then render (the "site is down" perception), worst right after deploys and during traffic bursts from a cold pool. We ship ISR-first architecture and deploy-warming workflows, but the tail persists whenever concurrency forces new instances.
+
+## Addendum, 2026-09-12 (not yet sent)
+
+Three facts to add before filing. First, Netlify's functions configuration page now lists the synchronous execution limit as 60 seconds and not configurable (the 2026-06-25 redesign); the "bare platform 500s at ~39 s" recorded above are therefore under the documented limit, which is a separate defect to report. Second, the ten cold invocations after the 2026-09-12 14:28 UTC production publish (deploy `6aa55feffc312e0008f33d62`, `@netlify/plugin-nextjs@5.15.13`, `nodejs22.x`, region `sin`) reported Duration 28.0–32.3 s and Memory Usage 892–1012 MB, against p50 219 ms and 116 MB warm, so the stall is unchanged on the latest runtime. Third, the edge returns a 504 at roughly 26 seconds to a response that has not started streaming while the function runs to completion (#1454); the value and configurability of that timeout are undocumented and should be asked in the same ticket. The full verification is in `.claude/skills/deployment/netlify/platform-limits.md`.

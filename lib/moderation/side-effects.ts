@@ -19,6 +19,10 @@ import type {
 } from "@prisma/client";
 import { EarningStatus } from "@prisma/client";
 import prisma, { type Tx } from "@/lib/prisma";
+import {
+  removeCollaboratorStanding,
+  type CollaborationRef,
+} from "@/lib/collaborators/standing";
 import { recomputeConsultantRating } from "@/lib/reviews";
 import {
   getStreamChatClient,
@@ -78,11 +82,6 @@ export interface TransactionalEffectResult {
   collaborationsRemoved?: CollaborationRef[];
 }
 
-export interface CollaborationRef {
-  planType: "webinar" | "class";
-  planId: string;
-}
-
 export type StepStatus = "ok" | "failed" | "skipped" | "gave_up";
 
 export interface SideEffectSummary extends TransactionalEffectResult {
@@ -100,6 +99,8 @@ export interface SideEffectSummary extends TransactionalEffectResult {
   notification?: StepStatus;
   /** #1580 C-P0-4 — Stream revocation for every plan in `collaborationsRemoved`. */
   collaboratorRevocation?: StepStatus;
+  /** #1580 — how many times the sweep has re-driven a failed revocation. */
+  collaboratorRevocationAttempts?: number;
   errors?: string[];
 }
 
@@ -181,6 +182,8 @@ async function banOrSuspendUser(
     if (earningsHeld !== undefined) result.earningsHeld = earningsHeld;
   }
 
+  // #1580 C-P0-4 — a moderated account otherwise stays an ACCEPTED collaborator
+  // in every split, roster and recording; the flip is shared with erasure.
   const collaborationsRemoved = await removeCollaboratorStanding(
     tx,
     report.targetUserId,
@@ -189,38 +192,6 @@ async function banOrSuspendUser(
     result.collaborationsRemoved = collaborationsRemoved;
   }
   return result;
-}
-
-// #1580 C-P0-4 — a moderated account otherwise stays an ACCEPTED collaborator in
-// every split, roster and recording. REMOVED is final: reinstatement re-invites.
-async function removeCollaboratorStanding(
-  tx: Tx,
-  targetUserId: string,
-): Promise<CollaborationRef[]> {
-  const target = await tx.user.findUnique({
-    where: { id: targetUserId },
-    select: { consultantProfileId: true },
-  });
-  if (!target?.consultantProfileId) return [];
-
-  // One statement, so the plans handed to the revocation are exactly the rows
-  // flipped — a re-invite landing between a read and a write cannot slip past.
-  const rows = await tx.collaborator.updateManyAndReturn({
-    where: {
-      consultantProfileId: target.consultantProfileId,
-      status: { in: ["PENDING", "ACCEPTED"] },
-    },
-    data: { status: "REMOVED", respondedAt: new Date() },
-    select: { collaboratorType: true, webinarPlanId: true, classPlanId: true },
-  });
-
-  return rows.flatMap((row) => {
-    const planId =
-      row.collaboratorType === "WEBINAR" ? row.webinarPlanId : row.classPlanId;
-    if (!planId) return [];
-    const planType = row.collaboratorType === "WEBINAR" ? "webinar" : "class";
-    return [{ planType, planId } as CollaborationRef];
-  });
 }
 
 // Hold the banned consultant's unpaid earnings for admin disposition; HELD is

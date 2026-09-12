@@ -33,6 +33,8 @@ export const ErrorTypes = {
   // by instanceof and hardcodes `errorType: "WALLET_FROZEN"` in the response
   // JSON), so this value must equal that literal or the toast map misses it.
   WALLET_FROZEN: "WALLET_FROZEN",
+  // #1580 — the plan's owner or an accepted collaborator buying their own seat.
+  SELF_BOOKING: "SELF_BOOKING_ERROR",
   CONSENT_REQUIRED: "CONSENT_REQUIRED_ERROR",
   CONSENT_WITHDRAWN: "CONSENT_WITHDRAWN_ERROR",
   // Same literal-equality rule as WALLET_FROZEN above: the checkout route
@@ -219,6 +221,11 @@ export const BUSINESS_ERROR_CODES: ReadonlyArray<{
   {
     code: "WALLET_FROZEN",
     errorType: ErrorTypes.WALLET_FROZEN,
+    httpStatus: 409,
+  },
+  {
+    code: "SELF_BOOKING",
+    errorType: ErrorTypes.SELF_BOOKING,
     httpStatus: 409,
   },
   {

@@ -60,6 +60,11 @@ export function useSessionInfo(): SessionInfo {
   const { data: session } = useSession();
 
   const consultantUserId = str(custom?.consultantUserId);
+  // #1580 C-P1-4 — the owner plus the accepted co-presenter, stamped by
+  // buildCallCustom; a crew collaborator is a member without host controls.
+  const hostUserIds = Array.isArray(custom?.hostUserIds)
+    ? custom.hostUserIds.filter((id): id is string => typeof id === "string")
+    : [];
   // #org-appts — which SIDE of this appointment the viewer is on, not the
   // singular UserRole, which is wrong for a dual-profile user booked as a
   // learner into someone else's session. Role fallback for legacy calls
@@ -67,9 +72,15 @@ export function useSessionInfo(): SessionInfo {
   // read `isHost` off this hook rather than repeating it, because it gates
   // "End for everyone" — a destructive action the people it affects cannot
   // undo, and three copies could disagree about who may take it.
-  const isHost = consultantUserId
-    ? session?.user?.id === consultantUserId
-    : session?.user?.role === "CONSULTANT";
+  const me = session?.user?.id;
+  let isHost: boolean;
+  if (hostUserIds.length > 0) {
+    isHost = Boolean(me) && hostUserIds.includes(me as string);
+  } else if (consultantUserId) {
+    isHost = me === consultantUserId;
+  } else {
+    isHost = session?.user?.role === "CONSULTANT";
+  }
 
   const hostName = str(custom?.hostName);
   const guestName = str(custom?.guestName);

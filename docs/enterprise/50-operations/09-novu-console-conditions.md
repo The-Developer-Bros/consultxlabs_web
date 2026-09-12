@@ -10,74 +10,72 @@ last-reviewed: 2026-07-30
 
 [ADR 23](../70-design-decisions/23-notification-scope.md) made notifications carry their organization scope and made the organization preference categories writable. The application half of that is complete: every field below is written to the Novu subscriber record by `POST /api/novu/subscriber` and `PUT /api/novu/preferences`.
 
-The other half lives in the Novu console and cannot be done from the repository. Until the conditions in this document exist, **the preference switches save, display and read back correctly but do not gate delivery** — a member who turns off billing alerts still receives them. Nothing regresses in the meantime, because the default for every flag is permissive; the switches are simply inert.
-
-This document exists so that work is mechanical rather than reverse-engineered from the code. Work through it once and the feature is complete.
+The console half is now automated as well. [ADR 30](../70-design-decisions/30-novu-templates-as-code-and-workflow-families.md) moved the step conditions into `lib/novu/templates/conditions.ts`, and `npm run novu:sync` applies them per family — one `skip` rule per family's in-app step, derived from the family's `PreferenceCategory` — rather than an operator setting them by hand in the console. This document now describes what the sync writes, so that the reasoning behind the mapping stays legible without reverse-engineering the code.
 
 ## Where the flags come from
 
 Every flag is a key on the subscriber's `data` object. The two writers are `lib/novu/subscriber.ts` — `syncSubscriber` for the routing flags and `updateSubscriberPreferences` for the category flags. In the Novu step editor these are referenced as `subscriber.data.<key>`.
 
-| Key | Type | Default | Written from |
-|---|---|---|---|
-| `routingBell` | boolean | `true` | `OrgWorkspaceProfile.notificationRoutingMode` |
-| `routingEmail` | boolean | `true` | `OrgWorkspaceProfile.notificationRoutingMode` |
-| `routingMode` | string | `BELL_AND_EMAIL` | the same column, kept for readability in the console |
-| `categoryOrgBilling` | boolean | `true` | `NotificationPreference.orgBillingAlerts` |
-| `categoryOrgMembership` | boolean | `true` | `NotificationPreference.orgMembershipAlerts` |
-| `categoryOrgProgram` | boolean | `true` | `NotificationPreference.orgProgramAlerts` |
+| Key                     | Type    | Default          | Written from                                         |
+| ----------------------- | ------- | ---------------- | ---------------------------------------------------- |
+| `routingBell`           | boolean | `true`           | `OrgWorkspaceProfile.notificationRoutingMode`        |
+| `routingEmail`          | boolean | `true`           | `OrgWorkspaceProfile.notificationRoutingMode`        |
+| `routingMode`           | string  | `BELL_AND_EMAIL` | the same column, kept for readability in the console |
+| `categoryOrgBilling`    | boolean | `true`           | `NotificationPreference.orgBillingAlerts`            |
+| `categoryOrgMembership` | boolean | `true`           | `NotificationPreference.orgMembershipAlerts`         |
+| `categoryOrgProgram`    | boolean | `true`           | `NotificationPreference.orgProgramAlerts`            |
 
 The seven pre-existing `category*` flags are unchanged and already wired; do not touch them.
 
-## Step one: the routing flags
+## Step one: the routing flag
 
-These gate the channel rather than the event, so they apply to **every** workflow that has the corresponding step, not only the organization ones.
+This gates the channel rather than the event, so the sync applies it to **every** family's in-app step, not only the organization ones.
 
-On each workflow's **In-App** step, add the condition `subscriber.data.routingBell` **is true**. On each workflow's **Email** step, add `subscriber.data.routingEmail` **is true**.
+On each family's **In-App** step, `inAppSkipRule` in `lib/novu/templates/conditions.ts` writes the condition `subscriber.data.routingBell` **is not false**. The operator language changed from "is true" to "is not false" because a subscriber whose flag was never written resolves to `null` in Novu's JSON Logic, and `null == true` evaluates to false — which would have silenced a subscriber who had simply never touched the setting. `!= false` treats `null` the same as `true`, matching the flag's own permissive default.
 
-Both default to `true`, so a subscriber who has never touched the setting is unaffected. Only an operator who has explicitly chosen `BELL_ONLY`, `EMAIL_ONLY` or `NEITHER` in their workspace settings sees a difference — which is the behaviour the settings panel has been promising and not delivering.
+A subscriber who has never touched the setting is therefore unaffected. `syncSubscriber` writes `routingBell` as `true` for `BELL_AND_EMAIL` and `BELL_ONLY` and as `false` for `EMAIL_ONLY` and `NEITHER`, so only an operator who has explicitly chosen `EMAIL_ONLY` or `NEITHER` in their workspace settings has the bell suppressed — which is the behaviour the settings panel has been promising and now delivers.
 
 ## Step two: the organization category flags
 
-Each workflow below takes exactly one category condition, applied to **all** of its steps. The mapping follows the audience rather than the noun: an operator who wants invoices but not roster churn, and an expert who wants the reverse, are the two cases the split exists to serve.
+Each family carries at most one category condition, applied by the same `inAppSkipRule` call to its in-app step. The mapping follows the audience rather than the noun: an operator who wants invoices but not roster churn, and an expert who wants the reverse, are the two cases the split exists to serve.
 
 ### `categoryOrgBilling` — money in and money out
 
-| Workflow slug |
-|---|
-| `org-invoice-issued` |
-| `org-invoice-paid` |
-| `org-invoice-overdue` |
-| `org-wallet-topup-confirmed` |
-| `org-wallet-low` |
-| `org-payout-completed` |
-| `org-payout-failed` |
-| `org-payout-reversed` |
+| Workflow slug                  |
+| ------------------------------ |
+| `org-invoice-issued`           |
+| `org-invoice-paid`             |
+| `org-invoice-overdue`          |
+| `org-wallet-topup-confirmed`   |
+| `org-wallet-low`               |
+| `org-payout-completed`         |
+| `org-payout-failed`            |
+| `org-payout-reversed`          |
 | `org-member-overage-timed-out` |
-| `org-program-overage-due` |
+| `org-program-overage-due`      |
 
 The two overage workflows sit here rather than under programs because both are addressed to the member who now owes money, not to the operator watching a cap.
 
 ### `categoryOrgMembership` — who is in the organization
 
-| Workflow slug |
-|---|
-| `org-invite-sent` |
-| `org-invite-accepted` |
-| `org-expert-removed` |
+| Workflow slug              |
+| -------------------------- |
+| `org-invite-sent`          |
+| `org-invite-accepted`      |
+| `org-expert-removed`       |
 | `org-sso-provider-deleted` |
-| `org-sso-cert-expiring` |
+| `org-sso-cert-expiring`    |
 
 The two SSO workflows are membership rather than a category of their own: they concern how people get into the organization, and an operator who mutes roster noise is unlikely to want certificate warnings routed elsewhere. Revisit this if an organization asks for security alerts to be separately non-mutable.
 
 ### `categoryOrgProgram` — entitlement and capacity
 
-| Workflow slug |
-|---|
-| `org-program-exhausted` |
-| `org-program-cap-near` |
+| Workflow slug                  |
+| ------------------------------ |
+| `org-program-exhausted`        |
+| `org-program-cap-near`         |
 | `org-license-renewal-upcoming` |
-| `org-data-export-ready` |
+| `org-data-export-ready`        |
 
 `org-data-export-ready` is the loosest fit. It is operational rather than commercial, and it sits here because it is addressed to the same operator audience as the capacity warnings.
 

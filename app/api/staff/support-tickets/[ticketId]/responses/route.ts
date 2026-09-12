@@ -129,6 +129,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     if (!validatedData.isInternal) {
       void notifySupportTicketResponse(ticket.userId, {
         ticketId: ticket.id,
+        reference: ticket.referenceNumber ?? undefined,
         ticketTitle: ticket.title || "Support Ticket",
         message: validatedData.message,
         // Declared on the payload and never passed, so a template naming the

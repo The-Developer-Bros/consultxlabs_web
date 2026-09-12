@@ -27,9 +27,6 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
       where: { id: reportId },
       include: {
         reportedBy: {
-          select: { id: true, name: true, email: true, image: true },
-        },
-        targetUser: {
           select: {
             id: true,
             name: true,
@@ -38,13 +35,37 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
             role: true,
           },
         },
+        targetUser: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            image: true,
+            role: true,
+            banned: true,
+            banExpires: true,
+          },
+        },
+        review: {
+          select: {
+            id: true,
+            rating: true,
+            reviewDescription: true,
+            consultantProfile: {
+              select: { user: { select: { name: true } } },
+            },
+          },
+        },
+        // #1300 — the drawer's audit trail reads top-to-bottom as a history,
+        // so it is oldest first; the card's single "last action" line still
+        // reads the list route's own `desc`-ordered `actions[0]`.
         actions: {
           include: {
             takenBy: {
               select: { id: true, name: true, email: true },
             },
           },
-          orderBy: { createdAt: "desc" },
+          orderBy: { createdAt: "asc" },
         },
       },
     });
@@ -55,7 +76,10 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
 
     return NextResponse.json({ report });
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "staff" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "staff" } },
+    );
     console.error("Error fetching moderation report:", error);
     return NextResponse.json(
       { error: "Failed to fetch report" },
@@ -124,7 +148,10 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
 
     return NextResponse.json({ report });
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "staff" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "staff" } },
+    );
     console.error("Error updating moderation report:", error);
     return NextResponse.json(
       { error: "Failed to update report" },

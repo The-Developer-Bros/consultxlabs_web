@@ -8,7 +8,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { isPaymentEntitled } from "@/lib/payments/utils/refund-balance";
-import { isRecordingEnabledForAppointment } from "@/lib/stream/recording-utils";
+import {
+  isAppointmentOwner,
+  isRecordingEnabledForAppointment,
+} from "@/lib/stream/recording-utils";
 import {
   auditOperatorRecordingAccess,
   resolveOperatorRecordingAccess,
@@ -47,6 +50,11 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
                       select: {
                         recordingEnabled: true,
                         consultantProfileId: true,
+                        // #1580 C-P1-4 — the accepted co-presenter reads recording state too.
+                        collaborators: {
+                          where: { status: "ACCEPTED" as const },
+                          select: { consultantProfileId: true, role: true },
+                        },
                       },
                     },
                   },
@@ -57,6 +65,11 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
                       select: {
                         recordingEnabled: true,
                         consultantProfileId: true,
+                        // #1580 C-P1-4 — the accepted co-presenter reads recording state too.
+                        collaborators: {
+                          where: { status: "ACCEPTED" as const },
+                          select: { consultantProfileId: true, role: true },
+                        },
                       },
                     },
                   },
@@ -130,11 +143,13 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
       hasAccess = slotUserIds.includes(session.user.id);
     }
 
-    // Provider path: owns the consultant profile that delivered the session.
+    // Provider path: owns the consultant profile that delivered the session, or
+    // co-presents it — the same predicate the start/stop routes use, so the room
+    // shows the button to exactly the people the mutations admit (#1580 C-P1-4).
     if (
       !hasAccess &&
-      session.user.consultantProfileId &&
-      session.user.consultantProfileId === consultantProfileId
+      (session.user.consultantProfileId === consultantProfileId ||
+        isAppointmentOwner(appointment, session.user.consultantProfileId))
     ) {
       hasAccess = true;
     }
@@ -228,7 +243,10 @@ export async function GET(req: NextRequest, { params }: RouteParams) {
       recordingStartedBy: meetingSession.recordingStartedBy,
     });
   } catch (error) {
-    Sentry.captureException(error instanceof Error ? error : new Error(String(error)), { tags: { subsystem: "stream" } });
+    Sentry.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      { tags: { subsystem: "stream" } },
+    );
     console.error("Error getting meeting recording info:", error);
     return NextResponse.json(
       { error: "Failed to get recording info" },

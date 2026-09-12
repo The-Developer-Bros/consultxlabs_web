@@ -6,6 +6,7 @@ import {
   withAppointmentLock,
 } from "@/utils/appointmentlock";
 import prisma from "@/lib/prisma";
+import { collaboratorUserIds } from "@/lib/collaborators/recipients";
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-server";
 import { isPrivileged } from "@/lib/auth-helpers";
@@ -890,6 +891,17 @@ export async function POST(
               userIds.push(user.id);
             }
           }
+        }
+
+        // #1580 C-P1-5 — a group event's accepted collaborators are moved too.
+        if (webinar) {
+          userIds.push(
+            ...(await collaboratorUserIds("webinar", webinar.webinarPlanId)),
+          );
+        } else if (classEvent) {
+          userIds.push(
+            ...(await collaboratorUserIds("class", classEvent.classPlanId)),
+          );
         }
 
         // Deduplicate; exclude the initiator — you don't need a notification

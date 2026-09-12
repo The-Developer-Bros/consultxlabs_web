@@ -186,6 +186,12 @@ export function markUserSynced(userId: string): void {
 /**
  * Check if a user has been synced recently
  */
+/** #1580 — a withdrawn STREAM_DATA_PROCESSING consent must not ride the 5-minute
+ *  sync cache: the next roster build re-checks the user instead of trusting it. */
+export function forgetUserSynced(userId: string): void {
+  userSyncCache.delete(`user:${userId}`);
+}
+
 export function isUserSynced(userId: string): boolean {
   return userSyncCache.has(`user:${userId}`);
 }
