@@ -1,11 +1,7 @@
 import * as Sentry from "@sentry/nextjs";
 import { withSerializableRetry } from "@/lib/db/serializable-retry";
 import prisma, { type PrismaLike, type Tx } from "@/lib/prisma";
-import {
-  Prisma,
-  type AppointmentStatus,
-  type CollaboratorRole,
-} from "@prisma/client";
+import { Prisma, type CollaboratorRole } from "@prisma/client";
 import type { Collaborator, CollaboratorStatus } from "@prisma/client";
 import { removeUserFromEventChannel } from "@/actions/stream/chat/event-channel.action";
 import { getStreamChatClient } from "@/lib/stream-client";
@@ -196,18 +192,13 @@ async function assertNotAttendee(
   userId: string,
   db: PrismaLike = prisma,
 ): Promise<void> {
+  // Typed up front: Prisma's XOR relation filter rejects a spread literal.
+  const appointment: Prisma.AppointmentWhereInput = livePlanAppointmentsWhere(
+    planType,
+    planId,
+  );
   const seat = await db.slotOfAppointment.findFirst({
-    where: {
-      deletedAt: null,
-      user: { some: { id: userId } },
-      appointment: {
-        deletedAt: null,
-        status: { notIn: ["CANCELLED", "REJECTED", "EXPIRED"] },
-        ...(planType === "webinar"
-          ? { webinar: { webinarPlanId: planId } }
-          : { class: { classPlanId: planId } }),
-      },
-    },
+    where: { deletedAt: null, user: { some: { id: userId } }, appointment },
     select: { id: true },
   });
   if (seat) {
@@ -446,16 +437,31 @@ export async function respondToInvitation(
   return updated;
 }
 
-/** The plan's appointments a collaborator is party to: live, not called off. */
-function livePlanAppointmentsWhere(planType: PlanType, planId: string) {
+/**
+ * The plan's appointments a collaborator is party to: live, not called off.
+ * An Appointment carries no status of its own; the event row does.
+ */
+function livePlanAppointmentsWhere(
+  planType: PlanType,
+  planId: string,
+): Prisma.AppointmentWhereInput {
   return {
     deletedAt: null,
-    status: {
-      notIn: ["CANCELLED", "REJECTED", "EXPIRED"] as AppointmentStatus[],
-    },
     ...(planType === "webinar"
-      ? { webinar: { webinarPlanId: planId } }
-      : { class: { classPlanId: planId } }),
+      ? {
+          webinar: {
+            webinarPlanId: planId,
+            deletedAt: null,
+            status: { not: "CANCELLED" },
+          },
+        }
+      : {
+          class: {
+            classPlanId: planId,
+            deletedAt: null,
+            status: { not: "CANCELLED" },
+          },
+        }),
   };
 }
 

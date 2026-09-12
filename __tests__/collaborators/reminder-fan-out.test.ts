@@ -8,7 +8,7 @@
  * the recipient list now, read through `collaboratorUserIds`.
  */
 
-const slotFindMany = jest.fn(async () => [
+const slotFindMany = jest.fn(async (..._args: unknown[]) => [
   {
     id: "slot-1",
     startsAt: new Date(Date.now() + 60 * 60_000),
