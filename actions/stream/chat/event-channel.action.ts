@@ -425,7 +425,11 @@ async function getEventData(eventType: EventType, eventId: string) {
               // #1580 C-P2-5 — accepted collaborators are members from the
               // channel's first mint, not only once they happen to join.
               collaborators: {
-                where: { status: "ACCEPTED" as const },
+                // A soft-deleted profile keeps its ACCEPTED row (#1593).
+                where: {
+                  status: "ACCEPTED" as const,
+                  consultantProfile: { deletedAt: null },
+                },
                 select: { consultantProfile: { select: { userId: true } } },
               },
             },
@@ -479,7 +483,11 @@ async function getEventData(eventType: EventType, eventId: string) {
                 include: { user: { select: { id: true } } },
               },
               collaborators: {
-                where: { status: "ACCEPTED" as const },
+                // A soft-deleted profile keeps its ACCEPTED row (#1593).
+                where: {
+                  status: "ACCEPTED" as const,
+                  consultantProfile: { deletedAt: null },
+                },
                 select: { consultantProfile: { select: { userId: true } } },
               },
             },

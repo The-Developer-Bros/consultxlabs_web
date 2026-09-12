@@ -436,6 +436,28 @@ describe("Event Channel Actions", () => {
       );
     });
 
+    it("names only ACCEPTED, non-deleted collaborators as initial members (#1593)", async () => {
+      mockPrisma.class.findUnique.mockResolvedValue({
+        id: "class-123",
+        classPlan: {
+          title: "Test Class",
+          consultantProfile: { user: { id: "consultant-1" } },
+          collaborators: [{ consultantProfile: { userId: "cohost-1" } }],
+        },
+        appointments: [],
+      });
+
+      const { addUserToEventChannel } =
+        await import("../../actions/stream/chat/event-channel.action");
+      await addUserToEventChannel("class", "class-123", "new-user");
+
+      const include = mockPrisma.class.findUnique.mock.calls[0][0].include;
+      expect(include.classPlan.include.collaborators.where).toEqual({
+        status: "ACCEPTED",
+        consultantProfile: { deletedAt: null },
+      });
+    });
+
     it("should return null for class without consultant", async () => {
       mockPrisma.class.findUnique.mockResolvedValue({
         id: "class-123",

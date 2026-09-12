@@ -113,7 +113,11 @@ export async function buildSupportContext(
               consultantProfileId: true,
               title: true,
               collaborators: {
-                where: { status: "ACCEPTED" },
+                // A soft-deleted profile keeps its ACCEPTED row (#1593).
+                where: {
+                  status: "ACCEPTED",
+                  consultantProfile: { deletedAt: null },
+                },
                 select: { consultantProfileId: true },
               },
             },
@@ -127,7 +131,11 @@ export async function buildSupportContext(
               consultantProfileId: true,
               title: true,
               collaborators: {
-                where: { status: "ACCEPTED" },
+                // A soft-deleted profile keeps its ACCEPTED row (#1593).
+                where: {
+                  status: "ACCEPTED",
+                  consultantProfile: { deletedAt: null },
+                },
                 select: { consultantProfileId: true },
               },
             },

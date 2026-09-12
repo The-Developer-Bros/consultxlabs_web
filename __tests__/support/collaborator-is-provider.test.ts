@@ -70,3 +70,18 @@ it("treats an ACCEPTED collaborator as a provider and withholds the attendee NO_
   const noShow = flowsForContext(ctx!).filter((f) => f.category === "NO_SHOW");
   expect(noShow.map((f) => f.title)).toEqual(["The participant didn't join"]);
 });
+
+it("reads only ACCEPTED collaborators whose profile is not soft-deleted", async () => {
+  await buildSupportContext("t1", "appt1", "u-cohost", "NO_SHOW");
+  const select = mockPrisma.appointment.findUnique.mock.calls[0][0].select;
+  const expected = {
+    status: "ACCEPTED",
+    consultantProfile: { deletedAt: null },
+  };
+  expect(select.webinar.select.webinarPlan.select.collaborators.where).toEqual(
+    expected,
+  );
+  expect(select.class.select.classPlan.select.collaborators.where).toEqual(
+    expected,
+  );
+});

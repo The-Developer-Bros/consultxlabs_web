@@ -134,6 +134,17 @@ async function sendRemindersForWindow(window: {
 
   // Deduplicate by appointmentId (multiple slots per appointment)
   const seenAppointments = new Set<string>();
+  // Sessions of one class share a plan; one collaborator read per plan (#1593).
+  const collaboratorsByPlan = new Map<string, Promise<string[]>>();
+  const planCollaborators = (planType: "webinar" | "class", planId: string) => {
+    const key = `${planType}:${planId}`;
+    let ids = collaboratorsByPlan.get(key);
+    if (!ids) {
+      ids = collaboratorUserIds(planType, planId);
+      collaboratorsByPlan.set(key, ids);
+    }
+    return ids;
+  };
 
   for (const slot of upcomingSlots) {
     const apt = slot.appointment;
@@ -188,7 +199,7 @@ async function sendRemindersForWindow(window: {
         const hostId = apt.webinar.webinarPlan?.consultantProfile?.userId;
         if (hostId) userIds.push(hostId);
         userIds.push(
-          ...(await collaboratorUserIds("webinar", apt.webinar.webinarPlanId)),
+          ...(await planCollaborators("webinar", apt.webinar.webinarPlanId)),
         );
       } else if (apt.class) {
         appointmentType = "class";
@@ -202,7 +213,7 @@ async function sendRemindersForWindow(window: {
         const hostId = apt.class.classPlan?.consultantProfile?.userId;
         if (hostId) userIds.push(hostId);
         userIds.push(
-          ...(await collaboratorUserIds("class", apt.class.classPlanId)),
+          ...(await planCollaborators("class", apt.class.classPlanId)),
         );
       }
 

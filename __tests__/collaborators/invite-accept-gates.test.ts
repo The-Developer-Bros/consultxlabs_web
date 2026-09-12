@@ -25,6 +25,7 @@ jest.mock("../../lib/novu/service", () => ({
 }));
 
 type Invitee = {
+  userId: string;
   deletedAt: Date | null;
   verificationStatus: string;
   user: {
@@ -35,6 +36,7 @@ type Invitee = {
   };
 };
 const eligible = (): Invitee => ({
+  userId: "u-new",
   deletedAt: null,
   verificationStatus: "VERIFIED",
   user: { id: "u-new", banned: false, banExpires: null, erasedAt: null },
@@ -56,12 +58,16 @@ const tx = {
     })),
     update: jest.fn(),
   },
+  appointmentParticipant: { createMany: jest.fn(async () => ({ count: 1 })) },
 };
+// The accept write is a CAS `updateMany` on status PENDING (#1580); the row is
+// re-read afterwards. `collaboratorUpdate` spies on the CAS and shapes the re-read.
 const collaboratorUpdate = jest.fn(async (..._args: unknown[]) => ({
   id: "c-1",
   role: "MODERATOR",
   status: "ACCEPTED",
 }));
+let lastWrite: { id: string; role: string; status: string } | null = null;
 jest.mock("../../lib/prisma", () => ({
   __esModule: true,
   default: {
@@ -69,6 +75,9 @@ jest.mock("../../lib/prisma", () => ({
     webinarPlan: { findUnique: jest.fn(async () => plan) },
     classPlan: { findUnique: jest.fn(async () => plan) },
     slotOfAppointment: { findFirst: jest.fn(async () => seat) },
+    appointment: {
+      findMany: jest.fn(async () => [{ id: "appt-1", organizationId: null }]),
+    },
     collaborator: {
       findUnique: jest.fn(async () => ({
         id: "c-1",
@@ -78,7 +87,11 @@ jest.mock("../../lib/prisma", () => ({
         status: "PENDING",
       })),
       // Referenced lazily: the factory is hoisted above the const.
-      update: (...args: unknown[]) => collaboratorUpdate(...args),
+      updateMany: async (...args: unknown[]) => {
+        lastWrite = (await collaboratorUpdate(...args)) as typeof lastWrite;
+        return { count: 1 };
+      },
+      findUniqueOrThrow: async () => lastWrite,
     },
     $transaction: jest.fn(async (fn: (t: unknown) => Promise<unknown>) =>
       fn(tx),
@@ -87,7 +100,6 @@ jest.mock("../../lib/prisma", () => ({
 }));
 
 import {
-  CollaboratorIneligibleError,
   inviteCollaborator,
   respondToInvitation,
 } from "@/lib/collaborators/service";
@@ -159,7 +171,10 @@ describe("invite and accept gates", () => {
       arrange();
       await expect(
         respondToInvitation("webinar", "c-1", "cp-new", "ACCEPTED"),
-      ).rejects.toBeInstanceOf(CollaboratorIneligibleError);
+      ).rejects.toMatchObject({
+        name: "CollaboratorIneligibleError",
+        httpStatus: status,
+      });
       expect(collaboratorUpdate).not.toHaveBeenCalled();
     });
   });
@@ -170,6 +185,18 @@ describe("invite and accept gates", () => {
     await expect(
       respondToInvitation("webinar", "c-1", "cp-new", "ACCEPTED"),
     ).resolves.toMatchObject({ status: "ACCEPTED" });
+    // The shadow participant edge (#1319 A9) is written for the accepted seat.
+    expect(tx.appointmentParticipant.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          appointmentId: "appt-1",
+          userId: "u-new",
+          role: "COLLABORATOR",
+          status: "CONFIRMED",
+        }),
+      ],
+      skipDuplicates: true,
+    });
   });
 
   it("does not gate a decline", async () => {

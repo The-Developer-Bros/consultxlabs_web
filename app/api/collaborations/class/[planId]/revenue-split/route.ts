@@ -47,9 +47,9 @@ export async function GET(
 
     // #1580 C-P2-7 — bounded: `Number()` accepted NaN, negatives and 1e308,
     // and the split math ran on whatever arrived.
-    const amountParsed = amountSchema.safeParse(
-      req.nextUrl.searchParams.get("amount") ?? "10000",
-    );
+    // `?amount=` coerces to 0, not to the documented default (#1593).
+    const rawAmount = req.nextUrl.searchParams.get("amount");
+    const amountParsed = amountSchema.safeParse(rawAmount || "10000");
     if (!amountParsed.success) {
       return NextResponse.json(
         { error: "amount must be an integer between 0 and 1,000,000,000" },

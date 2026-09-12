@@ -557,7 +557,17 @@ async function cancelGroupEvent(
     new Set([...attendees.map((p) => p.userId), ...collaboratorIds]),
   );
   if (attendeeIds.length > 0) {
-    const eventOrgId = attendees[0]?.appointment?.organizationId ?? null;
+    // With collaborators but no paid seat there is no attendee row to read
+    // the org from; the event's appointment carries it either way (#1593).
+    const eventOrgId =
+      attendees[0]?.appointment?.organizationId ??
+      (
+        await prisma.appointment.findFirst({
+          where: isWebinar ? { webinarId: eventId } : { classId: eventId },
+          select: { organizationId: true },
+        })
+      )?.organizationId ??
+      null;
     void notifyAppointmentCancelled(attendeeIds, {
       ...notificationScope(eventOrgId),
       appointmentType: isWebinar ? "WEBINAR" : "CLASS",

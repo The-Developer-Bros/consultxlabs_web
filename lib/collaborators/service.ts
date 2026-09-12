@@ -26,12 +26,9 @@ import {
   setParticipantStatus,
 } from "@/lib/booking/participants";
 
-// The flip a ban and an erasure share lives in its own module so the
-// moderation transaction does not load this module's Stream and Novu graph.
-export {
-  removeCollaboratorStanding,
-  type CollaborationRef,
-} from "@/lib/collaborators/standing";
+// #1593 — `removeCollaboratorStanding` is deliberately NOT re-exported here:
+// its callers import `@/lib/collaborators/standing` so they never load this
+// module's Stream and Novu graph inside a transaction.
 export {
   collaboratorUserIds,
   collaboratorUserIdsForEvent,
@@ -408,9 +405,15 @@ export async function respondToInvitation(
     await assertNotAttendee(planType, planId, invitee.userId);
   }
 
-  const updated = await prisma.collaborator.update({
-    where: { id: collaborationId },
+  // CAS in the WHERE: an owner's removal landing between the read and this
+  // write must not be overwritten back to ACCEPTED and reach the split (#1580).
+  const moved = await prisma.collaborator.updateMany({
+    where: { id: collaborationId, status: "PENDING" },
     data: { status: response, respondedAt: new Date() },
+  });
+  if (moved.count === 0) return null;
+  const updated = await prisma.collaborator.findUniqueOrThrow({
+    where: { id: collaborationId },
   });
 
   if (response === "ACCEPTED") {
@@ -486,14 +489,25 @@ async function syncCollaboratorParticipants(
       where: livePlanAppointmentsWhere(planType, planId),
       select: { id: true, organizationId: true },
     });
-    for (const appointment of appointments) {
-      await recordParticipants(
-        prisma,
-        appointment.id,
-        [{ userId: profile.userId, role: "COLLABORATOR", status: "CONFIRMED" }],
-        { organizationId: appointment.organizationId },
-      );
-    }
+    if (appointments.length === 0) return;
+    // One transaction, so a miss on the third appointment does not leave the
+    // rest silently unsynced with nothing to re-drive it (#1593).
+    await prisma.$transaction(async (tx) => {
+      for (const appointment of appointments) {
+        await recordParticipants(
+          tx,
+          appointment.id,
+          [
+            {
+              userId: profile.userId,
+              role: "COLLABORATOR",
+              status: "CONFIRMED",
+            },
+          ],
+          { organizationId: appointment.organizationId },
+        );
+      }
+    });
   } catch (error) {
     reportSentryError(error, {
       subsystem: "collaborators",
@@ -544,10 +558,13 @@ async function notifyHostOfResponse(
       await notifyCollaboratorDeclined(plan.consultantProfile.userId, payload);
     }
   } catch (error) {
-    Sentry.captureException(
-      error instanceof Error ? error : new Error(String(error)),
-      { tags: { subsystem: "stream" }, level: "warning" },
-    );
+    // A Novu miss, not a Stream one (#1593).
+    reportSentryError(error, {
+      subsystem: "collaborators",
+      op: "respondToInvitation.notifyHost",
+      level: "warning",
+      extra: { planId, planType },
+    });
     console.error(
       "[collaborators] Failed to send response notification:",
       error,
@@ -588,9 +605,15 @@ export async function removeCollaborator(
   });
   if (!collab) return null;
 
-  const result = await prisma.collaborator.update({
-    where: { id: collaborationId },
+  // CAS in the WHERE: a lost race (already REMOVED or DECLINED) writes nothing
+  // and, for a withdrawal, sends no notice to the host.
+  const moved = await prisma.collaborator.updateMany({
+    where: { id: collaborationId, status: { in: ["PENDING", "ACCEPTED"] } },
     data: { status: "REMOVED" },
+  });
+  if (moved.count === 0) return null;
+  const result = await prisma.collaborator.findUniqueOrThrow({
+    where: { id: collaborationId },
   });
 
   // Fire-and-forget: notification and Stream removal are independent.

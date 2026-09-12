@@ -45,7 +45,9 @@ jest.mock("../../lib/prisma", () => ({
             ? row
             : null,
       ),
-      update: jest.fn(async () => ({ ...row, status: "REMOVED" })),
+      // The removal is a CAS `updateMany` on PENDING/ACCEPTED, then a re-read (#1580).
+      updateMany: jest.fn(async () => ({ count: 1 })),
+      findUniqueOrThrow: jest.fn(async () => ({ ...row, status: "REMOVED" })),
     },
     consultantProfile: {
       findUnique: jest.fn(async () => ({
@@ -104,7 +106,18 @@ describe("collaborator self-withdraw", () => {
       withdrawnByProfileId: "cp-stranger",
     });
     expect(result).toBeNull();
-    expect(prisma.collaborator.update).not.toHaveBeenCalled();
+    expect(prisma.collaborator.updateMany).not.toHaveBeenCalled();
+    expect(notifyCollaboratorWithdrawn).not.toHaveBeenCalled();
+  });
+
+  it("a lost race (row already REMOVED) writes nothing and tells nobody", async () => {
+    (prisma.collaborator.updateMany as jest.Mock).mockResolvedValueOnce({
+      count: 0,
+    });
+    const result = await removeCollaborator("webinar", "c-1", "plan-1", {
+      withdrawnByProfileId: row.consultantProfileId,
+    });
+    expect(result).toBeNull();
     expect(notifyCollaboratorWithdrawn).not.toHaveBeenCalled();
   });
 });
