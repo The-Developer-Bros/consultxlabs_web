@@ -56,7 +56,13 @@ const reviewReportRow = () => ({
   assignedToId: null,
   createdAt: new Date(),
   resolvedAt: null,
-  reportedBy: { id: "p1", name: "Reporter", email: "r@x.com", image: null },
+  reportedBy: {
+    id: "p1",
+    name: "Reporter",
+    email: "r@x.com",
+    image: null,
+    role: "CONSULTEE",
+  },
   targetUser: {
     id: "u1",
     name: "The author",
@@ -127,6 +133,9 @@ describe("GET /api/staff/moderation/reports — naming the subject and the actor
       notes: "clear breach",
       takenBy: { name: "Staffer One" },
     });
+    // The reporter's role is selected and passed through (the card prints it).
+    expect(findMany.mock.calls[0][0].include.reportedBy.select.role).toBe(true);
+    expect(report.reportedBy.role).toBe("CONSULTEE");
   });
 
   it("reports no review subject for a non-REVIEW report", async () => {

@@ -336,9 +336,38 @@ function EnforcementSummary({
  * moderator opening a report with three prior actions can read them in the
  * order they happened rather than guessing from the single latest one.
  */
+/** A null relation is a departed account; a null name is merely an unnamed one. */
+function actorName(
+  takenBy: { name: string | null } | null | undefined,
+): string {
+  if (!takenBy) return "a departed staff member";
+  return takenBy.name ?? "an unnamed staff member";
+}
+
 function ActionAuditTrail({
   actions,
-}: Readonly<{ actions: ModerationReportDetail["actions"] }>) {
+  status,
+  onRetry,
+}: Readonly<{
+  actions: ModerationReportDetail["actions"];
+  status: "pending" | "error" | "success";
+  onRetry: () => void;
+}>) {
+  if (status === "pending") {
+    return (
+      <p className="text-sm text-muted-foreground">Loading audit trail…</p>
+    );
+  }
+  if (status === "error") {
+    return (
+      <p className="text-sm text-destructive">
+        The audit trail could not be loaded.{" "}
+        <button type="button" className="underline" onClick={onRetry}>
+          Retry
+        </button>
+      </p>
+    );
+  }
   if (actions.length === 0) {
     return <p className="text-sm text-muted-foreground">No action yet.</p>;
   }
@@ -350,8 +379,7 @@ function ActionAuditTrail({
           <li key={action.id} className="text-sm">
             <p>
               {humaniseActionType(action.actionType)} —{" "}
-              {action.takenBy?.name ?? "a departed staff member"} —{" "}
-              {formatDate(action.createdAt)}
+              {actorName(action.takenBy)} — {formatDate(action.createdAt)}
               {action.notes ? ` — ${action.notes}` : ""}
             </p>
             {lines.length > 0 && (
@@ -481,7 +509,11 @@ export function ModerationPage() {
   // #1300 — the list row only carries the latest action; the drawer's full
   // audit trail comes from the report's own detail route, fetched only once
   // a report is opened.
-  const { data: selectedReportDetail } = useQuery({
+  const {
+    data: selectedReportDetail,
+    status: selectedReportDetailStatus,
+    refetch: refetchSelectedReportDetail,
+  } = useQuery({
     queryKey: ["staff-moderation-report-detail", selectedReport?.id],
     queryFn: async (): Promise<ModerationReportDetail> => {
       const response = await fetch(
@@ -1048,10 +1080,9 @@ export function ModerationPage() {
                               {report.actionCount > 0 && report.latestAction
                                 ? `Last action: ${humaniseActionType(
                                     report.latestAction.actionType,
-                                  )} by ${
-                                    report.latestAction.takenBy?.name ??
-                                    "a departed staff member"
-                                  } · ${relativeDate(
+                                  )} by ${actorName(
+                                    report.latestAction.takenBy,
+                                  )} · ${relativeDate(
                                     report.latestAction.createdAt,
                                   )}`
                                 : "No action yet"}
@@ -1289,10 +1320,8 @@ export function ModerationPage() {
                                 {humaniseActionType(
                                   latestModerationAction.actionType,
                                 )}{" "}
-                                by{" "}
-                                {latestModerationAction.takenBy?.name ??
-                                  "a departed staff member"}{" "}
-                                · {formatDate(latestModerationAction.createdAt)}
+                                by {actorName(latestModerationAction.takenBy)} ·{" "}
+                                {formatDate(latestModerationAction.createdAt)}
                               </p>
                             )}
                           </div>
@@ -1419,6 +1448,8 @@ export function ModerationPage() {
                   <div className="mt-1">
                     <ActionAuditTrail
                       actions={selectedReportDetail?.actions ?? []}
+                      status={selectedReportDetailStatus}
+                      onRetry={() => void refetchSelectedReportDetail()}
                     />
                   </div>
                 </div>
