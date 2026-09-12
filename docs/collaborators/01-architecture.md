@@ -96,11 +96,7 @@ Once a collaborator accepts, the team needs a place to talk. The system creates 
 
 Scheduling remains host-only — collaborators cannot create events or set timings. But the host needs to know when co-hosts are free, and since #784 (AE-2) the platform **enforces** co-host availability instead of treating it as advisory. The guard is wired into both the webinar plan route and the class plan route, so a co-host and a co-instructor are protected alike.
 
-### The availability endpoint
-
-`GET /api/collaborators/{consultantProfileId}/availability?date=YYYY-MM-DD` returns three data sets for the date: the co-host's weekly availability (`SlotOfAvailabilityWeekly`), their custom one-off availability (`SlotOfAvailabilityCustom`), and their booked slots — including events they collaborate on, not only events they own. Access is limited to the profile owner, consultants who share an accepted collaboration with them, and admin/staff.
-
-The scheduling calendar renders this as a color overlay: green means available with no booking, yellow means no availability defined (they may be flexible), red means an existing booking.
+The per-date availability endpoint that once backed a calendar overlay (`GET /api/collaborators/{consultantProfileId}/availability`) was removed in #1580 (C-P1-8): no client ever fetched it, and the guard below is what actually protects a co-host.
 
 ### The two enforcement layers
 

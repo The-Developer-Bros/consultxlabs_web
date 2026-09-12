@@ -71,7 +71,6 @@ Some capabilities attach to the `ACCEPTED` status itself rather than to any perm
 - Appear in the plan's collaborator list visible to the owner and other accepted collaborators.
 - See the other `ACCEPTED` collaborators (`getCollaboratorsForUser` scoping).
 - Use the plan's private Stream coordination channel.
-- View co-host availability of consultants they share an accepted collaboration with (`GET /api/collaborators/[consultantProfileId]/availability`).
 - View the plan's revenue-split preview (`GET .../revenue-split`).
 - Receive their earnings share at settlement.
 
@@ -83,15 +82,14 @@ Scheduling is deliberately **not** a permission: no flag grants it, and only the
 
 The full capability matrix, with the enforcement source for each row, is:
 
-| Capability                                      | Host           | Collaborator                        | Where enforced                       |
-| ----------------------------------------------- | -------------- | ----------------------------------- | ------------------------------------ |
-| Create the plan                                 | Yes            | No                                  | Plan CRUD ownership checks           |
-| Invite / update / remove collaborators          | Yes            | No                                  | Collaboration routes (owner check)   |
-| Create events, set times                        | Yes            | No — never                          | Event CRUD ownership; no flag exists |
-| View participant roster                         | Yes            | Only with `canSeeAttendees`         | Participant GETs (#768)              |
-| View revenue-split preview                      | Yes            | Yes (accepted)                      | Revenue-split route scoping          |
-| View co-host availability                       | Yes            | Yes (shared accepted collaboration) | Availability route scoping           |
-| Chat in the collaborator channel                | Yes            | Yes (accepted)                      | Stream channel membership            |
-| Accept/decline own invitation                   | —              | Yes                                 | Respond route identity check         |
-| Receive earnings                                | Yes            | Yes (accepted)                      | Settlement split                     |
-| Approve payments / view analytics / edit events | Yes (as owner) | Not yet — flags stored, unenforced  | Pending #768                         |
+| Capability                                      | Host           | Collaborator                       | Where enforced                       |
+| ----------------------------------------------- | -------------- | ---------------------------------- | ------------------------------------ |
+| Create the plan                                 | Yes            | No                                 | Plan CRUD ownership checks           |
+| Invite / update / remove collaborators          | Yes            | No                                 | Collaboration routes (owner check)   |
+| Create events, set times                        | Yes            | No — never                         | Event CRUD ownership; no flag exists |
+| View participant roster                         | Yes            | Only with `canSeeAttendees`        | Participant GETs (#768)              |
+| View revenue-split preview                      | Yes            | Yes (accepted)                     | Revenue-split route scoping          |
+| Chat in the collaborator channel                | Yes            | Yes (accepted)                     | Stream channel membership            |
+| Accept/decline own invitation                   | —              | Yes                                | Respond route identity check         |
+| Receive earnings                                | Yes            | Yes (accepted)                     | Settlement split                     |
+| Approve payments / view analytics / edit events | Yes (as owner) | Not yet — flags stored, unenforced | Pending #768                         |
