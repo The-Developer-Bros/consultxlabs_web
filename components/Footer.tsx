@@ -209,7 +209,7 @@ const Footer: React.FC = () => {
                 placeholder="Enter your email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="h-14 bg-zinc-900 border-zinc-800 text-white placeholder:text-zinc-600 rounded-xl focus:border-zinc-600 focus:ring-zinc-600"
+                className="h-14 bg-zinc-900 border-zinc-800 text-white placeholder:text-zinc-400 rounded-xl focus:border-zinc-600 focus:ring-zinc-600"
               />
               <Button
                 type="submit"
@@ -229,7 +229,7 @@ const Footer: React.FC = () => {
               </p>
             )}
 
-            <p className="text-sm text-zinc-600 mt-4">
+            <p className="text-sm text-zinc-400 mt-4">
               No spam, unsubscribe anytime.{" "}
               <Link
                 href="/privacy"

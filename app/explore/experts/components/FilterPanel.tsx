@@ -18,9 +18,15 @@ import {
   Star,
   Building2,
   Globe,
+  Users,
+  Zap,
 } from "lucide-react";
 import { useCurrency } from "@/hooks/useCurrency";
-import type { IExpertFilters, IExpertsMetaData } from "../utils";
+import type {
+  IExpertFilters,
+  IExpertsMetaData,
+  AffiliationType,
+} from "../utils";
 
 // Slider operates in paise (smallest currency unit) end-to-end so it
 // matches both the API filter contract and `useCurrency().formatPrice`,
@@ -30,6 +36,18 @@ import type { IExpertFilters, IExpertsMetaData } from "../utils";
 // seed plan range with headroom; step is ₹500 so dragging feels snappy.
 const MAX_PRICE_PAISE = 5_000_000;
 const PRICE_STEP_PAISE = 50_000;
+
+/** Same three options as the toggle above the results — both write to
+ *  `filters.affiliationType`, so sidebar and toggle always agree. */
+const AFFILIATION_OPTIONS: {
+  value: AffiliationType;
+  label: string;
+  icon: React.ElementType;
+}[] = [
+  { value: null, label: "All experts", icon: Users },
+  { value: "independent", label: "Independent", icon: Zap },
+  { value: "agency", label: "Agency / Org", icon: Building2 },
+];
 
 interface FilterPanelProps {
   metadata: IExpertsMetaData | null;
@@ -129,6 +147,25 @@ function FilterPanelImpl({
     [updateFilters],
   );
 
+  // Exact min/max inputs commit here: major units → paise, clamped so
+  // min never exceeds max. Reuses the slider's debounced filter write.
+  const commitPriceBound = useCallback(
+    (which: 0 | 1, raw: string) => {
+      // Empty input means "still typing / cleared", not zero — Number("")
+      // is 0 and would otherwise slam max down to nothing.
+      if (raw.trim() === "") return;
+      const major = Number(raw);
+      if (!Number.isFinite(major) || major < 0) return;
+      const paise = Math.min(Math.round(major * 100), MAX_PRICE_PAISE);
+      const next: [number, number] =
+        which === 0
+          ? [Math.min(paise, localRange[1]), localRange[1]]
+          : [localRange[0], Math.max(paise, localRange[0])];
+      handleSliderChange(next);
+    },
+    [handleSliderChange, localRange],
+  );
+
   const handleDomainChange = (value: string) => {
     updateFilters({
       domain: value === "all" ? null : value,
@@ -205,6 +242,43 @@ function FilterPanelImpl({
   return (
     <div>
       <div className="grid gap-4 grid-cols-1">
+        {/* Affiliation — mirrors the All | Independent | Agency toggle above
+            the results; both write to the same filter so they stay in sync. */}
+        <div className="pb-4 border-b border-border last:border-b-0">
+          <div className="flex items-center gap-2 mb-4">
+            <Users className="w-4 h-4 text-muted-foreground" />
+            <span className="text-sm font-medium text-muted-foreground">
+              Affiliation
+            </span>
+          </div>
+          <div
+            role="radiogroup"
+            aria-label="Filter by affiliation type"
+            className="space-y-2"
+          >
+            {AFFILIATION_OPTIONS.map(({ value, label, icon: Icon }) => {
+              const selected = filters.affiliationType === value;
+              return (
+                <button
+                  key={String(value)}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  onClick={() => updateFilters({ affiliationType: value })}
+                  className={`flex w-full items-center gap-2.5 rounded-lg border px-3 py-2.5 text-sm transition-colors ${
+                    selected
+                      ? "border-primary/50 bg-primary/5 font-medium text-foreground"
+                      : "border-border bg-muted text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <Icon className="w-4 h-4 shrink-0" />
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Domain & Subdomain */}
         <div className="pb-4 border-b border-border last:border-b-0">
           <div className="flex items-center gap-2 mb-4">
@@ -402,13 +476,29 @@ function FilterPanelImpl({
           </div>
         </div>
 
-        {/* Price Range — dual-thumb slider */}
+        {/* Price Range — dual-thumb slider + exact min/max inputs */}
         <div className="pb-4 border-b border-border last:border-b-0">
           <div className="flex items-center gap-2 mb-4">
             <DollarSign className="w-4 h-4 text-muted-foreground" />
             <span className="text-sm font-medium text-muted-foreground">
               Price Range
             </span>
+            {(localRange[0] !== 0 || localRange[1] !== MAX_PRICE_PAISE) && (
+              <button
+                type="button"
+                // Cancel a still-pending slider write first — otherwise it
+                // lands after this reset and silently re-activates the filter.
+                onClick={() => {
+                  if (debounceRef.current) clearTimeout(debounceRef.current);
+                  debounceRef.current = null;
+                  setLocalRange([0, MAX_PRICE_PAISE]);
+                  updateFilters({ minPrice: undefined, maxPrice: undefined });
+                }}
+                className="ml-auto text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+              >
+                Any price
+              </button>
+            )}
           </div>
           <div>
             <div className="flex justify-between mb-3 text-sm font-medium text-muted-foreground">
@@ -428,6 +518,47 @@ function FilterPanelImpl({
               onValueChange={handleSliderChange}
               className="my-2"
             />
+            {/* Exact bounds for users who know their budget — commits on
+                blur/Enter, clamped to the slider range. Keyed by the applied
+                filter so chip removal / clear-all resets the inputs. */}
+            <div
+              key={`${minPrice ?? 0}-${maxPrice ?? MAX_PRICE_PAISE}`}
+              className="mt-3 flex items-center gap-2"
+            >
+              <label className="sr-only" htmlFor="price-min">
+                Minimum price in {currency}
+              </label>
+              <input
+                id="price-min"
+                type="number"
+                inputMode="numeric"
+                min={0}
+                defaultValue={Math.round(localRange[0] / 100)}
+                onBlur={(e) => commitPriceBound(0, e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                }}
+                className="h-10 w-full min-w-0 rounded-lg border border-border bg-muted px-3 text-base text-foreground focus:border-transparent focus:ring-2 focus:ring-ring sm:text-sm"
+              />
+              <span aria-hidden className="text-xs text-muted-foreground">
+                to
+              </span>
+              <label className="sr-only" htmlFor="price-max">
+                Maximum price in {currency}
+              </label>
+              <input
+                id="price-max"
+                type="number"
+                inputMode="numeric"
+                min={0}
+                defaultValue={Math.round(localRange[1] / 100)}
+                onBlur={(e) => commitPriceBound(1, e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                }}
+                className="h-10 w-full min-w-0 rounded-lg border border-border bg-muted px-3 text-base text-foreground focus:border-transparent focus:ring-2 focus:ring-ring sm:text-sm"
+              />
+            </div>
             <div className="flex justify-between mt-2 text-xs text-muted-foreground/70">
               <span>{formatPrice(0)}</span>
               <span>{formatPrice(MAX_PRICE_PAISE)}+</span>

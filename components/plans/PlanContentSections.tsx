@@ -1,9 +1,13 @@
 "use client";
 
-import { useState } from "react";
-import { ChevronDown, CheckCircle2, Target, Package } from "lucide-react";
+import { CheckCircle2, Target, Package } from "lucide-react";
+import {
+  Accordion,
+  AccordionItem,
+  AccordionTrigger,
+  AccordionContent,
+} from "@/components/ui/accordion";
 import { groupCurriculumBySection } from "@/lib/labels/plan-labels";
-import { cn } from "@/utils/tailwind";
 
 /**
  * Buyer-facing renderers for the plan content model.
@@ -183,7 +187,6 @@ export function PlanFaqAccordion({
   faqs,
   className,
 }: Readonly<{ faqs: PlanFaqItem[] | null | undefined; className?: string }>) {
-  const [openIndex, setOpenIndex] = useState<number | null>(null);
   if (!faqs?.length) return null;
 
   return (
@@ -191,36 +194,29 @@ export function PlanFaqAccordion({
       <h3 className="text-base font-semibold text-foreground mb-3">
         Frequently asked questions
       </h3>
-      <div className="divide-y divide-border border border-border rounded-xl overflow-hidden">
-        {faqs.map((faq, index) => {
-          const isOpen = openIndex === index;
-          return (
-            <div key={faq.id ?? `${index}-${faq.question}`}>
-              <button
-                type="button"
-                onClick={() => setOpenIndex(isOpen ? null : index)}
-                aria-expanded={isOpen}
-                className="w-full flex items-center justify-between gap-3 text-left px-4 py-3 hover:bg-muted/50 transition-colors"
-              >
-                <span className="text-sm font-medium text-foreground">
-                  {faq.question}
-                </span>
-                <ChevronDown
-                  className={cn(
-                    "w-4 h-4 text-muted-foreground flex-shrink-0 transition-transform",
-                    isOpen && "rotate-180",
-                  )}
-                />
-              </button>
-              {isOpen && (
-                <p className="px-4 pb-4 text-sm text-muted-foreground whitespace-pre-line">
-                  {faq.answer}
-                </p>
-              )}
-            </div>
-          );
-        })}
-      </div>
+      {/* Radix accordion: animated, keyboard-navigable, aria-wired. First
+          item opens by default so the section never reads as an empty list. */}
+      <Accordion
+        type="single"
+        collapsible
+        defaultValue="faq-0"
+        className="border border-border rounded-xl overflow-hidden px-4"
+      >
+        {faqs.map((faq, index) => (
+          <AccordionItem
+            key={faq.id ?? `${index}-${faq.question}`}
+            value={`faq-${index}`}
+            className="last:border-b-0"
+          >
+            <AccordionTrigger className="text-left py-3 hover:no-underline">
+              {faq.question}
+            </AccordionTrigger>
+            <AccordionContent className="text-muted-foreground whitespace-pre-line">
+              {faq.answer}
+            </AccordionContent>
+          </AccordionItem>
+        ))}
+      </Accordion>
     </div>
   );
 }

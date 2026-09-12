@@ -37,6 +37,7 @@ function StaticTopRowsImpl({
       <div className="mb-14">
         <SectionHeader
           title="Trending Experts"
+          subtitle="The mentors everyone is booking right now."
           icon={<Flame className="w-5 h-5 text-white" />}
           onSeeAllClick={() => onSeeAllSort("trending")}
         />
@@ -51,6 +52,7 @@ function StaticTopRowsImpl({
       <div className="mb-14">
         <SectionHeader
           title="Newly Joined"
+          subtitle="Fresh, vetted talent — get in before their calendars fill up."
           icon={<Clock className="w-5 h-5 text-white" />}
           onSeeAllClick={() => onSeeAllSort("newest")}
         />
@@ -67,6 +69,7 @@ function StaticTopRowsImpl({
         >
           <SectionHeader
             title="Browse by Domain"
+            subtitle="Pick your field, meet the people who have mastered it."
             icon={<Briefcase className="w-5 h-5 text-white" />}
           />
           <DomainGrid

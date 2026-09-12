@@ -14,6 +14,8 @@ import {
   Users,
   GraduationCap,
   ArrowLeft,
+  ArrowRight,
+  Star,
 } from "lucide-react";
 import { formatInTimeZone } from "date-fns-tz";
 import {
@@ -271,21 +273,35 @@ export function ClassDetails({ plan }: ClassDetailsProps) {
                       <h3 className="font-semibold text-foreground">
                         {plan.consultantProfile?.user?.name}
                       </h3>
-                      <p className="text-sm text-muted-foreground">
-                        Expert Instructor
+                      {/* Headline comes from the already-fetched public
+                          projection — no more generic "Expert Instructor". */}
+                      <p className="text-sm text-muted-foreground truncate">
+                        {plan.consultantProfile?.headline ||
+                          "Expert Instructor"}
                       </p>
                     </div>
                   </div>
-                  <p className="text-sm text-muted-foreground">
-                    An experienced professional dedicated to sharing knowledge
-                    and expertise.
-                  </p>
+                  {(plan.consultantProfile &&
+                    (plan.consultantProfile.rating !== null ||
+                      plan.consultantProfile.experience)) && (
+                    <p className="flex items-center gap-2 text-xs text-muted-foreground mb-3">
+                      {plan.consultantProfile.rating !== null && (
+                        <span className="inline-flex items-center gap-1 font-medium text-foreground">
+                          <Star className="w-3.5 h-3.5 fill-foreground text-foreground" />
+                          {plan.consultantProfile.rating.toFixed(1)}
+                        </span>
+                      )}
+                      {plan.consultantProfile?.experience && (
+                        <span>{plan.consultantProfile.experience}</span>
+                      )}
+                    </p>
+                  )}
                   <Link
                     href={`/explore/experts/${plan.consultantProfile?.id}`}
                     className="inline-flex items-center gap-1 text-sm font-medium text-foreground hover:text-muted-foreground mt-3"
                   >
                     View Full Profile
-                    <ArrowLeft className="w-4 h-4 rotate-180" />
+                    <ArrowRight className="w-4 h-4" />
                   </Link>
                 </CardContent>
               </Card>

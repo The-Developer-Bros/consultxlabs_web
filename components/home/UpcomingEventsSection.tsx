@@ -34,15 +34,15 @@ function EventCard({
             >
               {event.type}
             </Badge>
-            <span className="text-xs text-zinc-500">
+            <span className="text-xs text-zinc-400">
               {event.attendees} attending
             </span>
           </div>
-          <h4 className="font-semibold text-white mb-2 group-hover:text-zinc-200">
+          <h3 className="font-semibold text-white mb-2 group-hover:text-zinc-200">
             {event.title}
-          </h4>
+          </h3>
           <p className="text-sm text-zinc-400 mb-3">Hosted by {event.host}</p>
-          <div className="flex items-center gap-4 text-xs text-zinc-500">
+          <div className="flex items-center gap-4 text-xs text-zinc-400">
             <span className="flex items-center gap-1">
               <Calendar className="w-3 h-3" />
               {event.date}
@@ -106,7 +106,11 @@ export function UpcomingEventsSection({ reviews }: UpcomingEventsSectionProps) {
                 >
                   <Card className="border border-zinc-800 bg-zinc-900/50 backdrop-blur-sm">
                     <CardContent className="p-5">
-                      <div className="flex items-center gap-1 mb-3">
+                      <div
+                        className="flex items-center gap-1 mb-3"
+                        role="img"
+                        aria-label={`Rated ${review.rating} out of 5 stars`}
+                      >
                         {Array.from({ length: 5 }).map((_, j) => (
                           <Star
                             key={j}
@@ -122,13 +126,16 @@ export function UpcomingEventsSection({ reviews }: UpcomingEventsSectionProps) {
                         <Avatar className="w-6 h-6 border border-zinc-700">
                           <AvatarImage
                             src={review.consulteeProfile?.user?.image ?? ""}
+                            alt={
+                              review.consulteeProfile?.user?.name ?? "Reviewer"
+                            }
                           />
                           <AvatarFallback className="bg-zinc-800 text-zinc-300 text-xs">
                             {review.consulteeProfile?.user?.name?.charAt(0) ??
                               "U"}
                           </AvatarFallback>
                         </Avatar>
-                        <p className="text-xs text-zinc-500">
+                        <p className="text-xs text-zinc-400">
                           — {review.consulteeProfile?.user?.name || "Anonymous"}
                         </p>
                       </div>

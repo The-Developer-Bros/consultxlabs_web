@@ -48,6 +48,11 @@ function FeaturedCarouselImpl({
     }, 5000);
   }, [programs.length]);
 
+  const stopAutoScroll = useCallback(() => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    intervalRef.current = null;
+  }, []);
+
   useEffect(() => {
     startAutoScroll();
     return () => {
@@ -81,7 +86,15 @@ function FeaturedCarouselImpl({
   };
 
   return (
-    <div className="relative">
+    // Autoplay pauses while the pointer is over the carousel or focus is
+    // inside it, so content doesn't slide away mid-read.
+    <div
+      className="relative"
+      onMouseEnter={stopAutoScroll}
+      onMouseLeave={startAutoScroll}
+      onFocus={stopAutoScroll}
+      onBlur={startAutoScroll}
+    >
       <div
         className="group bg-card rounded-2xl overflow-hidden border border-border hover:border-border hover:shadow-xl transition-all duration-300 cursor-pointer"
         onClick={handleClick}
@@ -94,6 +107,7 @@ function FeaturedCarouselImpl({
           }
         }}
         aria-label={`View details for ${program.title}`}
+        aria-roledescription="carousel"
       >
         <div className="flex flex-col md:flex-row h-auto md:h-[280px]">
           {/* Image */}
@@ -181,8 +195,8 @@ function FeaturedCarouselImpl({
             <ChevronRight className="w-4 h-4 text-muted-foreground" />
           </button>
 
-          {/* Dots */}
-          <div className="flex justify-center gap-2 mt-4">
+          {/* Dots — 44px tap targets via padding, not 8px dots. */}
+          <div className="flex justify-center gap-1 mt-3">
             {programs.map((_, i) => (
               <button
                 key={i}
@@ -190,13 +204,19 @@ function FeaturedCarouselImpl({
                   e.stopPropagation();
                   goTo(i);
                 }}
-                className={`w-2 h-2 rounded-full transition-all duration-200 ${
-                  i === currentIndex
-                    ? "bg-primary w-6"
-                    : "bg-muted-foreground/30 hover:bg-muted-foreground/50"
-                }`}
+                className="p-2 -m-0 flex items-center justify-center"
                 aria-label={`Go to slide ${i + 1}`}
-              />
+                aria-current={i === currentIndex ? "true" : undefined}
+              >
+                <span
+                  aria-hidden
+                  className={`block h-2 rounded-full transition-all duration-200 ${
+                    i === currentIndex
+                      ? "bg-primary w-6"
+                      : "bg-muted-foreground/30 hover:bg-muted-foreground/50 w-2"
+                  }`}
+                />
+              </button>
             ))}
           </div>
         </>

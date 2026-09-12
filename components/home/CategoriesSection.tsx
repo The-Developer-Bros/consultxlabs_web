@@ -29,7 +29,9 @@ function CategoryCard({
       transition={{ duration: 0.4, delay: index * 0.05 }}
       viewport={{ once: true }}
     >
-      <Link href={`/explore/experts?category=${category.name.toLowerCase()}`}>
+      {/* Domain is the filter the explore page actually reads (?domain=);
+          ?category= was silently ignored. */}
+      <Link href={`/explore/experts?domain=${category.name.toLowerCase()}`}>
         <Card className="group cursor-pointer border border-border bg-card hover:border-foreground/40 transition-all duration-300 hover:-translate-y-1 hover:shadow-elevation-2">
           <CardContent className="p-6 flex items-center gap-4">
             <div
@@ -38,9 +40,9 @@ function CategoryCard({
               <Icon className="w-6 h-6 text-white" />
             </div>
             <div className="min-w-0">
-              <h4 className="font-semibold text-foreground truncate">
+              <h3 className="font-semibold text-foreground truncate">
                 {category.name}
-              </h4>
+              </h3>
               {consultantCount > 0 && (
                 <p className="text-sm text-muted-foreground truncate">
                   {consultantCount === 1

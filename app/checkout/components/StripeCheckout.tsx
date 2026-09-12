@@ -187,7 +187,11 @@ export default function StripeCheckout({
   };
 
   return (
-    <Button onClick={handleCheckout} disabled={isProcessing || disabled}>
+    <Button
+      onClick={handleCheckout}
+      disabled={isProcessing || disabled}
+      className="w-full sm:w-auto"
+    >
       {isProcessing ? "Processing..." : "Pay with Stripe"}
     </Button>
   );

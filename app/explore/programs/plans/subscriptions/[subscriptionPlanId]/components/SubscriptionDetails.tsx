@@ -34,8 +34,10 @@ export function SubscriptionDetails({
   const mentorName = consultant?.user?.name ?? "This expert";
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    // Same page shell as the class/webinar details (bg-muted + wide
+    // container) so all four plan families read as one product.
+    <main className="min-h-screen bg-muted">
+      <div className="w-full max-w-[92%] xl:max-w-[88%] 2xl:max-w-[1600px] mx-auto py-8 md:py-12">
         <Link
           href="/explore/experts"
           className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors mb-6"
@@ -182,6 +184,6 @@ export function SubscriptionDetails({
           </motion.div>
         </div>
       </div>
-    </div>
+    </main>
   );
 }

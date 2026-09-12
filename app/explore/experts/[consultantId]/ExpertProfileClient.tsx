@@ -283,45 +283,54 @@ export function ExpertProfileClient({
         </div>
       </div>
 
-      {/* Main Content Area - Profile, About, Availability + Pricing */}
+      {/* Main Content Area - Profile, About, Availability + Pricing.
+          Mobile order is Profile → Pricing → About/Experience/Availability so
+          booking is reachable without scrolling the whole bio; xl keeps the
+          two-column rail. Achieved with `contents` below xl (children become
+          direct flex items and take responsive orders) and a real left column
+          on xl. */}
       <div className="w-full px-4 md:px-8 lg:px-12 py-8 md:py-12">
         <div className="flex flex-col xl:flex-row gap-8 xl:gap-12">
           {/* Main Content */}
           <motion.div
-            className="flex-1 min-w-0"
+            className="contents xl:block xl:flex-1 xl:min-w-0 xl:space-y-8"
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5 }}
           >
-            <div className="space-y-8">
+            <div className="order-1 min-w-0 xl:order-none">
               <ProfileHeader
                 userDetails={userDetails}
                 consultantDetails={consultantDetails}
                 reviewCount={consultantDetails.reviewCount}
               />
+            </div>
 
-              <AboutSection
-                userDetails={userDetails}
-                consultantDetails={consultantDetails}
-              />
+            <div className="order-3 min-w-0 xl:order-none">
+              <div className="space-y-8">
+                <AboutSection
+                  userDetails={userDetails}
+                  consultantDetails={consultantDetails}
+                />
 
-              <ExperienceSection
-                workExperiences={userDetails.workExperiences || []}
-                education={userDetails.education || []}
-                certifications={userDetails.certifications || []}
-              />
+                <ExperienceSection
+                  workExperiences={userDetails.workExperiences || []}
+                  education={userDetails.education || []}
+                  certifications={userDetails.certifications || []}
+                />
 
-              <ConsultantAvailability
-                consultantDetails={consultantDetails}
-                timezone={timezone || "UTC"}
-              />
+                <ConsultantAvailability
+                  consultantDetails={consultantDetails}
+                  timezone={timezone || "UTC"}
+                />
+              </div>
             </div>
           </motion.div>
 
-          {/* Sidebar - Pricing */}
+          {/* Sidebar - Pricing. Second on phones (order-2), right rail on xl. */}
           <motion.div
             ref={pricingRef}
-            className="w-full xl:w-[450px] 2xl:w-[500px] flex-shrink-0"
+            className="w-full xl:w-[450px] 2xl:w-[500px] flex-shrink-0 order-2 xl:order-none"
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 0.1 }}

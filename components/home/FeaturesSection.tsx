@@ -72,7 +72,7 @@ export function FeaturesSection() {
           <h2 className="text-fluid-4xl font-bold text-white mb-4 tracking-tight">
             Multiple ways to <span className="text-zinc-400">learn & grow</span>
           </h2>
-          <p className="text-lg text-zinc-500 max-w-2xl mx-auto">
+          <p className="text-lg text-zinc-400 max-w-2xl mx-auto">
             Choose the format that works best for your learning style and
             schedule
           </p>

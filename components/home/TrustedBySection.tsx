@@ -12,7 +12,7 @@ export function TrustedBySection() {
           whileInView={{ opacity: 1 }}
           transition={{ duration: 0.5 }}
           viewport={{ once: true }}
-          className="text-center text-zinc-500 text-sm mb-8"
+          className="text-center text-zinc-400 text-sm mb-8"
         >
           Our experts have worked at leading companies
         </motion.p>
@@ -24,7 +24,7 @@ export function TrustedBySection() {
               whileInView={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.4, delay: i * 0.05 }}
               viewport={{ once: true }}
-              className="text-zinc-600 font-semibold text-lg md:text-xl hover:text-zinc-400 transition-colors cursor-default"
+              className="text-zinc-500 font-semibold text-lg md:text-xl hover:text-zinc-300 transition-colors cursor-default"
             >
               {company}
             </motion.div>

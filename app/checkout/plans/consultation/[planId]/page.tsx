@@ -35,7 +35,8 @@ import {
   ConsultantReview,
   ConsultationPlan,
 } from "@prisma/client";
-import { CreditCard as CreditCardIcon } from "lucide-react";
+import { CreditCard as CreditCardIcon, Lock } from "lucide-react";
+import Link from "next/link";
 import { CompanyLogo } from "@/components/ui/company-logo";
 import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import RazorpayCheckout from "../../../components/RazorpayCheckout";
@@ -604,7 +605,7 @@ export default function ConsultationCheckoutPage({
 
   return (
     <>
-      <div className="flex flex-col gap-6 border-r border-border bg-gradient-to-br from-muted via-background to-muted p-6 sm:p-8">
+      <div className="flex flex-col gap-6 border-border bg-gradient-to-br from-muted via-background to-muted p-6 sm:p-8 lg:border-r">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-4 min-w-0">
             <Avatar className="w-12 h-12 border shrink-0">
@@ -883,6 +884,15 @@ export default function ConsultationCheckoutPage({
             <div className="text-muted-foreground">
               Select your preferred payment method
             </div>
+            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              Payments are encrypted and processed securely. If your expert
+              cancels, refunds follow our{" "}
+              <Link href="/refund" className="underline hover:text-foreground">
+                refund policy
+              </Link>
+              .
+            </p>
           </div>
           {paymentGateways.map((gateway) => (
             <Card key={gateway.name} className="border-border">

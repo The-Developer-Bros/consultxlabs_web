@@ -112,7 +112,7 @@ export function HeroSection({
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6, delay: 0.2 }}
-            className="text-lg md:text-xl text-zinc-500 mb-10 max-w-2xl mx-auto leading-relaxed"
+            className="text-lg md:text-xl text-zinc-400 mb-10 max-w-2xl mx-auto leading-relaxed"
           >
             Connect with world-class experts for personalized 1-on-1 sessions,
             interactive classes, and live webinars. Your career transformation
@@ -167,7 +167,7 @@ export function HeroSection({
               {stats.map((stat) => (
                 <div key={stat.key} className="text-center">
                   <AnimatedNumber value={stat.value} />
-                  <div className="text-zinc-600 text-sm mt-1">{stat.label}</div>
+                  <div className="text-zinc-400 text-sm mt-1">{stat.label}</div>
                 </div>
               ))}
             </motion.div>

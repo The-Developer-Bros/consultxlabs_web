@@ -26,7 +26,7 @@ function PlatformFeatureCard({
       <div className="w-16 h-16 rounded-2xl bg-muted flex items-center justify-center mx-auto mb-4 group-hover:bg-secondary transition-colors group-hover:scale-110 duration-300">
         <Icon className="w-8 h-8 text-foreground" />
       </div>
-      <h4 className="font-semibold text-foreground mb-2">{feature.title}</h4>
+      <h3 className="font-semibold text-foreground mb-2">{feature.title}</h3>
       <p className="text-sm text-muted-foreground">{feature.description}</p>
     </motion.div>
   );

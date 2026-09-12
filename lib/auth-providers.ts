@@ -1,6 +1,14 @@
 /**
  * Centralized OAuth provider configuration.
  *
+ * All providers share one neutral outline button treatment (see
+ * `SocialLoginButtons`). Per-provider full-bleed fills are deliberately NOT
+ * configured here: black-on-black GitHub was near-invisible on the dark auth
+ * pages, red/blue Google/Facebook fills outranked the primary email action,
+ * and a red Google fill violates Google's Sign-In branding guidelines (white
+ * #FFFFFF, dark #131314, or neutral #F2F2F2 only). Provider recognition comes
+ * from the icon, not the fill.
+ *
  * To add or remove a provider:
  * 1. Update `socialProviders` + `trustedProviders` in `lib/auth.ts`
  * 2. Add/remove entry here
@@ -11,17 +19,14 @@ export const AUTH_PROVIDERS = [
   {
     id: "github" as const,
     label: "GitHub",
-    className: "bg-black hover:bg-gray-700",
   },
   {
     id: "google" as const,
     label: "Google",
-    className: "bg-red-600 hover:bg-red-500",
   },
   {
     id: "facebook" as const,
     label: "Facebook",
-    className: "bg-blue-600 hover:bg-blue-500",
   },
 ] as const;
 
