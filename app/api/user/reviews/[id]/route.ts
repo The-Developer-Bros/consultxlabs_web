@@ -152,7 +152,6 @@ export async function PUT(
                 reviewDescription: current.reviewDescription,
                 afterPublicReply:
                   current.repliedAt !== null && current.replyDeletedAt === null,
-                editorUserId: session.user.id,
               },
             });
           }
@@ -242,7 +241,7 @@ export async function DELETE(
     }
 
     // Soft, never hard: the unique is not partial on `deletedAt`, so the withdrawn
-    // row keeps its slot and `deletedByUserId` is what lets the author revive it.
+    // row keeps its slot and `removedBy = AUTHOR` is what lets the author revive it.
     await withSerializableRetry(() =>
       prisma.$transaction(
         async (tx) => {
@@ -251,7 +250,7 @@ export async function DELETE(
             // writes nothing rather than overwriting the first one's timestamp
             // and its attribution.
             where: { id, deletedAt: null },
-            data: { deletedAt: new Date(), deletedByUserId: session.user.id },
+            data: { deletedAt: new Date(), removedBy: "AUTHOR" },
           });
           if (removed.count === 0) return;
           await recomputeConsultantRating(tx, review.consultantProfileId);

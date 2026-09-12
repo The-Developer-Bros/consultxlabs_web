@@ -384,7 +384,6 @@ export function ExpertProfileClient({
             <ReviewsSection
               reviews={reviews}
               reviewTracks={reviewTracks}
-              publishedRating={consultantDetails.publishedRating}
               reviewCount={consultantDetails.reviewCount}
               publishedRatingOneToOne={
                 consultantDetails.publishedRatingOneToOne

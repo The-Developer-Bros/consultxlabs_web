@@ -62,7 +62,6 @@ export async function GET(
   const attendeeRatings = {
     organizationId: orgId,
     raterRole: "CONSULTEE" as const,
-    deletedAt: null,
     excludedFromAggregateAt: null,
   };
 

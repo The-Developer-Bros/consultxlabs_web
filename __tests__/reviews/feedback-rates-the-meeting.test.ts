@@ -173,12 +173,14 @@ describe("#1540 — one read for the whole booking", () => {
     );
   });
 
-  it("excludes moderation-removed ratings", async () => {
-    // `AppointmentFeedback.deletedAt` is new in #1300 and this read is what a
-    // consultee and a consultant both see; a removed comment's rating goes with
-    // it.
+  it("has no tombstone to filter on: a private rating is excluded, never removed", async () => {
+    // #1562 dropped `AppointmentFeedback.deletedAt` — it had no writer and nobody
+    // is protected by hiding a staff-only note; ratings protection is
+    // `excludedFromAggregateAt`, which the aggregates filter and this read does not.
     await get(`http://x/api/appointments/${APPT}/feedback?scope=booking`);
-    expect(mockedFeedbackFindMany.mock.calls[0][0].where.deletedAt).toBeNull();
+    expect(mockedFeedbackFindMany.mock.calls[0][0].where).not.toHaveProperty(
+      "deletedAt",
+    );
   });
 });
 

@@ -16,7 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { User } from "@prisma/client";
 import type { ConsultantDetailData } from "../types";
-import { displayedScore } from "@/lib/reviews-display";
+import { displayedScore, displayedScoreCount } from "@/lib/reviews-display";
 
 interface ProfileHeaderProps {
   userDetails: User;
@@ -30,6 +30,9 @@ export function ProfileHeader({
   reviewCount,
 }: ProfileHeaderProps) {
   const headlineScore = displayedScore(consultantDetails);
+  // #1566 — a published score is always shown with its own denominator; the total
+  // review count is the wrong number beside a per-track mean.
+  const headlineCount = displayedScoreCount(consultantDetails, "ONE_TO_ONE");
   return (
     <div className="bg-card rounded-2xl border border-border p-6 md:p-8">
       <div className="flex flex-col sm:flex-row gap-6">
@@ -85,9 +88,9 @@ export function ProfileHeader({
             )}
           </div>
 
-          {/* Rating. #1300 — the published 1:1 score, no fallback (#1566); the
-              reviews section below lists both tracks. Null until five distinct
-              clients have rated. */}
+          {/* Rating. #1300 — the published 1:1 score, no fallback (#1566), with
+              "based on N clients"; the reviews section below lists both tracks.
+              Null until five distinct clients have rated. */}
           <div className="flex items-center gap-3 mb-4">
             {headlineScore.score !== null && (
               <>
@@ -109,7 +112,11 @@ export function ProfileHeader({
                 <span className="text-muted-foreground/70">•</span>
               </>
             )}
-            <span className="text-muted-foreground">{reviewCount} reviews</span>
+            <span className="text-muted-foreground">
+              {headlineScore.score !== null
+                ? `based on ${headlineCount} client${headlineCount === 1 ? "" : "s"}`
+                : `${reviewCount} reviews`}
+            </span>
           </div>
 
           {/* Meta */}

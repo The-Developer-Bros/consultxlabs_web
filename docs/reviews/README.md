@@ -1,6 +1,6 @@
 # Reviews
 
-Reviews are the public reputation rail: one review per consultee per consultant, rendered on the expert's profile and on the landing page, and folded into two published scores that order the explore directory. The models are `ConsultantReview`, its append-only edit trail `ConsultantReviewRevision`, the per-run `ScoringSnapshot`, and the score columns on `ConsultantProfile`. A review is about a person; the private per-call rating documented under [`docs/feedback/`](../feedback/README.md) is about a conversation, and the [grid](../support/02-the-grid.md) says how the two relate; its section F multiplies both objects out by booking shape and organisation relationship.
+Reviews are the public reputation rail: one review per consultee per consultant, rendered on the expert's profile and on the landing page, and folded into two published scores that order the explore directory. The models are `ConsultantReview`, its append-only edit trail `ConsultantReviewRevision`, the score columns on `ConsultantProfile`, and `ModerationAction` as the audit row for every staff act. A review is about a person; the private per-call rating documented under [`docs/feedback/`](../feedback/README.md) is about a conversation, and the [grid](../support/02-the-grid.md) says how the two relate; its section F multiplies both objects out by booking shape and organisation relationship.
 
 This folder is the reference: how the subsystem works, what every column means, and the contracts the code keeps. The _decisions_ live in the ADRs, and the two link both ways.
 
@@ -32,7 +32,7 @@ The table below lists the files the reviews subsystem is built from.
 | `app/api/staff/moderation/reviews/route.ts`            | The staff queue                                                                                                                              |
 | `app/api/staff/moderation/reviews/[reviewId]/route.ts` | The ADMIN-only soft delete                                                                                                                   |
 | `app/api/report/route.ts`                              | `POST` a moderation report, including the `REVIEW` type                                                                                      |
-| `lib/reviews-recompute.ts`                             | `recomputeAllConsultantRatings`, the full recompute that mints a `ScoringSnapshot`; shared by the script and the seed                        |
+| `lib/reviews-recompute.ts`                             | `recomputeAllConsultantRatings`, the full recompute; shared by the script and the seed                                                       |
 | `scripts/db/recompute-consultant-ratings.ts`           | `npm run db:recompute-ratings`, the command over it                                                                                          |
 | `prisma/seedFiles/7b-create-consultant-reviews.ts`     | Seeds reviews per track and per-call feedback, then runs the recompute                                                                       |
 | `scripts/db/preflight-push.ts`                         | `npm run db:preflight`, the destructive-push guard                                                                                           |

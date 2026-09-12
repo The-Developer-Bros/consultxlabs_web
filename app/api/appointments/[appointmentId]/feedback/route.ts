@@ -105,16 +105,8 @@ export async function GET(
     // breakdown instead of one number for the package.
     const feedback = await prisma.appointmentFeedback.findMany({
       where: asProvider
-        ? {
-            appointmentId: { in: scopeIds },
-            raterRole: "CONSULTEE",
-            deletedAt: null,
-          }
-        : {
-            appointmentId: { in: scopeIds },
-            userId: auth.userId,
-            deletedAt: null,
-          },
+        ? { appointmentId: { in: scopeIds }, raterRole: "CONSULTEE" }
+        : { appointmentId: { in: scopeIds }, userId: auth.userId },
       select: {
         id: true,
         slotOfAppointmentId: true,
@@ -251,18 +243,8 @@ export async function POST(
           userId: auth.userId,
         },
       },
-      select: { rating: true, comment: true, deletedAt: true },
+      select: { rating: true, comment: true },
     });
-    // A rating moderation removed cannot be re-rated back into view: GET hides
-    // it, so a 200 here would report a save nothing shows.
-    if (previous?.deletedAt) {
-      return supportError({
-        status: 409,
-        code: "CONFLICT",
-        message: "This rating was removed by our moderation team.",
-        context: { route: FEEDBACK_ROUTE, action: "save", appointmentId },
-      });
-    }
     const opinionChanged =
       previous !== null &&
       (previous.rating !== body.data.rating ||
