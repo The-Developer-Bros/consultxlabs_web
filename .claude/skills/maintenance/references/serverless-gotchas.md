@@ -22,7 +22,7 @@ Phase-2 work inside `after()` (earnings, channel creation, notifications) shares
 - Scheduled functions run only on the PUBLISHED deploy, never on previews; env changes need a redeploy; `CONTEXT` is not visible at function runtime (use an explicit env flag per context).
 - Deploy previews are the right place for logged-in money E2E (local `next dev` can exhaust RAM); commit STATUS (not check-runs) carries the preview state: `gh api repos/O/R/commits/<sha>/status`.
 - Function logs: `netlify logs --since …` with the DEPLOY PERMALINK, not the preview URL.
-- A new instance's first ~25 s can stall the event loop; a 30 s hard ceiling means any lock retry budget must fit under ~26 s.
+- A new instance's first ~25 s can stall the event loop. There are two ceilings, not one: the Lambda execution limit is 60 s (invocations of 32–39 s complete here), but the edge returns a 504 at ~26 s to any response that has not started streaming, so a lock retry budget or a silent admin route must still fit under ~25 s (#1454; `deployment/netlify/platform-limits.md`).
 - The stall lands on the handler's FIRST await, and no timer can fire inside it — so every deadline armed before it (pg's 3 s connect budget, a `Promise.race` timeout) wakes on the first tick after, together, before the awaited work has run. A probe that arms its budget and then hits the stall reports a false timeout (#1557: `/api/health` said `database: unreachable` on every cold instance). Yield once before arming any budget, and treat a deadline that woke at more than twice its budget as stale, not as a verdict — `lib/health/probe.ts` is the reference implementation.
 
 ## 5. CodeRabbit mechanics (1 review/hour org-wide)
