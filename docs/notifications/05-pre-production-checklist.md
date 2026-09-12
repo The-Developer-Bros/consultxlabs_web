@@ -150,7 +150,7 @@ newsletter@familiarise.com
 
 - [ ] Create account at [novu.co](https://novu.co)
 - [ ] Add Resend as email provider in Novu → Integrations
-- [ ] Configure 16 Tier 1 workflows (see [Novu Dashboard Configuration](#novu-dashboard-configuration))
+- [ ] Sync the workflows (see [Novu Dashboard Configuration](#novu-dashboard-configuration))
 - [ ] Copy Secret Key + App ID → save for Step 5
 
 ### Step 4: Prisma Migration
@@ -216,16 +216,13 @@ Use the template specs at `docs/notifications/03-novu-template-specs.md` for cop
 4. Set default From: `Familiarise <notifications@yourdomain.com>`
 5. Save and activate
 
-### 2. Create 16 Tier 1 Workflows
+### 2. Sync the workflows
 
-For each workflow in the template specs doc:
+The workflows are no longer created by hand. `lib/novu/templates/` is the source of truth, and `scripts/novu/sync-workflows.ts` writes it to the Novu environment with three commands:
 
-1. Go to **Workflows** → **"Create Workflow"**
-2. Set **Workflow ID** to match exactly (e.g., `appointment-booked`)
-3. Add an **In-App** step → paste the in-app notification text
-4. Add an **Email** step → paste the subject line and HTML body
-5. Set the **Redirect URL** to `{{payload.dashboardUrl}}`
-6. Save
+- `npm run novu:sync -- --dry-run` prints the plan without writing anything.
+- `npm run novu:sync` applies the plan. It retires the 19 legacy workflows first, because the environment's 20-workflow cap counts live workflows and a create on a full environment fails. This apply is a production operation: local development and production both point at the same Development environment, so running it writes to what customers see. Run it by hand after a merge, never from CI.
+- `npm run novu:check` exits 1 if the live environment has drifted from the manifest. This is the drift guard CI runs on every pull request.
 
 ### 3. Configure Preference Categories
 

@@ -9,6 +9,10 @@
 
 > **Payload values are customer-ready before they reach a template (#536).** Every field named below without a unit suffix already holds the string a person should read: `dateTime` is a sentence in the recipient's own timezone, `amount` is formatted money including its currency symbol, and `appointmentType` is a label rather than an enum member. The machine-readable original travels alongside under a unit-suffixed name (`dateTimeIso`, `amountPaise`, `appointmentTypeCode`). See "Payload conventions" in `02-workflows-and-api.md` for the full rule. A template must never format a date itself. The one exception to "print the field as-is" is money: the four templates that already render `{{payload.currency}} {{payload.amount}}` receive `amount` with the symbol stripped, so they keep printing the ISO code and read correctly; every other money template gets the symbol inside `amount` and must not print a currency code beside it.
 
+## Source of truth
+
+The in-app templates described below are generated from `lib/novu/templates/` and written to the Novu environment by `scripts/novu/sync-workflows.ts`. The environment itself holds one workflow per family rather than one workflow per event, with a Liquid `case` over `payload.event` selecting the branch for the triggering event (see ADR 30, `docs/enterprise/70-design-decisions/30-novu-templates-as-code-and-workflow-families.md`). The per-workflow sections below describe the email bodies that go with each event; those are not yet created as steps in any family and must be written in Liquid, not Handlebars, when they are.
+
 ---
 
 ## Table of Contents
@@ -29,9 +33,11 @@
   - [11. trial-session-completed](#11-trial-session-completed)
   - [12. trial-session-cancelled](#12-trial-session-cancelled)
   - [13. support-ticket-created](#13-support-ticket-created)
-  - [14. support-ticket-response](#14-support-ticket-response)
-  - [15. new-review-received](#15-new-review-received)
-  - [16. verification-status-changed](#16-verification-status-changed)
+  - [14. support-ticket-update](#14-support-ticket-update)
+  - [15. support-ticket-activity](#15-support-ticket-activity)
+  - [16. support-ticket-response](#16-support-ticket-response)
+  - [17. new-review-received](#17-new-review-received)
+  - [18. verification-status-changed](#18-verification-status-changed)
 
 ---
 
@@ -49,7 +55,7 @@
 
 ## Setup: Preference Categories
 
-Configure these in **Novu Dashboard → Settings → Preferences** (or per-workflow):
+The opt-out categories below are no longer per-workflow settings; they are tags carried by a workflow family, written by the sync from `PreferenceCategory` in `lib/novu/templates/types.ts` and applied to every event in that family. The table names the events each category currently covers.
 
 | Category ID     | Display Name                | Mapped Workflows                                                                                   |
 | --------------- | --------------------------- | -------------------------------------------------------------------------------------------------- |
@@ -57,10 +63,33 @@ Configure these in **Novu Dashboard → Settings → Preferences** (or per-workf
 | `payments`      | Payment Notifications       | payment-success, payment-failed                                                                    |
 | `subscriptions` | Subscription Notifications  | subscription-started, subscription-cancelled                                                       |
 | `trials`        | Trial Session Notifications | trial-session-requested, trial-session-scheduled, trial-session-completed, trial-session-cancelled |
-| `support`       | Support Updates             | support-ticket-created, support-ticket-response                                                    |
+| `support`       | Support Updates             | support-ticket-created, support-ticket-update, support-ticket-activity, support-ticket-response    |
 | `feedback`      | Feedback & Reviews          | new-review-received                                                                                |
 
 `verification-status-changed` is a system notification — no opt-out category (always sends).
+
+### Workflow families
+
+The Novu environment holds one workflow per family, not one per event; a family groups events that share an audience and an opt-out switch, and the sixteen families are defined in `EVENT_FAMILY` in `lib/novu/templates/families.ts`. The table below lists every family and the events it carries.
+
+| Family ID        | Events                                                                                                                                                                                                                     |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `appointment`    | appointment-booked, appointment-partially-scheduled, appointment-cancelled, appointment-rescheduled, appointment-reminder, appointment-completed, new-booking-request                                                      |
+| `session-media`  | recording-available, recording-failed, recording-expiring, document-uploaded, document-reviewed                                                                                                                            |
+| `payment`        | payment-success, payment-failed, referral-credits-applied                                                                                                                                                                  |
+| `refund`         | refund-requested, refund-processed, refund-failed, dispute-created, dispute-resolved                                                                                                                                       |
+| `payout`         | payout-processed                                                                                                                                                                                                           |
+| `referral`       | referral-bonus-earned, referee-welcome-bonus                                                                                                                                                                               |
+| `subscription`   | subscription-started, subscription-cancelled, subscription-renewed                                                                                                                                                         |
+| `trial`          | trial-session-requested, trial-session-scheduled, trial-session-completed, trial-session-cancelled                                                                                                                         |
+| `support-ticket` | support-ticket-created, support-ticket-activity, support-ticket-update, support-ticket-response                                                                                                                            |
+| `feedback`       | feedback-received, new-review-received                                                                                                                                                                                     |
+| `account`        | verification-status-changed, new-consultant-application, moderation-warning, account-suspended, account-banned                                                                                                             |
+| `collaborator`   | collaborator-invited, collaborator-accepted, collaborator-removed                                                                                                                                                          |
+| `platform`       | general-announcement, maintenance-scheduled, maintenance-started, maintenance-ended                                                                                                                                        |
+| `org-billing`    | org-invoice-issued, org-invoice-paid, org-invoice-overdue, org-wallet-topup-confirmed, org-wallet-low, org-payout-completed, org-payout-failed, org-payout-reversed, org-member-overage-timed-out, org-program-overage-due |
+| `org-membership` | org-invite-sent, org-invite-accepted, org-expert-removed, org-sso-provider-deleted, org-sso-cert-expiring                                                                                                                  |
+| `org-program`    | org-program-exhausted, org-program-cap-near, org-license-renewal-upcoming, org-data-export-ready                                                                                                                           |
 
 ---
 
@@ -101,10 +130,10 @@ In the Novu editor, replicate this using their visual builder or paste the HTML 
 {{payload.dashboardUrl}}       - Link to dashboard
 ```
 
-**In-App notification**:
+**In-App notification** (`lib/novu/templates/b2c.ts`, verbatim):
 
 ```
-Your {{payload.appointmentType}} "{{payload.planTitle}}" has been booked for {{payload.dateTime}}.
+Your {{payload.appointmentType}} for {{payload.planTitle}} is booked{% if payload.dateTime %} for {{payload.dateTime}}{% endif %}.
 ```
 
 **Email subject**:
@@ -113,7 +142,7 @@ Your {{payload.appointmentType}} "{{payload.planTitle}}" has been booked for {{p
 Booking Confirmed — {{payload.planTitle}}
 ```
 
-**Email body** (Handlebars):
+**Email body** (not yet created as a step; write it in Liquid when it is):
 
 ```html
 <h1 style="font-size:28px;font-weight:bold;color:#333;margin:0 0 20px">
@@ -142,14 +171,14 @@ Booking Confirmed — {{payload.planTitle}}
       {{payload.consulteeName}}
     </td>
   </tr>
-  {{#if payload.dateTime}}
+  {% if payload.dateTime %}
   <tr>
     <td style="padding:8px 0;color:#666;font-size:14px">Date & Time</td>
     <td style="padding:8px 0;color:#333;font-size:14px;font-weight:600">
       {{payload.dateTime}}
     </td>
   </tr>
-  {{/if}}
+  {% endif %}
   <tr>
     <td style="padding:8px 0;color:#666;font-size:14px">Type</td>
     <td
@@ -201,10 +230,10 @@ Booking Confirmed — {{payload.planTitle}}
 {{payload.cancelledByRole}}    - "consultant" | "consultee" | "system" (for branching)
 ```
 
-**In-App notification**:
+**In-App notification** (`lib/novu/templates/b2c.ts`, verbatim):
 
 ```
-{{payload.cancelledBy}} cancelled the {{payload.appointmentType}} session for {{payload.planTitle}}. Reason: {{payload.reason}}
+{{payload.cancelledBy}} cancelled the {{payload.appointmentType}} for {{payload.planTitle}}{% if payload.dateTime %} on {{payload.dateTime}}{% endif %}. Reason: {{payload.reason}}.
 ```
 
 **Email subject**:
@@ -229,11 +258,11 @@ Appointment Cancelled — {{payload.planTitle}}
   cancelled by {{payload.cancelledBy}}.
 </p>
 
-{{#if payload.reason}}
+{% if payload.reason %}
 <p style="font-size:16px;line-height:1.5;color:#444;margin:0 0 20px">
   <strong>Reason:</strong> {{payload.reason}}
 </p>
-{{/if}}
+{% endif %}
 
 <table style="width:100%;border-collapse:collapse;margin:0 0 20px">
   <tr>
@@ -248,14 +277,14 @@ Appointment Cancelled — {{payload.planTitle}}
       {{payload.consulteeName}}
     </td>
   </tr>
-  {{#if payload.dateTime}}
+  {% if payload.dateTime %}
   <tr>
     <td style="padding:8px 0;color:#666;font-size:14px">Original Date</td>
     <td style="padding:8px 0;color:#333;font-size:14px;font-weight:600">
       {{payload.dateTime}}
     </td>
   </tr>
-  {{/if}}
+  {% endif %}
 </table>
 
 <p style="font-size:16px;line-height:1.5;color:#444;margin:0 0 20px">
@@ -295,10 +324,10 @@ Appointment Cancelled — {{payload.planTitle}}
 {{payload.dashboardUrl}}       - Link to dashboard
 ```
 
-**In-App notification**:
+**In-App notification** (`lib/novu/templates/b2c.ts`, verbatim):
 
 ```
-Reminder: Your {{payload.appointmentType}} "{{payload.planTitle}}" is coming up on {{payload.dateTime}}.
+Your {{payload.appointmentType}} for {{payload.planTitle}} is coming up — {{payload.dateTime}}.
 ```
 
 **Email subject**:
@@ -379,10 +408,10 @@ Reminder — {{payload.planTitle}} is coming up
 {{payload.dashboardUrl}}       - Link to dashboard
 ```
 
-**In-App notification**:
+**In-App notification** (`lib/novu/templates/b2c.ts`, verbatim):
 
 ```
-Payment of {{payload.currency}} {{payload.amount}} confirmed for "{{payload.planTitle}}" with {{payload.consultantName}}.
+Payment of {{payload.amountFormatted}} received for {{payload.planTitle}} with {{payload.consultantName}}.
 ```
 
 **Email subject**:
@@ -437,13 +466,13 @@ Payment Confirmed — {{payload.planTitle}}
   </tr>
 </table>
 
-{{#if payload.receiptUrl}}
+{% if payload.receiptUrl %}
 <p style="font-size:14px;line-height:1.5;color:#666;margin:0 0 20px">
   <a href="{{payload.receiptUrl}}" style="color:#000;text-decoration:underline"
     >Download Receipt</a
   >
 </p>
-{{/if}}
+{% endif %}
 
 <div style="text-align:center;margin:30px 0">
   <a
@@ -480,10 +509,10 @@ Payment Confirmed — {{payload.planTitle}}
 {{payload.retryUrl}}           - Retry URL (optional)
 ```
 
-**In-App notification**:
+**In-App notification** (`lib/novu/templates/b2c.ts`, verbatim):
 
 ```
-Payment of {{payload.currency}} {{payload.amount}} failed for "{{payload.planTitle}}". {{payload.failureReason}}.
+Your payment of {{payload.amountFormatted}}{% if payload.planTitle %} for {{payload.planTitle}}{% endif %} did not go through. {{payload.failureReason}}
 ```
 
 **Email subject**:
@@ -528,7 +557,7 @@ Payment Failed — Action Required
   </tr>
 </table>
 
-{{#if payload.retryUrl}}
+{% if payload.retryUrl %}
 <div style="text-align:center;margin:30px 0">
   <a
     href="{{payload.retryUrl}}"
@@ -537,7 +566,7 @@ Payment Failed — Action Required
     Retry Payment
   </a>
 </div>
-{{/if}}
+{% endif %}
 
 <p style="font-size:16px;line-height:1.5;color:#444;margin:0 0 20px">
   Please check your payment method and try again. If the issue persists, contact
@@ -566,10 +595,10 @@ Payment Failed — Action Required
 {{payload.dashboardUrl}}        - Link to dashboard
 ```
 
-**In-App notification**:
+**In-App notification** (`lib/novu/templates/b2c.ts`, verbatim):
 
 ```
-New booking request from {{payload.consulteeName}} for "{{payload.planTitle}}".
+{{payload.consulteeName}} requested a {{payload.appointmentType}} for {{payload.planTitle}}{% if payload.requestedDateTime %} on {{payload.requestedDateTime}}{% endif %}.
 ```
 
 **Email subject**:
@@ -595,11 +624,11 @@ New Booking Request — {{payload.planTitle}}
   <strong>"{{payload.planTitle}}"</strong>.
 </p>
 
-{{#if payload.requestedDateTime}}
+{% if payload.requestedDateTime %}
 <p style="font-size:16px;line-height:1.5;color:#444;margin:0 0 20px">
   <strong>Requested time:</strong> {{payload.requestedDateTime}}
 </p>
-{{/if}}
+{% endif %}
 
 <p style="font-size:16px;line-height:1.5;color:#444;margin:0 0 20px">
   Please review and approve or decline this request from your dashboard.
@@ -636,10 +665,10 @@ New Booking Request — {{payload.planTitle}}
 {{payload.dashboardUrl}}       - Link to dashboard
 ```
 
-**In-App notification**:
+**In-App notification** (`lib/novu/templates/b2c.ts`, verbatim):
 
 ```
-Your subscription to "{{payload.planTitle}}" with {{payload.consultantName}} is now active.
+Your subscription to {{payload.planTitle}} with {{payload.consultantName}} is now active.
 ```
 
 **Email subject**:
@@ -699,10 +728,10 @@ Subscription Active — {{payload.planTitle}}
 {{payload.dashboardUrl}}       - Link to dashboard
 ```
 
-**In-App notification**:
+**In-App notification** (`lib/novu/templates/b2c.ts`, verbatim):
 
 ```
-The subscription "{{payload.planTitle}}" has been cancelled.
+The subscription to {{payload.planTitle}} has been cancelled.
 ```
 
 **Email subject**:
@@ -764,10 +793,10 @@ Subscription Cancelled — {{payload.planTitle}}
 {{payload.dashboardUrl}}       - Link to dashboard
 ```
 
-**In-App notification**:
+**In-App notification** (`lib/novu/templates/b2c.ts`, verbatim):
 
 ```
-{{payload.consulteeName}} has requested a trial session for "{{payload.planTitle}}".
+{{payload.consulteeName}} requested a free trial session for {{payload.planTitle}}{% if payload.dateTime %} on {{payload.dateTime}}{% endif %}.
 ```
 
 **Email subject**:
@@ -792,11 +821,11 @@ New Trial Request — {{payload.planTitle}}
   <strong>"{{payload.planTitle}}"</strong>.
 </p>
 
-{{#if payload.dateTime}}
+{% if payload.dateTime %}
 <p style="font-size:16px;line-height:1.5;color:#444;margin:0 0 20px">
   <strong>Preferred time:</strong> {{payload.dateTime}}
 </p>
-{{/if}}
+{% endif %}
 
 <p style="font-size:16px;line-height:1.5;color:#444;margin:0 0 20px">
   Review and schedule this trial from your dashboard. Trial sessions are a great
@@ -834,10 +863,10 @@ New Trial Request — {{payload.planTitle}}
 {{payload.dashboardUrl}}       - Link to dashboard
 ```
 
-**In-App notification**:
+**In-App notification** (`lib/novu/templates/b2c.ts`, verbatim):
 
 ```
-Your trial session for "{{payload.planTitle}}" with {{payload.consultantName}} has been scheduled for {{payload.dateTime}}.
+The trial session for {{payload.planTitle}} between {{payload.consulteeName}} and {{payload.consultantName}} is scheduled for {{payload.dateTime}}.
 ```
 
 **Email subject**:
@@ -863,11 +892,11 @@ Trial Scheduled — {{payload.planTitle}} with {{payload.consultantName}}
   <strong>{{payload.consultantName}}</strong> has been scheduled.
 </p>
 
-{{#if payload.dateTime}}
+{% if payload.dateTime %}
 <p style="font-size:16px;line-height:1.5;color:#444;margin:0 0 20px">
   <strong>Date & Time:</strong> {{payload.dateTime}}
 </p>
-{{/if}}
+{% endif %}
 
 <p style="font-size:16px;line-height:1.5;color:#444;margin:0 0 20px">
   Make sure you have a stable internet connection. You can join the session from
@@ -904,10 +933,10 @@ Trial Scheduled — {{payload.planTitle}} with {{payload.consultantName}}
 {{payload.dashboardUrl}}       - Link to dashboard
 ```
 
-**In-App notification**:
+**In-App notification** (`lib/novu/templates/b2c.ts`, verbatim):
 
 ```
-Your trial session for "{{payload.planTitle}}" has been completed.
+The trial session for {{payload.planTitle}} with {{payload.consultantName}} has ended.
 ```
 
 **Email subject**:
@@ -966,10 +995,10 @@ Trial Completed — {{payload.planTitle}}
 {{payload.dashboardUrl}}       - Link to dashboard
 ```
 
-**In-App notification**:
+**In-App notification** (`lib/novu/templates/b2c.ts`, verbatim):
 
 ```
-The trial session for "{{payload.planTitle}}" has been cancelled.
+The trial session for {{payload.planTitle}}{% if payload.dateTime %} on {{payload.dateTime}}{% endif %} was cancelled.
 ```
 
 **Email subject**:
@@ -1023,16 +1052,20 @@ Trial Cancelled — {{payload.planTitle}}
 
 ```
 {{payload.ticketId}}          - Ticket ID
+{{payload.reference}}         - Human-facing ticket reference, e.g. "FAM-2026-000007" (optional)
 {{payload.ticketTitle}}       - Ticket subject
-{{payload.status}}            - Ticket status (optional)
+{{payload.status}}            - Sentence fragment, e.g. "in progress" (optional)
+{{payload.statusCode}}        - Raw status enum, for branching (optional)
+{{payload.userName}}          - The customer who opened or acted on the ticket (optional)
+{{payload.activity}}          - "replied" | "reopened" (optional; SUPPORT_TICKET_ACTIVITY only)
 {{payload.message}}           - Ticket body (optional)
 {{payload.dashboardUrl}}       - Link to staff dashboard
 ```
 
-**In-App notification**:
+**In-App notification** (`lib/novu/templates/b2c.ts`, verbatim; `TICKET` is `{% if payload.reference %}{{payload.reference}} — {% endif %}{{payload.ticketTitle}}`):
 
 ```
-New support ticket: "{{payload.ticketTitle}}" ({{payload.ticketId}}).
+{{payload.userName | default: "A customer"}} opened {% if payload.reference %}{{payload.reference}} — {% endif %}{{payload.ticketTitle}}.
 ```
 
 **Email subject**:
@@ -1071,13 +1104,13 @@ New Support Ticket — {{payload.ticketTitle}}
   </tr>
 </table>
 
-{{#if payload.message}}
+{% if payload.message %}
 <div
   style="background:#f9f9f9;border-left:3px solid #ddd;padding:15px;margin:0 0 20px;font-size:14px;color:#555"
 >
   {{payload.message}}
 </div>
-{{/if}}
+{% endif %}
 
 <div style="text-align:center;margin:30px 0">
   <a
@@ -1093,7 +1126,76 @@ New Support Ticket — {{payload.ticketTitle}}
 
 ---
 
-### 14. support-ticket-response
+### 14. support-ticket-update
+
+**Workflow family**: `support-ticket`
+**Trigger function**: `notifySupportTicketUpdate(userId, payload)`
+**Recipient**: The ticket's owner, when ops changes its status
+**Preference category**: `support`
+
+**Payload variables** (`SupportTicketPayload`):
+
+```
+{{payload.ticketId}}          - Ticket ID
+{{payload.reference}}         - Human-facing ticket reference, e.g. "FAM-2026-000007" (optional)
+{{payload.ticketTitle}}       - Ticket subject
+{{payload.status}}            - Sentence fragment, e.g. "in progress"
+{{payload.statusCode}}        - Raw status enum, for branching (optional)
+{{payload.userName}}          - The ticket's owner (optional)
+{{payload.dashboardUrl}}       - Link to dashboard
+```
+
+**In-App notification** (`lib/novu/templates/b2c.ts`, verbatim; `TICKET` is `{% if payload.reference %}{{payload.reference}} — {% endif %}{{payload.ticketTitle}}`):
+
+```
+Your ticket {% if payload.reference %}{{payload.reference}} — {% endif %}{{payload.ticketTitle}} is now {{payload.status}}.
+```
+
+**Email subject** (not yet created as a step):
+
+```
+Update on Your Ticket — {{payload.ticketTitle}}
+```
+
+**Redirect URL**: `{{payload.dashboardUrl}}`
+
+---
+
+### 15. support-ticket-activity
+
+**Workflow family**: `support-ticket`
+**Trigger function**: `notifySupportTicketActivity(staffUserIds[], payload, dedupeKey?)`
+**Recipient**: The ticket's assignee, or the whole staff queue if there is none, when the customer replies or reopens
+**Preference category**: `support`
+
+**Payload variables** (`SupportTicketPayload`):
+
+```
+{{payload.ticketId}}          - Ticket ID
+{{payload.reference}}         - Human-facing ticket reference, e.g. "FAM-2026-000007" (optional)
+{{payload.ticketTitle}}       - Ticket subject
+{{payload.userName}}          - The customer who replied or reopened (optional)
+{{payload.activity}}          - "replied" | "reopened" (optional)
+{{payload.dashboardUrl}}       - Link to staff dashboard
+```
+
+**In-App notification** (`lib/novu/templates/b2c.ts`, verbatim; `TICKET` is `{% if payload.reference %}{{payload.reference}} — {% endif %}{{payload.ticketTitle}}`):
+
+```
+{{payload.userName | default: "The customer"}} {{payload.activity | default: "replied"}} on {% if payload.reference %}{{payload.reference}} — {% endif %}{{payload.ticketTitle}}.
+```
+
+**Email subject** (not yet created as a step):
+
+```
+Ticket Activity — {{payload.ticketTitle}}
+```
+
+**Redirect URL**: `{{payload.dashboardUrl}}`
+
+---
+
+### 16. support-ticket-response
 
 **Workflow ID**: `support-ticket-response`
 **Trigger function**: `notifySupportTicketResponse(userId, payload)`
@@ -1104,16 +1206,19 @@ New Support Ticket — {{payload.ticketTitle}}
 
 ```
 {{payload.ticketId}}          - Ticket ID
+{{payload.reference}}         - Human-facing ticket reference, e.g. "FAM-2026-000007" (optional)
 {{payload.ticketTitle}}       - Ticket subject
+{{payload.statusCode}}        - Raw status enum, for branching (optional)
+{{payload.userName}}          - The ticket's owner (optional)
 {{payload.message}}           - Response content (optional)
 {{payload.respondedBy}}       - Staff member name (optional)
 {{payload.dashboardUrl}}       - Link to user dashboard
 ```
 
-**In-App notification**:
+**In-App notification** (`lib/novu/templates/b2c.ts`, verbatim; `TICKET` is `{% if payload.reference %}{{payload.reference}} — {% endif %}{{payload.ticketTitle}}`):
 
 ```
-Your support ticket "{{payload.ticketTitle}}" has a new response{{#if payload.respondedBy}} from {{payload.respondedBy}}{{/if}}.
+{{payload.respondedBy | default: "Support"}} replied on {% if payload.reference %}{{payload.reference}} — {% endif %}{{payload.ticketTitle}}{% if payload.message %}: "{{payload.message | truncate: 140}}"{% endif %}
 ```
 
 **Email subject**:
@@ -1138,17 +1243,17 @@ Update on Your Ticket — {{payload.ticketTitle}}
   <strong>"{{payload.ticketTitle}}"</strong>.
 </p>
 
-{{#if payload.respondedBy}}
+{% if payload.respondedBy %}
 <p style="font-size:14px;line-height:1.5;color:#666;margin:0 0 10px">
   <em>Response from {{payload.respondedBy}}:</em>
 </p>
-{{/if}} {{#if payload.message}}
+{% endif %} {% if payload.message %}
 <div
   style="background:#f9f9f9;border-left:3px solid #ddd;padding:15px;margin:0 0 20px;font-size:14px;color:#555"
 >
   {{payload.message}}
 </div>
-{{/if}}
+{% endif %}
 
 <div style="text-align:center;margin:30px 0">
   <a
@@ -1164,7 +1269,7 @@ Update on Your Ticket — {{payload.ticketTitle}}
 
 ---
 
-### 15. new-review-received
+### 17. new-review-received
 
 **Workflow ID**: `new-review-received`
 **Trigger function**: `notifyNewReview(consultantUserId, payload)`
@@ -1181,10 +1286,10 @@ Update on Your Ticket — {{payload.ticketTitle}}
 {{payload.dashboardUrl}}       - Link to dashboard
 ```
 
-**In-App notification**:
+**In-App notification** (`lib/novu/templates/b2c.ts`, verbatim):
 
 ```
-{{payload.reviewerName}} left a {{payload.rating}}-star review{{#if payload.planTitle}} for "{{payload.planTitle}}"{{/if}}.
+{{payload.reviewerName}} left a {{payload.rating}}-star review{% if payload.planTitle %} on {{payload.planTitle}}{% endif %}{% if payload.comment %}: "{{payload.comment | truncate: 140}}"{% endif %}
 ```
 
 **Email subject**:
@@ -1212,17 +1317,17 @@ New Review — {{payload.rating}} Stars from {{payload.reviewerName}}
   {{payload.rating}} / 5 Stars
 </div>
 
-{{#if payload.planTitle}}
+{% if payload.planTitle %}
 <p style="font-size:14px;line-height:1.5;color:#666;margin:0 0 10px">
   For: <strong>{{payload.planTitle}}</strong>
 </p>
-{{/if}} {{#if payload.comment}}
+{% endif %} {% if payload.comment %}
 <div
   style="background:#f9f9f9;border-left:3px solid #ddd;padding:15px;margin:0 0 20px;font-size:14px;color:#555;font-style:italic"
 >
   "{{payload.comment}}"
 </div>
-{{/if}}
+{% endif %}
 
 <p style="font-size:16px;line-height:1.5;color:#444;margin:0 0 20px">
   Reviews help build trust with potential clients. View your full review history
@@ -1243,7 +1348,7 @@ New Review — {{payload.rating}} Stars from {{payload.reviewerName}}
 
 ---
 
-### 16. verification-status-changed
+### 18. verification-status-changed
 
 **Workflow ID**: `verification-status-changed`
 **Trigger function**: `notifyVerificationStatusChanged(consultantUserId, payload)`
@@ -1258,10 +1363,10 @@ New Review — {{payload.rating}} Stars from {{payload.reviewerName}}
 {{payload.dashboardUrl}}       - Link to dashboard
 ```
 
-**In-App notification**:
+**In-App notification** (`lib/novu/templates/b2c.ts`, verbatim):
 
 ```
-Your verification status has been updated to {{payload.status}}.{{#if payload.reason}} Reason: {{payload.reason}}{{/if}}
+{% case payload.status %}{% when "VERIFIED" %}Your profile is verified and now visible to clients.{% when "REJECTED" %}Your profile verification was not approved.{% else %}Your profile verification is pending review.{% endcase %}{% if payload.reason %} {{payload.reason}}{% endif %}
 ```
 
 **Email subject**:
@@ -1286,21 +1391,21 @@ Verification Update — {{payload.status}}
   <strong>{{payload.status}}</strong>.
 </p>
 
-{{#if payload.reason}}
+{% if payload.reason %}
 <p style="font-size:16px;line-height:1.5;color:#444;margin:0 0 20px">
   <strong>Details:</strong> {{payload.reason}}
 </p>
-{{/if}} {{#equals payload.status "APPROVED"}}
+{% endif %} {% if payload.status == "APPROVED" %}
 <p style="font-size:16px;line-height:1.5;color:#444;margin:0 0 20px">
   Congratulations! Your profile is now verified and visible to potential
   clients. Start creating your service plans to begin receiving bookings.
 </p>
-{{/equals}} {{#equals payload.status "REJECTED"}}
+{% endif %} {% if payload.status == "REJECTED" %}
 <p style="font-size:16px;line-height:1.5;color:#444;margin:0 0 20px">
   Please review the feedback and update your profile accordingly. You can
   resubmit for verification from your dashboard.
 </p>
-{{/equals}}
+{% endif %}
 
 <div style="text-align:center;margin:30px 0">
   <a
@@ -1332,6 +1437,8 @@ trial-session-scheduled
 trial-session-completed
 trial-session-cancelled
 support-ticket-created
+support-ticket-update
+support-ticket-activity
 support-ticket-response
 new-review-received
 verification-status-changed

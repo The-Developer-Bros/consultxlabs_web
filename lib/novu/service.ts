@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import * as Sentry from "@sentry/nextjs";
 import { getNovuClient, isNovuConfigured } from "./client";
+import { toWire } from "./templates/families";
 import {
   NOVU_WORKFLOWS,
   type AccountBannedPayload,
@@ -225,10 +226,11 @@ async function triggerWorkflow<T extends NovuPayload>(
 
   try {
     const novu = getNovuClient();
+    const wire = toWire(workflowId, payload);
     await novu.trigger({
-      workflowId,
+      workflowId: wire.workflowId,
       to: subscriberId,
-      payload,
+      payload: wire.payload,
       transactionId: deriveTransactionId(
         workflowId,
         subscriberId,
@@ -280,10 +282,11 @@ async function triggerForMultiple<T extends NovuPayload>(
     const batch = userIds.slice(i, i + BATCH_SIZE);
     try {
       const novu = getNovuClient();
+      const wire = toWire(workflowId, payload);
       await novu.trigger({
-        workflowId,
+        workflowId: wire.workflowId,
         to: batch,
-        payload,
+        payload: wire.payload,
         transactionId: deriveTransactionId(
           workflowId,
           batch,
@@ -326,9 +329,10 @@ async function triggerBroadcastWorkflow<T extends NovuPayload>(
 
   try {
     const novu = getNovuClient();
+    const wire = toWire(workflowId, payload);
     await novu.triggerBroadcast({
-      name: workflowId,
-      payload,
+      name: wire.workflowId,
+      payload: wire.payload,
     });
     console.log(`[Novu] Broadcast triggered: ${workflowId}`);
     return { success: true };
@@ -713,18 +717,19 @@ export async function notifySupportTicketUpdate(
 }
 
 /**
- * #705 — the ops side of a ticket update, fanned out to several staff.
- * A user replying into an escalated thread used to page nobody at all, so the
- * only way staff learned of it was reopening the inbox.
+ * #705 — the ops side of a ticket: the customer replied or reopened, fanned
+ * out to the assignee or the whole queue. Its own workflow, not the owner's
+ * SUPPORT_TICKET_UPDATE, so staff can digest it later without touching the
+ * customer's bell.
  */
-export async function notifySupportTicketUpdateForStaff(
-  userIds: string[],
+export async function notifySupportTicketActivity(
+  staffUserIds: string[],
   payload: SupportTicketPayload,
   dedupeKey?: string,
 ) {
   return triggerForMultiple(
-    NOVU_WORKFLOWS.SUPPORT_TICKET_UPDATE,
-    userIds,
+    NOVU_WORKFLOWS.SUPPORT_TICKET_ACTIVITY,
+    staffUserIds,
     payload,
     dedupeKey,
   );

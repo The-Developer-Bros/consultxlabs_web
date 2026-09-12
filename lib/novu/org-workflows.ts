@@ -52,6 +52,7 @@ import {
   type OrgWalletTopupConfirmedPayload,
 } from "./workflows";
 import { getNovuClient, isNovuConfigured } from "./client";
+import { toWire } from "./templates/families";
 import {
   DEFAULT_NOTIFICATION_TIMEZONE,
   formatNotificationDateTime,
@@ -74,7 +75,12 @@ async function triggerOne<T extends NovuRecord>(
   if (!isNovuConfigured()) return;
   try {
     const novu = getNovuClient();
-    await novu.trigger({ workflowId, to: subscriberId, payload });
+    const wire = toWire(workflowId, payload);
+    await novu.trigger({
+      workflowId: wire.workflowId,
+      to: subscriberId,
+      payload: wire.payload,
+    });
   } catch (err) {
     Sentry.captureException(
       err instanceof Error ? err : new Error(String(err)),
@@ -93,7 +99,12 @@ async function triggerMany<T extends NovuRecord>(
   if (!isNovuConfigured()) return;
   try {
     const novu = getNovuClient();
-    await novu.trigger({ workflowId, to: subscriberIds, payload });
+    const wire = toWire(workflowId, payload);
+    await novu.trigger({
+      workflowId: wire.workflowId,
+      to: subscriberIds,
+      payload: wire.payload,
+    });
   } catch (err) {
     Sentry.captureException(
       err instanceof Error ? err : new Error(String(err)),

@@ -16,8 +16,8 @@ import type {
   SupportTicket,
 } from "@prisma/client";
 import {
+  notifySupportTicketActivity,
   notifySupportTicketCreated,
-  notifySupportTicketUpdateForStaff,
 } from "@/lib/novu";
 import { notificationScope } from "@/lib/novu/workflows";
 import { allocateTicketReference } from "./reference";
@@ -77,7 +77,7 @@ export interface CreateSupportTicketInput {
 export async function notifySupportStaff(
   ticket: Pick<
     SupportTicket,
-    "id" | "title" | "organizationId" | "referenceNumber"
+    "id" | "title" | "organizationId" | "referenceNumber" | "userId"
   >,
 ): Promise<void> {
   // ADR 23 — the notification inherits the ticket's org-ness (attribution +
@@ -90,18 +90,23 @@ export async function notifySupportStaff(
     });
     orgName = org?.name ?? null;
   }
-  const staffUsers = await prisma.user.findMany({
-    where: { role: { in: ["STAFF", "ADMIN"] } },
-    select: { id: true },
-  });
+  const [staffUsers, customer] = await Promise.all([
+    prisma.user.findMany({
+      where: { role: { in: ["STAFF", "ADMIN"] } },
+      select: { id: true },
+    }),
+    prisma.user.findUnique({
+      where: { id: ticket.userId },
+      select: { name: true },
+    }),
+  ]);
   void notifySupportTicketCreated(
     staffUsers.map((u) => u.id),
     {
       ticketId: ticket.id,
-      // Lead with the reference: it is what the user will quote back.
-      ticketTitle: ticket.referenceNumber
-        ? `${ticket.referenceNumber} — ${ticket.title || "Support Ticket"}`
-        : ticket.title || "Support Ticket",
+      reference: ticket.referenceNumber ?? undefined,
+      ticketTitle: ticket.title || "Support Ticket",
+      userName: customer?.name ?? undefined,
       dashboardUrl: "/dashboard/admin/tickets",
       ...notificationScope(ticket.organizationId, orgName),
     },
@@ -125,6 +130,7 @@ export async function notifyStaffOfTicketActivity(
    * would ever have paged anyone.
    */
   eventId?: string,
+  activity: "replied" | "reopened" = "replied",
 ): Promise<void> {
   const ticket = await prisma.supportTicket.findUnique({
     where: { id: ticketId },
@@ -133,6 +139,7 @@ export async function notifyStaffOfTicketActivity(
       assignedToId: true,
       referenceNumber: true,
       organizationId: true,
+      user: { select: { name: true } },
     },
   });
   if (!ticket) return;
@@ -145,13 +152,14 @@ export async function notifyStaffOfTicketActivity(
         })
       ).map((u) => u.id);
   if (recipients.length === 0) return;
-  void notifySupportTicketUpdateForStaff(
+  void notifySupportTicketActivity(
     recipients,
     {
       ticketId,
-      ticketTitle: ticket.referenceNumber
-        ? `${ticket.referenceNumber} — ${ticket.title}`
-        : ticket.title,
+      reference: ticket.referenceNumber ?? undefined,
+      ticketTitle: ticket.title,
+      userName: ticket.user.name ?? undefined,
+      activity,
       dashboardUrl: "/dashboard/admin/tickets",
       ...notificationScope(organizationId ?? ticket.organizationId),
     },

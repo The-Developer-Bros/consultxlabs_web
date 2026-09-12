@@ -64,6 +64,33 @@ graph TD
     end
 ```
 
+Every node in the diagram above is an event id, the id the application still triggers with; the Novu workflow that actually receives the trigger is the event's family (see "Workflow families" below), not a node with that name.
+
+---
+
+## Workflow families
+
+The Novu plan in use caps an environment at 20 workflows, and the application now has 67 events, so a Novu workflow is a family — one per audience-and-opt-out combination — rather than one per event. The event id the application triggers is unchanged; `toWire` in `lib/novu/templates/families.ts` maps it to its family and adds `payload.event`, and the family's body branches on that field with a Liquid `case`. There are 16 families, listed below with the events each one carries.
+
+| Family ID        | Events                                                                                                                                                                                                                     |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `appointment`    | appointment-booked, appointment-partially-scheduled, appointment-cancelled, appointment-rescheduled, appointment-reminder, appointment-completed, new-booking-request                                                      |
+| `session-media`  | recording-available, recording-failed, recording-expiring, document-uploaded, document-reviewed                                                                                                                            |
+| `payment`        | payment-success, payment-failed, referral-credits-applied                                                                                                                                                                  |
+| `refund`         | refund-requested, refund-processed, refund-failed, dispute-created, dispute-resolved                                                                                                                                       |
+| `payout`         | payout-processed                                                                                                                                                                                                           |
+| `referral`       | referral-bonus-earned, referee-welcome-bonus                                                                                                                                                                               |
+| `subscription`   | subscription-started, subscription-cancelled, subscription-renewed                                                                                                                                                         |
+| `trial`          | trial-session-requested, trial-session-scheduled, trial-session-completed, trial-session-cancelled                                                                                                                         |
+| `support-ticket` | support-ticket-created, support-ticket-activity, support-ticket-update, support-ticket-response                                                                                                                            |
+| `feedback`       | feedback-received, new-review-received                                                                                                                                                                                     |
+| `account`        | verification-status-changed, new-consultant-application, moderation-warning, account-suspended, account-banned                                                                                                             |
+| `collaborator`   | collaborator-invited, collaborator-accepted, collaborator-removed                                                                                                                                                          |
+| `platform`       | general-announcement, maintenance-scheduled, maintenance-started, maintenance-ended                                                                                                                                        |
+| `org-billing`    | org-invoice-issued, org-invoice-paid, org-invoice-overdue, org-wallet-topup-confirmed, org-wallet-low, org-payout-completed, org-payout-failed, org-payout-reversed, org-member-overage-timed-out, org-program-overage-due |
+| `org-membership` | org-invite-sent, org-invite-accepted, org-expert-removed, org-sso-provider-deleted, org-sso-cert-expiring                                                                                                                  |
+| `org-program`    | org-program-exhausted, org-program-cap-near, org-license-renewal-upcoming, org-data-export-ready                                                                                                                           |
+
 ---
 
 ## Payload conventions
@@ -158,13 +185,16 @@ sequenceDiagram
 
 ### Support Tickets
 
-| Workflow ID               | Trigger Function                                      | Recipients    | Payload Type           |
-| ------------------------- | ----------------------------------------------------- | ------------- | ---------------------- |
-| `support-ticket-created`  | `notifySupportTicketCreated(staffUserIds[], payload)` | Staff team    | `SupportTicketPayload` |
-| `support-ticket-update`   | `notifySupportTicketUpdate(userId, payload)`          | Ticket author | `SupportTicketPayload` |
-| `support-ticket-response` | `notifySupportTicketResponse(userId, payload)`        | Ticket author | `SupportTicketPayload` |
+| Workflow ID               | Trigger Function                                                   | Recipients                     | Payload Type           |
+| ------------------------- | ------------------------------------------------------------------ | ------------------------------ | ---------------------- |
+| `support-ticket-created`  | `notifySupportTicketCreated(staffUserIds[], payload)`              | Staff team                     | `SupportTicketPayload` |
+| `support-ticket-activity` | `notifySupportTicketActivity(staffUserIds[], payload, dedupeKey?)` | Assignee, else all STAFF/ADMIN | `SupportTicketPayload` |
+| `support-ticket-update`   | `notifySupportTicketUpdate(userId, payload)`                       | Ticket author                  | `SupportTicketPayload` |
+| `support-ticket-response` | `notifySupportTicketResponse(userId, payload)`                     | Ticket author                  | `SupportTicketPayload` |
 
-**SupportTicketPayload**: `ticketId`, `ticketTitle`, `status?`, `message?`, `respondedBy?`, `dashboardUrl`
+`support-ticket-activity` is the ops side of a ticket — the customer replied or reopened — and is its own event rather than reusing `support-ticket-update`, so staff can later digest or throttle it without touching the ticket owner's bell.
+
+**SupportTicketPayload**: `ticketId`, `reference?` (e.g. `FAM-2026-000007`), `ticketTitle`, `status?` (a sentence fragment, e.g. "in progress"), `statusCode?` (the raw enum), `userName?` (the customer, on the ops-facing workflows), `activity?` (`"replied" | "reopened"`, on `support-ticket-activity`), `message?`, `respondedBy?`, `dashboardUrl`
 
 ---
 

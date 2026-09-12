@@ -14,6 +14,8 @@
     "db:recompute-ratings": "npx tsx -r dotenv/config scripts/db/recompute-consultant-ratings.ts",
     "db:preflight": "npx tsx -r dotenv/config scripts/db/preflight-push.ts",
     "db:assert-sidecars": "npx tsx -r dotenv/config scripts/db/assert-sidecar-applied.ts",
+    "novu:sync": "npx tsx -r dotenv/config scripts/novu/sync-workflows.ts",
+    "novu:check": "npx tsx -r dotenv/config scripts/novu/sync-workflows.ts --check",
     "db:triggers": "npx tsx -r dotenv/config scripts/db/apply-ledger-triggers.ts",
     "db:leg-triggers": "npx tsx -r dotenv/config scripts/db/apply-payment-legs-triggers.ts",
     "db:constraints": "npx tsx -r dotenv/config scripts/db/apply-check-constraints.ts",

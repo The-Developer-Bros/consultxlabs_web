@@ -584,6 +584,7 @@ async function escalate(
     title: string;
     organizationId: string | null;
     referenceNumber: string | null;
+    userId: string;
   } | null = null;
 
   const ticketId = await prisma.$transaction(
@@ -670,6 +671,7 @@ async function escalate(
             title: true,
             organizationId: true,
             referenceNumber: true,
+            userId: true,
           },
         });
         linkedTicketId = ticket.id;
@@ -745,14 +747,17 @@ async function escalate(
     await resumeTicketClock(ticketId).catch((error) => {
       console.error("support: SLA resume failed", { ticketId, error });
     });
-    await notifyStaffOfTicketActivity(ticketId, ctx.organizationId).catch(
-      (error) => {
-        console.error("support: re-escalation notification failed", {
-          threadId,
-          error,
-        });
-      },
-    );
+    await notifyStaffOfTicketActivity(
+      ticketId,
+      ctx.organizationId,
+      undefined,
+      "reopened",
+    ).catch((error) => {
+      console.error("support: re-escalation notification failed", {
+        threadId,
+        error,
+      });
+    });
   }
 
   return {
