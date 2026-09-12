@@ -151,9 +151,12 @@ function FilterPanelImpl({
   // min never exceeds max. Reuses the slider's debounced filter write.
   const commitPriceBound = useCallback(
     (which: 0 | 1, raw: string) => {
+      // Empty input means "still typing / cleared", not zero — Number("")
+      // is 0 and would otherwise slam max down to nothing.
+      if (raw.trim() === "") return;
       const major = Number(raw);
       if (!Number.isFinite(major) || major < 0) return;
-      const paise = Math.round(major * 100);
+      const paise = Math.min(Math.round(major * 100), MAX_PRICE_PAISE);
       const next: [number, number] =
         which === 0
           ? [Math.min(paise, localRange[1]), localRange[1]]
@@ -483,9 +486,14 @@ function FilterPanelImpl({
             {(localRange[0] !== 0 || localRange[1] !== MAX_PRICE_PAISE) && (
               <button
                 type="button"
-                onClick={() =>
-                  updateFilters({ minPrice: undefined, maxPrice: undefined })
-                }
+                // Cancel a still-pending slider write first — otherwise it
+                // lands after this reset and silently re-activates the filter.
+                onClick={() => {
+                  if (debounceRef.current) clearTimeout(debounceRef.current);
+                  debounceRef.current = null;
+                  setLocalRange([0, MAX_PRICE_PAISE]);
+                  updateFilters({ minPrice: undefined, maxPrice: undefined });
+                }}
                 className="ml-auto text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
               >
                 Any price
@@ -530,7 +538,7 @@ function FilterPanelImpl({
                 onKeyDown={(e) => {
                   if (e.key === "Enter") e.currentTarget.blur();
                 }}
-                className="h-10 w-full min-w-0 rounded-lg border border-border bg-muted px-3 text-sm text-foreground focus:border-transparent focus:ring-2 focus:ring-ring"
+                className="h-10 w-full min-w-0 rounded-lg border border-border bg-muted px-3 text-base text-foreground focus:border-transparent focus:ring-2 focus:ring-ring sm:text-sm"
               />
               <span aria-hidden className="text-xs text-muted-foreground">
                 to
@@ -548,7 +556,7 @@ function FilterPanelImpl({
                 onKeyDown={(e) => {
                   if (e.key === "Enter") e.currentTarget.blur();
                 }}
-                className="h-10 w-full min-w-0 rounded-lg border border-border bg-muted px-3 text-sm text-foreground focus:border-transparent focus:ring-2 focus:ring-ring"
+                className="h-10 w-full min-w-0 rounded-lg border border-border bg-muted px-3 text-base text-foreground focus:border-transparent focus:ring-2 focus:ring-ring sm:text-sm"
               />
             </div>
             <div className="flex justify-between mt-2 text-xs text-muted-foreground/70">

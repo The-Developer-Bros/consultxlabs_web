@@ -157,6 +157,7 @@ function AdvancedFiltersImpl({
               type="text"
               role="combobox"
               aria-expanded={topicDropdownOpen}
+              aria-controls="topic-listbox"
               aria-label="Search topics"
               placeholder={
                 selectedTopicNames.length > 0
@@ -172,10 +173,17 @@ function AdvancedFiltersImpl({
               className="w-full h-11 px-3 bg-card border border-border text-foreground text-sm rounded-xl focus:ring-2 focus:ring-ring focus:border-transparent transition-all"
             />
             {topicDropdownOpen && filteredTopics.length > 0 && (
-              <div className="absolute z-30 w-full mt-1 bg-card border border-border rounded-xl shadow-xl max-h-48 overflow-auto">
+              <div
+                id="topic-listbox"
+                role="listbox"
+                aria-label="Matching topics"
+                className="absolute z-30 w-full mt-1 bg-card border border-border rounded-xl shadow-xl max-h-48 overflow-auto"
+              >
                 {filteredTopics.map((topic) => (
                   <button
                     key={topic.id}
+                    role="option"
+                    aria-selected={false}
                     className="w-full px-3 py-2.5 text-left text-sm text-muted-foreground hover:bg-muted first:rounded-t-xl last:rounded-b-xl transition-colors flex justify-between items-center"
                     onClick={() => handleTopicToggle(topic.id)}
                   >

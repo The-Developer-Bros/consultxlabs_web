@@ -36,6 +36,7 @@ import {
   ConsultationPlan,
 } from "@prisma/client";
 import { CreditCard as CreditCardIcon, Lock } from "lucide-react";
+import Link from "next/link";
 import { CompanyLogo } from "@/components/ui/company-logo";
 import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import RazorpayCheckout from "../../../components/RazorpayCheckout";
@@ -885,8 +886,12 @@ export default function ConsultationCheckoutPage({
             </div>
             <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden />
-              Payments are encrypted and processed securely. Full refund if
-              your expert cancels.
+              Payments are encrypted and processed securely. If your expert
+              cancels, refunds follow our{" "}
+              <Link href="/refund" className="underline hover:text-foreground">
+                refund policy
+              </Link>
+              .
             </p>
           </div>
           {paymentGateways.map((gateway) => (

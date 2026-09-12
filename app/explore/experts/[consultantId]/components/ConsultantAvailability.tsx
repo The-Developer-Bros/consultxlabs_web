@@ -159,7 +159,7 @@ export function ConsultantAvailability({
         </h3>
         <div className="flex items-center justify-center py-8">
           <div className="text-muted-foreground flex items-center space-x-2">
-            <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-muted-foreground"></div>
+              <div className="motion-safe:animate-spin animate-none rounded-full h-5 w-5 border-b-2 border-muted-foreground"></div>
             <span>Loading availability...</span>
           </div>
         </div>

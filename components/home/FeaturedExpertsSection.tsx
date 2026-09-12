@@ -10,10 +10,19 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import type { IConsultantCardData } from "@/types/consultant";
 
-function ExpertCard({ expert }: { expert: IConsultantCardData }) {
+function ExpertCard({
+  expert,
+  tabIndex,
+}: {
+  expert: IConsultantCardData;
+  /** Clones inside the aria-hidden duplication pass -1 so keyboard users
+   *  never tab into a link with no accessible announcement. */
+  tabIndex?: number;
+}) {
   return (
     <Link
       href={`/explore/experts/${expert.id}`}
+      tabIndex={tabIndex}
       className="block flex-shrink-0 w-[300px] mx-3"
     >
       <Card className="h-full border border-border bg-card overflow-hidden group hover:border-foreground/30 transition-all duration-300 hover:-translate-y-1 hover:shadow-elevation-3">
@@ -147,7 +156,11 @@ export function FeaturedExpertsSection({
               ))}
               <div aria-hidden="true" className="contents">
                 {experts.map((expert) => (
-                  <ExpertCard key={`clone-${expert.id}`} expert={expert} />
+                  <ExpertCard
+                    key={`clone-${expert.id}`}
+                    expert={expert}
+                    tabIndex={-1}
+                  />
                 ))}
               </div>
             </>

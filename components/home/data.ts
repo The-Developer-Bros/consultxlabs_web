@@ -286,7 +286,8 @@ export const TRUST_BADGES = [
 
 /** Upcoming-events rail — dates are computed relative to today so the landing
  *  never again shows stale past dates. Times stay fixed; only the day rolls
- *  forward (+9 / +11 / +17 days keeps the original spacing). */
+ *  forward (+9 / +11 / +17 days keeps the original spacing). Times use the
+ *  neutral "ET" label, which stays correct across EST/EDT. */
 function upcomingDate(offsetDays: number): string {
   const d = new Date();
   d.setDate(d.getDate() + offsetDays);
@@ -304,7 +305,7 @@ export const UPCOMING_EVENTS = [
     get date() {
       return upcomingDate(9);
     },
-    time: "6:00 PM EST",
+    time: "6:00 PM ET",
     attendees: 156,
     type: "Webinar",
   },
@@ -314,7 +315,7 @@ export const UPCOMING_EVENTS = [
     get date() {
       return upcomingDate(11);
     },
-    time: "2:00 PM EST",
+    time: "2:00 PM ET",
     attendees: 89,
     type: "Workshop",
   },
@@ -324,7 +325,7 @@ export const UPCOMING_EVENTS = [
     get date() {
       return upcomingDate(17);
     },
-    time: "11:00 AM EST",
+    time: "11:00 AM ET",
     attendees: 234,
     type: "Class",
   },

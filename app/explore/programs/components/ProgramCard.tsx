@@ -253,7 +253,7 @@ function ListCard({
 
   return (
     <div
-      className="group bg-card rounded-2xl overflow-hidden border border-border hover:border-border hover:shadow-xl transition-all duration-300 cursor-pointer flex flex-col sm:flex-row"
+      className="group bg-card rounded-2xl overflow-hidden border border-border hover:border-border hover:shadow-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background transition-all duration-300 cursor-pointer flex flex-col sm:flex-row"
       onClick={handleClick}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {

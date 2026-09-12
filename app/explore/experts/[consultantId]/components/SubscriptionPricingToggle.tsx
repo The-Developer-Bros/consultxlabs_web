@@ -328,7 +328,7 @@ export default function SubscriptionPricingToggle({
               key={option.id}
               value={option.id}
               title={option.description}
-              className="relative flex-1 py-2 text-xs sm:text-sm font-medium rounded-xl data-[state=active]:text-zinc-900 data-[state=active]:bg-transparent data-[state=active]:shadow-none text-zinc-400 transition-colors duration-300 z-10 h-auto whitespace-nowrap"
+              className="relative flex-1 min-w-0 py-2 text-xs sm:text-sm font-medium rounded-xl data-[state=active]:text-zinc-900 data-[state=active]:bg-transparent data-[state=active]:shadow-none text-zinc-400 transition-colors duration-300 z-10 h-auto"
             >
               {isActive && (
                 <motion.div
@@ -337,10 +337,14 @@ export default function SubscriptionPricingToggle({
                   transition={{ type: "spring", bounce: 0.15, duration: 0.35 }}
                 />
               )}
-              {/* Price lives inside the chooser — duration alone forced a
-                  tap-then-scroll to discover the cost. */}
-              <span className="relative z-10 flex flex-col items-center leading-tight">
-                <span>{option.title}</span>
+              {/* Price + plan identity live inside the chooser — duration
+                  alone forced a tap-then-scroll to discover the cost, and the
+                  name lived only in a hover tooltip touch users never get. */}
+              <span className="relative z-10 flex min-w-0 max-w-full flex-col items-center leading-tight">
+                <span className="max-w-full truncate">{option.title}</span>
+                <span className="max-w-full truncate text-[11px] text-zinc-500">
+                  {option.description}
+                </span>
                 <span
                   className={`text-[11px] font-semibold ${isActive ? "text-zinc-600" : "text-zinc-500"}`}
                 >
