@@ -4,9 +4,14 @@
  * the rule is true (construct-framework-workflow.usecase.ts: "The Step
  * Conditions in the Dashboard control the step execution").
  *
- * Every rule is `!= false`, never `== true`: a subscriber whose flag was
- * never written resolves to null, and `null == true` would silence them.
- * The flags default to true only in the writer, not in Novu.
+ * The comparison value is the STRING "false", not the boolean. Novu replaces
+ * json-logic's `!=` with its own (query-parser.service.ts): booleans and the
+ * strings "true"/"false" compare as booleans, but a never-written flag is
+ * null, and null against boolean false falls through to Number(), where
+ * `Number(null) === Number(false) === 0` — so `!= false` SKIPPED every
+ * subscriber whose flag was never written (found on the first sync,
+ * 2026-09-13). Against "false", null takes the strict fall-through
+ * (`null !== "false"`) and runs; true runs; false and "false" skip.
  */
 
 import type { PreferenceCategory } from "./types";
@@ -26,11 +31,11 @@ const CATEGORY_FLAG: Record<PreferenceCategory, string> = {
 /** Workspace routing (BELL_ONLY / EMAIL_ONLY / NEITHER) gates every bell. */
 const ROUTING_BELL_FLAG = "routingBell";
 
-type NotFalse = { "!=": [{ var: string }, false] };
+type NotFalse = { "!=": [{ var: string }, "false"] };
 export type SkipRule = { and: NotFalse[] };
 
 function notFalse(flag: string): NotFalse {
-  return { "!=": [{ var: `subscriber.data.${flag}` }, false] };
+  return { "!=": [{ var: `subscriber.data.${flag}` }, "false"] };
 }
 
 export function inAppSkipRule(category: PreferenceCategory | null): SkipRule {

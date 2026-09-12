@@ -339,7 +339,7 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
     // After the commit — a notification failure must not roll back a status
     // change the queue has already acted on.
     // Notify the ticket owner about the update
-    void notifySupportTicketUpdate(updatedTicket.user.id, {
+    await notifySupportTicketUpdate(updatedTicket.user.id, {
       ticketId: updatedTicket.id,
       reference: updatedTicket.referenceNumber ?? undefined,
       ticketTitle: updatedTicket.title || "Support Ticket",

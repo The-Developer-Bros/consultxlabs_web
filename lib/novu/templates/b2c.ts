@@ -58,7 +58,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     category: "appointments",
     inApp: {
       subject: "Schedule change",
-      body: '{% if payload.outcome == "MOVED" %}Your {{payload.appointmentType}} for {{payload.planTitle}} moved from {{payload.oldDateTime}} to {{payload.newDateTime}}.{% elsif payload.outcome == "PROPOSED" %}A new time was proposed for your {{payload.appointmentType}} for {{payload.planTitle}}: {{payload.newDateTime}} instead of {{payload.oldDateTime}}. Please review it.{% elsif payload.outcome == "RELEASED" %}The {{payload.appointmentType}} for {{payload.planTitle}}{% if payload.oldDateTime %} on {{payload.oldDateTime}}{% endif %} was released. You will be told once a new time is set.{% elsif payload.outcome == "DECLINED" %}The proposed new time for your {{payload.appointmentType}} for {{payload.planTitle}} was declined{% if payload.oldDateTime %}; it stays on {{payload.oldDateTime}}{% endif %}.{% else %}The reschedule request for your {{payload.appointmentType}} for {{payload.planTitle}} was withdrawn{% if payload.oldDateTime %}; it stays on {{payload.oldDateTime}}{% endif %}.{% endif %}',
+      body: "{% if payload.outcome == 'MOVED' %}Your {{payload.appointmentType}} for {{payload.planTitle}} moved from {{payload.oldDateTime}} to {{payload.newDateTime}}.{% elsif payload.outcome == 'PROPOSED' %}A new time was proposed for your {{payload.appointmentType}} for {{payload.planTitle}}: {{payload.newDateTime}} instead of {{payload.oldDateTime}}. Please review it.{% elsif payload.outcome == 'RELEASED' %}The {{payload.appointmentType}} for {{payload.planTitle}}{% if payload.oldDateTime %} on {{payload.oldDateTime}}{% endif %} was released. You will be told once a new time is set.{% elsif payload.outcome == 'DECLINED' %}The proposed new time for your {{payload.appointmentType}} for {{payload.planTitle}} was declined{% if payload.oldDateTime %}; it stays on {{payload.oldDateTime}}{% endif %}.{% else %}The reschedule request for your {{payload.appointmentType}} for {{payload.planTitle}} was withdrawn{% if payload.oldDateTime %}; it stays on {{payload.oldDateTime}}{% endif %}.{% endif %}",
       redirect: "dashboardUrl",
     },
   },
@@ -181,7 +181,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     category: "payments",
     inApp: {
       subject: "Dispute resolved",
-      body: 'The dispute of {{payload.amount}} has been resolved{% if payload.status %} — {{payload.status | downcase | replace: "_", " "}}{% endif %}.',
+      body: "The dispute of {{payload.amount}} has been resolved{% if payload.status %} — {{payload.status | downcase | replace: '_', ' '}}{% endif %}.",
       redirect: "dashboardUrl",
     },
   },
@@ -306,7 +306,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     category: "support",
     inApp: {
       subject: "New support ticket",
-      body: `{{payload.userName | default: "A customer"}} opened ${TICKET}.`,
+      body: `{{payload.userName | default: 'A customer'}} opened ${TICKET}.`,
       redirect: "dashboardUrl",
     },
   },
@@ -318,7 +318,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     category: "support",
     inApp: {
       subject: "Ticket activity",
-      body: `{{payload.userName | default: "The customer"}} {{payload.activity | default: "replied"}} on ${TICKET}.`,
+      body: `{{payload.userName | default: 'The customer'}} {{payload.activity | default: 'replied'}} on ${TICKET}.`,
       redirect: "dashboardUrl",
     },
   },
@@ -340,7 +340,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     category: "support",
     inApp: {
       subject: "Reply from support",
-      body: `{{payload.respondedBy | default: "Support"}} replied on ${TICKET}{% if payload.message %}: "{{payload.message | truncate: 140}}"{% endif %}`,
+      body: `{{payload.respondedBy | default: 'Support'}} replied on ${TICKET}{% if payload.message %}: "{{payload.message | truncate: 140}}"{% endif %}`,
       redirect: "dashboardUrl",
     },
   },
@@ -375,7 +375,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     category: null,
     inApp: {
       subject: "Verification update",
-      body: '{% case payload.status %}{% when "VERIFIED" %}Your profile is verified and now visible to clients.{% when "REJECTED" %}Your profile verification was not approved.{% else %}Your profile verification is pending review.{% endcase %}{% if payload.reason %} {{payload.reason}}{% endif %}',
+      body: "{% case payload.status %}{% when 'VERIFIED' %}Your profile is verified and now visible to clients.{% when 'REJECTED' %}Your profile verification was not approved.{% else %}Your profile verification is pending review.{% endcase %}{% if payload.reason %} {{payload.reason}}{% endif %}",
       redirect: "dashboardUrl",
     },
   },
@@ -503,7 +503,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     category: "appointments",
     inApp: {
       subject: "Document shared",
-      body: '{% if payload.uploadedByRole == "CONSULTEE" %}{{payload.consulteeName}}{% else %}{{payload.consultantName}}{% endif %} shared {{payload.fileName}}{% if payload.versionNo > 1 %} (version {{payload.versionNo}}){% endif %}.',
+      body: "{% if payload.uploadedByRole == 'CONSULTEE' %}{{payload.consulteeName}}{% else %}{{payload.consultantName}}{% endif %} shared {{payload.fileName}}{% if payload.versionNo > 1 %} (version {{payload.versionNo}}){% endif %}.",
       redirect: "dashboardUrl",
     },
   },
@@ -514,7 +514,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     category: "appointments",
     inApp: {
       subject: "Document reviewed",
-      body: '{{payload.consultantName}} {% case payload.reviewStatus %}{% when "APPROVED" %}approved{% when "REJECTED" %}declined{% when "NEEDS_REVISION" %}sent back{% when "IN_REVIEW" %}is reviewing{% else %}has queued{% endcase %} {{payload.originalName}}.{% if payload.reviewNotes %} "{{payload.reviewNotes | truncate: 140}}"{% endif %}',
+      body: `{{payload.consultantName}} {% case payload.reviewStatus %}{% when 'APPROVED' %}approved{% when 'REJECTED' %}declined{% when 'NEEDS_REVISION' %}sent back{% when 'IN_REVIEW' %}is reviewing{% else %}has queued{% endcase %} {{payload.originalName}}.{% if payload.reviewNotes %} "{{payload.reviewNotes | truncate: 140}}"{% endif %}`,
       redirect: "dashboardUrl",
     },
   },
@@ -527,7 +527,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     category: "appointments",
     inApp: {
       subject: "Collaboration invite",
-      body: '{{payload.ownerName}} invited you to join {{payload.planTitle}} ({{payload.planType | downcase}}) as {{payload.role | downcase | replace: "_", " "}} with a {{payload.revenueSharePercentage}}% revenue share.',
+      body: "{{payload.ownerName}} invited you to join {{payload.planTitle}} ({{payload.planType | downcase}}) as {{payload.role | downcase | replace: '_', ' '}} with a {{payload.revenueSharePercentage}}% revenue share.",
       redirect: "dashboardUrl",
     },
   },
@@ -538,7 +538,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     category: "appointments",
     inApp: {
       subject: "Invite accepted",
-      body: '{{payload.collaboratorName}} accepted your invitation to {{payload.planTitle}} as {{payload.role | downcase | replace: "_", " "}}.',
+      body: "{{payload.collaboratorName}} accepted your invitation to {{payload.planTitle}} as {{payload.role | downcase | replace: '_', ' '}}.",
       redirect: "dashboardUrl",
     },
   },
@@ -560,7 +560,7 @@ export const B2C_TEMPLATES: WorkflowTemplate[] = [
     category: "appointments",
     inApp: {
       subject: "Invite declined",
-      body: '{{payload.collaboratorName}} declined your invitation to {{payload.planTitle}} as {{payload.role | downcase | replace: "_", " "}}.',
+      body: "{{payload.collaboratorName}} declined your invitation to {{payload.planTitle}} as {{payload.role | downcase | replace: '_', ' '}}.",
       redirect: "dashboardUrl",
     },
   },
