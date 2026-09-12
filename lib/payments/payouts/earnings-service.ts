@@ -612,13 +612,16 @@ export async function createEarningsFromPayment({
             ? orgSplit.consultantSharePaise
             : grossAmount - platformFeePaise;
 
-          // Calculate collaborator splits if applicable
+          // Calculate collaborator splits if applicable. Read through `tx`:
+          // under PG_POOL_MAX=1 a global-client read inside this open
+          // transaction waits on the connection it holds (#1435, #1580 C-P0-1).
           let splits: RevenueSplit[] = [];
           if (planType && planId) {
             splits = await calculateRevenueSplit(
               planType,
               planId,
               totalConsultantPool,
+              tx,
             );
           }
 

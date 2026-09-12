@@ -1,6 +1,6 @@
 import * as Sentry from "@sentry/nextjs";
 import { withSerializableRetry } from "@/lib/db/serializable-retry";
-import prisma, { type Tx } from "@/lib/prisma";
+import prisma, { type PrismaLike, type Tx } from "@/lib/prisma";
 import { Prisma, type CollaboratorRole } from "@prisma/client";
 import type { Collaborator, CollaboratorStatus } from "@prisma/client";
 import { removeUserFromEventChannel } from "@/actions/stream/chat/event-channel.action";
@@ -514,12 +514,17 @@ export async function updateCollaborator(
 }
 
 /**
- * Get all collaborators for a plan.
+ * Get all collaborators for a plan. `db` lets a caller inside an open
+ * transaction read through it instead of the global client (#1580 C-P0-1).
  */
-export async function getCollaborators(planType: PlanType, planId: string) {
+export async function getCollaborators(
+  planType: PlanType,
+  planId: string,
+  db: PrismaLike = prisma,
+) {
   const activeStatuses: CollaboratorStatus[] = ["PENDING", "ACCEPTED"];
 
-  return prisma.collaborator.findMany({
+  return db.collaborator.findMany({
     where: { ...planWhere(planType, planId), status: { in: activeStatuses } },
     include: {
       consultantProfile: {
@@ -893,8 +898,9 @@ export async function calculateRevenueSplit(
   planType: PlanType,
   planId: string,
   totalAmount: number,
+  db: PrismaLike = prisma,
 ): Promise<RevenueSplit[]> {
-  const collabs = await getCollaborators(planType, planId);
+  const collabs = await getCollaborators(planType, planId, db);
   const acceptedCollabs = collabs.filter((c) => c.status === "ACCEPTED");
 
   if (acceptedCollabs.length === 0) {
@@ -930,13 +936,13 @@ export async function calculateRevenueSplit(
   // Get plan's owner consultant profile
   let ownerConsultantProfileId: string | null = null;
   if (planType === "webinar") {
-    const plan = await prisma.webinarPlan.findUnique({
+    const plan = await db.webinarPlan.findUnique({
       where: { id: planId },
       select: { consultantProfileId: true },
     });
     ownerConsultantProfileId = plan?.consultantProfileId ?? null;
   } else {
-    const plan = await prisma.classPlan.findUnique({
+    const plan = await db.classPlan.findUnique({
       where: { id: planId },
       select: { consultantProfileId: true },
     });
