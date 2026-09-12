@@ -18,12 +18,20 @@
 --
 -- A database built from scratch has no such rows, so this is never a sidecar.
 
--- Part 1 (before the push): author withdrawals, whose actor must survive.
-SELECT r.id
+-- Part 1 (before the push): author withdrawals, whose actor must survive —
+-- a review withdrawn by its author, and a reply withdrawn by the consultant
+-- (the legacy reply DELETE stored the consultant's own user id in that case).
+SELECT r.id, 'review' AS kind
   FROM "ConsultantReview" r
   JOIN "ConsulteeProfile" cp ON cp.id = r."consulteeProfileId"
  WHERE r."deletedAt" IS NOT NULL
-   AND r."deletedByUserId" = cp."userId";
+   AND r."deletedByUserId" = cp."userId"
+UNION ALL
+SELECT r.id, 'reply' AS kind
+  FROM "ConsultantReview" r
+  JOIN "ConsultantProfile" cons ON cons.id = r."consultantProfileId"
+ WHERE r."replyDeletedAt" IS NOT NULL
+   AND r."replyDeletedByUserId" = cons."userId";
 
 -- Part 2 (after the push): substitute the ids from part 1, or leave the list
 -- empty and skip the first statement.
@@ -35,9 +43,13 @@ UPDATE "ConsultantReview"
    SET "removedBy" = 'MODERATION'
  WHERE "deletedAt" IS NOT NULL AND "removedBy" IS NULL;
 
--- A reply's own withdrawal was never distinguishable from a takedown before
--- #1562 (the consultant's id was the only remover a reply could carry), so
--- every removed reply reads as MODERATION.
+UPDATE "ConsultantReview"
+   SET "replyRemovedBy" = 'AUTHOR'
+ WHERE "id" IN ('<reply ids from part 1>') AND "replyRemovedBy" IS NULL;
+
 UPDATE "ConsultantReview"
    SET "replyRemovedBy" = 'MODERATION'
  WHERE "replyDeletedAt" IS NOT NULL AND "replyRemovedBy" IS NULL;
+
+-- Applied 2026-09-12 13:33 UTC: part 1 returned no rows (two admin review
+-- takedowns and one staff reply takedown), so every stamp was MODERATION.
