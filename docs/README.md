@@ -183,11 +183,11 @@ The private per-call CSAT rail (`AppointmentFeedback`): one rating per person pe
 
 ### Reviews
 
-The public reputation rail (`ConsultantReview`, `ConsultantReviewRevision`, `ScoringSnapshot`, and the score columns on `ConsultantProfile`).
+The public reputation rail (`ConsultantReview`, `ConsultantReviewRevision`, the score columns on `ConsultantProfile`, and the `ModerationAction` audit row).
 
 - [README.md](./reviews/README.md) - System overview, source code map, recommended reading order
 - [01-architecture.md](./reviews/01-architecture.md) - One review per relationship, anonymity, the right of reply, attributed removal, the public read allowlist
-- [02-two-track-scoring.md](./reviews/02-two-track-scoring.md) - The 1:1 and group tracks, the shrinkage formula, the constants, `ScoringSnapshot`, the recompute
+- [02-two-track-scoring.md](./reviews/02-two-track-scoring.md) - The 1:1 and group tracks, the plain-mean formula and its gates, the constants, the recompute
 - [03-edit-trail-and-disclosure.md](./reviews/03-edit-trail-and-disclosure.md) - The revision trail, `editedAt` versus `updatedAt`, and why every edit is marked
 - [04-rating-cause-and-aggregate-exclusion.md](./reviews/04-rating-cause-and-aggregate-exclusion.md) - Ratings protection: the shared cause taxonomy, claim versus adjudication, excluded versus deleted
 - [05-moderation-and-reports.md](./reviews/05-moderation-and-reports.md) - Reporting a review, soft-delete on `CONTENT_REMOVED`, the staff queue

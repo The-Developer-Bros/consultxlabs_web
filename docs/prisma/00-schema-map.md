@@ -332,7 +332,7 @@ erDiagram
     Topic }o--o{ ClassPlan : "on plan"
 ```
 
-`ConsultantReview` is the public reputation rail and #1300 gave it three companions that the diagram above omits for space: `ConsultantReviewRevision` (one append-only row per superseded version of a review's text), `ScoringSnapshot` (one immutable row per scoring run, holding the priors and parameters that produced each profile's two published scores), and the enums `ReviewTrack` (`ONE_TO_ONE` or `GROUP`) and `RatingCause` (what a rater says drove a low score, shared with `AppointmentFeedback`). The reference for all four is [`docs/reviews/`](../reviews/README.md), and the column-by-column list is [`docs/reviews/06-schema-reference.md`](../reviews/06-schema-reference.md).
+`ConsultantReview` is the public reputation rail and #1300 gave it companions that the diagram above omits for space: `ConsultantReviewRevision` (one append-only row per superseded version of a review's text) and the enums `ReviewTrack` (`ONE_TO_ONE` or `GROUP`), `RatingCause` (what a rater says drove a low score, shared with `AppointmentFeedback`) and `ReviewActor` (`AUTHOR` or `MODERATION`, who removed a review or its reply). Every staff act on a review or a private rating is a `ModerationAction` row, which since #1562 no longer needs a report behind it. The `ScoringSnapshot` model that #1542 added was dropped by #1566. The reference for all of them is [`docs/reviews/`](../reviews/README.md), and the column-by-column list is [`docs/reviews/06-schema-reference.md`](../reviews/06-schema-reference.md).
 
 ---
 

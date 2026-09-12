@@ -15,6 +15,7 @@ import { purgeReviewSurfaces } from "@/lib/data/public-cache";
 import { reviewWriteLimiter, applyRateLimit } from "@/lib/rate-limit";
 import {
   ModeratedReviewError,
+  pickExistingReview,
   recomputeConsultantRating,
   resolveReviewableSession,
 } from "@/lib/reviews";
@@ -156,18 +157,27 @@ export async function POST(req: NextRequest) {
     const writeResult = await withSerializableRetry(() =>
       prisma.$transaction(
         async (tx) => {
-          // The pair's review, whatever its track: the unique is the two-column
-          // pair until #1549, so filtering on track would miss the row and 409.
-          const existing = await tx.consultantReview.findFirst({
+          // #1549 — the pair's review for THIS (track, event), or a NULL-track legacy
+          // row the write adopts. The same rule the composer uses (pickExistingReview),
+          // so the form never shows a review this write would not update.
+          const candidates = await tx.consultantReview.findMany({
             where: {
               consultantProfileId: reviewable.consultantProfileId,
               consulteeProfileId: sessionConsulteeProfileId,
+              OR: [
+                {
+                  track: reviewable.track,
+                  ratingUnitId: reviewable.ratingUnitId,
+                },
+                { track: null },
+              ],
             },
             select: {
               id: true,
               deletedAt: true,
-              deletedByUserId: true,
+              removedBy: true,
               track: true,
+              ratingUnitId: true,
               rating: true,
               reviewDescription: true,
               revisionNo: true,
@@ -175,12 +185,16 @@ export async function POST(req: NextRequest) {
               replyDeletedAt: true,
             },
           });
-          // An author's withdrawal is revivable; a moderation removal is not. A
-          // NULL remover on a removed row reads as moderation (fails closed).
+          const existing = pickExistingReview(
+            candidates,
+            reviewable.track,
+            reviewable.ratingUnitId,
+          );
+          // An author's withdrawal is revivable; a moderation removal is not.
           const withdrawnByAuthor =
             existing !== null &&
             existing.deletedAt !== null &&
-            existing.deletedByUserId === session.user.id;
+            existing.removedBy === "AUTHOR";
           if (existing?.deletedAt && !withdrawnByAuthor) {
             throw new ModeratedReviewError();
           }
@@ -235,38 +249,28 @@ export async function POST(req: NextRequest) {
                   afterPublicReply:
                     existing.repliedAt !== null &&
                     existing.replyDeletedAt === null,
-                  editorUserId: session.user.id,
                 },
               });
             }
 
             // Provenance moves as ONE fact — appointment, session clock, track
-            // and event key together — and only when the new session is in the
-            // row's own track. GROUP follows the latest event (its bucket, clock
-            // and provenance then agree) until #1549 gives each event its own row;
-            // a cross-track edit before #1549 changes the words and nothing else.
-            const sameTrack =
-              existing.track === null || existing.track === reviewable.track;
+            // and event key together. The row is either this (track, event)'s own
+            // or a NULL-track legacy row being adopted into it (#1549).
             created = await tx.consultantReview.update({
               where: { id: existing.id },
               data: {
                 rating: validatedData.rating,
                 reviewDescription: validatedData.reviewDescription,
-                ...(sameTrack
-                  ? {
-                      appointmentId: reviewable.appointmentId,
-                      track: reviewable.track,
-                      ratingUnitId: reviewable.ratingUnitId,
-                      // `heldAt` is the slot's end, never now(): re-saving cannot
-                      // refresh a recency weight. Kept when unknown (offline).
-                      ...(reviewable.heldAt
-                        ? { ratedSessionAt: reviewable.heldAt }
-                        : {}),
-                    }
+                appointmentId: reviewable.appointmentId,
+                track: reviewable.track,
+                ratingUnitId: reviewable.ratingUnitId,
+                // `heldAt` is the slot's end, never now(). Kept when unknown (offline).
+                ...(reviewable.heldAt
+                  ? { ratedSessionAt: reviewable.heldAt }
                   : {}),
                 isAnonymous: validatedData.isAnonymous ?? undefined,
                 ...(withdrawnByAuthor
-                  ? { deletedAt: null, deletedByUserId: null }
+                  ? { deletedAt: null, removedBy: null }
                   : {}),
               },
               select,
@@ -284,9 +288,7 @@ export async function POST(req: NextRequest) {
                 // Group only — see lib/reviews.ts. NULL on a 1:1 review, where
                 // the review is already one data point.
                 ratingUnitId: reviewable.ratingUnitId,
-                // The SESSION's clock, for recency weighting. The age of the
-                // conversation, not of the row: a client editing a year-old
-                // review this week has not held a recent session.
+                // The SESSION's clock: provenance, never refreshed by an edit.
                 ratedSessionAt: reviewable.heldAt,
               },
               select,
@@ -349,8 +351,8 @@ export async function POST(req: NextRequest) {
         { status: 409 },
       );
     }
-    // The pair unique, lost as a find-then-create race. Per consultant until
-    // #1549 (then per consultant per track, per event for GROUP).
+    // The sidecar unique (pair, track, event), lost as a find-then-create race:
+    // one review per expert for 1:1, one per event for a webinar or class (#1549).
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2002"
@@ -358,7 +360,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "You already have a review for this expert. Reload to edit the one you have.",
+            "You already have a review for this expert or event. Reload to edit the one you have.",
         },
         { status: 409 },
       );

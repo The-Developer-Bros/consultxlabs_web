@@ -20,13 +20,13 @@
  *      of two hundred buy a published score.
  *   3. Neither publishes below its threshold, so one review cannot define a new
  *      consultant.
- *   4. A score is SHRUNK toward the platform mean, so 5.0 from five ratings does
- *      not outrank 4.8 from two hundred.
+ *   4. A published score is the PLAIN MEAN of its track's points (#1566): no
+ *      prior, no decay; the count printed beside it is the disclosure.
  *   5. Legacy rows carry no track and contribute to NEITHER published score —
  *      unknown provenance fails closed, rather than being presumed 1:1.
  *
  * The individual review cards still render in every case; only the score is
- * weighted and suppressed.
+ * suppressed.
  */
 
 jest.mock("../../lib/prisma", () => ({
@@ -39,7 +39,6 @@ import {
   MIN_RATED_CLIENTS_ONE_TO_ONE,
   MIN_RATED_EVENTS_GROUP,
   MIN_GROUP_RESPONSES_PER_EVENT,
-  SCORE_PRIOR_WEIGHT,
 } from "@/lib/reviews";
 import type { ReviewTrack } from "@prisma/client";
 
@@ -47,27 +46,16 @@ type Row = {
   rating: number;
   track: ReviewTrack | null;
   ratingUnitId: string | null;
-  ratedSessionAt: Date | null;
-  createdAt: Date;
   excludedFromAggregateAt: Date | null;
 };
 
 const NOW = new Date("2026-09-10T00:00:00Z");
-/** Shrinking toward the midpoint keeps the arithmetic legible in assertions. */
-const PRIORS = {
-  platformMeanOneToOne: 3,
-  platformMeanGroup: 3,
-  sampleCountOneToOne: 0,
-  sampleCountGroup: 0,
-};
 
 /** One 1:1 review — one client, one data point. */
 const solo = (rating: number): Row => ({
   rating,
   track: "ONE_TO_ONE",
   ratingUnitId: null,
-  ratedSessionAt: NOW,
-  createdAt: NOW,
   excludedFromAggregateAt: null,
 });
 
@@ -77,8 +65,6 @@ const event = (id: string, rating: number, n: number): Row[] =>
     rating,
     track: "GROUP" as ReviewTrack,
     ratingUnitId: id,
-    ratedSessionAt: NOW,
-    createdAt: NOW,
     excludedFromAggregateAt: null,
   }));
 
@@ -87,8 +73,6 @@ const legacy = (rating: number): Row => ({
   rating,
   track: null,
   ratingUnitId: null,
-  ratedSessionAt: null,
-  createdAt: NOW,
   excludedFromAggregateAt: null,
 });
 
@@ -97,9 +81,6 @@ type Written = {
   publishedRatingGroup: number | null;
   ratedClientsOneToOne: number;
   ratedEventsGroup: number;
-  rawRatingOneToOne: number | null;
-  rawRatingGroup: number | null;
-  effectiveSampleOneToOne: number | null;
   rating: number;
   publishedRating: number | null;
   ratingUnitCount: number;
@@ -111,23 +92,14 @@ async function score(rows: Row[]): Promise<Written> {
   const client = {
     consultantReview: { findMany: jest.fn().mockResolvedValue(rows) },
     consultantProfile: { update },
-    scoringSnapshot: { findFirst: jest.fn().mockResolvedValue(null) },
   };
-  await recomputeConsultantRating(client as never, "cp1", {
-    priors: PRIORS,
-    snapshotId: null,
-    now: NOW,
-  });
+  await recomputeConsultantRating(client as never, "cp1", NOW);
   return update.mock.calls[0][0].data as Written;
 }
 
-/** `(Σr + m·C) / (n + m)` at weight 1, rounded the way the code rounds. */
-const shrunk = (ratings: number[], mean = 3) =>
-  Math.round(
-    ((ratings.reduce((a, b) => a + b, 0) + SCORE_PRIOR_WEIGHT * mean) /
-      (ratings.length + SCORE_PRIOR_WEIGHT)) *
-      100,
-  ) / 100;
+/** The plain mean, rounded the way the code rounds. */
+const mean = (ratings: number[]) =>
+  Math.round((ratings.reduce((a, b) => a + b, 0) / ratings.length) * 100) / 100;
 
 describe("the two tracks are separate numbers", () => {
   it("a 200-seat webinar cannot touch the 1:1 score at all", async () => {
@@ -150,8 +122,6 @@ describe("the two tracks are separate numbers", () => {
     const w = await score(event("webinar:w1", 4, 200));
     expect(w.ratedEventsGroup).toBe(1);
     expect(w.reviewCount).toBe(200);
-    // One point of value 4, shrunk toward 3.
-    expect(w.rawRatingGroup).toBe(4);
     expect(w.publishedRatingGroup).toBeNull(); // one event, below the gate
   });
 
@@ -163,9 +133,7 @@ describe("the two tracks are separate numbers", () => {
     ).flat();
     const s = await score(rows);
     expect(s.ratedEventsGroup).toBe(MIN_RATED_EVENTS_GROUP);
-    expect(s.publishedRatingGroup).toBe(
-      shrunk(Array(MIN_RATED_EVENTS_GROUP).fill(5)),
-    );
+    expect(s.publishedRatingGroup).toBe(5);
   });
 
   it("ignores an event nobody answered enough of", async () => {
@@ -176,7 +144,6 @@ describe("the two tracks are separate numbers", () => {
     );
     expect(thin.ratedEventsGroup).toBe(0);
     expect(thin.publishedRatingGroup).toBeNull();
-    expect(thin.rawRatingGroup).toBeNull();
     // The reviews still exist and still render.
     expect(thin.reviewCount).toBe(MIN_GROUP_RESPONSES_PER_EVENT - 1);
   });
@@ -201,9 +168,7 @@ describe("suppression below the threshold", () => {
     const s = await score(
       Array.from({ length: MIN_RATED_CLIENTS_ONE_TO_ONE }, () => solo(5)),
     );
-    expect(s.publishedRatingOneToOne).toBe(
-      shrunk(Array(MIN_RATED_CLIENTS_ONE_TO_ONE).fill(5)),
-    );
+    expect(s.publishedRatingOneToOne).toBe(5);
   });
 
   it("leaves a consultant with no reviews unpublished rather than at zero", async () => {
@@ -212,35 +177,33 @@ describe("suppression below the threshold", () => {
     const s = await score([]);
     expect(s.publishedRatingOneToOne).toBeNull();
     expect(s.publishedRatingGroup).toBeNull();
-    expect(s.rawRatingOneToOne).toBeNull();
-    expect(s.effectiveSampleOneToOne).toBeNull();
     expect(s.ratedClientsOneToOne).toBe(0);
   });
 });
 
-describe("shrinkage", () => {
-  it("does not let a perfect small sample outrank a strong large one", async () => {
-    // This is the whole reason a plain average is the wrong instrument, and the
-    // reason every mature platform migrated off one.
-    const fivePerfect = await score(
-      Array.from({ length: MIN_RATED_CLIENTS_ONE_TO_ONE }, () => solo(5)),
-    );
-    const manyStrong = await score(
-      Array.from({ length: 200 }, () => solo(4.8)),
-    );
-    expect(fivePerfect.rawRatingOneToOne).toBe(5);
-    expect(manyStrong.rawRatingOneToOne).toBe(4.8);
-    expect(manyStrong.publishedRatingOneToOne!).toBeGreaterThan(
-      fivePerfect.publishedRatingOneToOne!,
-    );
+describe("the plain mean (#1566)", () => {
+  it("publishes exactly what a client would get averaging the cards by hand", async () => {
+    // No prior, no decay: a consultant with five straight fives reads 5.0, not
+    // 4.65. The count shown beside the score is what keeps thin samples honest.
+    const s = await score([5, 4, 5, 3, 4].map(solo));
+    expect(s.publishedRatingOneToOne).toBe(mean([5, 4, 5, 3, 4]));
+    expect(s.ratedClientsOneToOne).toBe(5);
   });
 
-  it("reports the effective sample so a moved score can be explained", async () => {
-    // At the launch half-life the weight is 1 per row, so this is the count —
-    // and it will stop being the count the day decay is switched on, which is
-    // exactly when someone will need to know why their score drifted.
-    const s = await score(Array.from({ length: 5 }, () => solo(5)));
-    expect(s.effectiveSampleOneToOne).toBe(5);
+  it("averages the group track over event means, one vote per event", async () => {
+    // A 200-seat webinar at 3 and a five-person class at 5 are two points, so the
+    // track reads 4.0 — the room size buys no extra weight.
+    const rows = [
+      ...event("webinar:w1", 3, 200),
+      ...Array.from({ length: MIN_RATED_EVENTS_GROUP - 1 }, (_, i) =>
+        event(`class:c${i}`, 5, MIN_GROUP_RESPONSES_PER_EVENT),
+      ).flat(),
+    ];
+    const s = await score(rows);
+    expect(s.ratedEventsGroup).toBe(MIN_RATED_EVENTS_GROUP);
+    expect(s.publishedRatingGroup).toBe(
+      mean([3, ...Array(MIN_RATED_EVENTS_GROUP - 1).fill(5)]),
+    );
   });
 });
 
@@ -254,7 +217,7 @@ describe("ratings protection", () => {
     const written = await score([...five, excluded]);
     expect(written.reviewCount).toBe(6);
     expect(written.ratedClientsOneToOne).toBe(5);
-    expect(written.publishedRatingOneToOne).toBe(shrunk([5, 5, 5, 5, 5]));
+    expect(written.publishedRatingOneToOne).toBe(5);
   });
 });
 

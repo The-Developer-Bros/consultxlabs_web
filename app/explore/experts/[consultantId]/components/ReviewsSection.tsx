@@ -19,7 +19,6 @@ interface ReviewsSectionProps {
    * with more reviews than the page size, and it counted a 200-seat webinar's
    * attendees as 200 data points.
    */
-  publishedRating: number | null;
   reviewCount: number;
   /**
    * #1300 (ADR 29) — the two tracks, shown side by side rather than blended.
@@ -39,7 +38,6 @@ interface ReviewsSectionProps {
 export function ReviewsSection({
   reviews,
   reviewTracks,
-  publishedRating,
   reviewCount,
   publishedRatingOneToOne,
   publishedRatingGroup,
@@ -90,49 +88,34 @@ export function ReviewsSection({
             <h3 className="text-lg font-semibold text-foreground">
               Reviews ({reviewCount})
             </h3>
-            {/* Two numbers, not one. Falling back to the blended score keeps the
-                header honest for legacy rows, which carry no track and so
-                contribute to neither. */}
+            {/* Two numbers, never one blend (ADR 29): each track shows its mean
+                and count, or "not enough yet". */}
             <div className="mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-1">
-              {tracks.length > 0 ? (
-                tracks.map((t) => (
-                  <div key={t.label} className="flex items-center gap-1">
-                    {t.score !== null ? (
-                      <>
-                        <Star className="w-4 h-4 fill-amber-400 text-amber-400" />
-                        <span className="text-sm font-medium text-muted-foreground">
-                          {t.score.toFixed(1)} {t.label}
+              {tracks.length > 0
+                ? tracks.map((t) => (
+                    <div key={t.label} className="flex items-center gap-1">
+                      {t.score !== null ? (
+                        <>
+                          <Star className="w-4 h-4 fill-amber-400 text-amber-400" />
+                          <span className="text-sm font-medium text-muted-foreground">
+                            {t.score.toFixed(1)} {t.label}
+                          </span>
+                          <span className="text-xs text-muted-foreground/70">
+                            · {t.count} {t.unit}
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-sm text-muted-foreground">
+                          Not enough rated {t.label} yet
                         </span>
-                        <span className="text-xs text-muted-foreground/70">
-                          · {t.count} {t.unit}
-                        </span>
-                      </>
-                    ) : (
-                      <span className="text-sm text-muted-foreground">
-                        Not enough rated {t.label} yet
-                      </span>
-                    )}
-                  </div>
-                ))
-              ) : // No track has data. Legacy reviews carry no track and so
-              // contribute to neither, while still feeding the blended
-              // score — 59 of the 62 rows in this database are exactly
-              // that — so fall back to it rather than showing nothing about
-              // a consultant who does have reviews.
-              publishedRating !== null ? (
-                <div className="flex items-center gap-1">
-                  <Star className="w-4 h-4 fill-amber-400 text-amber-400" />
-                  <span className="text-sm font-medium text-muted-foreground">
-                    {publishedRating.toFixed(1)} average rating
-                  </span>
-                </div>
-              ) : (
-                reviewCount > 0 && (
-                  <span className="text-sm text-muted-foreground">
-                    Not enough rated sessions yet to show an average
-                  </span>
-                )
-              )}
+                      )}
+                    </div>
+                  ))
+                : reviewCount > 0 && (
+                    <span className="text-sm text-muted-foreground">
+                      Not enough rated sessions yet to show an average
+                    </span>
+                  )}
             </div>
           </div>
         </div>

@@ -48,57 +48,6 @@ export const MIN_RATED_EVENTS_GROUP = 5;
 export const MIN_GROUP_RESPONSES_PER_EVENT = 5;
 
 /**
- * Bayesian shrinkage: how many "average" observations a consultant is credited
- * with before their own reviews outweigh the platform mean.
- *
- * A plain average is the wrong instrument and every mature platform has migrated
- * off one — Amazon says outright that it "uses advanced models to calculate star
- * ratings, not just a simple average", IMDb shrinks toward a global mean, and
- * Etsy had to abandon a hard trailing window because low-volume sellers' scores
- * flapped. Shrinkage is what stops a 5.0 from five ratings outranking a 4.8 from
- * two hundred.
- *
- * Twelve rather than five: at the threshold itself a consultant should still be
- * pulled meaningfully toward the mean, or the gate merely relocates the problem
- * to N=5.
- */
-export const SCORE_PRIOR_WEIGHT = 12;
-
-/**
- * Recency half-life, in days. Deliberately inert at launch.
- *
- * Decay is right in principle — Uber reads the last 500 trips, Booking.com stops
- * displaying at 36 months — but it is a claim about a corpus that has enough
- * history for "old" to mean something. This one has 62 reviews and no published
- * score at all, so a live half-life would move numbers for reasons no consultant
- * could act on, and "your score fell and nothing happened" is a support ticket
- * we would be creating for ourselves.
- *
- * Ten years makes the weight effectively 1 for every row we hold, while keeping
- * the term in the arithmetic and on every `ScoringSnapshot`, so the day it is
- * lowered every previously published score is still explainable.
- */
-export const SCORE_HALF_LIFE_DAYS = 3650;
-
-/**
- * The prior used before the first `ScoringSnapshot` exists.
- *
- * Not a guess at "the average consultant": it is the midpoint of the scale, so a
- * consultant with no reviews shrinks toward neutral rather than toward flattery.
- * The moment one snapshot exists this is never read again.
- */
-const BOOTSTRAP_PLATFORM_MEAN = 3;
-
-/** The scoring parameters, as one object, so a snapshot records exactly what ran. */
-export const SCORING_PARAMS = {
-  priorWeight: SCORE_PRIOR_WEIGHT,
-  halfLifeDays: SCORE_HALF_LIFE_DAYS,
-  minRatedClientsOneToOne: MIN_RATED_CLIENTS_ONE_TO_ONE,
-  minRatedEventsGroup: MIN_RATED_EVENTS_GROUP,
-  minGroupResponsesPerEvent: MIN_GROUP_RESPONSES_PER_EVENT,
-} as const;
-
-/**
  * Which reputation a booking's review belongs to.
  *
  * Keyed on the booking SHAPE, not on a stored flag: a webinar or a class is a
@@ -179,138 +128,65 @@ interface ScorableReview {
   rating: number;
   track: ReviewTrack | null;
   ratingUnitId: string | null;
-  ratedSessionAt: Date | null;
-  createdAt: Date;
-}
-
-/** The platform priors a run shrinks toward, plus the parameters it applied. */
-export interface ScoringPriors {
-  platformMeanOneToOne: number;
-  platformMeanGroup: number;
-  sampleCountOneToOne: number;
-  sampleCountGroup: number;
 }
 
 /** One track's answer. */
 interface TrackScore {
-  /** Shrunk, decay-weighted. NULL below the publication threshold. */
+  /** The plain arithmetic mean of the data points; NULL below the publication gate. */
   published: number | null;
-  /** The plain arithmetic mean of the qualifying data points — what a
-   *  consultant gets if they average their own cards by hand. Staff-facing, and
-   *  the only way to answer "why is my score 4.1 when every review says 5". */
-  raw: number | null;
-  /** Data points: distinct clients for 1:1, qualifying events for group. */
+  /** Data points: distinct clients for 1:1, qualifying events for group. Always shown beside the score. */
   count: number;
-  /** Sum of the decay weights. Stale in exact lockstep with `published`, so the
-   *  pair is always internally consistent. */
-  effectiveSample: number | null;
-}
-
-/**
- * Recency weight for one data point. `0.5 ** (age / halfLife)`.
- *
- * At the launch half-life this is indistinguishable from 1 for every row we
- * hold — see SCORE_HALF_LIFE_DAYS for why that is deliberate — but the term is
- * in the arithmetic and on every snapshot, so lowering it later does not
- * invalidate scores that were already published.
- */
-function decayWeight(at: Date, now: Date, halfLifeDays: number): number {
-  const ageDays = Math.max(0, (now.getTime() - at.getTime()) / 86_400_000);
-  return Math.pow(0.5, ageDays / halfLifeDays);
 }
 
 /** Round to two decimals, the precision every surface renders. */
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
 /**
- * Shrink a set of weighted observations toward a prior.
- *
- * `(Σ(wᵢ·rᵢ) + m·C) / (Σwᵢ + m)` — IMDb's structure. With no observations it
- * returns the prior, which is why a consultant with nothing is never 0.0: a zero
- * is a claim, and an absent score is the truth.
+ * #1566 — a published score is the plain mean of its track's data points once the
+ * gate clears, and nothing before. No prior, no decay: at this scale a Bayesian
+ * average manufactures "why is my 5.0 shown as 4.65" tickets, and the count printed
+ * beside every score is the disclosure that lets thin samples sort honestly.
+ * ADR 29 names the trigger for a disclosed prior; see docs/reviews/02-two-track-scoring.md.
  */
-function shrink(
-  points: { rating: number; weight: number }[],
-  priorMean: number,
-  priorWeight: number,
-): number {
-  const w = points.reduce((sum, p) => sum + p.weight, 0);
-  const wr = points.reduce((sum, p) => sum + p.weight * p.rating, 0);
-  return (wr + priorWeight * priorMean) / (w + priorWeight);
-}
-
-function scoreTrack(
-  points: { rating: number; weight: number }[],
-  priorMean: number,
-  minCount: number,
-): TrackScore {
-  if (points.length === 0) {
-    return { published: null, raw: null, count: 0, effectiveSample: null };
-  }
-  const effectiveSample = points.reduce((sum, p) => sum + p.weight, 0);
-  const raw = points.reduce((sum, p) => sum + p.rating, 0) / points.length;
-  const shrunk = shrink(points, priorMean, SCORE_PRIOR_WEIGHT);
-  return {
-    published: points.length >= minCount ? round2(shrunk) : null,
-    raw: round2(raw),
-    count: points.length,
-    effectiveSample: round2(effectiveSample),
-  };
+function scoreTrack(points: number[], minCount: number): TrackScore {
+  if (points.length < minCount)
+    return { published: null, count: points.length };
+  const mean = points.reduce((sum, r) => sum + r, 0) / points.length;
+  return { published: round2(mean), count: points.length };
 }
 
 /**
  * The 1:1 track: one review IS one data point, because a 1:1 row is one per
  * client. No bucket key needed — that is the simplification the split buys.
  */
-function oneToOnePoints(
-  rows: ScorableReview[],
-  now: Date,
-  halfLifeDays: number,
-) {
-  return rows
-    .filter((r) => r.track === "ONE_TO_ONE")
-    .map((r) => ({
-      rating: r.rating,
-      weight: decayWeight(r.ratedSessionAt ?? r.createdAt, now, halfLifeDays),
-    }));
+function oneToOnePoints(rows: ScorableReview[]): number[] {
+  return rows.filter((r) => r.track === "ONE_TO_ONE").map((r) => r.rating);
 }
 
 /**
  * The group track: one EVENT is one data point, and only once enough of its
  * attendees answered.
  *
- * This is the half nobody publishes a method for. Weighting per attendee
- * systematically punishes whoever fills the room; weighting per event lets a
- * three-person class outvote a two-hundred-person one. Neither is defensible as
- * a blend with 1:1 work, which is why the two live apart — and within the group
- * track, one-event-one-vote plus a response floor is the honest compromise: the
- * floor is what stops a 200-seat webinar with two replies counting at all.
- *
- * The event's age is its NEWEST rated session, so a long-running class series is
- * not aged out by its first cohort.
+ * Weighting per attendee systematically punishes whoever fills the room;
+ * weighting per event lets a three-person class outvote a two-hundred-person
+ * one. Within the group track, one-event-one-vote plus a response floor is the
+ * honest compromise: the floor is what stops a 200-seat webinar with two replies
+ * counting at all.
  */
-function groupPoints(rows: ScorableReview[], now: Date, halfLifeDays: number) {
-  const byEvent = new Map<string, { ratings: number[]; newest: Date }>();
+function groupPoints(rows: ScorableReview[]): number[] {
+  const byEvent = new Map<string, number[]>();
   for (const r of rows) {
     // A GROUP review with no event key cannot be attributed to an event, so it
     // cannot be one data point about one. Legacy rows land here and are skipped
     // rather than guessed at.
     if (r.track !== "GROUP" || !r.ratingUnitId) continue;
-    const at = r.ratedSessionAt ?? r.createdAt;
     const acc = byEvent.get(r.ratingUnitId);
-    if (acc) {
-      acc.ratings.push(r.rating);
-      if (at > acc.newest) acc.newest = at;
-    } else {
-      byEvent.set(r.ratingUnitId, { ratings: [r.rating], newest: at });
-    }
+    if (acc) acc.push(r.rating);
+    else byEvent.set(r.ratingUnitId, [r.rating]);
   }
   return [...byEvent.values()]
-    .filter((e) => e.ratings.length >= MIN_GROUP_RESPONSES_PER_EVENT)
-    .map((e) => ({
-      rating: e.ratings.reduce((a, b) => a + b, 0) / e.ratings.length,
-      weight: decayWeight(e.newest, now, halfLifeDays),
-    }));
+    .filter((ratings) => ratings.length >= MIN_GROUP_RESPONSES_PER_EVENT)
+    .map((ratings) => ratings.reduce((a, b) => a + b, 0) / ratings.length);
 }
 
 /** The exact delegate methods scoring touches. Narrow on purpose: the dry run
@@ -319,89 +195,8 @@ function groupPoints(rows: ScorableReview[], now: Date, halfLifeDays: number) {
  *  pre-flight against production data. */
 export type ScoringTx = {
   consultantReview: Pick<Tx["consultantReview"], "findMany">;
-  scoringSnapshot: Pick<Tx["scoringSnapshot"], "findFirst">;
   consultantProfile: Pick<Tx["consultantProfile"], "update">;
 };
-
-/**
- * The priors in force. Reads the newest `ScoringSnapshot`, so a review mutation
- * shrinks toward the same mean the last full run used rather than recomputing
- * the whole corpus on every star.
- *
- * Before the first snapshot exists there is nothing to read, and the bootstrap
- * prior is the midpoint of the scale — no snapshot is pinned in that case,
- * because a run that invented its own priors must not claim to be reproducible.
- */
-export async function currentScoringPriors(tx: ScoringTx): Promise<{
-  priors: ScoringPriors;
-  snapshotId: string | null;
-}> {
-  const latest = await tx.scoringSnapshot.findFirst({
-    orderBy: { computedAt: "desc" },
-    select: {
-      id: true,
-      platformMeanOneToOne: true,
-      platformMeanGroup: true,
-      sampleCountOneToOne: true,
-      sampleCountGroup: true,
-    },
-  });
-  if (!latest) {
-    return {
-      priors: {
-        platformMeanOneToOne: BOOTSTRAP_PLATFORM_MEAN,
-        platformMeanGroup: BOOTSTRAP_PLATFORM_MEAN,
-        sampleCountOneToOne: 0,
-        sampleCountGroup: 0,
-      },
-      snapshotId: null,
-    };
-  }
-  const { id, ...priors } = latest;
-  return { priors, snapshotId: id };
-}
-
-/**
- * The platform priors, over the whole corpus, for one run.
- *
- * The mean each track is shrunk toward has to be measured the same way the track
- * itself is scored, or shrinkage pulls toward a number that does not describe the
- * same population: 1:1 averages review rows, group averages QUALIFYING EVENT
- * means. A track with no qualifying data falls back to the midpoint of the scale
- * rather than to a borrowed mean from the other track — the two are different
- * products and neither is evidence about the other.
- */
-export async function computePlatformPriors(
-  db: Pick<Tx, "consultantReview">,
-): Promise<ScoringPriors> {
-  const live = { deletedAt: null, excludedFromAggregateAt: null } as const;
-  const [one, groupEvents] = await Promise.all([
-    db.consultantReview.aggregate({
-      where: { ...live, track: "ONE_TO_ONE" },
-      _avg: { rating: true },
-      _count: { _all: true },
-    }),
-    db.consultantReview.groupBy({
-      by: ["ratingUnitId"],
-      where: { ...live, track: "GROUP", ratingUnitId: { not: null } },
-      _avg: { rating: true },
-      _count: { _all: true },
-    }),
-  ]);
-  const qualifying = groupEvents.filter(
-    (e) => e._count._all >= MIN_GROUP_RESPONSES_PER_EVENT,
-  );
-  const groupMean = qualifying.length
-    ? qualifying.reduce((sum, e) => sum + (e._avg.rating ?? 0), 0) /
-      qualifying.length
-    : null;
-  return {
-    platformMeanOneToOne: one._avg.rating ?? BOOTSTRAP_PLATFORM_MEAN,
-    sampleCountOneToOne: one._count._all,
-    platformMeanGroup: groupMean ?? BOOTSTRAP_PLATFORM_MEAN,
-    sampleCountGroup: qualifying.length,
-  };
-}
 
 /**
  * Recompute the denormalized rating columns on ConsultantProfile.
@@ -426,13 +221,8 @@ export async function computePlatformPriors(
 export async function recomputeConsultantRating(
   tx: ScoringTx,
   consultantProfileId: string,
-  /** Supplied by the full recompute so every profile in a run shares one prior;
-   *  omitted by mutation paths, which read the newest snapshot. */
-  run?: { priors: ScoringPriors; snapshotId: string | null; now?: Date },
+  now: Date = new Date(),
 ): Promise<void> {
-  const now = run?.now ?? new Date();
-  const { priors, snapshotId } = run ?? (await currentScoringPriors(tx));
-
   // Live rows. An excluded row (#1300 ratings protection) still renders on the
   // profile, so it stays in `reviewCount`; it just leaves the arithmetic.
   const liveRows = await tx.consultantReview.findMany({
@@ -441,8 +231,6 @@ export async function recomputeConsultantRating(
       rating: true,
       track: true,
       ratingUnitId: true,
-      ratedSessionAt: true,
-      createdAt: true,
       excludedFromAggregateAt: true,
     },
   });
@@ -450,17 +238,8 @@ export async function recomputeConsultantRating(
     (r) => r.excludedFromAggregateAt === null,
   );
 
-  const half = SCORE_HALF_LIFE_DAYS;
-  const one = scoreTrack(
-    oneToOnePoints(rows, now, half),
-    priors.platformMeanOneToOne,
-    MIN_RATED_CLIENTS_ONE_TO_ONE,
-  );
-  const group = scoreTrack(
-    groupPoints(rows, now, half),
-    priors.platformMeanGroup,
-    MIN_RATED_EVENTS_GROUP,
-  );
+  const one = scoreTrack(oneToOnePoints(rows), MIN_RATED_CLIENTS_ONE_TO_ONE);
+  const group = scoreTrack(groupPoints(rows), MIN_RATED_EVENTS_GROUP);
 
   // The legacy blended columns, kept in step for readers that have not moved.
   // One unit per NULL-`ratingUnitId` row, one per distinct event key.
@@ -495,11 +274,6 @@ export async function recomputeConsultantRating(
       publishedRatingGroup: group.published,
       ratedClientsOneToOne: one.count,
       ratedEventsGroup: group.count,
-      rawRatingOneToOne: one.raw,
-      rawRatingGroup: group.raw,
-      effectiveSampleOneToOne: one.effectiveSample,
-      effectiveSampleGroup: group.effectiveSample,
-      scoringSnapshotId: snapshotId,
       rating: legacyMean,
       ratingUnitCount: legacyUnitCount,
       reviewCount: liveRows.length,
@@ -719,9 +493,12 @@ type ExistingReview = {
   isAnonymous: boolean;
 };
 
+/** The columns that key a review inside one (consultant, consultee) pair. */
+type ReviewKey = { track: ReviewTrack | null; ratingUnitId: string | null };
+
 function describe(
   row: AppointmentRow,
-  reviewByConsultant: Map<string, ExistingReview>,
+  reviewByConsultant: Map<string, (ExistingReview & ReviewKey)[]>,
 ): ReviewableSession | null {
   const consultantProfileId =
     row.consultation?.consultationPlan?.consultantProfileId ??
@@ -762,22 +539,38 @@ function describe(
       row.class?.classPlan?.title ??
       "Session",
     heldAt: row.slotsOfAppointment[0]?.endsAt ?? null,
-    // Keyed on the CONSULTANT, not this appointment. The review is one per
-    // person now, so it may well hang off a different booking — looking it up
-    // through the appointment made the card say "Post review" to someone who
-    // had already written one, and lose their text.
-    existingReview: reviewByConsultant.get(consultantProfileId) ?? null,
+    // Keyed on the CONSULTANT and the (track, event), not this appointment: a 1:1
+    // review may hang off a different booking, and a webinar's review is that
+    // webinar's, not another one's (#1549).
+    existingReview: pickExistingReview(
+      reviewByConsultant.get(consultantProfileId) ?? [],
+      track,
+      ratingUnitId,
+    ),
   };
 }
 
-/** This consultee's existing review of each of the given consultants.
- *
- *  Keyed by consultant alone while the unique is the pair. #1549 keys 1:1 by
- *  (consultant, track) and GROUP by (consultant, event). */
+/**
+ * #1549 — which of a consultee's reviews of one consultant is "their review" of
+ * this session: the row keyed exactly on (track, event), else a NULL-track legacy
+ * row, which the write path then adopts into the track. The POST route applies
+ * the same rule, so the composer never shows a review the write would not update.
+ */
+export function pickExistingReview<
+  T extends { track: ReviewTrack | null; ratingUnitId: string | null },
+>(rows: T[], track: ReviewTrack, ratingUnitId: string | null): T | null {
+  return (
+    rows.find((r) => r.track === track && r.ratingUnitId === ratingUnitId) ??
+    rows.find((r) => r.track === null) ??
+    null
+  );
+}
+
+/** This consultee's live reviews of each of the given consultants, all tracks and events. */
 async function reviewsByConsultant(
   consulteeProfileId: string,
   consultantProfileIds: string[],
-): Promise<Map<string, ExistingReview>> {
+): Promise<Map<string, (ExistingReview & ReviewKey)[]>> {
   if (consultantProfileIds.length === 0) return new Map();
   const rows = await prisma.consultantReview.findMany({
     where: {
@@ -792,14 +585,16 @@ async function reviewsByConsultant(
       isAnonymous: true,
       consultantProfileId: true,
       track: true,
+      ratingUnitId: true,
     },
   });
-  return new Map(
-    rows.map(({ consultantProfileId, track: _track, ...r }) => [
-      consultantProfileId,
-      r,
-    ]),
-  );
+  const out = new Map<string, (ExistingReview & ReviewKey)[]>();
+  for (const { consultantProfileId, ...r } of rows) {
+    const acc = out.get(consultantProfileId);
+    if (acc) acc.push(r);
+    else out.set(consultantProfileId, [r]);
+  }
+  return out;
 }
 
 /**
