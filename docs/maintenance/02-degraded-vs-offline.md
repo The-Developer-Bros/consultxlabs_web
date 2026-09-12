@@ -9,6 +9,12 @@
 | **Banner**          | Yellow dismissible banner at top                  | Full-screen maintenance page with auto-refresh   |
 | **BetterStack**     | No incident created                               | Auto-creates incident                            |
 
+## Error boundaries during an active phase
+
+OFFLINE is a nav-less full-page screen shown for every non-exempt page: the middleware rewrite in `middleware.ts` replaces the requested page with `app/maintenance/page.tsx`, and that screen carries no site navigation. DEGRADED instead keeps the ordinary site navigation and layers the "Scheduled maintenance" banner (`components/banners/MaintenanceBanner.tsx`) on top of it, because reads are still allowed and a user should be able to keep browsing. Neither of those rules changes.
+
+The gap they left open was in the error boundary rather than in the gate itself. A server-component render can still throw while DEGRADED is active — most often because a stale deploy's reads no longer match the live schema — and `app/error.tsx` used to show its generic "Something went wrong" card underneath the banner and navigation with no indication that maintenance was the cause. `app/error.tsx` now makes one `/api/health` call on mount (the same maintenance-exempt endpoint the `/maintenance` page reads) and, when the reported phase is `DEGRADED` or `OFFLINE`, renders the maintenance message — the site logo, the reason, the formatted ETA, and a "Try Again" action — in place of the generic card. When the phase is `OFF`, or the health call itself fails, the generic card is shown exactly as before.
+
 ## Detailed Component Behavior
 
 ### User-Facing Pages
@@ -24,35 +30,35 @@
 
 ### API Routes by Category
 
-| Route Category                                           | DEGRADED                                | OFFLINE                    | Risk Level |
-| -------------------------------------------------------- | --------------------------------------- | -------------------------- | ---------- |
-| **Webhooks** (`/api/webhooks/*`)                         | Exempt -- always processed              | Exempt -- always processed | Low        |
-| **Health** (`/api/health`)                               | Exempt -- always responds               | Exempt -- always responds  | None       |
-| **Auth** (`/api/auth/*`)                                 | Exempt -- always works                  | Exempt -- always works     | None       |
-| **Maintenance API** (`/api/admin/maintenance`)           | Exempt                                  | Exempt                     | None       |
-| **Checkout** (`/api/checkout`, `/api/checkout/verify`, `DELETE /api/checkout/pending/[paymentId]`) | Allowed (gap) | Blocked (503) | HIGH |
-| **Cancel appointment** (`/api/appointments/[id]/cancel`) | Allowed (gap)                           | Blocked                    | MEDIUM     |
-| **Reschedule** (`/api/appointments/[id]/reschedule`)     | Allowed (gap)                           | Blocked                    | MEDIUM     |
-| **Documents** (`/api/appointments/[id]/documents`)       | Allowed                                 | Blocked                    | LOW        |
-| **Consultations** (`/api/bookings/consultations`)          | GET: Allowed, POST/PATCH: Allowed (gap) | Blocked                    | HIGH       |
-| **Subscriptions** (`/api/bookings/subscriptions`)          | GET: Allowed, POST: Allowed (gap)       | Blocked                    | HIGH       |
-| **Webinars** (`/api/bookings/webinars`)                    | GET: Allowed, POST: Allowed (gap)       | Blocked                    | MEDIUM     |
-| **Classes** (`/api/bookings/classes`)                      | GET: Allowed, POST: Allowed (gap)       | Blocked                    | MEDIUM     |
-| **Allocate slots** (`/api/bookings/*/allocate`)            | Allowed (gap)                           | Blocked                    | HIGH       |
-| **Validate** (`/api/bookings/*/validate`)                  | Allowed (read-only)                     | Blocked                    | LOW        |
-| **Participants** (`/api/participants/*`)                 | Allowed                                 | Blocked                    | LOW        |
-| **Trials** (`/api/trials`, `/api/trials/[id]`)           | Allowed (gap)                           | Blocked                    | MEDIUM     |
-| **Plans** (`/api/plans/*`)                               | GET: Allowed, POST/PATCH: Allowed (gap) | Blocked                    | MEDIUM     |
-| **Slot appointments** (`/api/slots/appointments`)        | **Writes blocked (503)** (Mar 2026)     | Blocked                    | HIGH       |
-| **Waitlist / newsletter** (`/api/waitlist`)              | **Writes blocked (503)** (Mar 2026)     | Blocked                    | LOW        |
-| **Referrals** (`/api/referrals`)                         | **Writes blocked (503)** (Mar 2026)     | Blocked                    | MEDIUM     |
-| **Collaborators** (`/api/collaborators`)                 | **Writes blocked (503)** (Mar 2026)     | Blocked                    | MEDIUM     |
-| **Refunds** (`/api/payments/refunds`)                    | **Writes blocked (503)** (Mar 2026)     | Blocked                    | HIGH       |
-| **Disputes** (`/api/payments/disputes`)                  | **Writes blocked (503)** (Mar 2026)     | Blocked                    | HIGH       |
-| **Admin payouts** (`/api/admin/payouts`)                 | **Writes blocked (503)** (Mar 2026)     | Blocked                    | HIGH       |
-| **User routes** (`/api/user/*`)                          | Allowed                                 | Blocked                    | LOW        |
-| **Admin routes** (`/api/admin/*`)                        | Allowed                                 | Blocked                    | LOW        |
-| **Staff routes** (`/api/staff/*`)                        | Allowed                                 | Blocked                    | LOW        |
+| Route Category                                                                                     | DEGRADED                                | OFFLINE                    | Risk Level |
+| -------------------------------------------------------------------------------------------------- | --------------------------------------- | -------------------------- | ---------- |
+| **Webhooks** (`/api/webhooks/*`)                                                                   | Exempt -- always processed              | Exempt -- always processed | Low        |
+| **Health** (`/api/health`)                                                                         | Exempt -- always responds               | Exempt -- always responds  | None       |
+| **Auth** (`/api/auth/*`)                                                                           | Exempt -- always works                  | Exempt -- always works     | None       |
+| **Maintenance API** (`/api/admin/maintenance`)                                                     | Exempt                                  | Exempt                     | None       |
+| **Checkout** (`/api/checkout`, `/api/checkout/verify`, `DELETE /api/checkout/pending/[paymentId]`) | Allowed (gap)                           | Blocked (503)              | HIGH       |
+| **Cancel appointment** (`/api/appointments/[id]/cancel`)                                           | Allowed (gap)                           | Blocked                    | MEDIUM     |
+| **Reschedule** (`/api/appointments/[id]/reschedule`)                                               | Allowed (gap)                           | Blocked                    | MEDIUM     |
+| **Documents** (`/api/appointments/[id]/documents`)                                                 | Allowed                                 | Blocked                    | LOW        |
+| **Consultations** (`/api/bookings/consultations`)                                                  | GET: Allowed, POST/PATCH: Allowed (gap) | Blocked                    | HIGH       |
+| **Subscriptions** (`/api/bookings/subscriptions`)                                                  | GET: Allowed, POST: Allowed (gap)       | Blocked                    | HIGH       |
+| **Webinars** (`/api/bookings/webinars`)                                                            | GET: Allowed, POST: Allowed (gap)       | Blocked                    | MEDIUM     |
+| **Classes** (`/api/bookings/classes`)                                                              | GET: Allowed, POST: Allowed (gap)       | Blocked                    | MEDIUM     |
+| **Allocate slots** (`/api/bookings/*/allocate`)                                                    | Allowed (gap)                           | Blocked                    | HIGH       |
+| **Validate** (`/api/bookings/*/validate`)                                                          | Allowed (read-only)                     | Blocked                    | LOW        |
+| **Participants** (`/api/participants/*`)                                                           | Allowed                                 | Blocked                    | LOW        |
+| **Trials** (`/api/trials`, `/api/trials/[id]`)                                                     | Allowed (gap)                           | Blocked                    | MEDIUM     |
+| **Plans** (`/api/plans/*`)                                                                         | GET: Allowed, POST/PATCH: Allowed (gap) | Blocked                    | MEDIUM     |
+| **Slot appointments** (`/api/slots/appointments`)                                                  | **Writes blocked (503)** (Mar 2026)     | Blocked                    | HIGH       |
+| **Waitlist / newsletter** (`/api/waitlist`)                                                        | **Writes blocked (503)** (Mar 2026)     | Blocked                    | LOW        |
+| **Referrals** (`/api/referrals`)                                                                   | **Writes blocked (503)** (Mar 2026)     | Blocked                    | MEDIUM     |
+| **Collaborators** (`/api/collaborators`)                                                           | **Writes blocked (503)** (Mar 2026)     | Blocked                    | MEDIUM     |
+| **Refunds** (`/api/payments/refunds`)                                                              | **Writes blocked (503)** (Mar 2026)     | Blocked                    | HIGH       |
+| **Disputes** (`/api/payments/disputes`)                                                            | **Writes blocked (503)** (Mar 2026)     | Blocked                    | HIGH       |
+| **Admin payouts** (`/api/admin/payouts`)                                                           | **Writes blocked (503)** (Mar 2026)     | Blocked                    | HIGH       |
+| **User routes** (`/api/user/*`)                                                                    | Allowed                                 | Blocked                    | LOW        |
+| **Admin routes** (`/api/admin/*`)                                                                  | Allowed                                 | Blocked                    | LOW        |
+| **Staff routes** (`/api/staff/*`)                                                                  | Allowed                                 | Blocked                    | LOW        |
 
 ### Infrastructure Components
 
@@ -74,15 +80,15 @@
 
 **Mar 2026 fix**: The following routes are now **write-blocked** (return 503) during DEGRADED mode:
 
-| Route | Reason |
-| --- | --- |
+| Route                     | Reason                                        |
+| ------------------------- | --------------------------------------------- |
 | `/api/slots/appointments` | Prevent slot modifications during maintenance |
-| `/api/waitlist` | Prevent newsletter signups |
-| `/api/referrals` | Prevent referral creation |
-| `/api/collaborators` | Prevent collaborator changes |
-| `/api/payments/refunds` | Prevent refund processing |
-| `/api/payments/disputes` | Prevent dispute evidence submission |
-| `/api/admin/payouts` | Prevent payout batch creation/approval |
+| `/api/waitlist`           | Prevent newsletter signups                    |
+| `/api/referrals`          | Prevent referral creation                     |
+| `/api/collaborators`      | Prevent collaborator changes                  |
+| `/api/payments/refunds`   | Prevent refund processing                     |
+| `/api/payments/disputes`  | Prevent dispute evidence submission           |
+| `/api/admin/payouts`      | Prevent payout batch creation/approval        |
 
 **Remaining gap**: Checkout (`/api/checkout`), appointment cancel/reschedule, event CRUD, and trial routes are still **not** write-blocked in DEGRADED mode. These may be addressed in a future update.
 
@@ -196,4 +202,3 @@
 Entering OFFLINE cancels every appointment overlapping the window through the same machinery as an interactive cancellation, because the old implementation predated that machinery and violated it three ways: it hard-deleted appointments whose only payment was PENDING (cascade-destroying the Payment row the capture webhook then needed), refunded gross amounts through a raw gateway call that could not route org-funded or credit-funded intents, and wrote statuses with no compare-and-swap guard, which could resurrect a COMPLETED booking. The rewrite deletes nothing: event statuses move through the `lib/booking/transitions.ts` CAS helpers (an already-terminal booking is skipped and counted, never resurrected), slots soft-cancel to `completionStatus: CANCELLED` exactly like the cancel route, trials tombstone through `softCancelTrialAppointment`, and open reschedule proposals are closed so `openForAppointmentId` frees. Refunds run after the transactions through `refundBookingPayment`, which clamps to the refundable balance and routes every rail — gateway, org-funded, and referral-credit — and a re-run of the freeze is safe end to end: the CAS guards skip what is already cancelled and the balance clamp turns a second refund attempt into a recorded skip.
 
 Separately, the maintenance-mode Redis keys now carry a 24-hour TTL (#697 INF-1). Every `setMaintenanceState` call refreshes the clock, so a tended window persists, while an OFFLINE flag whose owner disappeared expires back to OFF instead of keeping the platform down indefinitely. Maintenance windows planned to exceed a day must re-assert their phase at least daily; the pre-maintenance checklist carries that rule.
-
