@@ -495,6 +495,41 @@ ALTER TABLE "OrganizationPayout" ADD CONSTRAINT "org_payout_tds_fy_format"
   CHECK ("tdsFinancialYear" IS NULL OR "tdsFinancialYear" ~ '^[0-9]{4}-[0-9]{2}$');
 
 -- SPLIT
+-- #1549 — one review per (consultant, consultee, track, event). ratingUnitId is NULL on
+-- every 1:1 row, so the key needs NULLS NOT DISTINCT, which Prisma cannot express; the
+-- predicate exempts NULL-track legacy rows and is what keeps `db push` from seeing the
+-- index (Prisma ignores partial indexes; a total one with an undeclared tuple would be
+-- dropped). Deliberately NOT partial on deletedAt: a removed row keeps occupying its key.
+DROP INDEX IF EXISTS "consultant_review_pair_track_event_key";
+-- SPLIT
+CREATE UNIQUE INDEX IF NOT EXISTS "consultant_review_pair_track_event_key"
+  ON "ConsultantReview" ("consultantProfileId", "consulteeProfileId", "track", "ratingUnitId")
+  NULLS NOT DISTINCT
+  WHERE "track" IS NOT NULL;
+
+-- SPLIT
+-- #1562 — the actor enum is set exactly when the removal timestamp is, on both the
+-- review and its reply; the read paths branch on the enum and must never meet a
+-- removed row with no actor.
+ALTER TABLE "ConsultantReview" DROP CONSTRAINT IF EXISTS "consultant_review_removed_pair";
+-- SPLIT
+ALTER TABLE "ConsultantReview" ADD CONSTRAINT "consultant_review_removed_pair"
+  CHECK (("deletedAt" IS NULL) = ("removedBy" IS NULL));
+-- SPLIT
+ALTER TABLE "ConsultantReview" DROP CONSTRAINT IF EXISTS "consultant_review_reply_removed_pair";
+-- SPLIT
+ALTER TABLE "ConsultantReview" ADD CONSTRAINT "consultant_review_reply_removed_pair"
+  CHECK (("replyDeletedAt" IS NULL) = ("replyRemovedBy" IS NULL));
+
+-- SPLIT
+-- #1562 — ModerationAction is the single audit row for every staff act; reportId is
+-- nullable now, so a row must still name what it was about.
+ALTER TABLE "ModerationAction" DROP CONSTRAINT IF EXISTS "moderation_action_has_target";
+-- SPLIT
+ALTER TABLE "ModerationAction" ADD CONSTRAINT "moderation_action_has_target"
+  CHECK ("reportId" IS NOT NULL OR "reviewId" IS NOT NULL OR "feedbackId" IS NOT NULL);
+
+-- SPLIT
 -- ============================================================================
 -- STAGED FOR THE PRE-MVP RESET (#1169 decision 8 — do NOT apply mid-cycle).
 -- Each of these can fail against pre-reset data (existing nulls, historical
