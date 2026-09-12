@@ -22,7 +22,7 @@ This document tells the story of how multi-creator collaboration works on Famili
 
 Familiarise supports four paid service types: consultations, subscriptions, webinars, and classes. Consultations and subscriptions are inherently one-on-one. Webinars and classes are group events, and in the real world these are often team efforts — a React webinar might have a primary instructor and a co-host managing Q&A; a bootcamp class might have a lead teacher, a teaching assistant, and a guest lecturer.
 
-The collaborator system makes this possible. It sits on top of the existing plan/event architecture without changing how participants register. The key principle is that **the host owns the plan; collaborators participate on the host's terms**. Since #784 the whole feature runs on one merged `Collaborator` model (`prisma/schema.prisma:5125`) with a `collaboratorType` discriminator, so every flow below is written once and parameterized by plan type rather than duplicated per table.
+The collaborator system makes this possible. It sits on top of the existing plan/event architecture without changing how participants register. The key principle is that **the host owns the plan; collaborators participate on the host's terms**. Since #784 the whole feature runs on one merged `Collaborator` model (`prisma/schema.prisma:6392`) with a `collaboratorType` discriminator, so every flow below is written once and parameterized by plan type rather than duplicated per table.
 
 The system touches five areas: the Prisma schema (the `Collaborator` junction model plus the multi-row `ConsultantEarnings` fan-out), a service layer (`lib/collaborators/service.ts` and `lib/collaborators/availability.ts`), API routes under `app/api/collaborations/`, Stream.io for auto-created chat channels, and the dashboard UI in `components/collaborators/`.
 
@@ -42,8 +42,10 @@ The POST handler (`app/api/collaborations/webinar/[planId]/route.ts` and its cla
 
 1. **Percentage range.** The share must be greater than 0 and at most 90.
 2. **Role subset.** The merged `CollaboratorRole` enum cannot itself reject a class role on a webinar invitation, so `asPlanRole()` checks the role against the plan type's allowed subset (`WEBINAR_COLLABORATOR_ROLES` / `CLASS_COLLABORATOR_ROLES` from `schemas/collaborators.ts`).
-3. **Invitee existence.** The invited consultant profile must exist; without this check a fabricated id would create an orphaned row.
-4. **The 90% cap, race-safely.** Validation and creation run inside one Serializable transaction (isolation `Serializable`, 10s timeout — FIX B1), so two concurrent invitations cannot jointly exceed the cap. `validateRevenueSharesTx()` sums `revenueShareBps` over all `PENDING` and `ACCEPTED` collaborators and checks that the total plus the new share stays at or under 9000 bps.
+3. **Invitee standing (#1580 C-P1-9).** The invited consultant profile must exist (a fabricated id would otherwise create an orphaned row), must not be soft-deleted, must be `VERIFIED`, and must belong to a user who is neither erased nor under an active ban (a ban whose `banExpires` has passed does not count). A refusal is a `CollaboratorIneligibleError`, which the route returns as 400.
+4. **Not already an attendee.** A consultant who already holds a seat on one of the plan's live events (the slot↔user join, ignoring cancelled and soft-deleted events) cannot also be a collaborator on it; the checkout guard refuses the other direction (C-P0-2). This is a 409.
+5. **The plan is open.** An archived plan (`archivedAt` set) takes no new collaborator; a missing plan reads the same way. Also a 409.
+6. **The 90% cap, race-safely.** Validation and creation run inside one Serializable transaction (isolation `Serializable`, 10s timeout — FIX B1), so two concurrent invitations cannot jointly exceed the cap. `validateRevenueSharesTx()` sums `revenueShareBps` over all `PENDING` and `ACCEPTED` collaborators and checks that the total plus the new share stays at or under 9000 bps.
 
 Note that **PENDING invitations count toward the total**. If the host invites three people at 35% each before any of them respond, the third invitation is rejected, because 105% would over-allocate the pool.
 
@@ -72,8 +74,9 @@ When the invited consultant opens their dashboard, the Collaborations page (powe
 1. **Identity** — the record's `consultantProfileId` must match the authenticated consultant. You can only answer your own invitations.
 2. **Type match** — with the merged table, a `planType` that does not match the record (its `webinarPlanId`/`classPlanId`) is the old wrong-table lookup and returns null (#784).
 3. **Status** — the record must still be `PENDING`. You cannot re-accept an accepted invitation or revive a declined one.
+4. **The invite gates, again (#1580 C-P1-9)** — on an `ACCEPTED` response the invitee-standing, not-an-attendee and plan-open checks from §2 run a second time, because a ban, an erasure, an archive or a seat purchase can land between the invite and the answer. A decline is not gated. A refusal surfaces as 400 or 409 from the respond route.
 
-If valid, the row is updated to the response status with `respondedAt` stamped. Declining frees the reserved share; the host can invite someone else with that percentage.
+If valid, the row is updated to the response status with `respondedAt` stamped. Declining frees the reserved share; the host can invite someone else with that percentage, and hears about the decline through `collaborator-declined` (#1580 C-P1-5).
 
 ### Side-effects on acceptance
 
@@ -81,8 +84,9 @@ Acceptance triggers two independent best-effort actions, each in its own try/cat
 
 - **Stream channel** — `createCollaboratorChannel(planType, planId)` is loaded via dynamic `import()` (avoiding a service ↔ server-action circular dependency) and creates or updates the private coordination channel. See [05-stream-integration.md](./05-stream-integration.md).
 - **Host notification** — `notifyCollaboratorAccepted` tells the plan owner who accepted and in what role.
+- **Participant rows (#1580)** — an `AppointmentParticipant` row with `role: COLLABORATOR` and `status: CONFIRMED` is written for the collaborator on every live appointment of the plan (`recordParticipants`, idempotent, never linked to a Payment), so the roster reader flip of #1319 A9 finds them. Removal cancels those rows again.
 
-Failures in either are reported to Sentry with `subsystem: "stream"` at warning level.
+Failures in any of these are reported to Sentry at warning level.
 
 ---
 
@@ -157,7 +161,11 @@ Refunds are all-or-nothing across parties for any given refund amount: you canno
 
 ## 8. Removing a collaborator
 
-The host removes a collaborator from the `CollaboratorsTab`, which calls `DELETE /api/collaborations/{planType}/{planId}/{id}`. `removeCollaborator()` (`service.ts:323`) first verifies the collaborator actually belongs to that plan (the planId parameter exists to prevent IDOR), then sets `status: REMOVED` — a soft delete; the row persists for audit and for the re-activation path in §2.
+The host removes a collaborator from the `CollaboratorsTab`, which calls `DELETE /api/collaborations/{planType}/{planId}/{id}`. `removeCollaborator()` in `lib/collaborators/service.ts` first verifies the collaborator actually belongs to that plan (the planId parameter exists to prevent IDOR), then sets `status: REMOVED` — a soft delete; the row persists for audit and for the re-activation path in §2. The two route files are thin wrappers over `lib/api/collaborations/member-handlers.ts`, whose owner check refuses when either the plan or the caller's profile is missing rather than comparing two undefined ids (#1580 C-P2-7).
+
+The same route serves a **self-withdraw** (#1580 C-P1-7): a caller whose own consultant profile is the row's `consultantProfileId` may remove their `PENDING` or `ACCEPTED` row without the host. The service is passed `withdrawnByProfileId`, so the lookup itself refuses a row that is not the caller's (a third party gets 403), the Stream revocation runs as usual, and the notice goes to the host as `collaborator-withdrawn` instead of to the collaborator. Earnings already settled to the collaborator are untouched, because the split only ever reads `ACCEPTED` rows for future payments.
+
+The ban side-effect (C-P0-4) and DPDP erasure (#1580) reach `REMOVED` through the shared `removeCollaboratorStanding` flip in `lib/collaborators/standing.ts` and then run the same `revokeCollaboratorAccess` per plan; a revocation that fails is recorded on the moderation action and re-driven by the `retry-moderation-enforcement` sweep. Every removal path also cancels the collaborator's `AppointmentParticipant` rows on the plan's live appointments.
 
 Two independent side-effects follow, each guarded separately so a Novu outage cannot block Stream revocation or vice versa:
 
@@ -212,6 +220,6 @@ Host invites Consultant B (role, share %, permission booleans)
 ### What is NOT in the collaborator system (deliberate exclusions)
 
 - **Consultation/subscription collaborators** — those services are 1:1 by definition.
-- **Stream video call roles** — calls are created client-side; assigning collaborator-specific roles (host, moderator, speaker) needs server-side call creation and is deferred.
+- **Stream video call roles** — calls are minted server-side and every accepted collaborator joins under one `call_member` role; host controls (end for everyone, recording) are decided by our routes for the owner and the accepted co-presenter only (#1580 C-P1-4), so no per-role Stream permission is needed. See [05-stream-integration.md](./05-stream-integration.md).
 - **Collaborator-initiated scheduling** — only the host creates events and sets times. The enforced availability guard protects co-hosts; it does not empower them. See [06-scheduling-approaches.md](./06-scheduling-approaches.md) for the considered future options.
 - **Enforcement of three of the four permission booleans** — `canApprovePayment`, `canViewAnalytics` and `canEditEvent` are stored but have no surface to gate yet; only `canSeeAttendees` is enforced. See [04-permissions.md](./04-permissions.md).

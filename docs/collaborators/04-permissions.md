@@ -4,7 +4,7 @@
 
 Collaborator permissions are four **typed boolean columns** on the `Collaborator` model, set by the host at invite time and defaulting to `false` so an unspecified permission is never silently granted (#768 lockdown #12). The earlier design — role-based defaults with an optional `permissions` JSON override and a `lib/collaborators/permissions.ts` checking module — no longer exists; the JSON column was replaced by the booleans and there is no permissions module. This page was rewritten on 2026-08-14 to describe what is actually enforced.
 
-The columns live at `prisma/schema.prisma:5133-5136`:
+The columns live at `prisma/schema.prisma:6400-6403`:
 
 ```prisma
 canApprovePayment   Boolean @default(false)
@@ -73,6 +73,10 @@ Some capabilities attach to the `ACCEPTED` status itself rather than to any perm
 - Use the plan's private Stream coordination channel.
 - View the plan's revenue-split preview (`GET .../revenue-split`).
 - Receive their earnings share at settlement.
+- Withdraw their own row (`DELETE .../[id]` on their own collaboration, #1580 C-P1-7); the host is notified.
+- Join the plan's video calls and event chat channels, and receive the booking, cancellation, reschedule and reminder notifications the host receives (#1580 C-P1-5).
+
+Two capabilities attach to the **role** rather than to a flag: the accepted co-presenter (`CO_HOST` / `CO_INSTRUCTOR`) may end a call for everyone and start or stop a recording, exactly as the owner may; crew roles may not (#1580 C-P1-4). Support treats every accepted collaborator as a provider, so none of them is offered the attendee no-show flow (C-P1-3).
 
 Scheduling is deliberately **not** a permission: no flag grants it, and only the plan owner can create events and set times. When the owner schedules a webinar or a class, that scheduling is itself constrained by the co-host availability guard (#784 AE-2 — see [01-architecture.md §5](./01-architecture.md#5-scheduling-with-enforced-co-host-availability)).
 
@@ -82,14 +86,16 @@ Scheduling is deliberately **not** a permission: no flag grants it, and only the
 
 The full capability matrix, with the enforcement source for each row, is:
 
-| Capability                                      | Host           | Collaborator                       | Where enforced                       |
-| ----------------------------------------------- | -------------- | ---------------------------------- | ------------------------------------ |
-| Create the plan                                 | Yes            | No                                 | Plan CRUD ownership checks           |
-| Invite / update / remove collaborators          | Yes            | No                                 | Collaboration routes (owner check)   |
-| Create events, set times                        | Yes            | No — never                         | Event CRUD ownership; no flag exists |
-| View participant roster                         | Yes            | Only with `canSeeAttendees`        | Participant GETs (#768)              |
-| View revenue-split preview                      | Yes            | Yes (accepted)                     | Revenue-split route scoping          |
-| Chat in the collaborator channel                | Yes            | Yes (accepted)                     | Stream channel membership            |
-| Accept/decline own invitation                   | —              | Yes                                | Respond route identity check         |
-| Receive earnings                                | Yes            | Yes (accepted)                     | Settlement split                     |
-| Approve payments / view analytics / edit events | Yes (as owner) | Not yet — flags stored, unenforced | Pending #768                         |
+| Capability                                      | Host           | Collaborator                       | Where enforced                             |
+| ----------------------------------------------- | -------------- | ---------------------------------- | ------------------------------------------ |
+| Create the plan                                 | Yes            | No                                 | Plan CRUD ownership checks                 |
+| Invite / update / remove collaborators          | Yes            | No                                 | Collaboration routes (owner check)         |
+| Create events, set times                        | Yes            | No — never                         | Event CRUD ownership; no flag exists       |
+| View participant roster                         | Yes            | Only with `canSeeAttendees`        | Participant GETs (#768)                    |
+| View revenue-split preview                      | Yes            | Yes (accepted)                     | Revenue-split route scoping                |
+| Chat in the collaborator channel                | Yes            | Yes (accepted)                     | Stream channel membership                  |
+| Accept/decline own invitation                   | —              | Yes                                | Respond route identity check               |
+| Withdraw own collaboration                      | —              | Yes (pending or accepted)          | `member-handlers.ts` withdraw branch       |
+| End call for everyone / record                  | Yes            | Co-presenter only                  | `lib/meetings/access.ts`, recording routes |
+| Receive earnings                                | Yes            | Yes (accepted)                     | Settlement split                           |
+| Approve payments / view analytics / edit events | Yes (as owner) | Not yet — flags stored, unenforced | Pending #768                               |
