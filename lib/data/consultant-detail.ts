@@ -1,8 +1,11 @@
 import { cache } from "react";
 import { reportSentryError } from "@/lib/observability/report";
 import prisma from "@/lib/prisma";
-import { stripAnonymousReviewers } from "@/lib/data/review-privacy";
-import { consultantPublicScalars } from "@/lib/data/consultant-public";
+import type { TReviewTrackPresence } from "@/types/review";
+import {
+  publicReviewSelect,
+  sanitisePublicReviews,
+} from "@/lib/data/review-public";
 
 /**
  * Server-side data access for the expert detail page.
@@ -28,11 +31,19 @@ export const getConsultantDetail = cache(async (consultantId: string) => {
       id: true,
       description: true,
       experience: true,
-      rating: true,
-      // #705 — the published score and the count behind it. `rating` above is
-      // the RAW mean and stays internal; the profile shows this one.
+      // The raw `rating` mean is INTERNAL (CONSULTANT_INTERNAL_SCORE_FIELDS)
+      // and is not selected into public client props; the profile shows the
+      // two published scores below.
       publishedRating: true,
       reviewCount: true,
+      // #1300 (ADR 29) — the two tracks the profile shows side by side. A
+      // twelve-session 1:1 engagement and a 200-seat webinar are different
+      // products, and one blended number tells a buyer of either one nothing.
+      // NULL on either means SUPPRESSED, never zero.
+      publishedRatingOneToOne: true,
+      publishedRatingGroup: true,
+      ratedClientsOneToOne: true,
+      ratedEventsGroup: true,
       headline: true,
       websiteUrl: true,
       twitterUrl: true,
@@ -121,20 +132,36 @@ export const getConsultantReviews = cache(
       // #693 — moderation-removed reviews stay hidden from the public page
       where: { consultantProfileId, deletedAt: null },
       take: 20,
-      include: {
-        consultantProfile: {
-          select: {
-            ...consultantPublicScalars,
-            user: { select: { name: true } },
-          },
-        },
-        consulteeProfile: {
-          include: { user: { select: { name: true, image: true } } },
-        },
-      },
+      // #1300 — the ALLOWLIST, not a bare `include`. `sanitisePublicReviews` only
+      // strips the anonymous reviewer and a removed reply; swapping the sanitiser
+      // while leaving the projection wide still shipped `excludedReason`,
+      // `revisionNo`, `ratedSessionAt` and the reviewer's whole ConsulteeProfile
+      // row into this page's client props.
+      select: publicReviewSelect,
       orderBy: { rating: "desc" },
     });
     // The reviewer chose to be unnamed; that has to hold in the payload.
-    return stripAnonymousReviewers(reviews);
+    return sanitisePublicReviews(reviews);
+  },
+);
+
+/**
+ * Which tracks this consultant has any live review in. Its own query rather
+ * than a scan of `getConsultantReviews`, which is a 20-row page ordered by
+ * rating: a GROUP review past that page, on an event still below
+ * MIN_GROUP_RESPONSES_PER_EVENT, would otherwise hide the group track entirely
+ * instead of rendering it as "not enough rated group sessions yet".
+ */
+export const getConsultantReviewTracks = cache(
+  async (consultantProfileId: string): Promise<TReviewTrackPresence> => {
+    const rows = await prisma.consultantReview.groupBy({
+      by: ["track"],
+      where: { consultantProfileId, deletedAt: null, track: { not: null } },
+    });
+    const present = new Set(rows.map((r) => r.track));
+    return {
+      ONE_TO_ONE: present.has("ONE_TO_ONE"),
+      GROUP: present.has("GROUP"),
+    };
   },
 );

@@ -265,8 +265,7 @@ export const ConsultantCard = memo(function ConsultantCard({
                 )}
               </div>
               {/* #705 — a null score means too few rated sessions to publish
-                  one. Say that rather than printing 0.0, which reads as a bad
-                  consultant instead of a new one. */}
+                  one. Say that rather than printing 0.0. */}
               <div className="flex items-center gap-2 mt-2">
                 {consultant.rating !== null ? (
                   <>

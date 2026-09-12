@@ -13,9 +13,6 @@ export const UpdateSubscriptionSchema = z.object({
   schedulingPeriodStartsAt: z.string().optional(),
   schedulingPeriodEndsAt: z.string().optional(),
   requestNotes: z.string().max(MAX_TEXT_LENGTH).optional(), // #831
-  feedbackFromConsultee: z.string().max(MAX_TEXT_LENGTH).optional(),
-  feedbackFromConsultant: z.string().max(MAX_TEXT_LENGTH).optional(),
-  rating: z.number().min(0).max(5).optional(),
   planId: z.string().optional(),
 });
 

@@ -91,16 +91,28 @@ export async function buildSupportContext(
         take: 1,
       },
       consultation: {
-        select: { consultationPlan: { select: { consultantProfileId: true } } },
+        select: {
+          consultationPlan: {
+            select: { consultantProfileId: true, title: true },
+          },
+        },
       },
       subscription: {
-        select: { subscriptionPlan: { select: { consultantProfileId: true } } },
+        select: {
+          subscriptionPlan: {
+            select: { consultantProfileId: true, title: true },
+          },
+        },
       },
       webinar: {
-        select: { webinarPlan: { select: { consultantProfileId: true } } },
+        select: {
+          webinarPlan: { select: { consultantProfileId: true, title: true } },
+        },
       },
       class: {
-        select: { classPlan: { select: { consultantProfileId: true } } },
+        select: {
+          classPlan: { select: { consultantProfileId: true, title: true } },
+        },
       },
     },
   });
@@ -216,5 +228,11 @@ export async function buildSupportContext(
     // moneyResultExtensions has already converted the BigInt column → number paise.
     paymentAmountPaise: appt.payment[0]?.amount ?? null,
     hasRecording: !!recording,
+    planTitle:
+      appt.consultation?.consultationPlan?.title ??
+      appt.subscription?.subscriptionPlan?.title ??
+      appt.webinar?.webinarPlan?.title ??
+      appt.class?.classPlan?.title ??
+      null,
   };
 }

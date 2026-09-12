@@ -28,7 +28,6 @@ type PlanRead<T extends { price: bigint }> = {
 const NUM_CONSULTATION = config.volumes.appointments.consultation;
 const NUM_SUBSCRIPTION = config.volumes.appointments.subscription;
 const NUM_WEBINAR = config.volumes.appointments.webinar;
-const NUM_CLASS = config.volumes.appointments.class;
 const NUM_APPOINTMENTS = getTotalAppointments();
 const BATCH_SIZE = config.batchSize;
 
@@ -110,7 +109,7 @@ const getNumSlots = (appointmentType: AppointmentsType): number => {
   switch (appointmentType) {
     case AppointmentsType.CONSULTATION:
       return 1;
-    case AppointmentsType.SUBSCRIPTION:
+    case AppointmentsType.SUBSCRIPTION: {
       // Create realistic subscription slots based on plan types
       const planType = faker.helpers.arrayElement([
         "basic",
@@ -127,6 +126,7 @@ const getNumSlots = (appointmentType: AppointmentsType): number => {
         default:
           return faker.number.int({ min: 4, max: 12 });
       }
+    }
     case AppointmentsType.WEBINAR:
       return 1;
     case AppointmentsType.CLASS:
@@ -234,15 +234,6 @@ const createConsultationAppointment = (
           "DIRECT_CHECKOUT",
           "REQUEST_SUBMITTED",
         ]),
-        feedbackFromConsultee: isPastAppointment
-          ? faker.lorem.paragraph()
-          : null,
-        feedbackFromConsultant: isPastAppointment
-          ? faker.lorem.paragraph()
-          : null,
-        rating: isPastAppointment
-          ? faker.number.float({ min: 1, max: 5, multipleOf: 0.5 })
-          : null,
       },
     },
   };
@@ -425,15 +416,6 @@ const createSubscriptionAppointment = (
         schedulingPeriodStartsAt: startDate,
         schedulingPeriodEndsAt: endDate,
         schedulingTimezone: "UTC",
-        feedbackFromConsultee: isPastAppointment
-          ? faker.lorem.paragraph()
-          : null,
-        feedbackFromConsultant: isPastAppointment
-          ? faker.lorem.paragraph()
-          : null,
-        rating: isPastAppointment
-          ? faker.number.float({ min: 1, max: 5, multipleOf: 0.5 })
-          : null,
       },
     },
   };

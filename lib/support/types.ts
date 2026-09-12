@@ -54,6 +54,8 @@ export interface SupportContext {
    *  refund exposure (amount × refundPct) rather than guess. */
   paymentAmountPaise: number | null;
   hasRecording: boolean;
+  /** The booking's plan title, for anything that names the appointment to a human. */
+  planTitle: string | null;
 }
 
 /** One turn of a support conversation, resolver-agnostic. */

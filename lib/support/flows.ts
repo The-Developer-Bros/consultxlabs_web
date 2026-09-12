@@ -31,10 +31,10 @@ const noShowFlowAttendee: FlowDefinition = {
     start: {
       id: "start",
       kind: "PROMPT",
-      body: "Sorry about that. What happened?",
+      body: "Sorry about that. Who couldn't make it?",
       options: [
-        { id: "expert", label: "The expert didn't join", next: "expert" },
-        { id: "me", label: "I couldn't join", next: "tech" },
+        { id: "expert", label: "The expert never showed up", next: "expert" },
+        { id: "me", label: "I couldn't get in", next: "tech" },
       ],
     },
     expert: {
@@ -63,10 +63,14 @@ const noShowFlowProvider: FlowDefinition = {
     start: {
       id: "start",
       kind: "PROMPT",
-      body: "Sorry about that. What happened?",
+      body: "Sorry about that. Who couldn't make it?",
       options: [
-        { id: "client", label: "The participant didn't join", next: "client" },
-        { id: "me", label: "I couldn't join", next: "tech" },
+        {
+          id: "client",
+          label: "The participant never showed up",
+          next: "client",
+        },
+        { id: "me", label: "I couldn't get in", next: "tech" },
       ],
     },
     client: {
@@ -151,7 +155,11 @@ const paymentStatusFlow: FlowDefinition = {
         },
         { id: "twice", label: "I was charged twice", next: "twice" },
         { id: "refund", label: "Where is my refund?", next: "refund" },
-        { id: "invoice", label: "I need an invoice or GST receipt", next: "invoice" },
+        {
+          id: "invoice",
+          label: "I need an invoice or GST receipt",
+          next: "invoice",
+        },
       ],
     },
     deducted: {
@@ -418,7 +426,11 @@ const sponsorshipBillingFlow: FlowDefinition = {
       body: "This session is sponsored by your organization. What do you need?",
       options: [
         { id: "who", label: "Who paid for this?", next: "who" },
-        { id: "charged", label: "I think I was charged by mistake", next: "escalate" },
+        {
+          id: "charged",
+          label: "I think I was charged by mistake",
+          next: "escalate",
+        },
       ],
     },
     who: {
@@ -509,7 +521,11 @@ const documentsFlow: FlowDefinition = {
       body: "Materials appear on this appointment's page once the expert uploads them — they aren't emailed. Can you see anything under Documents there?",
       options: [
         { id: "found", label: "Yes, found them", next: "found" },
-        { id: "stillmissing", label: "No, nothing is there", next: "stillmissing" },
+        {
+          id: "stillmissing",
+          label: "No, nothing is there",
+          next: "stillmissing",
+        },
       ],
     },
     found: {

@@ -9,7 +9,6 @@ import { Switch } from "@/components/ui/switch";
 import { useMaintenanceGuard } from "@/hooks/useMaintenanceGuard";
 import { useToast } from "@/hooks/use-toast";
 import { CheckoutPlanSkeleton } from "@/app/checkout/CheckoutSkeletons";
-import { fetchReviews } from "@/lib/user";
 import {
   SearchParams,
   searchParamsSchema,
@@ -46,7 +45,6 @@ import type {
   ClassContent,
   ClassPlan,
   ConsultantProfile,
-  ConsultantReview,
   Domain,
   Class as PrismaClass,
   Tag as PrismaTag,
@@ -105,7 +103,6 @@ export default function ClassCheckoutPage({
   const [planData, setPlanData] = useState<PlanResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [_reviews, _setReviews] = useState<ConsultantReview[]>([]);
   const [isCheckoutProcessing, setIsCheckoutProcessing] = useState(false);
   const isProcessingRef = useRef(false);
   const [processingGateway, setProcessingGateway] = useState<string | null>(
@@ -356,11 +353,6 @@ export default function ClassCheckoutPage({
         }
 
         setPlanData(data);
-
-        const reviewsData = await fetchReviews(
-          data.data.consultantProfile?.id ?? "",
-        );
-        _setReviews(reviewsData);
       } catch (error) {
         reportPaymentsError(error);
         console.error("Error fetching plan data:", error);

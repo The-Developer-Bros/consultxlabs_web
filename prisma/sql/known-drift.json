@@ -5,10 +5,15 @@
     "the reviewed record of what we are knowingly carrying and until when.",
     "",
     "Every entry needs an owner, a reason, and an `expires` date. Past the expiry the",
-    "guard fails anyway \u2014 an allowlist without an expiry is just a permanently",
+    "guard fails anyway — an allowlist without an expiry is just a permanently",
     "disabled check, which is how the ledger reconciler ended up ignored.",
     "",
-    "Remove an entry the moment its fix lands. Do not add one to make CI green."
+    "Remove an entry the moment its fix lands. Do not add one to make CI green.",
+    "",
+    "`destructiveStatementsAllowed` gates `npm run db:preflight`, which runs ahead of",
+    "every `db:push`. Entries are exact `prisma migrate diff --script` statements,",
+    "whitespace-insensitive. The reset is the only occasion that should add any."
   ],
-  "enumLabelsInDbNotInSchema": []
+  "enumLabelsInDbNotInSchema": [],
+  "destructiveStatementsAllowed": []
 }

@@ -21,7 +21,20 @@ export const consultantPublicScalars = {
   domainId: true,
   description: true,
   experience: true,
-  rating: true,
+  // #1300 — the RAW mean (`rating`) is deliberately NOT here. It is the
+  // internal/staff number: unshrunk, unsuppressed, and 0 for a consultant nobody
+  // has rated. Because this allowlist was the only public projection and it
+  // carried `rating`, every surface built on it was structurally unable to read
+  // the suppressed score and could only render the raw one — which is how the
+  // public org directory came to print "5.0" for a consultant with a single
+  // review and "0.0" for one with none, the two outcomes the threshold exists to
+  // prevent. Removing it makes that a compile error rather than a rendering bug.
+  //
+  // NULL on either published column means SUPPRESSED, not "zero".
+  publishedRatingOneToOne: true,
+  publishedRatingGroup: true,
+  ratedClientsOneToOne: true,
+  ratedEventsGroup: true,
   headline: true,
   websiteUrl: true,
   twitterUrl: true,
@@ -76,6 +89,19 @@ export const CONSULTANT_PII_FIELDS = [
 ] as const;
 
 /**
+ * ConsultantProfile columns that are INTERNAL rather than statutory PII — kept out
+ * of the allowlist for a product reason and rejected here for the same one.
+ */
+export const CONSULTANT_INTERNAL_SCORE_FIELDS = [
+  // #1300 — the raw, unshrunk, unsuppressed mean. Staff read it; a public payload
+  // must not, because it is 5.0 for a consultant with one review and 0 for one
+  // with none — the two outcomes the publication threshold exists to prevent. Kept
+  // out of the allowlist AND rejected here, so a producer that reintroduces it by
+  // hand fails closed instead of rendering a number nobody vetted.
+  "rating",
+] as const;
+
+/**
  * Sensitive ConsultantProfile RELATIONS (financial / compliance) that must never be
  * selected into a public payload. `consultantPublicScalars` already excludes them
  * (it is scalars-only), so this is the defense-in-depth list the Zod tripwire also
@@ -106,7 +132,16 @@ export const consultantPublicApiSchema = z
     domainId: z.string().nullish(),
     description: z.string().nullish(),
     experience: z.number().nullish(),
-    rating: z.number().nullish(),
+    // #1300 — the four PUBLISHED score columns, and no `rating`. This schema still
+    // declared the raw mean after `consultantPublicScalars` dropped it, so the
+    // tripwire meant to mirror the allowlist licensed exactly the field the
+    // allowlist exists to withhold — while `.passthrough()` let the columns that
+    // replaced it through unvalidated. NULL on either published rating means
+    // SUPPRESSED, never zero, so `nullish` here is load-bearing.
+    publishedRatingOneToOne: z.number().min(0).max(5).nullish(),
+    publishedRatingGroup: z.number().min(0).max(5).nullish(),
+    ratedClientsOneToOne: z.number().int().min(0).nullish(),
+    ratedEventsGroup: z.number().int().min(0).nullish(),
     headline: z.string().nullish(),
     websiteUrl: z.string().nullish(),
     twitterUrl: z.string().nullish(),
@@ -130,6 +165,7 @@ export const consultantPublicApiSchema = z
     for (const f of [
       ...CONSULTANT_PII_FIELDS,
       ...CONSULTANT_SENSITIVE_RELATIONS,
+      ...CONSULTANT_INTERNAL_SCORE_FIELDS,
     ]) {
       if (f in val) {
         ctx.addIssue({

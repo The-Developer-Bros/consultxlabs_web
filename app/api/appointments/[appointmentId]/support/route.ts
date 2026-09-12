@@ -82,10 +82,13 @@ export async function GET(
         auth.userId,
       );
       if (ctx) {
-        intents = flowsForContext(ctx).map((f) => ({
-          category: f.category,
-          title: f.title,
-        }));
+        // An org party sees only the intents the POST will accept from it; the
+        // sheet used to offer "Recording access" to an operator and then fail.
+        intents = flowsForContext(ctx)
+          .filter(
+            (f) => !auth.isOrgParty || ORG_PARTY_CATEGORIES.has(f.category),
+          )
+          .map((f) => ({ category: f.category, title: f.title }));
       }
     } catch (cause) {
       // Intent resolution is an optimization — the sheet falls back to its

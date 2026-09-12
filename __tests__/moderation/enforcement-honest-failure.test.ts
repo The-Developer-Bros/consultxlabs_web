@@ -68,7 +68,12 @@ import { applyBestEffortEffects } from "../../lib/moderation/side-effects";
 
 const banInput = {
   actionType: "USER_BANNED" as const,
-  report: { id: "r1", targetUserId: "u1", reviewId: null },
+  report: {
+    id: "r1",
+    type: "PROFILE" as const,
+    targetUserId: "u1",
+    reviewId: null,
+  },
   staffUserId: "admin-1",
 };
 
@@ -76,6 +81,7 @@ const removeMessageInput = {
   actionType: "CONTENT_REMOVED" as const,
   report: {
     id: "r2",
+    type: "MESSAGE" as const,
     targetUserId: "u1",
     reviewId: null,
     streamMessageId: "msg-1",
@@ -149,7 +155,12 @@ describe("CONTENT_REMOVED on a chat message", () => {
     const summary = await applyBestEffortEffects(
       {
         actionType: "CONTENT_REMOVED" as const,
-        report: { id: "r3", targetUserId: "u1", reviewId: "review-1" },
+        report: {
+          id: "r3",
+          type: "REVIEW" as const,
+          targetUserId: "u1",
+          reviewId: "review-1",
+        },
         staffUserId: "admin-1",
       },
       { reviewRemoved: true },

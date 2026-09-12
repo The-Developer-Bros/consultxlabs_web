@@ -41,10 +41,31 @@ interface TriageRow {
 }
 
 interface FeedbackSummary {
+  // #1300 — every one of these is nullable now, and null means SUPPRESSED rather
+  // than zero. Below the cohort floor the endpoint withholds the counts as well
+  // as the average: ADR 20's stated reason for suppressing is that the count makes
+  // the disclosure trivial, and the previous shape returned `totalResponses`
+  // unconditionally, so at one respondent an organisation learned that exactly one
+  // member had rated exactly one session.
   averageRating: number | null;
-  totalResponses: number;
+  totalResponses: number | null;
+  respondents: number | null;
   averageRating30d: number | null;
-  responses30d: number;
+  responses30d: number | null;
+  respondents30d: number | null;
+  /** The floor, so this can say "needs 5" instead of rendering a blank. */
+  minRespondents: number;
+  /** Per expert, already floored and secondarily suppressed by the endpoint. */
+  byConsultant: {
+    consultantProfileId: string;
+    name: string | null;
+    average: number | null;
+    responses: number | null;
+    respondents: number | null;
+  }[];
+  /** How many experts are withheld. 0 whenever the withheld people are too few
+   *  to describe, so a count here is always about a group of five or more. */
+  consultantsSuppressed: number;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -128,8 +149,12 @@ export function OrgSupportTriage({ orgId }: { orgId: string }) {
   const summary = useQuery({
     queryKey: ["org-feedback-summary", orgId],
     enabled: allowed,
-    queryFn: async (): Promise<FeedbackSummary> => {
+    queryFn: async (): Promise<FeedbackSummary | null> => {
       const res = await fetch(`/api/organizations/${orgId}/feedback-summary`);
+      // The summary is behind `quality.read`, a narrower grant than the
+      // `operations.read` this page needs: a 403 is "not your permission", not
+      // a failure to retry.
+      if (res.status === 403) return null;
       if (!res.ok) throw new Error("Failed to load quality summary");
       const { data } = await res.json();
       return data;
@@ -155,7 +180,8 @@ export function OrgSupportTriage({ orgId }: { orgId: string }) {
   if (!allowed) return null;
 
   const s = summary.data;
-  // A failed request is not "no data" — show it, with a way out.
+  // A failed request is not "no data" — show it, with a way out. A 403 (data
+  // resolved to null) is a third thing: the card is not for this role.
   const summaryError = summary.isError ? (
     <div className="rounded-lg border border-dashed border-border p-3 text-sm text-muted-foreground">
       Couldn&apos;t load the quality summary.{" "}
@@ -181,6 +207,11 @@ export function OrgSupportTriage({ orgId }: { orgId: string }) {
         Retry
       </Button>
     </div>
+  ) : summary.data === null && !summary.isLoading ? (
+    <div className="rounded-lg border border-dashed border-border p-3 text-sm text-muted-foreground">
+      The quality summary needs the quality permission, which your role does not
+      hold.
+    </div>
   ) : null;
 
   return (
@@ -205,7 +236,9 @@ export function OrgSupportTriage({ orgId }: { orgId: string }) {
                   <p className="mt-1 text-2xl font-semibold text-foreground">
                     {s?.averageRating ?? "—"}
                     <span className="ml-2 text-xs font-normal text-muted-foreground">
-                      {s?.totalResponses ?? 0} private ratings
+                      {s?.averageRating === null
+                        ? `needs ${s?.minRespondents ?? 5} people`
+                        : `${s?.totalResponses ?? 0} private ratings`}
                     </span>
                   </p>
                 )}
@@ -220,7 +253,9 @@ export function OrgSupportTriage({ orgId }: { orgId: string }) {
                   <p className="mt-1 text-2xl font-semibold text-foreground">
                     {s?.averageRating30d ?? "—"}
                     <span className="ml-2 text-xs font-normal text-muted-foreground">
-                      {s?.responses30d ?? 0} responses
+                      {s?.averageRating30d === null
+                        ? `needs ${s?.minRespondents ?? 5} people`
+                        : `${s?.responses30d ?? 0} responses`}
                     </span>
                   </p>
                 )}
@@ -228,9 +263,48 @@ export function OrgSupportTriage({ orgId }: { orgId: string }) {
             </>
           )}
         </div>
+        {/* #1300 — the question an enterprise buyer actually has is per expert,
+            not per organisation. Still aggregate, still floored; the endpoint
+            has already applied secondary suppression on distinct people. */}
+        {!summary.isLoading && (s?.byConsultant?.length ?? 0) > 0 && (
+          <div className="mt-4">
+            <p className="mb-2 text-xs font-medium text-foreground">
+              By expert
+            </p>
+            <ul className="divide-y divide-border rounded-lg border border-border">
+              {s?.byConsultant.map((c) => (
+                <li
+                  key={c.consultantProfileId}
+                  className="flex items-center justify-between gap-3 px-3 py-2"
+                >
+                  <span className="truncate text-sm text-foreground">
+                    {c.name ?? "Expert"}
+                  </span>
+                  <span className="shrink-0 text-sm text-muted-foreground">
+                    {c.average ?? "—"}
+                    <span className="ml-1.5 text-xs">
+                      {c.respondents === null
+                        ? `needs ${s?.minRespondents ?? 5} people`
+                        : `· ${c.respondents} people`}
+                    </span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {!summary.isLoading && (s?.consultantsSuppressed ?? 0) > 0 && (
+          <p className="mt-2 text-xs text-muted-foreground">
+            {s?.consultantsSuppressed} expert
+            {(s?.consultantsSuppressed ?? 0) === 1 ? "" : "s"} withheld — too
+            few people have rated their sessions for an average to stay
+            anonymous.
+          </p>
+        )}
         <p className="mt-2 text-xs text-muted-foreground">
           Ratings are private to the participant and the platform — this card is
-          the aggregate, never individual feedback.
+          the aggregate, never individual feedback. An average appears once at
+          least {s?.minRespondents ?? 5} different people have rated.
         </p>
       </section>
 

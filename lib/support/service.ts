@@ -136,7 +136,13 @@ export async function runSupportTurn(
   }
 
   // Already with a human — persist the user's message and leave it in the queue.
-  if (thread.activeChannel === "HUMAN") {
+  // A thread staff have RESOLVED is handed back: a new intent runs the self-serve
+  // flow again (the write below leaves HUMAN), and a bare reply reopens it. Only
+  // CLOSED is final, and only staff close.
+  if (
+    thread.activeChannel === "HUMAN" &&
+    !(thread.status === "RESOLVED" && input.category)
+  ) {
     return persistHumanTurn(thread, input.userMessage);
   }
 
@@ -301,6 +307,7 @@ export async function runSupportTurn(
           category,
           currentNodeId: turn.nextNodeId,
           status,
+          activeChannel: "SELF_SERVE",
           resolvedAt: turn.resolved ? new Date() : null,
           // Keep the hub's "latest activity first" clock honest — updatedAt
           // alone won't move on message inserts.
@@ -413,17 +420,34 @@ async function persistHumanTurn(
         // The CAS and the sequence allocation are the SAME statement: a CLOSED
         // or RESOLVED thread is one the PATCH route refuses to reopen, so a
         // message must not land on it or bump its activity clock.
+        // A reply on a RESOLVED thread reopens it (Zendesk's rule); CLOSED is
+        // staff saying the matter is finished, and stays refused.
+        // Unconditional rather than gated on the pre-transaction read: a staff
+        // RESOLVE landing in between must not leave the reply on a RESOLVED thread.
         const moved = await tx.appointmentSupportThread.updateMany({
-          where: { id: thread.id, status: { notIn: ["CLOSED", "RESOLVED"] } },
-          data: { messageSeq: { increment: 1 }, lastMessageAt: new Date() },
+          where: { id: thread.id, status: { not: "CLOSED" } },
+          data: {
+            messageSeq: { increment: 1 },
+            lastMessageAt: new Date(),
+            status: "ESCALATED",
+            resolvedAt: null,
+          },
         });
         if (moved.count === 0) return null;
+        if (thread.supportTicketId) {
+          // The ticket's CURRENT status is the predicate, so this reopens
+          // exactly when the queue had it resolved.
+          await tx.supportTicket.updateMany({
+            where: { id: thread.supportTicketId, status: "RESOLVED" },
+            data: { status: "OPEN", resolvedAt: null },
+          });
+        }
 
         const row = await tx.appointmentSupportThread.findUniqueOrThrow({
           where: { id: thread.id },
-          select: { messageSeq: true },
+          select: { messageSeq: true, status: true },
         });
-        return tx.supportMessage.create({
+        const message = await tx.supportMessage.create({
           data: {
             threadId: thread.id,
             sender: "USER",
@@ -432,6 +456,7 @@ async function persistHumanTurn(
           },
           select: { id: true },
         });
+        return { id: message.id, status: row.status };
       },
       { maxWait: ALLOCATION_TX_MAX_WAIT_MS, timeout: ALLOCATION_TX_TIMEOUT_MS },
     );
@@ -449,6 +474,8 @@ async function persistHumanTurn(
       accepted = false;
     } else {
       messageId = written.id;
+      // The row's status after the write, not the pre-transaction read.
+      status = written.status;
 
       // Post-commit, and best-effort. A clock that resumes a moment late is a
       // rounding error on a 15-day deadline; a message that failed to store
@@ -603,7 +630,14 @@ async function escalate(
       }
 
       let linkedTicketId = existingTicketId;
-      if (!linkedTicketId) {
+      if (linkedTicketId) {
+        // A RESOLVED thread re-escalating on a new intent reuses its ticket;
+        // the queue must see it again (same CAS as persistHumanTurn).
+        await tx.supportTicket.updateMany({
+          where: { id: linkedTicketId, status: "RESOLVED" },
+          data: { status: "OPEN", resolvedAt: null },
+        });
+      } else {
         // Both inside the ticket's own transaction: a rolled-back escalation must
         // not leave a live reference behind, and must not start an SLA clock for
         // a ticket that does not exist.
@@ -616,7 +650,7 @@ async function escalate(
         const ticket = await tx.supportTicket.create({
           data: {
             userId: ctx.userId,
-            title: `Support for appointment ${ctx.appointmentId}`,
+            title: `Support for ${ctx.planTitle ?? `${ctx.appointmentType.toLowerCase()} appointment`}`,
             description: `Escalated from per-appointment support (${category}, reason: ${effectiveReason}).`,
             priority,
             referenceNumber,
@@ -705,6 +739,20 @@ async function escalate(
         error,
       });
     });
+  } else {
+    // Reused ticket: the ball is back with us, so the clock and the queue's
+    // activity feed move exactly as they do for a plain reply.
+    await resumeTicketClock(ticketId).catch((error) => {
+      console.error("support: SLA resume failed", { ticketId, error });
+    });
+    await notifyStaffOfTicketActivity(ticketId, ctx.organizationId).catch(
+      (error) => {
+        console.error("support: re-escalation notification failed", {
+          threadId,
+          error,
+        });
+      },
+    );
   }
 
   return {

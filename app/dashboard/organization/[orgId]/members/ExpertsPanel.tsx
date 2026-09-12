@@ -1,15 +1,11 @@
 "use client";
 
+import { displayedScore } from "@/lib/reviews-display";
 import { useQuery } from "@tanstack/react-query";
 
 import { PanelHeader } from "@/components/dashboard/PageScaffold";
 import { Badge } from "@/components/ui/badge";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   ResponsiveTable,
   type ResponsiveColumn,
@@ -31,7 +27,8 @@ interface ExpertRow {
   consultantProfile: {
     id: string;
     headline: string | null;
-    rating: number;
+    publishedRatingOneToOne: number | null;
+    publishedRatingGroup: number | null;
     isVerified: boolean;
   } | null;
 }
@@ -98,7 +95,12 @@ export function ExpertsPanel({ orgId }: { orgId: string }) {
     {
       key: "rating",
       header: "Rating",
-      cell: (row) => row.consultantProfile?.rating?.toFixed(1) ?? "—",
+      // Published score or nothing: the raw mean read 5.0 off one review.
+      cell: (row) => {
+        if (!row.consultantProfile) return "—";
+        const shown = displayedScore(row.consultantProfile);
+        return shown.score === null ? "—" : shown.score.toFixed(1);
+      },
     },
     {
       key: "payout",

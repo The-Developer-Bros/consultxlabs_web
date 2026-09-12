@@ -43,7 +43,13 @@ jest.mock("../../lib/prisma", () => ({
   __esModule: true,
   default: {
     slotOfAppointment: { findFirst: jest.fn(), findMany: jest.fn() },
-    appointmentFeedback: { upsert: jest.fn(), findMany: jest.fn() },
+    appointmentFeedback: {
+      upsert: jest.fn(),
+      findMany: jest.fn(),
+      // #1300 — the route reads the stored row before the upsert, so it can stamp
+      // `updatedAt` only when the opinion actually changed. No prior row here.
+      findUnique: jest.fn(async () => null),
+    },
   },
 }));
 
@@ -51,13 +57,19 @@ import { NextRequest } from "next/server";
 import prisma from "../../lib/prisma";
 import { authorizeAppointment } from "../../lib/api/appointment-access";
 import { appointmentRaterRole } from "../../lib/data/appointment-detail";
-import { POST } from "../../app/api/appointments/[appointmentId]/feedback/route";
+import {
+  GET,
+  POST,
+} from "../../app/api/appointments/[appointmentId]/feedback/route";
 
 const mockedAuthorize = authorizeAppointment as jest.Mock;
 const mockedRaterRole = appointmentRaterRole as jest.Mock;
 const mockedFindFirst = prisma.slotOfAppointment.findFirst as jest.Mock;
 const mockedFindMany = prisma.slotOfAppointment.findMany as jest.Mock;
 const mockedUpsert = prisma.appointmentFeedback.upsert as jest.Mock;
+const mockedFeedbackFindMany = prisma.appointmentFeedback.findMany as jest.Mock;
+const mockedFeedbackFindUnique = prisma.appointmentFeedback
+  .findUnique as jest.Mock;
 
 const APPT = "appt-offline-90";
 
@@ -89,11 +101,11 @@ const RUN = [
   },
 ];
 
-function post(slotId: string): NextRequest {
+function post(slotId: string, rating = 4, comment?: string): NextRequest {
   return new NextRequest(`https://x.test/api/appointments/${APPT}/feedback`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rating: 4, slotId }),
+    body: JSON.stringify({ rating, slotId, ...(comment ? { comment } : {}) }),
   });
 }
 
@@ -108,6 +120,66 @@ beforeEach(() => {
   mockedRaterRole.mockReturnValue("CONSULTEE");
   mockedFindMany.mockResolvedValue(RUN);
   mockedUpsert.mockResolvedValue({ id: "fb1" });
+});
+
+describe("#1540 — one read for the whole booking", () => {
+  /** The subscription shape: the page's appointment plus two child appointments,
+   *  which is what `authorizeAppointment` already loaded to answer at all. */
+  const withSiblings = {
+    userId: "u1",
+    isOrgParty: false,
+    organizationId: null,
+    detail: {
+      appointment: { id: APPT },
+      siblings: [{ id: "appt-child-1" }, { id: "appt-child-2" }],
+    },
+  };
+
+  const get = (url: string) =>
+    GET(new NextRequest(url), {
+      params: Promise.resolve({ appointmentId: APPT }),
+    });
+
+  beforeEach(() => {
+    mockedAuthorize.mockResolvedValue(withSiblings);
+    mockedFeedbackFindMany.mockResolvedValue([]);
+    mockedFindMany.mockResolvedValue([]);
+  });
+
+  it("covers the booking and its siblings under scope=booking", async () => {
+    // This is the whole fix: the timeline renders sessions belonging to child
+    // appointments, and fanning out one request per child cost ~100 Prisma
+    // operations for one page — serialised, because PG_POOL_MAX=1.
+    await get(`http://x/api/appointments/${APPT}/feedback?scope=booking`);
+
+    const ids = { in: [APPT, "appt-child-1", "appt-child-2"] };
+    expect(mockedFindMany.mock.calls[0][0].where.appointmentId).toEqual(ids);
+    expect(mockedFeedbackFindMany.mock.calls[0][0].where.appointmentId).toEqual(
+      ids,
+    );
+  });
+
+  it("still answers for one appointment when the scope is not asked for", async () => {
+    // The narrow read stays the default: a caller that wants one booking's own
+    // ratings must not silently receive its siblings'. Expressed as a
+    // single-element `in` rather than an equality so the query shape is the same
+    // either way — Prisma emits `IN (...)`, which uses the same index as `=`.
+    await get(`http://x/api/appointments/${APPT}/feedback`);
+    expect(mockedFindMany.mock.calls[0][0].where.appointmentId).toEqual({
+      in: [APPT],
+    });
+    expect(mockedFeedbackFindMany.mock.calls[0][0].where.appointmentId).toEqual(
+      { in: [APPT] },
+    );
+  });
+
+  it("excludes moderation-removed ratings", async () => {
+    // `AppointmentFeedback.deletedAt` is new in #1300 and this read is what a
+    // consultee and a consultant both see; a removed comment's rating goes with
+    // it.
+    await get(`http://x/api/appointments/${APPT}/feedback?scope=booking`);
+    expect(mockedFeedbackFindMany.mock.calls[0][0].where.deletedAt).toBeNull();
+  });
 });
 
 describe("a rating identifies the meeting, not the row it was clicked on", () => {
@@ -169,6 +241,61 @@ describe("a rating identifies the meeting, not the row it was clicked on", () =>
     const args = mockedUpsert.mock.calls[0][0];
     expect(args.where.slotOfAppointmentId_userId.slotOfAppointmentId).toBe(
       "slot-z",
+    );
+  });
+});
+
+describe("#1300 — only a changed opinion is an edit", () => {
+  /** The stored row a re-submission lands on. */
+  const stored = (rating: number, comment: string | null = null) =>
+    mockedFeedbackFindUnique.mockResolvedValue({ rating, comment });
+
+  beforeEach(() => mockedFindFirst.mockResolvedValue({ id: "slot-a" }));
+
+  it("does not stamp updatedAt when the same rating is re-submitted", async () => {
+    // `@updatedAt` was the original spelling and it could not express this at all:
+    // Prisma stamps that attribute on create as well as update, so the column could
+    // never hold the NULL that means "never edited since it was written", and a
+    // double-tapped Save read as somebody changing their mind.
+    stored(4);
+    await POST(post("slot-a", 4), {
+      params: Promise.resolve({ appointmentId: APPT }),
+    });
+    expect(mockedUpsert.mock.calls[0][0].update).not.toHaveProperty(
+      "updatedAt",
+    );
+  });
+
+  it("stamps updatedAt when the rating moves", async () => {
+    // The case the org aggregate needs: it windows on `createdAt`, so a rating
+    // written inside the window and rewritten from 5 to 1 later still reports in
+    // that window and nothing else records that it moved.
+    stored(5);
+    await POST(post("slot-a", 1), {
+      params: Promise.resolve({ appointmentId: APPT }),
+    });
+    expect(mockedUpsert.mock.calls[0][0].update.updatedAt).toBeInstanceOf(Date);
+  });
+
+  it("stamps updatedAt when only the comment is rewritten", async () => {
+    stored(4, "Fine.");
+    await POST(post("slot-a", 4, "Actually the call never connected."), {
+      params: Promise.resolve({ appointmentId: APPT }),
+    });
+    expect(mockedUpsert.mock.calls[0][0].update.updatedAt).toBeInstanceOf(Date);
+  });
+
+  it("never stamps updatedAt on a first rating", async () => {
+    // Nothing was edited: there was no previous opinion to change.
+    mockedFeedbackFindUnique.mockResolvedValue(null);
+    await POST(post("slot-a", 4), {
+      params: Promise.resolve({ appointmentId: APPT }),
+    });
+    expect(mockedUpsert.mock.calls[0][0].update).not.toHaveProperty(
+      "updatedAt",
+    );
+    expect(mockedUpsert.mock.calls[0][0].create).not.toHaveProperty(
+      "updatedAt",
     );
   });
 });

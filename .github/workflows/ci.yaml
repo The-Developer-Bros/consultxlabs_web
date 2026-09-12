@@ -21,7 +21,11 @@ name: CI
 
 on:
   pull_request:
-    branches: [dev, staging, prod]
+    # `feat/**` is here because a stacked train is the normal shape for large
+    # work in this repo and, without it, a sub-PR whose base is a feature branch
+    # ran NO checks at all — no tsc, no drift guard, no sidecar assertion — until
+    # the integration PR. The gap was found the hard way (#1268's stack).
+    branches: [dev, staging, prod, "feat/**"]
     types: [opened, synchronize, reopened]
   workflow_dispatch:
 

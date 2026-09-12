@@ -8,7 +8,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import type { ReviewWithProfiles } from "@/types/review";
+import type { TPublicConsultantReview } from "@/types/review";
 import { UPCOMING_EVENTS } from "./data";
 
 function EventCard({
@@ -59,7 +59,7 @@ function EventCard({
 }
 
 interface UpcomingEventsSectionProps {
-  reviews: ReviewWithProfiles[];
+  reviews: TPublicConsultantReview[];
 }
 
 export function UpcomingEventsSection({ reviews }: UpcomingEventsSectionProps) {

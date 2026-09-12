@@ -13,9 +13,9 @@ import { fetchUserDetails } from "@/lib/user";
  * will not connect until `isLoading` clears — so every fetch added here is
  * time the Messages tab spends on a skeleton. It fetches one thing.
  *
- * `fetchConsultantDetails`, `fetchConsulteeDetails`, `fetchStaffDetails` and
- * `fetchReviews` all still live in `@/lib/user` for callers that genuinely
- * need them; they simply have no business on this path.
+ * `fetchConsultantDetails`, `fetchConsulteeDetails` and `fetchStaffDetails` all
+ * still live in `@/lib/user` for callers that genuinely need them; they simply
+ * have no business on this path.
  */
 export const useUserData = (userId: string) => {
   const [userDetails, setUserDetails] = useState<User | null>(null);

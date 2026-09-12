@@ -13,7 +13,10 @@
  * and the outcome lands in ModerationAction.sideEffects for staff visibility.
  */
 import * as Sentry from "@sentry/nextjs";
-import type { ModerationActionType } from "@prisma/client";
+import type {
+  ModerationActionType,
+  ModerationReportType,
+} from "@prisma/client";
 import { EarningStatus } from "@prisma/client";
 import prisma, { type Tx } from "@/lib/prisma";
 import { recomputeConsultantRating } from "@/lib/reviews";
@@ -36,6 +39,9 @@ import {
 
 export interface ModerationReportRef {
   id: string;
+  /** What the report is about. CONTENT_REMOVED acts on the id this type owns
+   *  and ignores any other, so a stored cross-type id can never be enforced. */
+  type: ModerationReportType;
   targetUserId: string;
   reviewId: string | null;
   /** #1270 — set on MESSAGE reports; what CONTENT_REMOVED deletes on Stream. */
@@ -116,7 +122,8 @@ export async function applyTransactionalEffects(
     case "CONTENT_REMOVED":
       // A reported chat message is removed in phase 2 — the delete is a Stream
       // API call and cannot join this transaction (#1270).
-      return softDeleteReview(tx, report.reviewId);
+      if (report.type !== "REVIEW") return {};
+      return softDeleteReview(tx, report.reviewId, input.staffUserId);
     case "WARNING_ISSUED":
     case "NO_ACTION":
     case "USER_REINSTATED":
@@ -212,20 +219,34 @@ async function unverifyProfiles(
 async function softDeleteReview(
   tx: Tx,
   reviewId: string | null,
+  staffUserId: string,
 ): Promise<TransactionalEffectResult> {
   if (!reviewId) return {};
   const review = await tx.consultantReview.findUnique({
     where: { id: reviewId },
-    select: { consultantProfileId: true, deletedAt: true },
+    select: {
+      consultantProfileId: true,
+      deletedAt: true,
+      deletedByUserId: true,
+      consulteeProfile: { select: { userId: true } },
+    },
   });
-  if (!review || review.deletedAt) return {};
-  await tx.consultantReview.update({
-    where: { id: reviewId },
-    data: { deletedAt: new Date() },
+  if (!review) return {};
+  const authorId = review.consulteeProfile.userId;
+  // Already taken down by moderation: nothing to do. An AUTHOR's withdrawal is
+  // not a takedown — it is revivable — so moderation still stamps itself over
+  // it, or the author could revive content staff resolved as removed.
+  if (review.deletedAt && review.deletedByUserId !== authorId) return {};
+  // CAS'd in the WHERE rather than trusting the read above.
+  const removed = await tx.consultantReview.updateMany({
+    where: {
+      id: reviewId,
+      OR: [{ deletedAt: null }, { deletedByUserId: authorId }],
+    },
+    data: { deletedAt: new Date(), deletedByUserId: staffUserId },
   });
-  // #705 — was an inlined plain `_avg`, a second implementation of the rating
-  // rule that silently disagreed with lib/reviews.ts once group sessions became
-  // one data point, and never touched publishedRating at all.
+  if (removed.count === 0) return {};
+  // #705 — one implementation of the rating rule, never an inlined `_avg`.
   await recomputeConsultantRating(tx, review.consultantProfileId);
   return {
     reviewRemoved: true,
@@ -286,7 +307,11 @@ export function hasStreamEnforcement(
   if (actionType === "USER_BANNED" || actionType === "USER_SUSPENDED") {
     return true;
   }
-  return actionType === "CONTENT_REMOVED" && Boolean(report.streamMessageId);
+  return (
+    actionType === "CONTENT_REMOVED" &&
+    report.type === "MESSAGE" &&
+    Boolean(report.streamMessageId)
+  );
 }
 
 /**

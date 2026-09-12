@@ -17,9 +17,7 @@ import { z } from "zod";
 import { MemberRoleSchema } from "@/lib/labels/org-labels";
 import prisma from "@/lib/prisma";
 import { requireOrgAccess } from "@/lib/auth-helpers";
-import {
-  isAtLeastRole,
-} from "@/lib/auth/role-ranks";
+import { isAtLeastRole } from "@/lib/auth/role-ranks";
 import type { MemberRole, MemberStatus } from "@prisma/client";
 import { AUDIT_ACTIONS } from "@/lib/enterprise/audit-actions";
 import { dispatchWebhookEvent } from "@/lib/enterprise/outbound-webhooks/dispatch";
@@ -33,7 +31,12 @@ import {
 // #817 — the canonical full-enum Zod mirror lives in org-labels; the local
 // duplicate here drifted (BILLING_ADMIN went missing), so import it instead.
 
-const MemberStatusSchema = z.enum(["PENDING", "ACTIVE", "SUSPENDED", "REMOVED"]);
+const MemberStatusSchema = z.enum([
+  "PENDING",
+  "ACTIVE",
+  "SUSPENDED",
+  "REMOVED",
+]);
 
 /**
  * Accepts a string like "EXPERT" or "EXPERT,LEARNER" and returns the
@@ -135,7 +138,9 @@ export async function GET(
           select: {
             id: true,
             headline: true,
-            rating: true,
+            // The published two-track scores, never the raw mean (#1300).
+            publishedRatingOneToOne: true,
+            publishedRatingGroup: true,
             isVerified: true,
           },
         },
@@ -277,10 +282,7 @@ export async function POST(
       select: { id: true },
     });
     if (!existingConsultant) {
-      return NextResponse.json(
-        { error: "NOT_A_CONSULTANT" },
-        { status: 400 },
-      );
+      return NextResponse.json({ error: "NOT_A_CONSULTANT" }, { status: 400 });
     }
   }
   if (role === "LEARNER") {
@@ -289,10 +291,7 @@ export async function POST(
       select: { id: true },
     });
     if (!existingConsultee) {
-      return NextResponse.json(
-        { error: "NOT_A_CONSULTEE" },
-        { status: 400 },
-      );
+      return NextResponse.json({ error: "NOT_A_CONSULTEE" }, { status: 400 });
     }
   }
 
@@ -316,127 +315,125 @@ export async function POST(
   let membership;
   try {
     membership = await prisma.$transaction(async (tx) => {
-    // Profile FK + payoutRecipient defaults from the shared helper. The
-    // helper lazy-creates a ConsulteeProfile (LEARNER) or
-    // ConsultantProfile (EXPERT) inside the same tx if the user does
-    // not already have one, so direct-add stays consistent with
-    // invitations/accept and SSO auto-join.
-    const roleEffects = await applyMembershipRoleEffects(tx, {
-      userId,
-      role,
-    });
-    if (existing) {
-      // Reactivation keeps the same Membership row (preserves downstream
-      // FKs on ProgramAssignment / audit trail). That means the LEARNER
-      // <-> EXPERT boundary applies here too: a previously-LEARNER user
-      // can't be re-added as EXPERT on the same Membership. They need a
-      // brand-new Membership, which (given we soft-delete rather than
-      // hard-delete) effectively means they can't swap roles inside
-      // this org.
-      if (
-        existing.status === "REMOVED" &&
-        isBlockedRoleTransition(existing.role, role)
-      ) {
-        throw Object.assign(
-          new Error("ROLE_TRANSITION_BLOCKED"),
-          { httpStatus: 409 },
-        );
+      // Profile FK + payoutRecipient defaults from the shared helper. The
+      // helper lazy-creates a ConsulteeProfile (LEARNER) or
+      // ConsultantProfile (EXPERT) inside the same tx if the user does
+      // not already have one, so direct-add stays consistent with
+      // invitations/accept and SSO auto-join.
+      const roleEffects = await applyMembershipRoleEffects(tx, {
+        userId,
+        role,
+      });
+      if (existing) {
+        // Reactivation keeps the same Membership row (preserves downstream
+        // FKs on ProgramAssignment / audit trail). That means the LEARNER
+        // <-> EXPERT boundary applies here too: a previously-LEARNER user
+        // can't be re-added as EXPERT on the same Membership. They need a
+        // brand-new Membership, which (given we soft-delete rather than
+        // hard-delete) effectively means they can't swap roles inside
+        // this org.
+        if (
+          existing.status === "REMOVED" &&
+          isBlockedRoleTransition(existing.role, role)
+        ) {
+          throw Object.assign(new Error("ROLE_TRANSITION_BLOCKED"), {
+            httpStatus: 409,
+          });
+        }
+
+        // REMOVED → ACTIVE reactivation. Keep the same membership row so
+        // downstream FKs (ProgramAssignment, audit trail, etc.) stay intact.
+        // Routed through the central FSM (#1132 follow-up): its CAS where-clause
+        // refuses ERASED rows, so a tombstone can never be resurrected even if
+        // the pre-transaction `existing` read above went stale concurrently
+        // with an erasure run. Throws IllegalTransitionError (409) on loss.
+        await transitionMembership(tx, {
+          to: "ACTIVE",
+          where: { id: existing.id, organizationId: orgId },
+          data: {
+            role,
+            departmentLabel: departmentLabel ?? null,
+            consulteeProfileId: roleEffects.consulteeProfileId,
+            consultantProfileId: roleEffects.consultantProfileId,
+            payoutRecipient: roleEffects.payoutRecipient,
+          },
+        });
+        const reactivated = await tx.membership.findUniqueOrThrow({
+          where: { id: existing.id },
+        });
+        await tx.orgAuditLog.create({
+          data: {
+            organizationId: orgId,
+            actorMembershipId: access.member.id,
+            targetMembershipId: reactivated.id,
+            category: "MEMBER",
+            action: AUDIT_ACTIONS.MEMBER.MEMBER_REACTIVATED,
+            description: `Reactivated ${userId} as ${role}`,
+            details: { role, departmentLabel: departmentLabel ?? null },
+          },
+        });
+        await bumpUserSessionGeneration(tx, userId);
+        return reactivated;
       }
 
-      // REMOVED → ACTIVE reactivation. Keep the same membership row so
-      // downstream FKs (ProgramAssignment, audit trail, etc.) stay intact.
-      // Routed through the central FSM (#1132 follow-up): its CAS where-clause
-      // refuses ERASED rows, so a tombstone can never be resurrected even if
-      // the pre-transaction `existing` read above went stale concurrently
-      // with an erasure run. Throws IllegalTransitionError (409) on loss.
-      await transitionMembership(tx, {
-        to: "ACTIVE",
-        where: { id: existing.id, organizationId: orgId },
+      const created = await tx.membership.create({
         data: {
+          userId,
+          organizationId: orgId,
           role,
+          status: "ACTIVE",
           departmentLabel: departmentLabel ?? null,
           consulteeProfileId: roleEffects.consulteeProfileId,
           consultantProfileId: roleEffects.consultantProfileId,
           payoutRecipient: roleEffects.payoutRecipient,
         },
       });
-      const reactivated = await tx.membership.findUniqueOrThrow({
-        where: { id: existing.id },
-      });
       await tx.orgAuditLog.create({
         data: {
           organizationId: orgId,
           actorMembershipId: access.member.id,
-          targetMembershipId: reactivated.id,
+          targetMembershipId: created.id,
           category: "MEMBER",
-          action: AUDIT_ACTIONS.MEMBER.MEMBER_REACTIVATED,
-          description: `Reactivated ${userId} as ${role}`,
+          action: AUDIT_ACTIONS.MEMBER.MEMBER_ADDED,
+          description: `Added ${userId} as ${role}`,
           details: { role, departmentLabel: departmentLabel ?? null },
         },
       });
+      // Bump the user's session-generation marker so the next request
+      // through customSession refetches and includes this new org
+      // membership without waiting for BetterAuth's 24h session rotation.
+      // Audit Phase B.5.
       await bumpUserSessionGeneration(tx, userId);
-      return reactivated;
-    }
 
-    const created = await tx.membership.create({
-      data: {
-        userId,
+      // Outbound webhook: notify subscribed integrations (HRIS sync,
+      // customer-success tools, ERP). The dispatch helper inserts
+      // delivery rows on the SAME transaction so if this whole block
+      // rolls back, the webhook rows roll back too — the receiver only
+      // sees a member.added event for memberships that actually committed.
+      await dispatchWebhookEvent({
+        prisma: tx,
         organizationId: orgId,
-        role,
-        status: "ACTIVE",
-        departmentLabel: departmentLabel ?? null,
-        consulteeProfileId: roleEffects.consulteeProfileId,
-        consultantProfileId: roleEffects.consultantProfileId,
-        payoutRecipient: roleEffects.payoutRecipient,
-      },
-    });
-    await tx.orgAuditLog.create({
-      data: {
-        organizationId: orgId,
-        actorMembershipId: access.member.id,
-        targetMembershipId: created.id,
-        category: "MEMBER",
-        action: AUDIT_ACTIONS.MEMBER.MEMBER_ADDED,
-        description: `Added ${userId} as ${role}`,
-        details: { role, departmentLabel: departmentLabel ?? null },
-      },
-    });
-    // Bump the user's session-generation marker so the next request
-    // through customSession refetches and includes this new org
-    // membership without waiting for BetterAuth's 24h session rotation.
-    // Audit Phase B.5.
-    await bumpUserSessionGeneration(tx, userId);
-
-    // Outbound webhook: notify subscribed integrations (HRIS sync,
-    // customer-success tools, ERP). The dispatch helper inserts
-    // delivery rows on the SAME transaction so if this whole block
-    // rolls back, the webhook rows roll back too — the receiver only
-    // sees a member.added event for memberships that actually committed.
-    await dispatchWebhookEvent({
-      prisma: tx,
-      organizationId: orgId,
-      eventType: "member.added",
-      payload: {
-        membershipId: created.id,
-        userId,
-        role,
-        departmentLabel: departmentLabel ?? null,
-      },
-    });
-    return created;
+        eventType: "member.added",
+        payload: {
+          membershipId: created.id,
+          userId,
+          role,
+          departmentLabel: departmentLabel ?? null,
+        },
+      });
+      return created;
     });
   } catch (err) {
     if (err instanceof Error && "httpStatus" in err) {
-      const status =
-        typeof err.httpStatus === "number" ? err.httpStatus : 500;
+      const status = typeof err.httpStatus === "number" ? err.httpStatus : 500;
       return NextResponse.json({ error: err.message }, { status });
     }
-    Sentry.captureException(err instanceof Error ? err : new Error(String(err)), { tags: { subsystem: "enterprise" } });
+    Sentry.captureException(
+      err instanceof Error ? err : new Error(String(err)),
+      { tags: { subsystem: "enterprise" } },
+    );
     throw err;
   }
 
-  return NextResponse.json(
-    { membership },
-    { status: existing ? 200 : 201 },
-  );
+  return NextResponse.json({ membership }, { status: existing ? 200 : 201 });
 }
