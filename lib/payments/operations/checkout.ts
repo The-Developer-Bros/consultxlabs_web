@@ -1855,8 +1855,9 @@ async function revalidateInsideLock(
     // sponsor-money loop above is reachable through a collaboration too. The
     // capacity `excludeUserIds` sites are left alone — a buyer refused here
     // never holds a seat (#1580 C-P0-2).
+    // Not gated on the owner existing: an org-owned plan has no owner and can
+    // still carry collaborators.
     if (
-      plan.consultantProfileId &&
       user.consultantProfile &&
       (plan.consultantProfileId === user.consultantProfile.id ||
         plan.collaboratorProfileIds.includes(user.consultantProfile.id))

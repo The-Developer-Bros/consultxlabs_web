@@ -66,11 +66,12 @@ const tx = {
     updateMany: jest.fn(async () => ({ count: 0 })),
   },
   collaborator: {
-    findMany: jest.fn(async () => [
+    // One statement flips and returns the rows, so the revocation list is
+    // exactly what was flipped.
+    updateManyAndReturn: jest.fn(async () => [
       { collaboratorType: "WEBINAR", webinarPlanId: "wp-1", classPlanId: null },
       { collaboratorType: "CLASS", webinarPlanId: null, classPlanId: "cp-9" },
     ]),
-    updateMany: jest.fn(async () => ({ count: 2 })),
   },
 };
 
@@ -89,12 +90,13 @@ describe("a ban revokes collaborator standing", () => {
   it("flips both rows to REMOVED in phase 1 and revokes both plans in phase 2", async () => {
     const transactional = await applyTransactionalEffects(tx as never, input);
 
-    expect(tx.collaborator.updateMany).toHaveBeenCalledWith({
+    expect(tx.collaborator.updateManyAndReturn).toHaveBeenCalledWith({
       where: {
         consultantProfileId: "cp-1",
         status: { in: ["PENDING", "ACCEPTED"] },
       },
       data: { status: "REMOVED", respondedAt: expect.any(Date) },
+      select: expect.any(Object),
     });
     expect(transactional.collaborationsRemoved).toEqual([
       { planType: "webinar", planId: "wp-1" },

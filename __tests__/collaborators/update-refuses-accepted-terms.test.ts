@@ -26,7 +26,7 @@ jest.mock("../../lib/novu/service", () => ({
 const tx = {
   collaborator: {
     findFirst: jest.fn(),
-    findMany: jest.fn(async () => []),
+    findMany: jest.fn(async (): Promise<{ role: string }[]> => []),
     update: jest.fn(async (args: { data: unknown }) => ({
       id: "c1",
       ...(args.data as object),
@@ -43,6 +43,7 @@ jest.mock("../../lib/prisma", () => ({
 }));
 
 import {
+  CollaboratorCapError,
   CollaboratorNotFoundError,
   CollaboratorTermsLockedError,
   updateCollaborator,
@@ -77,5 +78,26 @@ describe("updateCollaborator by row status", () => {
     });
     await expect(run()).resolves.toMatchObject({ revenueShareBps: 100 });
     expect(tx.collaborator.update).toHaveBeenCalledTimes(1);
+  });
+
+  it("PENDING: a re-role to a presenter is refused while another presenter is active", async () => {
+    // The invite cap would otherwise be bypassed by inviting as MODERATOR and
+    // PATCHing to CO_HOST (#1580 §6).
+    tx.collaborator.findFirst.mockResolvedValue({
+      id: "c1",
+      status: "PENDING",
+      role: "MODERATOR",
+    });
+    tx.collaborator.findMany.mockResolvedValueOnce([{ role: "CO_HOST" }]);
+    await expect(
+      updateCollaborator("webinar", "c1", "plan-1", { role: "CO_HOST" }),
+    ).rejects.toBeInstanceOf(CollaboratorCapError);
+    expect(tx.collaborator.update).not.toHaveBeenCalled();
+    // The row's own row is excluded from the check, so re-roling the only
+    // presenter to the other presenter role is allowed.
+    tx.collaborator.findMany.mockResolvedValueOnce([]);
+    await expect(
+      updateCollaborator("webinar", "c1", "plan-1", { role: "CO_HOST" }),
+    ).resolves.toMatchObject({ role: "CO_HOST" });
   });
 });

@@ -199,21 +199,15 @@ async function removeCollaboratorStanding(
   });
   if (!target?.consultantProfileId) return [];
 
-  const rows = await tx.collaborator.findMany({
-    where: {
-      consultantProfileId: target.consultantProfileId,
-      status: { in: ["PENDING", "ACCEPTED"] },
-    },
-    select: { collaboratorType: true, webinarPlanId: true, classPlanId: true },
-  });
-  if (rows.length === 0) return [];
-
-  await tx.collaborator.updateMany({
+  // One statement, so the plans handed to the revocation are exactly the rows
+  // flipped — a re-invite landing between a read and a write cannot slip past.
+  const rows = await tx.collaborator.updateManyAndReturn({
     where: {
       consultantProfileId: target.consultantProfileId,
       status: { in: ["PENDING", "ACCEPTED"] },
     },
     data: { status: "REMOVED", respondedAt: new Date() },
+    select: { collaboratorType: true, webinarPlanId: true, classPlanId: true },
   });
 
   return rows.flatMap((row) => {

@@ -347,11 +347,14 @@ export async function respondToInvitation(
  * Remove a collaborator (soft-delete: set status to REMOVED).
  * Requires planId to prevent IDOR — ensures the collaborator belongs to the specified plan.
  */
+/** The removed row plus whether every Stream membership went with it. */
+export type RemovedCollaborator = Collaborator & { accessRevoked: boolean };
+
 export async function removeCollaborator(
   planType: PlanType,
   collaborationId: string,
   planId: string,
-): Promise<Collaborator | null> {
+): Promise<RemovedCollaborator | null> {
   const collab = await prisma.collaborator.findFirst({
     where: { id: collaborationId, ...planWhere(planType, planId) },
   });
@@ -381,11 +384,16 @@ export async function removeCollaborator(
       return null;
     });
 
+  // The row is REMOVED either way; whether Stream access actually went with it
+  // is reported to the caller rather than swallowed (#1580).
+  let accessRevoked = false;
   if (profile?.userId) {
-    await revokeCollaboratorAccess(planType, planId, profile.userId);
+    accessRevoked = (
+      await revokeCollaboratorAccess(planType, planId, profile.userId)
+    ).success;
   }
 
-  return result;
+  return { ...result, accessRevoked };
 }
 
 /**
@@ -563,6 +571,17 @@ export async function updateCollaborator(
         if (collab.status === "ACCEPTED")
           throw new CollaboratorTermsLockedError();
         if (collab.status !== "PENDING") throw new CollaboratorNotFoundError();
+
+        // A re-role to a presenter is the same guarantee as inviting one.
+        if (planRole && PRESENTER_ROLES.includes(planRole)) {
+          await assertCollaboratorCapTx(
+            tx,
+            planType,
+            planId,
+            planRole,
+            collaborationId,
+          );
+        }
 
         if (updates.revenueSharePercentage !== undefined) {
           const valid = await validateRevenueSharesTx(
@@ -956,15 +975,18 @@ async function assertCollaboratorCapTx(
   planType: PlanType,
   planId: string,
   role: CollaboratorRole,
+  /** The row being re-roled, which already counts and must not block itself. */
+  excludeId?: string,
 ): Promise<void> {
   const active = await db.collaborator.findMany({
     where: {
       ...planWhere(planType, planId),
       status: { in: ["PENDING", "ACCEPTED"] },
+      ...(excludeId ? { id: { not: excludeId } } : {}),
     },
     select: { role: true },
   });
-  if (active.length >= MAX_COLLABORATORS_PER_PLAN) {
+  if (!excludeId && active.length >= MAX_COLLABORATORS_PER_PLAN) {
     throw new CollaboratorCapError(
       `A plan can have at most ${MAX_COLLABORATORS_PER_PLAN} pending or accepted collaborators`,
     );

@@ -74,4 +74,26 @@ describe("calculateRevenueSplit reads through the client it is given", () => {
       { consultantProfileId: "collab-1", share: 3000, role: "CO_HOST" },
     ]);
   });
+
+  it("reads the class plan through the same client", async () => {
+    const tx = makeTx();
+    tx.classPlan.findUnique.mockResolvedValue({ consultantProfileId: "owner" });
+    await calculateRevenueSplit("class", "plan-1", 10_000, tx as never);
+    expect(tx.classPlan.findUnique).toHaveBeenCalledTimes(1);
+    expect(tx.webinarPlan.findUnique).not.toHaveBeenCalled();
+    expect(globalPrisma.classPlan.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("a zero pool splits to zero everywhere, never to a negative owner share", async () => {
+    // The pool is what remains after the platform fee is floored off the gross;
+    // a fully discounted seat hands settlement a zero, and the owner is the
+    // residual party, so nothing may round below it.
+    const splits = await calculateRevenueSplit(
+      "webinar",
+      "plan-1",
+      0,
+      makeTx() as never,
+    );
+    expect(splits.map((s) => s.share)).toEqual([0, 0]);
+  });
 });
