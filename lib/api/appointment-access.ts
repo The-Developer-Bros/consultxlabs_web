@@ -19,6 +19,7 @@ import prisma from "@/lib/prisma";
 import {
   readAppointmentDetail,
   canAccessAppointment,
+  scopeAppointmentDetail,
   type TAppointmentDetail,
 } from "@/lib/data/appointment-detail";
 import { supportError } from "@/lib/api/support-http";
@@ -67,11 +68,24 @@ export async function authorizeAppointment(
   const detail = await readAppointmentDetail(appointmentId);
   if (!detail) return { code: "NOT_FOUND", status: 404 };
   const organizationId = detail.appointment.organizationId ?? null;
+  // Staff who are also on the roster keep the whole view: privilege is
+  // decided here, not by which branch admitted them.
+  const privileged = isPrivileged(session.user.role);
   if (canAccessAppointment(session.user.id, detail)) {
-    return { userId: session.user.id, isOrgParty: false, organizationId, detail };
+    return {
+      userId: session.user.id,
+      isOrgParty: false,
+      organizationId,
+      detail: scopeAppointmentDetail(detail, session.user.id, privileged),
+    };
   }
-  if (isPrivileged(session.user.role)) {
-    return { userId: session.user.id, isOrgParty: false, organizationId, detail };
+  if (privileged) {
+    return {
+      userId: session.user.id,
+      isOrgParty: false,
+      organizationId,
+      detail,
+    };
   }
   // #support-hub — org-party branch. Grants the operator their OWN thread on
   // this appointment (org-party intents only); never widens read access to

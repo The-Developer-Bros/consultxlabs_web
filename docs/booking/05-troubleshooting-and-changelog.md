@@ -85,6 +85,12 @@ flowchart TD
 
 ---
 
+## Changelog: 2026-09-13 — hotfix, the detail hub's money
+
+### PR — a group event's money is a status per seat, and an attendee receives only their own rows
+
+`Payment` is unique per attendee and appointment, so a webinar's ten attendees put ten rows on one appointment. The detail read returned all of them to any participant and the shared client listed them as anonymous amounts, which the host read as one payment repeated; nothing on screen showed the other attendees' rows to a consultee, but the route and the hydrated first paint carried them. `scopeAppointmentDetail` now filters the rows to the viewer's own unless the viewer is the plan's consultant, an accepted collaborator or platform staff, applied by `authorizeAppointment` and by the consultee page before it hydrates. The host of a webinar or class sees a summary line and a payment dot on each participant chip, the roster's hard-coded "Registered" column became the seat's payment, and the Documents block renders only for the kinds that support documents. The decision is recorded in `docs/decisions/2026-09-13-appointment-money-is-per-seat.md`.
+
 ## Changelog: 2026-09-05 — booking closure train
 
 The 2026-09-05 train closes out a set of dated defects and doctrine drift the wave-6 train left open. Each PR appends its own subsection here.

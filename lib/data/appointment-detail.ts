@@ -123,6 +123,10 @@ export async function readAppointmentDetail(appointmentId: string) {
           // #1428 — the tentative-hold deadline shown on the detail page;
           // without it a held slot has no way to say when it releases.
           expiresAt: true,
+          // One Payment per attendee per appointment: the host needs the
+          // payer to put a status on each seat. Attendees only ever receive
+          // their own rows (scopeAppointmentDetail).
+          userId: true,
         },
       },
       organization: { select: { id: true, name: true } },
@@ -201,6 +205,40 @@ export function canAccessAppointment(
 ): boolean {
   const { consulteeUserIds, consultantUserIds } = participantUserIds(detail);
   return [...consulteeUserIds, ...consultantUserIds].includes(userId);
+}
+
+/**
+ * What a given viewer may see of the money. A webinar's ten attendees each
+ * have a Payment on the same appointment, and the read above returns all of
+ * them; an attendee must get only their own. The host (plan consultant or
+ * accepted collaborator) and platform staff see every seat.
+ *
+ * Only group kinds are scoped. A 1:1 booking has one payment that belongs to
+ * the booking whoever made it — a sponsoring organisation's admin, say — and
+ * the attending consultee must still see it (the 2026-09-12 QA pass found a
+ * sponsored consultation rendering no payment at all). An org-paid seat on a
+ * group event stays attributed to its payer until the AppointmentParticipant
+ * reader flip (#1319 A9), which carries the seat→payment edge.
+ */
+export function scopeAppointmentDetail<T extends TAppointmentDetail>(
+  detail: T,
+  viewerUserId: string,
+  privileged = false,
+): T {
+  const { webinarId, classId } = detail.appointment;
+  if (!webinarId && !classId) return detail;
+  if (privileged || appointmentRaterRole(viewerUserId, detail) === "PROVIDER") {
+    return detail;
+  }
+  return {
+    ...detail,
+    appointment: {
+      ...detail.appointment,
+      payment: detail.appointment.payment.filter(
+        (p) => p.userId === viewerUserId,
+      ),
+    },
+  };
 }
 
 function participantUserIds(detail: TAppointmentDetail) {

@@ -30,6 +30,7 @@ import { trialCheckoutHref } from "@/lib/appointments/trial-checkout-href";
 import type { TAppointmentDetail } from "@/lib/data/appointment-detail";
 import {
   paymentStatusBadge,
+  paymentStatusDot,
   recordingStatusBadge,
   resolveSponsoringOrgName,
   type PaymentDisplayStatus,
@@ -37,6 +38,14 @@ import {
 import { useSession } from "@/lib/auth-client";
 import { useHoldCountdown } from "@/hooks/useHoldCountdown";
 import { formatCurrencyAmount } from "@/utils/formatting";
+import {
+  isGroupKind,
+  supportsDocuments,
+} from "@/lib/appointments/kind-capabilities";
+import {
+  seatPaymentsByUser,
+  summarizeSeatPayments,
+} from "@/lib/appointments/seat-payments";
 import { CountdownBadge } from "../CountdownBadge";
 import { KIND_LABEL } from "../AppointmentRow";
 import { RowPrimaryAction } from "../RowPrimaryAction";
@@ -214,9 +223,13 @@ export function AppointmentDetailClient({
   const action = adapter.primaryAction(vm);
   // #1163 — the proposal card below IS the answer surface; the adapter's
   // "Review reschedule request" list affordance would only link back here.
+  // "Report issue" opens the same per-appointment support thread as the
+  // "Get help" button beside it — one entry point on this page.
   const overflow = adapter
     .overflowItems(vm)
-    .filter((item) => item.key !== "reschedule-proposal");
+    .filter(
+      (item) => item.key !== "reschedule-proposal" && item.key !== "report",
+    );
   const badge = eventUnionStatusBadge(vm.status);
   const orgName =
     detail.appointment.organization?.name ??
@@ -237,6 +250,16 @@ export function AppointmentDetailClient({
     participants.length - PARTICIPANTS_PREVIEW,
   );
   const manageHref = participantsHref?.(detail) ?? null;
+  // A group event's money is one row per attendee. The host reads it as a
+  // status on each seat plus a total; an attendee's `payments` is already
+  // just their own (scopeAppointmentDetail).
+  const isGroup = isGroupKind(vm.kind);
+  const seatPayments = seatPaymentsByUser(payments);
+  const seatSummary = summarizeSeatPayments(
+    seatPayments,
+    payments[0]?.currency?.toString() ?? "INR",
+  );
+  const showSeatSummary = role === "consultant" && isGroup;
   const anchorSession = vm.nextAt
     ? vm.sessions.find((s) => s.startsAt.getTime() === vm.nextAt?.getTime())
     : undefined;
@@ -506,38 +529,75 @@ export function AppointmentDetailClient({
               )}
             </Section>
 
-            <Section title="Payment & sponsorship">
+            <Section
+              title={showSeatSummary ? "Payments" : "Payment & sponsorship"}
+            >
               {payments.length === 0 && !orgName ? (
                 <p className="text-xs text-muted-foreground">
-                  No payment is attached to this booking.
+                  {showSeatSummary
+                    ? "No seat has been paid for yet."
+                    : "No payment is attached to this booking."}
                 </p>
               ) : (
                 <div className="space-y-2">
-                  {payments.map((payment) => (
-                    <div
-                      key={payment.id}
-                      className="flex items-center justify-between gap-2 rounded-lg bg-muted border border-border px-3 py-2"
-                    >
-                      <div className="flex items-center gap-2 text-sm">
-                        <CreditCard className="h-3.5 w-3.5 text-muted-foreground" />
-                        <span className="font-medium text-foreground tabular-nums">
-                          {formatCurrencyAmount(
-                            Number(payment.amount),
-                            payment.currency?.toString() ?? "INR",
-                          )}
-                        </span>
-                        <span className="text-xs text-muted-foreground">
-                          {format(new Date(payment.createdAt), "d MMM yyyy")}
-                        </span>
-                      </div>
-                      <StatusBadge
-                        {...paymentStatusBadge(
-                          payment.paymentStatus as PaymentDisplayStatus,
-                        )}
-                        size="sm"
-                      />
+                  {showSeatSummary ? (
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border bg-muted px-3 py-2 text-sm">
+                      <span className="font-medium text-foreground tabular-nums">
+                        {seatSummary.paid} of {participants.length} seat
+                        {participants.length === 1 ? "" : "s"} paid
+                      </span>
+                      <span className="text-muted-foreground">·</span>
+                      <span className="tabular-nums text-foreground">
+                        {formatCurrencyAmount(
+                          seatSummary.collectedPaise,
+                          seatSummary.currency,
+                        )}{" "}
+                        collected
+                      </span>
+                      {seatSummary.pending > 0 && (
+                        <>
+                          <span className="text-muted-foreground">·</span>
+                          <span className="text-muted-foreground">
+                            {seatSummary.pending} awaiting payment
+                          </span>
+                        </>
+                      )}
+                      {seatSummary.lapsed > 0 && (
+                        <>
+                          <span className="text-muted-foreground">·</span>
+                          <span className="text-muted-foreground">
+                            {seatSummary.lapsed} lapsed
+                          </span>
+                        </>
+                      )}
                     </div>
-                  ))}
+                  ) : (
+                    payments.map((payment) => (
+                      <div
+                        key={payment.id}
+                        className="flex items-center justify-between gap-2 rounded-lg bg-muted border border-border px-3 py-2"
+                      >
+                        <div className="flex items-center gap-2 text-sm">
+                          <CreditCard className="h-3.5 w-3.5 text-muted-foreground" />
+                          <span className="font-medium text-foreground tabular-nums">
+                            {formatCurrencyAmount(
+                              Number(payment.amount),
+                              payment.currency?.toString() ?? "INR",
+                            )}
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            {format(new Date(payment.createdAt), "d MMM yyyy")}
+                          </span>
+                        </div>
+                        <StatusBadge
+                          {...paymentStatusBadge(
+                            payment.paymentStatus as PaymentDisplayStatus,
+                          )}
+                          size="sm"
+                        />
+                      </div>
+                    ))
+                  )}
                   {orgName && (
                     <p className="text-xs text-muted-foreground">
                       This booking is sponsored by <strong>{orgName}</strong>.
@@ -602,23 +662,41 @@ export function AppointmentDetailClient({
                   </p>
                 ) : (
                   <div className="mb-3 flex flex-wrap gap-2">
-                    {previewParticipants.map((u) => (
-                      <span
-                        key={u.id}
-                        className="flex items-center gap-1.5 rounded-full border border-border bg-muted py-0.5 pl-1 pr-2.5 text-xs text-foreground"
-                      >
-                        <Avatar className="h-5 w-5">
-                          <AvatarImage
-                            src={u.image ?? undefined}
-                            alt={u.name}
-                          />
-                          <AvatarFallback className="text-[9px]">
-                            {initials(u.name) || "?"}
-                          </AvatarFallback>
-                        </Avatar>
-                        {u.name}
-                      </span>
-                    ))}
+                    {previewParticipants.map((u) => {
+                      const seat = isGroup ? seatPayments.get(u.id) : undefined;
+                      const seatBadge = seat
+                        ? paymentStatusBadge(
+                            seat.paymentStatus as PaymentDisplayStatus,
+                          )
+                        : null;
+                      return (
+                        <span
+                          key={u.id}
+                          title={seatBadge?.label}
+                          className="flex items-center gap-1.5 rounded-full border border-border bg-muted py-0.5 pl-1 pr-2.5 text-xs text-foreground"
+                        >
+                          <Avatar className="h-5 w-5">
+                            <AvatarImage
+                              src={u.image ?? undefined}
+                              alt={u.name}
+                            />
+                            <AvatarFallback className="text-[9px]">
+                              {initials(u.name) || "?"}
+                            </AvatarFallback>
+                          </Avatar>
+                          {u.name}
+                          {seat && seatBadge && (
+                            <>
+                              <span
+                                aria-hidden
+                                className={`ml-0.5 inline-block h-1.5 w-1.5 rounded-full ${paymentStatusDot(seat.paymentStatus)}`}
+                              />
+                              <span className="sr-only">{seatBadge.label}</span>
+                            </>
+                          )}
+                        </span>
+                      );
+                    })}
                     {hiddenParticipantCount > 0 && (
                       <span className="inline-flex items-center rounded-full border border-border bg-muted px-2.5 py-0.5 text-xs text-muted-foreground">
                         +{hiddenParticipantCount} more
@@ -641,17 +719,21 @@ export function AppointmentDetailClient({
           <aside className="min-w-0 lg:sticky lg:top-20">
             <Section title="Resources">
               <div className="space-y-5">
-                <ResourceSubgroup title="Documents" icon={FileText}>
-                  {renderDocuments ? (
-                    renderDocuments(vm)
-                  ) : (
-                    <p className="text-xs text-muted-foreground">
-                      Documents for this booking will appear here.
-                    </p>
-                  )}
-                </ResourceSubgroup>
+                {supportsDocuments(vm.kind) && (
+                  <>
+                    <ResourceSubgroup title="Documents" icon={FileText}>
+                      {renderDocuments ? (
+                        renderDocuments(vm)
+                      ) : (
+                        <p className="text-xs text-muted-foreground">
+                          Documents for this booking will appear here.
+                        </p>
+                      )}
+                    </ResourceSubgroup>
 
-                <div className="border-t border-border" />
+                    <div className="border-t border-border" />
+                  </>
+                )}
 
                 <ResourceSubgroup title="Recordings" icon={Video}>
                   {recordings.length === 0 ? (

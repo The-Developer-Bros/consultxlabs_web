@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import prisma from "@/lib/prisma";
+import { readSeatPayments } from "@/lib/data/seat-payments";
 import { withSerializableRetry } from "@/lib/db/serializable-retry";
 import {
   requireApiAuth,
@@ -98,9 +99,15 @@ export async function GET(
       ).values(),
     );
 
+    const seatPayments = await readSeatPayments(
+      webinarEvent.appointment ? [webinarEvent.appointment.id] : [],
+      participants.map((u) => u.id),
+    );
+
     return NextResponse.json({
       webinarEvent,
       participants,
+      seatPayments,
     });
   } catch (error) {
     Sentry.captureException(
