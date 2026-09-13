@@ -93,13 +93,18 @@ export async function handleRecordingStarted(
       return;
     }
 
-    // Update meeting session to mark recording as active
+    // #1615 — the route's claim is the source of truth for the actor and the
+    // claim time; the webhook only confirms, so both fields are first-write-wins.
     await prisma.meetingSession.update({
       where: { id: meetingSession.id },
       data: {
         isRecording: true,
-        recordingStartedAt: new Date(created_at),
-        recordingStartedBy: user?.id || null,
+        ...(meetingSession.recordingStartedAt
+          ? {}
+          : { recordingStartedAt: new Date(created_at) }),
+        ...(!meetingSession.recordingStartedBy && user?.id
+          ? { recordingStartedBy: user.id }
+          : {}),
       },
     });
 
@@ -336,9 +341,9 @@ export async function handleRecordingReady(
 
     // Build recipient list — for webinar/class, include all enrolled attendees
     // (the meeting session slot only has the consultant's allocation slot users)
-    const slotUserIds = meetingSession.slotOfAppointment.user?.map(
-      (u: { id: string }) => u.id,
-    ) ?? [];
+    const slotUserIds =
+      meetingSession.slotOfAppointment.user?.map((u: { id: string }) => u.id) ??
+      [];
     const userIds = await getEventAttendeeIds(appointment, slotUserIds);
 
     if (userIds.length > 0) {

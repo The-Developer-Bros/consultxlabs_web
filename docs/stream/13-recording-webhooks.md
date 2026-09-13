@@ -360,6 +360,8 @@ interface StreamRecordingStartedEvent {
 }
 ```
 
+Every start in this app goes through the server SDK (`POST /api/stream/recordings/start`), so this event never carries a `user` in practice. The handler treats the webhook as confirmation that recording is active, not as a fresh source of truth: it never overwrites the actor or claim time the route already stamped, and it only fills them in when the row does not already have them (#1615).
+
 #### call.recording_stopped
 
 ```typescript
