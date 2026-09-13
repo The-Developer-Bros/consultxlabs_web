@@ -93,8 +93,8 @@ export async function handleRecordingStarted(
       return;
     }
 
-    // #1615 — server-side starts carry no `user`; never overwrite the actor
-    // or claim time the route already stamped one request earlier.
+    // #1615 — the route's claim is the source of truth for the actor and the
+    // claim time; the webhook only confirms, so both fields are first-write-wins.
     await prisma.meetingSession.update({
       where: { id: meetingSession.id },
       data: {
@@ -102,7 +102,9 @@ export async function handleRecordingStarted(
         ...(meetingSession.recordingStartedAt
           ? {}
           : { recordingStartedAt: new Date(created_at) }),
-        ...(user?.id ? { recordingStartedBy: user.id } : {}),
+        ...(!meetingSession.recordingStartedBy && user?.id
+          ? { recordingStartedBy: user.id }
+          : {}),
       },
     });
 

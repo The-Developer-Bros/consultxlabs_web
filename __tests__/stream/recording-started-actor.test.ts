@@ -60,4 +60,25 @@ describe("handleRecordingStarted — actor and claim time", () => {
     expect(data).not.toHaveProperty("recordingStartedBy");
     expect(data).not.toHaveProperty("recordingStartedAt");
   });
+
+  it("keeps the route's actor even when the event names a user", async () => {
+    const { handleRecordingStarted } =
+      await import("../../lib/stream/recording-handlers");
+
+    mockFindUnique.mockResolvedValue({
+      id: "session-1",
+      recordingStartedBy: "owner-user-id",
+      recordingStartedAt: new Date("2026-09-12T22:06:00.000Z"),
+    });
+    mockUpdate.mockResolvedValue({});
+
+    await handleRecordingStarted({
+      call_cid: "default:call-1",
+      type: "call.recording_started",
+      created_at: "2026-09-12T22:06:28.522Z",
+      user: { id: "someone-else" },
+    });
+
+    expect(mockUpdate.mock.calls[0][0].data).toEqual({ isRecording: true });
+  });
 });
