@@ -204,7 +204,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
     });
 
     if (thread.supportTicketId) {
-      void notifySupportTicketResponse(thread.userId, {
+      await notifySupportTicketResponse(thread.userId, {
         ticketId: thread.supportTicketId,
         reference: thread.supportTicket?.referenceNumber ?? undefined,
         ticketTitle: thread.supportTicket?.title ?? "Support",
@@ -336,7 +336,7 @@ export async function PATCH(req: NextRequest, { params }: RouteParams) {
     // #705 — the user is the only party who cannot see the ops queue, and this
     // route was the one status change nobody told them about.
     if (thread.supportTicketId) {
-      void notifySupportTicketUpdate(thread.userId, {
+      await notifySupportTicketUpdate(thread.userId, {
         ticketId: thread.supportTicketId,
         reference: thread.supportTicket?.referenceNumber ?? undefined,
         ticketTitle: thread.supportTicket?.title ?? "Support",

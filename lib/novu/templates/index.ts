@@ -79,7 +79,7 @@ function caseOverEvents(
   const branches = templates
     .map((t) => [t.workflowId, pick(t)] as const)
     .filter(([, text]) => !!text)
-    .map(([event, text]) => `{% when "${event}" %}${text}`)
+    .map(([event, text]) => `{% when '${event}' %}${text}`)
     .join("");
   return branches ? `{% case payload.event %}${branches}{% endcase %}` : "";
 }
@@ -106,9 +106,9 @@ export function toFamilyDto(family: Family): CreateWorkflowDto {
   return {
     workflowId: family.id,
     name: family.name,
-    description: `${family.description} Events: ${members
-      .map((t) => t.workflowId)
-      .join(", ")}.`,
+    // Novu caps a description at 256 characters; org-billing's ten events
+    // overflowed it on the first sync. The events are listed in families.ts.
+    description: `${family.description} ${members.length} events; see lib/novu/templates/families.ts.`,
     tags: family.category ? [family.category] : [],
     active: true,
     validatePayload: false,

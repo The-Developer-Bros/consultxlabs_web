@@ -127,7 +127,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
 
     // Notify the ticket owner about the staff response (skip for internal notes)
     if (!validatedData.isInternal) {
-      void notifySupportTicketResponse(ticket.userId, {
+      await notifySupportTicketResponse(ticket.userId, {
         ticketId: ticket.id,
         reference: ticket.referenceNumber ?? undefined,
         ticketTitle: ticket.title || "Support Ticket",
